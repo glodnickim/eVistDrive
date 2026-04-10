@@ -258,8 +258,12 @@ int main(void)
     //initialize MS struct.
 	MS.hall_angle_detect_flag=1;
 	MS.Speedx100=0; //in km/h*100
+<<<<<<< Updated upstream
 	MS.assist_level=127;
 	MS.regen_level=7;
+=======
+	MS.assist_level=2;
+>>>>>>> Stashed changes
 	MS.i_q_setpoint = 0;
 	MS.i_d_setpoint = 0;
 	MS.angle_est=SPEED_PLL;
@@ -326,6 +330,16 @@ int main(void)
     		MS.torque_on_crank=750;
     		MS.p_human=0;
     	}
+<<<<<<< Updated upstream
+=======
+    	// switch lights
+    	if(MS.light_flag&&!gpio_input_bit_get(GPIOB,GPIO_PIN_10))GPIO_BOP(GPIOB) = GPIO_PIN_10;
+    	if(!MS.light_flag&&gpio_input_bit_get(GPIOB,GPIO_PIN_10)) GPIO_BC(GPIOB) = GPIO_PIN_10;
+
+    	//check brake sensor state
+    	if(!gpio_input_bit_get(GPIOC,GPIO_PIN_13))MS.brake_active_flag=0;
+    	else MS.brake_active_flag=0;
+>>>>>>> Stashed changes
     	// update scaled current and speed
     	if(MS.assist_level!=assist_level_old){
     		speedlimitx100_scaled=MP.speedLimitx100*MP.assist_settings[level_to_array_element[MS.assist_level]][1]/100;
@@ -346,6 +360,7 @@ int main(void)
 				counter = 0;
 				if((((adc_value[3]>>2)+1555)-adc_value[5])+100>300)shutoffcounter++;
 				else shutoffcounter=0;
+<<<<<<< Updated upstream
 				if(shutoffcounter>5){
 					timer_primary_output_config(TIMER0,DISABLE); //stop PWM output
 				    GPIO_BC(GPIOB) = GPIO_PIN_5; // Display off
@@ -373,6 +388,14 @@ int main(void)
 					}
 
 #endif
+=======
+//				if(shutoffcounter>20){
+//					timer_primary_output_config(TIMER0,DISABLE); //stop PWM output
+//					GPIO_BC(GPIOB) = GPIO_PIN_4; //reset Pin4 from Bootloader
+//				    GPIO_BC(GPIOB) = GPIO_PIN_5; // Display off
+//				    GPIO_BC(GPIOB) = GPIO_PIN_6; // DC/DC off
+//				}
+>>>>>>> Stashed changes
             }
             //calculate iq setpoint
             mapped_throttle= map(adc_value[1], THROTTLE_OFFSET, THROTTLE_MAX, 0, PH_CURRENT_MAX);
@@ -739,7 +762,7 @@ void timer0_config(void)
 	    /* automatic output enable, break, dead time and lock configuration*/
 	    timer_breakpara.runoffstate      = TIMER_ROS_STATE_DISABLE;
 	    timer_breakpara.ideloffstate     = TIMER_IOS_STATE_DISABLE ;
-	    timer_breakpara.deadtime         = 16;
+	    timer_breakpara.deadtime         = 32;
 	    timer_breakpara.breakpolarity    = TIMER_BREAK_POLARITY_HIGH;
 	    timer_breakpara.outputautostate  = TIMER_OUTAUTO_DISABLE;
 	    timer_breakpara.protectmode      = TIMER_CCHP_PROT_0;
@@ -1453,6 +1476,78 @@ uint8_t interpolate_assistfactor(void){
 	return ui8_speedfactor;
 }
 
+<<<<<<< Updated upstream
+=======
+void print_debug_on_CAN(void){
+
+
+	transmit_message.tx_sfid = 0x00;
+	transmit_message.tx_efid = 0x00010203; //ID for debug message
+	transmit_message.tx_ft = CAN_FT_DATA;
+	transmit_message.tx_ff = CAN_FF_EXTENDED;
+	transmit_message.tx_dlen = 8;
+	transmit_message.tx_data[0] = (MS.Battery_Current>>8)&0xFF;//(GPIO_ISTAT(GPIOC)>>6)&0x07;
+	transmit_message.tx_data[1] = (MS.Battery_Current)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
+	transmit_message.tx_data[2] = (MS.i_q_setpoint>>8)&0xFF;;
+	transmit_message.tx_data[3] = (MS.i_q_setpoint)&0xFF;
+	transmit_message.tx_data[4] = (MS.i_q>>8)&0xFF;
+	transmit_message.tx_data[5] = (MS.i_q)&0xFF;
+	transmit_message.tx_data[6] = (MS.i_d>>8)&0xFF; //(adc_value[1]>>8)&0xFF;
+	transmit_message.tx_data[7] = (MS.i_d)&0xFF;
+
+	/* transmit message */
+	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
+	/* waiting for transmit completed */
+	timeout = 0xFFFF;
+	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
+		timeout--;
+		}
+
+}
+
+int16_t T_NTC(uint16_t ADC) // ADC 12 Bit, 10k NTC, RÃ¼ckgabewert in Â°C
+
+{
+	int R = R_TEMP_PULLUP;                                    // Spannungsteiler, fester Widerstand
+	float Rn = 20000;                                         // gemessen (Ohm)
+	float Tn = 23;                                            // gemessen (°C)
+	float B = 3398;
+    float U_ntc = (3.3 * ADC) / 4095;             // Spannung
+    float R_ntc = (U_ntc * R) / (3.3 - U_ntc);           // Widerstand
+                                                          // Temperatur-Berechnung
+        // Rt = Rn * e hoch B*(1/T - 1/Tn)                // Ausgangsformel
+        // T = 1 / [(log(Rt/Rn)/B + 1/Tn] - 273,15        // umgestellt in °K
+        // Tnk = 26,2 + 273,15                            // °K
+    float A1 = log(R_ntc / Rn) / B;
+    float A2 = A1 + 1 / (Tn + 273.15);
+    float T = (1 / A2) - 273.15;
+	return (int)T; // Rundung
+
+}
+
+int8_t calculate_SOC(uint16_t voltage, uint8_t cells_in_series){ //interpolate from lookup table
+    float voltages[] = {3.00, 3.15, 3.30, 3.42, 3.55, 3.60, 3.65, 3.70, 3.75, 3.80, 3.85, 3.90, 4.00, 4.10, 4.20};
+    float soc_values[] = {0, 5, 15, 30, 50, 60, 75, 85, 90, 95, 97, 99, 99.5, 99.8, 100};
+    int length = sizeof(voltages) / sizeof(voltages[0]);
+    float cell_voltage = (float)voltage/((float)cells_in_series*1000);
+    if (cell_voltage <= voltages[0]) {
+        return (int8_t)soc_values[0];
+    }
+    if (cell_voltage >= voltages[length - 1]) {
+        return (int8_t)soc_values[length - 1];
+    }
+
+    for (int i = 0; i < length - 1; i++) {
+        if (cell_voltage < voltages[i+1]) {
+            float slope = (soc_values[i+1] - soc_values[i]) / (voltages[i+1] - voltages[i]);
+            float soc = soc_values[i] + slope * (cell_voltage - voltages[i]);
+            return (int8_t)soc;
+        }
+    }
+    return (int8_t)soc_values[length - 1];
+}
+
+>>>>>>> Stashed changes
 /*!
     \brief      erase fmc pages from FMC_WRITE_START_ADDR to FMC_WRITE_END_ADDR
     \param[in]  none
