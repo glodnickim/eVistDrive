@@ -63,14 +63,14 @@ void FOC_calculation(int16_t int16_i_as, int16_t int16_i_bs, q31_t q31_teta, int
 	 q31_t q31_i_beta_corr = 0;
 	 static q31_t q31_angle_old = 0;
 	 q31_t sinevalue=0, cosinevalue = 0;
-	 temp6= (((q31_teta >> 23) * 180) >> 9);
-	 if(temp6 !=temp5){
-		 debug[j]=(int8_t)temp6;
-
-		 temp5=debug[j];
-		 if(j<720) j++;
-		 else j=0;
-	 }
+//	 temp6= (((q31_teta >> 23) * 180) >> 9);
+//	 if(temp6 !=temp5){
+//		 debug[j]=(int8_t)temp6;
+//
+//		 temp5=debug[j];
+//		 if(j<720) j++;
+//		 else j=0;
+//	 }
 
 
 	// temp5=(q31_t)int16_i_as;
@@ -103,9 +103,9 @@ void FOC_calculation(int16_t int16_i_as, int16_t int16_i_bs, q31_t q31_teta, int
 
 
 	if(MS_FOC->i_d>(PH_CURRENT_MAX<<2)){
-		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,0);
-		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,0);
-		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,0);
+		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,_T>>1);
+		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,_T>>1);
+		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,_T>>1);
 		timer_primary_output_config(TIMER0,DISABLE)	;	//disable PWM if overcurrent detected
 		while(1){}						//stay here until hard reset
 	}
@@ -116,7 +116,7 @@ void FOC_calculation(int16_t int16_i_as, int16_t int16_i_bs, q31_t q31_teta, int
 
 
 	if(!MS_FOC->hall_angle_detect_flag){
-		MS_FOC->u_d = 100;
+		MS_FOC->u_d = 200;
 		MS_FOC->u_q = 0;
 	}
 	else{ //workaround, as long as no current control is implemented

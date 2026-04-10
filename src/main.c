@@ -57,8 +57,11 @@ can_trasnmit_message_struct transmit_message;
 can_receive_message_struct receive_message;
 FlagStatus receive_flag;
 FlagStatus PAS_flag=0;
+FlagStatus Speed_flag=0;
 FlagStatus reg_ADC_flag=0;
 FlagStatus OnOffButton_flag=0;
+FlagStatus BC_limit_flag=0;
+FlagStatus Backwards_flag=RESET;
 
 void nvic_config(void);
 void led_config(void);
@@ -68,7 +71,10 @@ void dma_config(void);
 void adc_config(void);
 void timer0_config(void); //PWM for Mosfet driver
 void timer1_config(void); //PWM for triggering regular ADC
-void timer2_config(void); // Input capture for hall sensors
+
+void timer3_config(void); // Input capture for signal Z of encoder
+void timer4_config(void); // Input capture for signal PWM of encoder
+void Encoder_Init(void); // Quadrature signal A/B on timer2
 ErrStatus can_networking(void);
 void can_networking_init(void);
 int32_t speed_PLL (int32_t ist, int32_t soll, uint8_t speedadapt);
@@ -88,8 +94,15 @@ fmc_state_enum fmc_multi_word_program(uint32_t offset, uint8_t* data, uint8_t wo
 void write_virtual_eeprom(void);
 void read_virtual_eeprom(void);
 uint8_t interpolate_assistfactor(void);
-uint16_t counter=0;
+int8_t calculate_SOC(uint16_t voltage, uint8_t cells_in_series);
+void print_debug_on_CAN(void);
+void Speed_processing(void);
+int16_t T_NTC(uint16_t ADC);
+float u32_to_deg=0.00000008381903171539;
+uint16_t slow_loop_counter=0;
 uint16_t PAS_counter=0;
+uint16_t Speed_counter=0;
+int32_t ButtonVoltageCumulated=620<<6;
 #define iabs(x) (((x) >= 0)?(x):-(x))
 #define sign(x) (((x) >= 0)?(1):(-1))
 MotorState_t MS;
@@ -105,12 +118,13 @@ uint8_t ui8_hall_state=0;
 uint8_t ui8_hall_state_old=0;
 uint8_t ui8_hall_case=0;
 uint32_t uint32_tics_filtered=128000;
+uint16_t uint16_cadence_filtered=0;
 uint8_t ui8_overflow_flag=0;
 uint8_t ui8_SPEED_control_flag=0;
 
 int32_t q31_rotorposition_hall=0;
 q31_t q31_rotorposition_absolute=0;
-int8_t i8_recent_rotor_direction=1;
+int8_t i8_recent_rotor_direction=0;
 
 uint16_t ui16_tim2_recent=0;
 uint16_t uint16_full_rotation_counter=0;
@@ -129,26 +143,29 @@ q31_t q31_u_q_temp=0;
 
 int8_t statehistory[36];
 uint8_t historycounter=0;
-int32_t i32_hall_order =-1;
-int32_t Hall_13 = 1825361405;
-int32_t Hall_32 = -1789569490;
+int32_t i32_full_rotation_flag =-1;
+int32_t Z_position_cumulated = 0;
+int32_t Z_position = 450;
 int32_t Hall_26 = -966367405;
-int32_t Hall_64 = -322122295;
-int32_t Hall_45 = 381775140;
-int32_t Hall_51 = 1169185830;
+int32_t Encoder_raw_angle = 0;
+int32_t PWM_offset_cumulated = 0;
+int32_t PWM_offset = 0;
 
 int32_t q31_PLL_error=0;
 int32_t q31_rotorposition_PLL=0;
 uint8_t ui_8_PLL_counter=0;
 uint8_t shutoffcounter=0;
+uint16_t offroadcode=0;
+uint16_t offroadcounter=0;
 uint8_t ui_8_PWM_ON_Flag=0;
 int32_t q31_angle_per_tic=0;
 //Rotor angle scaled from degree to q31 for arm_math. -180Ã‚Â°-->-2^31, 0Ã‚Â°-->0, +180Ã‚Â°-->+2^31
 const int32_t deg_30 = 357913941;
 uint16_t switchtime[3];
 uint16_t ui16_erps=0;
-uint32_t ui32_erps_cumulated=0;
+uint16_t ui16_erps_counter=0;
 uint16_t mapped_throttle=0;
+uint16_t mapped_torque=0;
 char char_dyn_adc_state_old=1;
 int16_t i16_ph1_current=0;
 int16_t i16_ph2_current=0;
@@ -158,6 +175,9 @@ int8_t i8_reverse_flag = 1;
 const q31_t tics_lower_limit = WHEEL_CIRCUMFERENCE*5*3600/(6*GEAR_RATIO*SPEEDLIMIT*10); //tics=wheelcirc*timerfrequency/(no. of hallevents per rev*gear-ratio*speedlimit)*3600/1000000
 const q31_t tics_higher_limit = WHEEL_CIRCUMFERENCE*5*3600/(6*GEAR_RATIO*(SPEEDLIMIT+2)*10);
 uint8_t i = 0;
+uint16_t p = 0;
+uint16_t Overrun_strength = 0;
+uint16_t Overrun_counter = 0;
 uint32_t timeout = 0xFFFF;
 uint8_t transmit_mailbox = 0;
 int32_t battery_current_cumulated=0;
@@ -166,6 +186,9 @@ uint8_t array_temp[88];
 
 uint8_t level_to_array_element[10]={0,0,1,0,2,0,3,0,4,5}; //map assist Level to array element
 
+int32_t ic1value = 0,AngleFromPWM = 0;
+__IO uint16_t dutycycle = 0;
+__IO uint16_t frequency = 0;
 
 
 
@@ -202,8 +225,14 @@ void led_spark(void)
 
 int main(void)
 {
+#if (BOOTLOADER== 3)
+	nvic_vector_table_set(NVIC_VECTTAB_FLASH, 0x4000); //for bootloader v3
 
-    nvic_vector_table_set(NVIC_VECTTAB_FLASH, 0xA800);
+#elif (BOOTLOADER== 38)
+	nvic_vector_table_set(NVIC_VECTTAB_FLASH, 0xA800); //for bootloader v3.8
+#endif
+
+
     __enable_irq();
 
 	//SCB->VTOR = 0x08004000;
@@ -229,7 +258,11 @@ int main(void)
     /* TIMER configuration */
     timer0_config(); // PWM for Mosfet driver
     timer1_config(); //trigger regular ADC for testing
-    timer2_config(); //for hall sensor handling
+    //timer2_config(); //for hall sensor handling
+    timer3_config(); //for encoder z signal handling
+    timer4_config(); //for encoder PWM handling
+    Encoder_Init();
+
     /* DMA configuration */
     dma_config();
     /* ADC configuration */
@@ -242,7 +275,7 @@ int main(void)
     receive_flag = RESET;
 
     can_interrupt_enable(CAN0, CAN_INTEN_RFNEIE1);
-#ifdef PRINTDEBUG
+#ifdef PRINTDEBUG_UART
     //start UART4 for debug messages
     UART4_init();
 #endif
@@ -258,7 +291,6 @@ int main(void)
     //initialize MS struct.
 	MS.hall_angle_detect_flag=1;
 	MS.Speedx100=0; //in km/h*100
-	MS.regen_level=7;
 	MS.assist_level=2;
 	MS.i_q_setpoint = 0;
 	MS.i_d_setpoint = 0;
@@ -267,7 +299,10 @@ int main(void)
 	MS.light_flag=SET;
 	MS.button_up_flag=SET;
 	MS.button_down_flag=SET;
-
+	MS.offroadflag=RESET;
+	MS.offroadtics=0;
+	MS.pushassist_flag=RESET;
+	MS.distance_since_startup=0;
 
 	MP.pulses_per_revolution = PULSES_PER_REVOLUTION;
 	MP.wheel_cirumference = WHEEL_CIRCUMFERENCE;
@@ -276,6 +311,8 @@ int main(void)
 	MP.phase_current_max = PH_CURRENT_MAX;
 	MP.TS_coeff = TS_COEF;
 	MP.reverse = REVERSE;
+	MP.MagicNumber=202;
+	MP.Override_Duration=8000;
 
 
 	//init PI structs
@@ -319,14 +356,25 @@ int main(void)
     	}
 
 #endif
+    	if(offroadcounter>4000){
+    		offroadcode=0;
+    		MS.offroadtics=0;
+    	}
     	if(PAS_flag)PAS_processing();
+    	if(Speed_flag)Speed_processing();
     	if(reg_ADC_flag)reg_ADC_processing();
     	if(PAS_counter>MP.PAS_timeout){
+    		Backwards_flag=RESET;
     		MS.cadence=0;
     		MS.torque_on_crank=750;
     		MS.p_human=0;
+    		uint16_cadence_filtered=0;
+    		if(!MS.i_q_setpoint){
+				PI_iq.integral_part=0;
+				PI_id.integral_part=0;
+    		}
+    		if(torque_cumulated)torque_cumulated--;
     	}
-
     	// switch lights
     	if(MS.light_flag&&!gpio_input_bit_get(GPIOB,GPIO_PIN_10))GPIO_BOP(GPIOB) = GPIO_PIN_10;
     	if(!MS.light_flag&&gpio_input_bit_get(GPIOB,GPIO_PIN_10)) GPIO_BC(GPIOB) = GPIO_PIN_10;
@@ -334,109 +382,144 @@ int main(void)
     	//check brake sensor state
     	if(!gpio_input_bit_get(GPIOC,GPIO_PIN_13))MS.brake_active_flag=1;
     	else MS.brake_active_flag=0;
-
     	// update scaled current and speed
     	if(MS.assist_level!=assist_level_old){
     		speedlimitx100_scaled=MP.speedLimitx100*MP.assist_settings[level_to_array_element[MS.assist_level]][1]/100;
     		phase_current_max_scaled=MP.phase_current_max*MP.assist_settings[level_to_array_element[MS.assist_level]][0]/100;
+        	MS.TQfilter=level_to_array_element[MS.assist_level];
+        	MS.TQfilter=MP.assist_settings[MS.TQfilter][2];
+        	if(offroadcounter<4000&&offroadcounter>1000){
+        		offroadcode+=pow(10,MS.offroadtics)*MS.assist_level;
+        		MS.offroadtics++;
+        	}
+
+        	if(offroadcode==MP.MagicNumber){
+        		MS.offroadflag=!MS.offroadflag;
+        		if(MS.offroadflag)MS.offroadtics=9;
+        		else MS.offroadtics=8;
+        	}
+        	offroadcounter=0;
+
     		assist_level_old=MS.assist_level;
+
     	}
 
-            if (counter > 2000){ //slow loop every 500ms, Timer1 @4kHz interrupt frequency
+            if (slow_loop_counter > 200){ //slow loop every 500ms, Timer1 @4kHz interrupt frequency
             	gd_eval_led_toggle(LED2);
-#ifdef PRINTDEBUG
+#ifdef PRINTDEBUG_UART
+
             	//printf("%d, %d, %d, %d, %d\r\n",MS.Battery_Current,MS.i_q_setpoint,MP.reverse*MS.i_q,ui16_erps,temp2);
             	printf("%d, %d, %d, %d, %d\r\n",MS.Battery_Current,MS.i_q_setpoint,MP.reverse*MS.i_q,MS.p_human,MS.Speedx100);
 #endif
+
+#ifdef PRINTDEBUG_CAN
+            	print_debug_on_CAN();
+#endif
+            	MS.int_Temperature = T_NTC(adc_value[6]);
+            	MS.SOC = calculate_SOC(MS.Voltage, (uint8_t) ((float)MP.system_voltage/3.6));
             	//toggle speed pin
             	//gpio_bit_write(GPIOB, GPIO_PIN_0,(bit_status)(1-gpio_input_bit_get(GPIOB, GPIO_PIN_0)));
-            	if(ui16_timertics<10000)MS.Speedx100=internal_tics_to_speedx100(uint32_tics_filtered>>3);
-            	else MS.Speedx100=0;
-				counter = 0;
-				if((((adc_value[3]>>2)+1555)-adc_value[5])+100>300)shutoffcounter++;
-				else shutoffcounter=0;
+            	if(Speed_counter>20000) MS.Speedx100=0;
+				slow_loop_counter = 0;
 
-//				if(shutoffcounter>5){
+				//Check ratio form battery voltage to power button voltage
+				ButtonVoltageCumulated-=ButtonVoltageCumulated>>6;
+				ButtonVoltageCumulated+=adc_value[5];
+
+				if((ButtonVoltageCumulated>>6)-adc_value[5]>5)shutoffcounter++;
+				else shutoffcounter=0;
+//				if(shutoffcounter>20){
 //					timer_primary_output_config(TIMER0,DISABLE); //stop PWM output
+//					GPIO_BC(GPIOB) = GPIO_PIN_4; //reset Pin4 from Bootloader
 //				    GPIO_BC(GPIOB) = GPIO_PIN_5; // Display off
 //				    GPIO_BC(GPIOB) = GPIO_PIN_6; // DC/DC off
-//
-//
 //				}
-
-#if (DISPLAY_TYPE == DISPLAY_TYPE_DEBUG)
-				transmit_message.tx_data[0] = (MS.i_d>>8)&0xFF;//(GPIO_ISTAT(GPIOC)>>6)&0x07;
-				transmit_message.tx_data[1] = (MS.i_d)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
-				transmit_message.tx_data[2] = (MS.i_q>>8)&0xFF;;
-				transmit_message.tx_data[3] = (MS.i_q)&0xFF;
-				transmit_message.tx_data[4] = (MS.u_abs>>8)&0xFF;
-				transmit_message.tx_data[5] = (MS.u_abs)&0xFF;
-				transmit_message.tx_data[6] = (ui_8_PWM_ON_Flag)&0xFF; //(adc_value[1]>>8)&0xFF;
-				transmit_message.tx_data[7] = (ui8_6step_flag)&0xFF;
-
-				/* transmit message */
-				transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-				/* waiting for transmit completed */
-				timeout = 0xFFFF;
-				while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-					timeout--;
-					}
-
-#endif
-
             }
             //calculate iq setpoint
-            mapped_throttle= map(adc_value[1], THROTTLE_OFFSET, THROTTLE_MAX, 0, PH_CURRENT_MAX);
+            //check brake with first priority
+            if(MS.brake_active_flag||Backwards_flag)MS.i_q_setpoint_temp=0;
+            // check push assist active
+            else if(MS.pushassist_flag)MS.i_q_setpoint_temp=100;
+            //calculate setpoint, if brake is not activated
+            else{
+				mapped_throttle= map(adc_value[1], THROTTLE_OFFSET, THROTTLE_MAX, 0, phase_current_max_scaled);
+				mapped_torque= map(MS.torque_on_crank, MP.TQO_threshold[level_to_array_element[MS.assist_level]], 3300, 0, phase_current_max_scaled);
+				//MS.Speedx100=250;
 
-            //MS.Speedx100=250;
+				MS.i_q_setpoint_temp= MP.TS_coeff*MS.p_human*interpolate_assistfactor()/100;
+				temp1 = MS.i_q_setpoint_temp;
 
-    		MS.i_q_setpoint_temp= MP.TS_coeff*MS.p_human*interpolate_assistfactor()/100;
-    		//limit setpoint to the max value according to the current setting.
-
-
-    		if(mapped_throttle>MS.i_q_setpoint_temp)MS.i_q_setpoint_temp=mapped_throttle;
-    		if(MS.i_q_setpoint_temp>phase_current_max_scaled)MS.i_q_setpoint_temp = phase_current_max_scaled;
-    		if(MP.legalflag){
-				if(!MS.brake_active_flag){ //only ramp down if no regen active
-					if(PAS_counter<MP.PAS_timeout){
-						MS.i_q_setpoint_temp=map(MS.Speedx100, speedlimitx100_scaled,(speedlimitx100_scaled+200),MS.i_q_setpoint_temp,0);
+				//throttle override
+				if(mapped_throttle>MS.i_q_setpoint_temp)MS.i_q_setpoint_temp=mapped_throttle;
+				//torque override
+				if(mapped_torque>MS.i_q_setpoint_temp){
+					if(mapped_torque>Overrun_strength){
+						Overrun_strength=mapped_torque;
+						Overrun_counter = 0;
 					}
-					else{ //limit to 6km/h if pedals are not turning
-						MS.i_q_setpoint_temp=map(MS.Speedx100, 500,700,MS.i_q_setpoint_temp,0);
+					MS.i_q_setpoint_temp=mapped_torque;
+				}
+				if(Overrun_counter<MP.Override_Duration)MS.i_q_setpoint_temp=Overrun_strength;
+				else Overrun_strength=0;
+				//limit setpoint to the max value according to the current setting.
+				if(MS.i_q_setpoint_temp>phase_current_max_scaled)MS.i_q_setpoint_temp = phase_current_max_scaled;
+            }// else brake not active
+			if(MP.legalflag&&!MS.offroadflag){
+
+				if((uint16_cadence_filtered>>3)>15){
+					MS.i_q_setpoint_temp=map(MS.Speedx100, speedlimitx100_scaled,(speedlimitx100_scaled+200),MS.i_q_setpoint_temp,0);
+				}
+				else{ //limit to 6km/h if pedals are not turning
+					MS.i_q_setpoint_temp=map(MS.Speedx100, 500,700,MS.i_q_setpoint_temp,0);
+				}
+
+			}//end legalflag
+			if(MS.hall_angle_detect_flag>1){ // part 2 of positions calibration
+				MS.i_q_setpoint_temp=200;
+				temp6-=temp6>>4;
+				temp6+=MS.u_d;
+				if (p>30){
+					p=0;
+					if ((MP.reverse*temp6>>4)>-40)Z_position++;
+					else if ((MP.reverse*temp6>>4)<-50)Z_position--;
+					else {
+						MS.i_q_setpoint_temp=0;
+						timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,_T>>1);
+						timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,_T>>1);
+						timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,_T>>1);
+						timer_primary_output_config(TIMER0,DISABLE); //Disable PWM if motor is not turning
+						write_virtual_eeprom();
+						MS.hall_angle_detect_flag=1;
 					}
 				}
-    		}
-    		MS.i_q_setpoint_temp=map(MS.Battery_Current, MP.battery_current_max-500,MP.battery_current_max+500,MS.i_q_setpoint_temp,0);
+
+			}
 
     		MS.i_q_setpoint=MS.i_q_setpoint_temp;
             if(MS.i_q_setpoint){
             	if(!ui_8_PWM_ON_Flag){
-            		get_standstill_position();
-            		//=20000; //set interval between two hallevents to a large value
-            		//uint32_tics_filtered=128000;
-            		i8_recent_rotor_direction=MP.reverse*i8_reverse_flag;
-            		timer_counter_value_config(TIMER2, 0);
 					timer_primary_output_config(TIMER0,ENABLE);
+					uint16_half_rotation_counter=0;
 					ui_8_PWM_ON_Flag=1;
             	}
             }
-            else if(uint16_half_rotation_counter>4000) {
+            if(uint16_half_rotation_counter>4000) {
             	if(ui_8_PWM_ON_Flag){
-					timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,0);
-					timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,0);
-					timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,0);
+					timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,_T>>1);
+					timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,_T>>1);
+					timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,_T>>1);
 					timer_primary_output_config(TIMER0,DISABLE); //Disable PWM if motor is not turning
 					ui_8_PWM_ON_Flag=0;
+					i8_recent_rotor_direction=0;
 
             	}
             	 //Disable PWM if motor is not turning
-    			if(TIMER_CCHP(TIMER0)&(uint32_t)TIMER_CCHP_POEN){
-    				timer_primary_output_config(TIMER0,DISABLE);
-    				PI_id.integral_part=0;
-    				PI_iq.integral_part=0;
-    				temp1=0;
-
-    			}
+//    			if(TIMER_CCHP(TIMER0)&(uint32_t)TIMER_CCHP_POEN){
+//    				timer_primary_output_config(TIMER0,DISABLE);
+//    				PI_id.integral_part=0;
+//    				PI_iq.integral_part=0;
+//
+//    			}
             }
 
 
@@ -529,30 +612,57 @@ void gpio_config(void)
     /* enable can clock */
     rcu_periph_clock_enable(RCU_CAN0);
     rcu_periph_clock_enable(RCU_GPIOA);
-
     rcu_periph_clock_enable(RCU_GPIOB);
+    rcu_periph_clock_enable(RCU_GPIOC);
     rcu_periph_clock_enable(RCU_GPIOD);
     /* configure CAN0 GPIO, CAN0_TX(PD1) and CAN0_RX(PD0) */
     gpio_init(GPIOA, GPIO_MODE_AF_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_12);
 
     gpio_init(GPIOA, GPIO_MODE_IPU, GPIO_OSPEED_50MHZ, GPIO_PIN_11);
     /* config the GPIO as analog mode */
-    gpio_init(GPIOA, GPIO_MODE_AIN, GPIO_OSPEED_MAX, GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_6|GPIO_PIN_7);
+    gpio_init(GPIOA, GPIO_MODE_AIN, GPIO_OSPEED_MAX, GPIO_PIN_0|GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7);
+    gpio_init(GPIOC, GPIO_MODE_AIN, GPIO_OSPEED_MAX, GPIO_PIN_3); //Battery Voltage
+    gpio_init(GPIOB, GPIO_MODE_AIN, GPIO_OSPEED_MAX, GPIO_PIN_0); // Motor Temp
 
     gpio_init(GPIOA, GPIO_MODE_AF_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_8);
     //gpio_init(GPIOB, GPIO_MODE_OUT_OD, GPIO_OSPEED_50MHZ, GPIO_PIN_0);
     //PB6: switch for DC/DC
     //PB5: switch for BatteryPlus display supply
-    gpio_init(GPIOB, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_0|GPIO_PIN_5|GPIO_PIN_6);
+    delay_1ms(500);
+    gpio_init(GPIOB, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6);
     GPIO_BC(GPIOB) = GPIO_PIN_4; //reset Pin4 from Bootloader
-    GPIO_BOP(GPIOB) = GPIO_PIN_6; //DC/DC on
+
+    delay_1ms(50);
     GPIO_BOP(GPIOB) = GPIO_PIN_5; // Display on
+    delay_1ms(50);
+    GPIO_BOP(GPIOB) = GPIO_PIN_6; //DC/DC on
+// PB3 and PB10 have to be high to get 12V on the brake line.
+    gpio_init(GPIOB, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_7|GPIO_PIN_1|GPIO_PIN_10|GPIO_PIN_11);
+//    GPIO_BOP(GPIOB) = GPIO_PIN_1;
+//    GPIO_BOP(GPIOB) = GPIO_PIN_2;
+    GPIO_BOP(GPIOB) = GPIO_PIN_3;
+//    GPIO_BOP(GPIOB) = GPIO_PIN_7;
+    //GPIO_BOP(GPIOB) = GPIO_PIN_10;
+    //GPIO_BC(GPIOB) = GPIO_PIN_11;
+
+
+
     //PA15 Dual PAS input pin (green wire)
-    gpio_init(GPIOA, GPIO_MODE_IN_FLOATING, GPIO_OSPEED_50MHZ, GPIO_PIN_15);
-    gpio_exti_source_select(GPIO_PORT_SOURCE_GPIOA, GPIO_PIN_SOURCE_15);
+    gpio_init(GPIOA, GPIO_MODE_IPU, GPIO_OSPEED_50MHZ, GPIO_PIN_15);
+    //PC0 brake sensor floatinig
+    gpio_init(GPIOC, GPIO_MODE_IN_FLOATING, GPIO_OSPEED_50MHZ, GPIO_PIN_0);
+
+    gpio_init(GPIOC, GPIO_MODE_IPU, GPIO_OSPEED_50MHZ, GPIO_PIN_10|GPIO_PIN_11|GPIO_PIN_13);
+    gpio_exti_source_select(GPIO_PORT_SOURCE_GPIOC, GPIO_PIN_SOURCE_11);
     /* configure key EXTI line */
-    exti_init(EXTI_15, EXTI_INTERRUPT, EXTI_TRIG_FALLING);
-    exti_interrupt_flag_clear(EXTI_15);
+    exti_init(EXTI_11, EXTI_INTERRUPT, EXTI_TRIG_FALLING);
+    exti_interrupt_flag_clear(EXTI_11);
+    //PB2 for external speed sensor
+    gpio_init(GPIOB, GPIO_MODE_IPU, GPIO_OSPEED_50MHZ, GPIO_PIN_2);
+    gpio_exti_source_select(GPIO_PORT_SOURCE_GPIOB, GPIO_PIN_SOURCE_2);
+    /* configure key EXTI line */
+    exti_init(EXTI_2, EXTI_INTERRUPT, EXTI_TRIG_FALLING);
+    exti_interrupt_flag_clear(EXTI_2);
 
     /*configure PA8 PA9 PA10(TIMER0 CH0 CH1 CH2) as alternate function*/
     gpio_init(GPIOA,GPIO_MODE_AF_PP,GPIO_OSPEED_50MHZ,GPIO_PIN_8);
@@ -629,10 +739,10 @@ void adc_config(void)
     adc_regular_channel_config(ADC0, 1, ADC_CHANNEL_6, ADC_SAMPLETIME_239POINT5); // PA6 Throttle?
     adc_regular_channel_config(ADC0, 2, ADC_CHANNEL_7, ADC_SAMPLETIME_239POINT5); // PA7 Torque
     adc_regular_channel_config(ADC0, 3, ADC_CHANNEL_13, ADC_SAMPLETIME_239POINT5);// PC3 battery voltage
-    adc_regular_channel_config(ADC0, 4, ADC_CHANNEL_1, ADC_SAMPLETIME_239POINT5); // shunt current unfiltered
-    adc_regular_channel_config(ADC0, 5, ADC_CHANNEL_4, ADC_SAMPLETIME_239POINT5);
-    adc_regular_channel_config(ADC0, 6, ADC_CHANNEL_7, ADC_SAMPLETIME_239POINT5);
-    adc_regular_channel_config(ADC0, 7, ADC_CHANNEL_8, ADC_SAMPLETIME_239POINT5);
+    adc_regular_channel_config(ADC0, 4, ADC_CHANNEL_1, ADC_SAMPLETIME_239POINT5); // shunt current unfiltered (used for encoder on M510)
+    adc_regular_channel_config(ADC0, 5, ADC_CHANNEL_4, ADC_SAMPLETIME_239POINT5); // on/off button
+    adc_regular_channel_config(ADC0, 6, ADC_CHANNEL_8, ADC_SAMPLETIME_239POINT5);//Motor temperature
+    adc_regular_channel_config(ADC0, 7, ADC_CHANNEL_15, ADC_SAMPLETIME_239POINT5);
 
     adc_inserted_channel_config(ADC0, 0, ADC_CHANNEL_5, ADC_SAMPLETIME_55POINT5);
     adc_inserted_channel_offset_config(ADC0, ADC_INSERTED_CHANNEL_0, 2033); //hardcoded, to be improved
@@ -757,7 +867,7 @@ void timer0_config(void)
 	    timer_breakpara.breakstate       = TIMER_BREAK_DISABLE;
 	    timer_break_config(TIMER0,&timer_breakpara);
 
-	    timer_primary_output_config(TIMER0,ENABLE);
+	    timer_primary_output_config(TIMER0,DISABLE);
 
 	    /* auto-reload preload disable */
 	    timer_auto_reload_shadow_disable(TIMER0);
@@ -805,69 +915,151 @@ void timer1_config(void) //running at 6kHz interrupt frequency
     timer_enable(TIMER1);
 }
 
-void timer2_config(void) //for hall sensor processing.
+
+void Encoder_Init(void)//encoder A+B processing
 {
-
-    /* TIMER2 configuration: input capture mode */
-    timer_ic_parameter_struct timer_icinitpara;
     timer_parameter_struct timer_initpara;
+    timer_ic_parameter_struct timer_icinitpara;
 
+    /* enable the key clock */
+    rcu_periph_clock_enable(RCU_GPIOC);
     rcu_periph_clock_enable(RCU_TIMER2);
+    rcu_periph_clock_enable(RCU_AF);
+
+    gpio_init(GPIOC, GPIO_MODE_IPU, GPIO_OSPEED_50MHZ, GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_8);
 
 
     timer_deinit(TIMER2);
-    /* hall mode config */
-    timer_hall_mode_config(TIMER2, TIMER_HALLINTERFACE_ENABLE);
 
-
-
-    /* TIMER2 configuration */
-    timer_initpara.prescaler         = 239; //120MHz/(239+1)=500kHz
-    timer_initpara.alignedmode       = TIMER_COUNTER_EDGE;
-    timer_initpara.counterdirection  = TIMER_COUNTER_UP;
-    timer_initpara.period            = 0xFFFF;
-    timer_initpara.clockdivision     = TIMER_CKDIV_DIV1;
+    /* TIMER configuration */
+    timer_initpara.prescaler = 1 - 1;
+    timer_initpara.alignedmode = TIMER_COUNTER_EDGE;
+    timer_initpara.counterdirection = TIMER_COUNTER_UP;
+    timer_initpara.period = 819;
+    timer_initpara.clockdivision = TIMER_CKDIV_DIV1;
     timer_initpara.repetitioncounter = 0;
-    timer_init(TIMER2,&timer_initpara);
+    timer_init(TIMER2, &timer_initpara);
 
-    /* TIMER2  configuration */
-    /* TIMER2 input capture configuration */
-    timer_icinitpara.icpolarity  = TIMER_IC_POLARITY_RISING;
-    timer_icinitpara.icselection = TIMER_IC_SELECTION_ITS;
+    /* TIMER3 CH0,1 input capture configuration */
+    timer_icinitpara.icpolarity = TIMER_IC_POLARITY_RISING;
+    timer_icinitpara.icselection = TIMER_IC_SELECTION_DIRECTTI;
     timer_icinitpara.icprescaler = TIMER_IC_PSC_DIV1;
-    timer_icinitpara.icfilter    = 0xFF;
-    timer_input_capture_config(TIMER2,TIMER_CH_0,&timer_icinitpara);
+    timer_icinitpara.icfilter = 0xFF;  // 0x05
 
-    timer_icinitpara.icpolarity  = TIMER_IC_POLARITY_RISING;
-    timer_icinitpara.icselection = TIMER_IC_SELECTION_ITS;
-    timer_icinitpara.icprescaler = TIMER_IC_PSC_DIV1;
-    timer_icinitpara.icfilter    = 0xFF;
-    timer_input_capture_config(TIMER2,TIMER_CH_1,&timer_icinitpara);
+    timer_input_capture_config(TIMER2, TIMER_CH_0, &timer_icinitpara);
+    timer_input_capture_config(TIMER2, TIMER_CH_1, &timer_icinitpara);
+    timer_input_capture_config(TIMER2, TIMER_CH_2, &timer_icinitpara);
 
-    timer_icinitpara.icpolarity  = TIMER_IC_POLARITY_RISING;
-    timer_icinitpara.icselection = TIMER_IC_SELECTION_ITS;
-    timer_icinitpara.icprescaler = TIMER_IC_PSC_DIV1;
-    timer_icinitpara.icfilter    = 0xFF;
-    timer_input_capture_config(TIMER2,TIMER_CH_2,&timer_icinitpara);
-
-    /* slave mode selection: TIMER2 */
-    timer_input_trigger_source_select(TIMER2,TIMER_SMCFG_TRGSEL_CI0F_ED);
-    timer_slave_mode_select(TIMER2,TIMER_SLAVE_MODE_RESTART);
-
-    /* hall mode config */
-    timer_hall_mode_config(TIMER2, TIMER_HALLINTERFACE_ENABLE);
-
+    /* TIMER_ENCODER_MODE2 */
+    timer_quadrature_decoder_mode_config(TIMER2, TIMER_ENCODER_MODE2, TIMER_IC_POLARITY_RISING,
+                                         TIMER_IC_POLARITY_FALLING);
+    timer_slave_mode_select(TIMER2, TIMER_ENCODER_MODE2);
     /* auto-reload preload enable */
     timer_auto_reload_shadow_enable(TIMER2);
-    /* clear channel 0 interrupt bit */
-    timer_interrupt_flag_clear(TIMER2,TIMER_INT_FLAG_CH0);
-    /* channel 0 interrupt enable */
-    timer_interrupt_enable(TIMER2,TIMER_INT_CH0);
 
-    /* TIMER2 counter enable */
+//    timer_interrupt_flag_clear(TIMER2, TIMER_INT_FLAG_CH2);
+//    timer_interrupt_enable(TIMER2, TIMER_INT_CH2);
+
     timer_enable(TIMER2);
+}
+
+void timer3_config(void) //encoder Z-signal
+{
+
+
+    gpio_init(GPIOB, GPIO_MODE_IPU, GPIO_OSPEED_50MHZ, GPIO_PIN_8);
+
+
+    /* TIMER2 configuration: input capture mode -------------------
+    the external signal is connected to TIMER2 CH0 pin (PB4)
+    the rising edge is used as active edge
+    the TIMER2 CH0CV is used to compute the frequency value
+    ------------------------------------------------------------ */
+    timer_ic_parameter_struct timer_icinitpara;
+    timer_parameter_struct timer_initpara;
+
+    rcu_periph_clock_enable(RCU_TIMER3);
+
+    timer_deinit(TIMER3);
+
+    /* TIMER2 configuration */
+    timer_initpara.prescaler         = 256;
+    timer_initpara.alignedmode       = TIMER_COUNTER_EDGE;
+    timer_initpara.counterdirection  = TIMER_COUNTER_UP;
+    timer_initpara.period            = 65535;
+    timer_initpara.clockdivision     = TIMER_CKDIV_DIV1;
+    timer_initpara.repetitioncounter = 0;
+    timer_init(TIMER3,&timer_initpara);
+
+    /* TIMER2  configuration */
+    /* TIMER2 CH0 input capture configuration */
+    timer_icinitpara.icpolarity  = TIMER_IC_POLARITY_RISING;
+    timer_icinitpara.icselection = TIMER_IC_SELECTION_DIRECTTI;
+    timer_icinitpara.icprescaler = TIMER_IC_PSC_DIV1;
+    timer_icinitpara.icfilter    = 0x0F;
+    timer_input_capture_config(TIMER3,TIMER_CH_2,&timer_icinitpara);
+
+    /* auto-reload preload enable */
+    timer_auto_reload_shadow_enable(TIMER3);
+    /* clear channel 0 interrupt bit */
+    timer_interrupt_flag_clear(TIMER3,TIMER_INT_FLAG_CH2);
+    /* channel 0 interrupt enable */
+    timer_interrupt_enable(TIMER3,TIMER_INT_CH2);
+
+    /* TIMER2 slow_loop_counter enable */
+    timer_enable(TIMER3);
 
 }
+void timer4_config(void) //PWM input from Encoder
+{
+ /* TIMER2 configuration: PWM input mode ------------------------
+     the external signal is connected to TIMER2 CH0 pin
+     the rising edge is used as active edge
+     the TIMER2 CH0CV is used to compute the frequency value
+     the TIMER2 CH1CV is used to compute the duty cycle value
+  ------------------------------------------------------------ */
+    timer_ic_parameter_struct timer_icinitpara;
+    timer_parameter_struct timer_initpara;
+    gpio_init(GPIOA, GPIO_MODE_IPU, GPIO_OSPEED_50MHZ, GPIO_PIN_1);
+    rcu_periph_clock_enable(RCU_TIMER4);
+
+    timer_deinit(TIMER4);
+
+    /* TIMER2 configuration */
+    timer_initpara.prescaler         = 8;
+    timer_initpara.alignedmode       = TIMER_COUNTER_EDGE;
+    timer_initpara.counterdirection  = TIMER_COUNTER_UP;
+    timer_initpara.period            = 65535;
+    timer_initpara.clockdivision     = TIMER_CKDIV_DIV1;
+    timer_initpara.repetitioncounter = 0;
+    timer_init(TIMER4,&timer_initpara);
+
+    /* TIMER2 configuration */
+    /* TIMER2 CH0 PWM input capture configuration */
+    timer_icinitpara.icpolarity  = TIMER_IC_POLARITY_RISING;
+    timer_icinitpara.icselection = TIMER_IC_SELECTION_DIRECTTI;
+    timer_icinitpara.icprescaler = TIMER_IC_PSC_DIV1;
+    timer_icinitpara.icfilter    = 0x05;
+    timer_input_pwm_capture_config(TIMER4,TIMER_CH_1,&timer_icinitpara);
+
+    /* slave mode selection: TIMER2 */
+    timer_input_trigger_source_select(TIMER4,TIMER_SMCFG_TRGSEL_CI0FE0);
+    timer_slave_mode_select(TIMER4,TIMER_SLAVE_MODE_RESTART);
+
+    /* select the master slave mode */
+    timer_master_slave_mode_config(TIMER4,TIMER_MASTER_SLAVE_MODE_ENABLE);
+
+    /* auto-reload preload enable */
+    timer_auto_reload_shadow_enable(TIMER4);
+    /* clear channel 0 interrupt bit */
+    timer_interrupt_flag_clear(TIMER4,TIMER_INT_FLAG_CH1);
+    /* channel 0 interrupt enable */
+    timer_interrupt_enable(TIMER4,TIMER_INT_CH1);
+
+    /* TIMER2 slow_loop_counter enable */
+    timer_enable(TIMER4);
+}
+
 /*!
     \brief      configure the nested vectored interrupt controller
     \param[in]  none
@@ -882,14 +1074,16 @@ void nvic_config(void)
 
 	/* configure CAN0 NVIC */
     nvic_irq_enable(CAN0_RX1_IRQn,0,0);
-    nvic_irq_enable(EXTI10_15_IRQn, 2U, 0U);
-
+    nvic_irq_enable(EXTI10_15_IRQn, 2U, 0U); //for PAS
+    nvic_irq_enable(EXTI2_IRQn, 2U, 0U); //for external speed sensor
 
     //timer2 interrupt for Halls
     nvic_priority_group_set(NVIC_PRIGROUP_PRE1_SUB3);
     nvic_irq_enable(TIMER1_IRQn, 0, 0);
-    nvic_irq_enable(TIMER2_IRQn, 0, 0);
+    //nvic_irq_enable(TIMER2_IRQn, 0, 0);
     nvic_irq_enable(ADC0_1_IRQn, 0, 0);
+    nvic_irq_enable(TIMER3_IRQn, 0, 0);
+    nvic_irq_enable(TIMER4_IRQn, 0, 0);
 
 }
 
@@ -919,179 +1113,111 @@ void UART4_init(void)
 
 }
 
-void TIMER2_IRQHandler(void)
-{
-	fwdgt_counter_reload();
-    if(SET == timer_interrupt_flag_get(TIMER2,TIMER_INT_FLAG_CH0)){
-        /* clear channel 0 interrupt bit */
-        timer_interrupt_flag_clear(TIMER2,TIMER_INT_FLAG_CH0);
-
-       // if(TIM2->CCR1>20)ui16_timertics = TIM2->CCR1; //debounce hall signals
-            /* read channel 0 capture value */
-
-        	ui16_timertics=timer_channel_capture_value_register_read(TIMER2,TIMER_CH_0);
-        	ui32_erps_cumulated-=ui32_erps_cumulated>>5;
-        	ui32_erps_cumulated+=500000/(ui16_timertics*6);
-        	ui16_erps=ui32_erps_cumulated>>5;
-                  	//Hall sensor event processing
-
-            		ui8_hall_state = (GPIO_ISTAT(GPIOC)>>6)&0x07; //Mask input register with Hall 1 - 3 bits
-
-            		ui8_hall_case=ui8_hall_state_old*10+ui8_hall_state;
-            		statehistory[historycounter]=ui8_hall_case;
-            		historycounter++;
-            		if (historycounter>35)historycounter=0;
-
-            		if(MS.hall_angle_detect_flag){ //only process, if autodetect procedere is fininshed
-            		ui8_hall_state_old=ui8_hall_state;
-            		}
-
-            			uint32_tics_filtered-=uint32_tics_filtered>>3;
-            			uint32_tics_filtered+=ui16_timertics;
-
-            		   ui8_overflow_flag=0;
-            		   ui8_SPEED_control_flag=1;
 
 
-
-            		switch (ui8_hall_case) //12 cases for each transition from one stage to the next. 6x forward, 6x reverse
-            				{
-            			//6 cases for forward direction
-            		//6 cases for forward direction
-            		case 64:
-            			q31_rotorposition_hall = Hall_64;
-
-            			i8_recent_rotor_direction = -i32_hall_order;
-            			uint16_full_rotation_counter = 0;
-            			break;
-            		case 45:
-            			q31_rotorposition_hall = Hall_45;
-
-            			i8_recent_rotor_direction = -i32_hall_order;
-            			break;
-            		case 51:
-            			q31_rotorposition_hall = Hall_51;
-
-            			i8_recent_rotor_direction = -i32_hall_order;
-            			break;
-            		case 13:
-            			q31_rotorposition_hall = Hall_13;
-
-            			i8_recent_rotor_direction = -i32_hall_order;
-            			uint16_half_rotation_counter = 0;
-            			break;
-            		case 32:
-            			q31_rotorposition_hall = Hall_32;
-
-            			i8_recent_rotor_direction = -i32_hall_order;
-            			break;
-            		case 26:
-            			q31_rotorposition_hall = Hall_26;
-
-            			i8_recent_rotor_direction = -i32_hall_order;
-            			break;
-
-            			//6 cases for reverse direction
-            		case 46:
-            			q31_rotorposition_hall = Hall_64;
-
-            			i8_recent_rotor_direction = i32_hall_order;
-            			break;
-            		case 62:
-            			q31_rotorposition_hall = Hall_26;
-
-            			i8_recent_rotor_direction = i32_hall_order;
-            			break;
-            		case 23:
-            			q31_rotorposition_hall = Hall_32;
-
-            			i8_recent_rotor_direction = i32_hall_order;
-            			uint16_half_rotation_counter = 0;
-            			break;
-            		case 31:
-            			q31_rotorposition_hall = Hall_13;
-
-            			i8_recent_rotor_direction = i32_hall_order;
-            			break;
-            		case 15:
-            			q31_rotorposition_hall = Hall_51;
-
-            			i8_recent_rotor_direction = i32_hall_order;
-            			break;
-            		case 54:
-            			q31_rotorposition_hall = Hall_45;
-
-            			i8_recent_rotor_direction = i32_hall_order;
-            			uint16_full_rotation_counter = 0;
-            			break;
-
-            		} // end case
-
-            		if(MS.angle_est){
-            			q31_PLL_error=q31_rotorposition_PLL-q31_rotorposition_hall;
-            			if(iabs(q31_PLL_error) < deg_30){
-            				if(ui_8_PLL_counter<12)ui_8_PLL_counter++;
-            			}
-            			else ui_8_PLL_counter=0;
-            			q31_angle_per_tic = speed_PLL(q31_rotorposition_PLL,q31_rotorposition_hall,0);
-            		}
-
-            	#ifdef SPEED_PLL
-            		if(ui16_erps>30){   //360 interpolation at higher erps
-            			if(ui8_hall_case==32||ui8_hall_case==23){
-            				q31_angle_per_tic = speed_PLL(q31_rotorposition_PLL,q31_rotorposition_hall, SPDSHFT*tics_higher_limit/(uint32_tics_filtered>>3));
-
-            			}
-            		}
-            		else{
-
-            			q31_angle_per_tic = speed_PLL(q31_rotorposition_PLL,q31_rotorposition_hall, SPDSHFT*tics_higher_limit/(uint32_tics_filtered>>3));
-            		}
-
-            	#endif
-
-
-    }
-
-}
-
-void TIMER1_IRQHandler(void)
+void TIMER1_IRQHandler(void) // regular ADC processing and common slow timing tasks
 {
 	fwdgt_counter_reload();
 	if(SET == timer_interrupt_flag_get(TIMER1,TIMER_INT_FLAG_UP)){
         /* clear channel 0 interrupt bit */
         timer_interrupt_flag_clear(TIMER1,TIMER_INT_FLAG_UP);
 
-
-            /* read channel 0 capture value */
-        counter ++;
-        if(PAS_counter<64000)PAS_counter++;
-        if(uint16_half_rotation_counter<64000)uint16_half_rotation_counter++;
         reg_ADC_flag=1;
+    }
+}
+
+void TIMER3_IRQHandler(void) //Z-signal processing
+{
+    if(SET == timer_interrupt_flag_get(TIMER3,TIMER_INT_FLAG_CH2)){
+        /* clear channel 0 interrupt bit */
+        timer_interrupt_flag_clear(TIMER3,TIMER_INT_FLAG_CH2);
+        if(ui_8_PWM_ON_Flag){
+			if((int16_t)TIMER_CNT(TIMER2)>0)i8_recent_rotor_direction=1;
+			else i8_recent_rotor_direction=-1;
+        }
+        p++;
+        if(MS.hall_angle_detect_flag)TIMER_CNT(TIMER2) = (uint16_t)Z_position; //reset encoder slow_loop_counter at full rotation
+        else{
+
+        	//Z_position_cumulated+=q31_rotorposition_absolute/5237765; //Caclulate the timer2 value for the z-Position 5244160=2^32/820
+        	//Z_position=Z_position_cumulated/p;
+        	Z_position=q31_rotorposition_absolute/5237765;
+        }
+        TIMER_CNT(TIMER3) = 0;
+        ui16_erps=4000*5/(ui16_erps_counter);//4kHz counterfrequency, 5 polepairs, only one interrupt per mechanical revolution
+        ui16_erps_counter=0;
+        uint16_full_rotation_counter=0;
+        uint16_half_rotation_counter=0;
+        i32_full_rotation_flag=1;
+    }
+
+}
+
+void TIMER4_IRQHandler(void) // PWM position reading from Encoder
+{
+    if(SET == timer_interrupt_flag_get(TIMER4,TIMER_INT_FLAG_CH1)){
+        /* clear channel 0 interrupt bit */
+        timer_interrupt_flag_clear(TIMER4,TIMER_INT_FLAG_CH1);
+        /* read channel 0 capture value */
+        ic1value = timer_channel_capture_value_register_read(TIMER4,TIMER_CH_1)+1;
+
+        if(0 != ic1value){
+            /* read channel 1 capture value */
+        	Encoder_raw_angle=((timer_channel_capture_value_register_read(TIMER4,TIMER_CH_0)+1)%2643)*1625035;//%2643 is for 5pole pairs, is factor from timer4 tic to 32bit angle
+            AngleFromPWM = Encoder_raw_angle+PWM_offset;
+
+            /* calculate the duty cycle value */
+            dutycycle = (AngleFromPWM * 100) / ic1value;
+            /* calculate the frequency value */
+            frequency = 1000000 / ic1value;
+            TIMER_CNT(TIMER4) = 0;
+        }else{
+            dutycycle = 0;
+            frequency = 0;
+        }
     }
 }
 
 void EXTI10_15_IRQHandler(void)
 {
-    if(RESET != exti_interrupt_flag_get(EXTI_15)) {
+    if(RESET != exti_interrupt_flag_get(EXTI_11)) {
     	PAS_flag = 1;
-        exti_interrupt_flag_clear(EXTI_15);
+        exti_interrupt_flag_clear(EXTI_11);
+    }
+}
+
+void EXTI2_IRQHandler(void)
+{
+    if(RESET != exti_interrupt_flag_get(EXTI_2)) {
+    	Speed_flag = 1;
+        exti_interrupt_flag_clear(EXTI_2);
     }
 }
 
 void PAS_processing(void)
 {
-		MS.cadence=7500/PAS_counter;//32 Pulses per crank revolution, 4000 Hz Timer interrupt frequency
+		MS.cadence=10000/PAS_counter;//20 Pulses per crank revolution, 4000 Hz Timer interrupt frequency (for M510 about 40 pulses on speed/direction pn)
+		uint16_cadence_filtered-=uint16_cadence_filtered>>3;
+		uint16_cadence_filtered+=MS.cadence;
 		MS.torque_on_crank=(adc_value[2]*3300)>>12; //map ADC value to mV
 		PAS_counter=0;
     	PAS_flag = 0;
+    	if(gpio_input_bit_get(GPIOC,GPIO_PIN_10))Backwards_flag=RESET;
+    	else Backwards_flag=SET;
+    	torque_cumulated-=torque_cumulated>>MS.TQfilter;
     	if(MS.torque_on_crank>750){
-    	torque_cumulated-=torque_cumulated>>5;
-    	torque_cumulated+=(MS.torque_on_crank-750);
-    	//Power=2*Pi*speed*torque, calibration factors: rpm to 1/s for cadence: /60, mV to Nm: 750 to 3200 --> 0 to 80 Nm. (from Bafang data sheet)
-    	MS.p_human=(uint16_t)((float)(MS.cadence*(torque_cumulated>>5))*0.00342); //in Watt
+    		torque_cumulated+=(MS.torque_on_crank-750);
     	}
-    	else MS.p_human = 0;
+    	//Power=2*Pi*speed*torque, calibration factors: rpm to 1/s for cadence: /60, mV to Nm: 750 to 3200 --> 0 to 80 Nm. (from Bafang data sheet)
+    	MS.p_human=(uint16_t)((float)(MS.cadence*(torque_cumulated>>MS.TQfilter))*0.00342); //in Watt
+}
+
+void Speed_processing(void)
+{
+		MS.Speedx100=MP.wheel_cirumference*4*360/(MP.pulses_per_revolution*Speed_counter);// 4000 Hz Timer interrupt frequency
+		Speed_counter=0;
+		Speed_flag=0;
+		MS.distance_since_startup+=MP.wheel_cirumference/(MP.pulses_per_revolution*1000); //in m
 }
 
 void reg_ADC_processing(void)
@@ -1100,7 +1226,17 @@ void reg_ADC_processing(void)
 	battery_current_cumulated+= (adc_value[0]-CAL_BAT_I_OFFSET);
 	MS.Battery_Current=(int32_t)((float)(battery_current_cumulated>>6)*CAL_BAT_I); //Battery current in mA
 	MS.Voltage=adc_value[3]*CAL_BAT_V;//Battery voltage in mV
-	MS.calories=ui16_erps;//temp2;//(((adc_value[3]>>2)+1555)-adc_value[5])+100; temp2;// *CAL_I
+	MS.calories=Backwards_flag;
+
+    slow_loop_counter ++;
+    if(PAS_counter<64000)PAS_counter++;
+    if(Speed_counter<64000)Speed_counter++;
+    if(uint16_half_rotation_counter<64000)uint16_half_rotation_counter++;
+    if(offroadcounter<64000)offroadcounter++;
+    if(ui16_erps_counter<64000)ui16_erps_counter++;
+    if(Overrun_counter<64000)Overrun_counter++;
+
+
 	reg_ADC_flag=0;
 }
 
@@ -1109,7 +1245,7 @@ int16_t internal_tics_to_speedx100 (uint32_t tics){
 }
 
 int16_t external_tics_to_speedx100 (uint32_t tics){
-	return WHEEL_CIRCUMFERENCE*8*360/(MP.pulses_per_revolution*tics);
+	return MP.wheel_cirumference*4*360/(MP.pulses_per_revolution*tics);
 }
 
 int32_t speed_PLL (int32_t ist, int32_t soll, uint8_t speedadapt)
@@ -1134,10 +1270,25 @@ int32_t speed_PLL (int32_t ist, int32_t soll, uint8_t speedadapt)
   }
 
 void runPIcontrol(void){
+
+	//check, if Battery Current limit is exceeded
+	if(MS.Battery_Current>MP.battery_current_max) BC_limit_flag=1;
+	//check, if theoretical Battery current would be below limit with some hysteresis
+	if(((MP.reverse*MS.i_q_setpoint*MS.u_abs)>>5)<(MP.battery_current_max*0.9)) BC_limit_flag=0;
+
+	if(!BC_limit_flag){
 	//control iq
 	  PI_iq.recent_value = MS.i_q;
 	  PI_iq.setpoint = MP.reverse*i8_reverse_flag*MS.i_q_setpoint;
-	  q31_u_q_temp =  PI_control(&PI_iq);
+
+	}
+	else{
+	 //control Battery_Current
+	  PI_iq.recent_value = MS.Battery_Current>>6;
+	  PI_iq.setpoint = MP.reverse*i8_reverse_flag*(MP.battery_current_max>>6);
+
+	}
+	q31_u_q_temp =  PI_control(&PI_iq);
 	//control id
 	  PI_id.recent_value = MS.i_d;
 	  PI_id.setpoint = MS.i_d_setpoint;
@@ -1167,72 +1318,45 @@ void autodetect(void) {
 	ui_8_PWM_ON_Flag=1;
 	MS.hall_angle_detect_flag = 0; //set uq to contstant value in FOC.c for open loop control
 	q31_rotorposition_absolute = 1 << 31;
-	i32_hall_order = 1;//reset hall order
+	i32_full_rotation_flag = 0;
+	Z_position_cumulated=0;
+	Z_position=0;
+	PWM_offset_cumulated = 0;
+	PWM_offset = 0;
+	p=0;
+	
 	MS.i_d_setpoint= 200; //set MS.id to appr. 2000mA
 	MS.i_q_setpoint= 0;
+	delay_1ms(100);
+    TIMER_CNT(TIMER2) = 0; //reset counter for Encoder A/B quadrature signal
+    TIMER_CNT(TIMER3) = 0; //reset counter for Encoder Z signal for full rotation detection
 
-	for (int i = 0; i < 1080; i++) {
+	
+
+	for (int i = 0; i < 5400; i++) { //15 x 360° to get at least 3 z-pulses
 		q31_rotorposition_absolute += 11930465; //drive motor in open loop with steps of 1 deg
-		delay_1ms(25);
+		delay_1ms(1);
+		if(!(i%360)){
+			TIMER_CNT(TIMER2)=0; //reset counter @ position 180°
+		}
 
-
-		if (ui8_hall_state_old != ui8_hall_state) {
-//			printf_("angle: %d, hallstate:  %d, hallcase %d \n",
-//					(int16_t) (((q31_rotorposition_absolute >> 23) * 180) >> 8),
-//					ui8_hall_state, ui8_hall_case);
-
-			switch (ui8_hall_case) //12 cases for each transition from one stage to the next. 6x forward, 6x reverse
-			{
-			//6 cases for forward direction
-			case 64:
-				Hall_64=q31_rotorposition_absolute;
-				break;
-			case 45:
-				Hall_45=q31_rotorposition_absolute;
-				break;
-			case 51:
-				Hall_51=q31_rotorposition_absolute;
-				break;
-			case 13:
-				Hall_13=q31_rotorposition_absolute;
-				break;
-			case 32:
-				Hall_32=q31_rotorposition_absolute;
-				break;
-			case 26:
-				Hall_26=q31_rotorposition_absolute;
-				break;
-
-				//6 cases for reverse direction
-			case 46:
-				Hall_64=q31_rotorposition_absolute;
-				break;
-			case 62:
-				Hall_26=q31_rotorposition_absolute;
-				break;
-			case 23:
-				Hall_32=q31_rotorposition_absolute;
-				break;
-			case 31:
-				Hall_13=q31_rotorposition_absolute;
-				break;
-			case 15:
-				Hall_51=q31_rotorposition_absolute;
-				break;
-			case 54:
-				Hall_45=q31_rotorposition_absolute;
-				break;
-
-			} // end case
-
-            transmit_message.tx_data[0] = (int8_t) (((Hall_64 >> 23) * 180) >> 9);//scale q31 angle to -90 .. +90 for 1 Byte representation
-            transmit_message.tx_data[1] = (int8_t) (((Hall_45 >> 23) * 180) >> 9);
-            transmit_message.tx_data[2] = (int8_t) (((Hall_51 >> 23) * 180) >> 9);
-            transmit_message.tx_data[3] = (int8_t) (((Hall_13 >> 23) * 180) >> 9);
-            transmit_message.tx_data[4] = (int8_t) (((Hall_32 >> 23) * 180) >> 9);
-            transmit_message.tx_data[5] = (int8_t) (((Hall_26 >> 23) * 180) >> 9);
-            transmit_message.tx_data[6] = (adc_value[1]>>8)&0xFF;
-            transmit_message.tx_data[7] = (adc_value[1])&0xFF;
+		if(!(i%60)) { //print debug data every electrical 60°
+			PWM_offset_cumulated-=PWM_offset_cumulated>>2;
+			PWM_offset_cumulated+=q31_rotorposition_absolute-Encoder_raw_angle;
+			PWM_offset=PWM_offset_cumulated>>2;
+			transmit_message.tx_sfid = 0x00;
+			transmit_message.tx_efid = 0x00010203; //ID for debug message
+			transmit_message.tx_ft = CAN_FT_DATA;
+			transmit_message.tx_ff = CAN_FF_EXTENDED;
+			transmit_message.tx_dlen = 8;
+            transmit_message.tx_data[0] = (((int16_t) ((float)q31_rotorposition_absolute*u32_to_deg))>>8)&0xFF;//scale q31 angle to -90 .. +90 for 1 Byte representation
+            transmit_message.tx_data[1] = (int16_t) ((float)q31_rotorposition_absolute*u32_to_deg)&0xFF;
+            transmit_message.tx_data[2] = (int8_t) (p>>8)&0xFF;//scale q31 angle to -90 .. +90 for 1 Byte representation
+            transmit_message.tx_data[3] = (int8_t) (p)&0xFF;
+            transmit_message.tx_data[4] = (int8_t) (Z_position>>8)&0xFF;
+            transmit_message.tx_data[5] = (int8_t) (Z_position)&0xFF;
+            transmit_message.tx_data[6] = (((int16_t)((float)PWM_offset*u32_to_deg))>>8)&0xFF;
+            transmit_message.tx_data[7] = (int16_t)(((float)PWM_offset*u32_to_deg))&0xFF;
 
             /* transmit message */
             transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
@@ -1241,12 +1365,13 @@ void autodetect(void) {
             while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
                 timeout--;
             	}
-			ui8_hall_state_old = ui8_hall_state;
+			
 		}
 	}
-	timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,0);
-	timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,0);
-	timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,0);
+
+	timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,_T>>1);
+	timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,_T>>1);
+	timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,_T>>1);
 	delay_1ms(25);
 	timer_primary_output_config(TIMER0,DISABLE); //Disable PWM if motor is not turning
 
@@ -1257,20 +1382,21 @@ void autodetect(void) {
     MS.u_d=0;
     MS.u_q=0;
     MS.i_d_setpoint= 0;
+    temp6=0;//reset Temp6 for second part of calibration
     uint32_tics_filtered=1000000;
 
-
+    if(Z_position<0)Z_position+=820;
 	if (i8_recent_rotor_direction == 1) {
 
-		i32_hall_order = 1;
+		i32_full_rotation_flag = 1;
 	} else {
 
-		i32_hall_order = -1;
+		i32_full_rotation_flag = -1;
 	}
 
-	write_virtual_eeprom();
 
-	MS.hall_angle_detect_flag = 1;
+
+	MS.hall_angle_detect_flag = 2;
 
 	delay_1ms(20);
    // ui8_KV_detect_flag = 30;
@@ -1326,31 +1452,10 @@ void ADC0_1_IRQHandler(void)
 
 		} // end case
 
-    //get the recent timer value from the Hall timer
-    ui16_tim2_recent = timer_counter_read(TIMER2);
-    if (ui16_tim2_recent>SIXSTEPTHRESHOLD<<1){
-    	ui16_timertics=SIXSTEPTHRESHOLD<<1;
-    	uint32_tics_filtered=ui16_timertics<<3;
-    }
-    //check the speed for sixstep threshold
-	if (ui16_timertics < SIXSTEPTHRESHOLD && ui16_tim2_recent < 200)
-		ui8_6step_flag = 0;
-	if (ui16_timertics > (SIXSTEPTHRESHOLD * 6) >> 2)
-		ui8_6step_flag = 1;
-
-    // extrapolate rotorposition from filtered speed reading
-    if(MS.hall_angle_detect_flag){//q31_rotorposition_absolute = q31_rotorposition_hall + (q31_t) ((float)(i8_recent_rotor_direction * (deg_30<<1) * ui16_tim2_recent)/(float)(uint32_tics_filtered>>3));//
-//Speed PLL not implemented yet.
-    	if(!ui8_6step_flag){
-    	q31_rotorposition_absolute = q31_rotorposition_hall
-    									+ (q31_t) (i8_recent_rotor_direction
-    											* ((10923 * ui16_tim2_recent)
-    													/ (uint32_tics_filtered>>3)) << 16);//interpolate angle between two hallevents by scaling timer2 tics, 10923<<16 is 715827883 = 60deg
-    	}
-    	else q31_rotorposition_absolute = q31_rotorposition_hall - MP.reverse * deg_30; //offset of 30 degree to get the middle of the sector
-
-    }
-
+	if(MS.hall_angle_detect_flag){
+		if(i8_recent_rotor_direction)q31_rotorposition_absolute=(int32_t)(TIMER_CNT(TIMER2)*5237765); //=2^32/820, 4096 pulses per mechanical revolution, 5 pole pairs
+		else q31_rotorposition_absolute=AngleFromPWM;
+	}
 	//get the Phase with highest duty cycle for dynamic phase current reading
 	dyn_adc_state(q31_rotorposition_absolute);
 
@@ -1360,17 +1465,10 @@ void ADC0_1_IRQHandler(void)
 					q31_rotorposition_absolute,
 					(((int16_t) MP.reverse * i8_reverse_flag)
 							* MS.i_q_setpoint), &MS, &MP);
-		if(switchtime[0]>switchtime[1])temp2=switchtime[0];
-		else temp2=switchtime[1];
-		if(temp2<switchtime[2])temp2=switchtime[2];
+
 		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,switchtime[0]);
 		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,switchtime[1]);
 		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,switchtime[2]);
-
-//		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,_T>>1);
-//		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,(_T>>1));
-//		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,(_T>>1)-500);
-		//timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_3,-MS.i_q_setpoint*2+1);
 
     }
     __enable_irq();
@@ -1394,36 +1492,7 @@ int32_t map (int32_t x, int32_t in_min, int32_t in_max, int32_t out_min, int32_t
     return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
-void get_standstill_position(){
 
-	  delay_1ms(25);
-	  ui8_hall_state = (GPIO_ISTAT(GPIOC)>>6)&0x07;
-		switch (ui8_hall_state) {
-			//6 cases for forward direction
-			case 2:
-				q31_rotorposition_hall = Hall_32;
-				break;
-			case 6:
-				q31_rotorposition_hall = Hall_26;
-				break;
-			case 4:
-				q31_rotorposition_hall = Hall_64;
-				break;
-			case 5:
-				q31_rotorposition_hall = Hall_45;
-				break;
-			case 1:
-				q31_rotorposition_hall = Hall_51;
-
-				break;
-			case 3:
-				q31_rotorposition_hall = Hall_13;
-				break;
-
-			}
-
-			q31_rotorposition_absolute = q31_rotorposition_hall;
-}
 //assuming, a proper AD conversion takes 350 timer tics, to be confirmed. DT+TR+TS deadtime + noise subsiding + sample time
 void dyn_adc_state(q31_t angle){
 	if (switchtime[2]>switchtime[0] && switchtime[2]>switchtime[1]){
@@ -1463,7 +1532,6 @@ uint8_t interpolate_assistfactor(void){
 			MP.assist_profile[level_to_array_element[MS.assist_level]-1][ui8_speedcase+1]);
 	return ui8_speedfactor;
 }
-
 
 void print_debug_on_CAN(void){
 
@@ -1534,7 +1602,6 @@ int8_t calculate_SOC(uint16_t voltage, uint8_t cells_in_series){ //interpolate f
     return (int8_t)soc_values[length - 1];
 }
 
-
 /*!
     \brief      erase fmc pages from FMC_WRITE_START_ADDR to FMC_WRITE_END_ADDR
     \param[in]  none
@@ -1580,19 +1647,19 @@ void fmc_program_hall_angles(void)
 
     /* program flash */
 
-        fmc_word_program(address, (uint32_t)i32_hall_order);
+        fmc_word_program(address, (uint32_t)i32_full_rotation_flag);
         address += 4;
         fmc_flag_clear(FMC_FLAG_BANK0_END);
         fmc_flag_clear(FMC_FLAG_BANK0_WPERR);
         fmc_flag_clear(FMC_FLAG_BANK0_PGERR);
 
-        fmc_word_program(address, (uint32_t)Hall_13);
+        fmc_word_program(address, (uint32_t)Z_position_cumulated);
         address += 4;
         fmc_flag_clear(FMC_FLAG_BANK0_END);
         fmc_flag_clear(FMC_FLAG_BANK0_WPERR);
         fmc_flag_clear(FMC_FLAG_BANK0_PGERR);
 
-        fmc_word_program(address, (uint32_t)Hall_32);
+        fmc_word_program(address, (uint32_t)Z_position);
         address += 4;
         fmc_flag_clear(FMC_FLAG_BANK0_END);
         fmc_flag_clear(FMC_FLAG_BANK0_WPERR);
@@ -1604,19 +1671,19 @@ void fmc_program_hall_angles(void)
         fmc_flag_clear(FMC_FLAG_BANK0_WPERR);
         fmc_flag_clear(FMC_FLAG_BANK0_PGERR);
 
-        fmc_word_program(address, (uint32_t)Hall_64);
+        fmc_word_program(address, (uint32_t)Encoder_raw_angle);
         address += 4;
         fmc_flag_clear(FMC_FLAG_BANK0_END);
         fmc_flag_clear(FMC_FLAG_BANK0_WPERR);
         fmc_flag_clear(FMC_FLAG_BANK0_PGERR);
 
-        fmc_word_program(address, (uint32_t)Hall_45);
+        fmc_word_program(address, (uint32_t)PWM_offset_cumulated);
         address += 4;
         fmc_flag_clear(FMC_FLAG_BANK0_END);
         fmc_flag_clear(FMC_FLAG_BANK0_WPERR);
         fmc_flag_clear(FMC_FLAG_BANK0_PGERR);
 
-        fmc_word_program(address, (uint32_t)Hall_51);
+        fmc_word_program(address, (uint32_t)PWM_offset);
         address += 4;
         fmc_flag_clear(FMC_FLAG_BANK0_END);
         fmc_flag_clear(FMC_FLAG_BANK0_WPERR);
@@ -1651,10 +1718,7 @@ void write_virtual_eeprom(void)
 	{
 		fmc_erase_pages();
 		fmc_program_hall_angles();
-//		fmc_multi_word_program(FMC_OFFSET_PARA0, &Para0[0]);
-//		fmc_multi_word_program(FMC_OFFSET_PARA1, &Para1[0]);
-//		fmc_multi_word_program(FMC_OFFSET_PARA2, &Para2[0]);
-		fmc_multi_word_program(FMC_OFFSET_MP, (uint8_t*)&MP, 22); //86byte in MP
+		fmc_multi_word_program(FMC_OFFSET_MP, (uint8_t*)&MP, (sizeof(MP)+3)/4); //Did not know padding yet :-)
 	}
 
 void read_virtual_eeprom(void)
@@ -1662,27 +1726,23 @@ void read_virtual_eeprom(void)
     //read individual hall angles from virtual EEPROM
     ptrd = (uint32_t *)FMC_WRITE_START_ADDR;
     if(0xFFFFFFFF != (*(ptrd+1))){
-    	i32_hall_order=(int32_t)(*ptrd);
+    	i32_full_rotation_flag=(int32_t)(*ptrd);
     	ptrd++;
-    	Hall_13 = (int32_t)(*ptrd);
+    	Z_position_cumulated = (int32_t)(*ptrd);
     	ptrd++;
-    	Hall_32 = (int32_t)(*ptrd);
+    	Z_position = (int32_t)(*ptrd);
     	ptrd++;
     	Hall_26 = (int32_t)(*ptrd);
     	ptrd++;
-    	Hall_64 = (int32_t)(*ptrd);
+    	Encoder_raw_angle = (int32_t)(*ptrd);
     	ptrd++;
-    	Hall_45 = (int32_t)(*ptrd);
+    	PWM_offset_cumulated = (int32_t)(*ptrd);
     	ptrd++;
-    	Hall_51 = (int32_t)(*ptrd);
+    	PWM_offset = (int32_t)(*ptrd);
     	ptrd++;
     }
-    //read Para0 to Para2  from virtual EEPROM
-//    memcpy(&Para0[0],(uint32_t *)(FMC_WRITE_START_ADDR+FMC_OFFSET_PARA0),64);
-//    memcpy(&Para1[0],(uint32_t *)(FMC_WRITE_START_ADDR+FMC_OFFSET_PARA1),64);
-//    memcpy(&Para2[0],(uint32_t *)(FMC_WRITE_START_ADDR+FMC_OFFSET_PARA2),64);
 
-     memcpy(&MP,(uint32_t *)(FMC_WRITE_START_ADDR+FMC_OFFSET_MP),88);
+     memcpy(&MP,(uint32_t *)(FMC_WRITE_START_ADDR+FMC_OFFSET_MP),sizeof(MP));
 	}
 
 
@@ -1705,3 +1765,4 @@ int fputc(int ch, FILE *f)
     return ch;
 }
 #endif /* GD_ECLIPSE_GCC */
+
