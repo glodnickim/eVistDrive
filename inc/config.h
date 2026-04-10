@@ -21,15 +21,11 @@
 #define TRIGGER_DEFAULT _T-TRIGGER_OFFSET_ADC
 #define DYNAMIC_ADC_THRESHOLD 3750 //to be tested
 #define CAL_BAT_V 17
-#define CAL_BAT_I 22.5
+#define CAL_BAT_I 28.0
 #define CAL_BAT_I_OFFSET 1360
 #define CAL_V 15LL<<8
-<<<<<<< Updated upstream
-#define CAL_I 60 //noch herauszufinden!
-=======
 #define CAL_I 70 //Zurückgerechnet aus Batteriestrom = Tastverhältnis * Motorstrom
 #define BOOTLOADER 0
->>>>>>> Stashed changes
 // BionX IGH3
 //#define INDUCTANCE 12LL
 //#define RESISTANCE 220LL
@@ -47,7 +43,9 @@
 //#define DISABLE_DYNAMIC_ADC
 //#define INDIVIDUAL_MODES
 //#define SPEEDTHROTTLE
-//#define PRINTDEBUG
+//#define PRINTDEBUG_UART
+#define PRINTDEBUG_CAN
+#define R_TEMP_PULLUP 3100
 #define SIXSTEPTHRESHOLD 5000
 #define SPEED_PLL 0 //1 for using PLL, 0 for angle extrapolation
 #define P_FACTOR_PLL 10
@@ -89,27 +87,28 @@
 #define WHEEL_CIRCUMFERENCE 2200
 #define GEAR_RATIO 80 //11 for BionX IGH3
 #define SPEEDLIMIT 2500
-#define PULSES_PER_REVOLUTION 3 //wheel revolution, Para1[20]
+#define PULSES_PER_REVOLUTION 1 //wheel revolution, Para1[20]
 #define SPEEDSOURCE EXTERNAL
 #define SPEEDFILTER 1
 #define SPDSHFT 0
-#define LEGALFLAG 1
+#define LEGALFLAG 0
 
 //---------------------------------------------------------------------
 //power settings
 #define PH_CURRENT_MAX 700 //uses field Max current on low charge Para1[9]
 #define BATTERYCURRENT_MAX 12000
-#define REVERSE 1 //1 for normal direction, -1 for reverse //use field Motor Type (Para1[18]) 1 = 1, 0 = -1
+#define REVERSE -1 //1 for normal direction, -1 for reverse //use field Motor Type (Para1[18]) 1 = 1, 0 = -1
 #define PUSHASSIST_CURRENT 300
 #define VOLTAGE_MIN 1320 //33V
-#define SYSTEM_VOLTAGE 36// in V
-#define MAX_VOLTAGE 43// in V
+#define SYSTEM_VOLTAGE 52// in V
+#define MAX_VOLTAGE 59// in V
 
 //---------------------------------------------------------------------
 //torquesensor settings
-#define TS_COEF 1
+#define TS_COEF 4
 #define TS_MODE
 #define TQONAD1
+#define TQFILTER 4
 
 //---------------------------------------------------------------------
 //Display settings

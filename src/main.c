@@ -258,12 +258,8 @@ int main(void)
     //initialize MS struct.
 	MS.hall_angle_detect_flag=1;
 	MS.Speedx100=0; //in km/h*100
-<<<<<<< Updated upstream
-	MS.assist_level=127;
 	MS.regen_level=7;
-=======
 	MS.assist_level=2;
->>>>>>> Stashed changes
 	MS.i_q_setpoint = 0;
 	MS.i_d_setpoint = 0;
 	MS.angle_est=SPEED_PLL;
@@ -330,16 +326,15 @@ int main(void)
     		MS.torque_on_crank=750;
     		MS.p_human=0;
     	}
-<<<<<<< Updated upstream
-=======
+
     	// switch lights
     	if(MS.light_flag&&!gpio_input_bit_get(GPIOB,GPIO_PIN_10))GPIO_BOP(GPIOB) = GPIO_PIN_10;
     	if(!MS.light_flag&&gpio_input_bit_get(GPIOB,GPIO_PIN_10)) GPIO_BC(GPIOB) = GPIO_PIN_10;
 
     	//check brake sensor state
-    	if(!gpio_input_bit_get(GPIOC,GPIO_PIN_13))MS.brake_active_flag=0;
+    	if(!gpio_input_bit_get(GPIOC,GPIO_PIN_13))MS.brake_active_flag=1;
     	else MS.brake_active_flag=0;
->>>>>>> Stashed changes
+
     	// update scaled current and speed
     	if(MS.assist_level!=assist_level_old){
     		speedlimitx100_scaled=MP.speedLimitx100*MP.assist_settings[level_to_array_element[MS.assist_level]][1]/100;
@@ -360,14 +355,14 @@ int main(void)
 				counter = 0;
 				if((((adc_value[3]>>2)+1555)-adc_value[5])+100>300)shutoffcounter++;
 				else shutoffcounter=0;
-<<<<<<< Updated upstream
-				if(shutoffcounter>5){
-					timer_primary_output_config(TIMER0,DISABLE); //stop PWM output
-				    GPIO_BC(GPIOB) = GPIO_PIN_5; // Display off
-				    GPIO_BC(GPIOB) = GPIO_PIN_6; // DC/DC off
 
-
-				}
+//				if(shutoffcounter>5){
+//					timer_primary_output_config(TIMER0,DISABLE); //stop PWM output
+//				    GPIO_BC(GPIOB) = GPIO_PIN_5; // Display off
+//				    GPIO_BC(GPIOB) = GPIO_PIN_6; // DC/DC off
+//
+//
+//				}
 
 #if (DISPLAY_TYPE == DISPLAY_TYPE_DEBUG)
 				transmit_message.tx_data[0] = (MS.i_d>>8)&0xFF;//(GPIO_ISTAT(GPIOC)>>6)&0x07;
@@ -388,14 +383,7 @@ int main(void)
 					}
 
 #endif
-=======
-//				if(shutoffcounter>20){
-//					timer_primary_output_config(TIMER0,DISABLE); //stop PWM output
-//					GPIO_BC(GPIOB) = GPIO_PIN_4; //reset Pin4 from Bootloader
-//				    GPIO_BC(GPIOB) = GPIO_PIN_5; // Display off
-//				    GPIO_BC(GPIOB) = GPIO_PIN_6; // DC/DC off
-//				}
->>>>>>> Stashed changes
+
             }
             //calculate iq setpoint
             mapped_throttle= map(adc_value[1], THROTTLE_OFFSET, THROTTLE_MAX, 0, PH_CURRENT_MAX);
@@ -1476,8 +1464,7 @@ uint8_t interpolate_assistfactor(void){
 	return ui8_speedfactor;
 }
 
-<<<<<<< Updated upstream
-=======
+
 void print_debug_on_CAN(void){
 
 
@@ -1547,7 +1534,7 @@ int8_t calculate_SOC(uint16_t voltage, uint8_t cells_in_series){ //interpolate f
     return (int8_t)soc_values[length - 1];
 }
 
->>>>>>> Stashed changes
+
 /*!
     \brief      erase fmc pages from FMC_WRITE_START_ADDR to FMC_WRITE_END_ADDR
     \param[in]  none
