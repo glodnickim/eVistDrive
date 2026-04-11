@@ -36,7 +36,7 @@ OF SUCH DAMAGE.
 #include "FOC.h"
 #include "CAN_Display.h"
 #include "parser.h"
-uint16_t adc_value[8];
+uint16_t adc_value[9];
 
 #define FMC_PAGE_SIZE           ((uint16_t)0x800U)
 #define FMC_WRITE_START_ADDR    ((uint32_t)0x0803F000U) //Page 126, Page size 2kB
@@ -366,7 +366,7 @@ int main(void)
     	if(PAS_counter>MP.PAS_timeout){
     		Backwards_flag=RESET;
     		MS.cadence=0;
-    		MS.torque_on_crank=750;
+    		//MS.torque_on_crank=750;
     		MS.p_human=0;
     		uint16_cadence_filtered=0;
     		if(!MS.i_q_setpoint){
@@ -428,12 +428,12 @@ int main(void)
 
 				if((ButtonVoltageCumulated>>6)-adc_value[5]>5)shutoffcounter++;
 				else shutoffcounter=0;
-//				if(shutoffcounter>20){
-//					timer_primary_output_config(TIMER0,DISABLE); //stop PWM output
-//					GPIO_BC(GPIOB) = GPIO_PIN_4; //reset Pin4 from Bootloader
-//				    GPIO_BC(GPIOB) = GPIO_PIN_5; // Display off
-//				    GPIO_BC(GPIOB) = GPIO_PIN_6; // DC/DC off
-//				}
+				if(shutoffcounter>20){
+					timer_primary_output_config(TIMER0,DISABLE); //stop PWM output
+					GPIO_BC(GPIOB) = GPIO_PIN_4; //reset Pin4 from Bootloader
+				    GPIO_BC(GPIOB) = GPIO_PIN_5; // Display off
+				    GPIO_BC(GPIOB) = GPIO_PIN_6; // DC/DC off
+				}
             }
             //calculate iq setpoint
             //check brake with first priority
@@ -446,7 +446,7 @@ int main(void)
 				mapped_torque= map(MS.torque_on_crank, MP.TQO_threshold[level_to_array_element[MS.assist_level]], 3300, 0, phase_current_max_scaled);
 				//MS.Speedx100=250;
 
-				MS.i_q_setpoint_temp= MP.TS_coeff*MS.p_human*interpolate_assistfactor()/100;
+				MS.i_q_setpoint_temp= MP.TS_coeff*MS.p_human*interpolate_assistfactor()/400;//factor 4 lower assistance for better tunability
 				temp1 = MS.i_q_setpoint_temp;
 
 				//throttle override
@@ -696,7 +696,7 @@ void dma_config(void)
     dma_data_parameter.periph_width = DMA_PERIPHERAL_WIDTH_16BIT;
     dma_data_parameter.memory_width = DMA_MEMORY_WIDTH_16BIT;
     dma_data_parameter.direction    = DMA_PERIPHERAL_TO_MEMORY;
-    dma_data_parameter.number       = 8;
+    dma_data_parameter.number       = 9;
     dma_data_parameter.priority     = DMA_PRIORITY_HIGH;
     dma_init(DMA0, DMA_CH0, &dma_data_parameter);
 
@@ -729,7 +729,7 @@ void adc_config(void)
     adc_data_alignment_config(ADC2, ADC_DATAALIGN_RIGHT);
 
     /* ADC channel length config */
-    adc_channel_length_config(ADC0, ADC_REGULAR_CHANNEL,8);
+    adc_channel_length_config(ADC0, ADC_REGULAR_CHANNEL,9);
     adc_channel_length_config(ADC0, ADC_INSERTED_CHANNEL,1);
     adc_channel_length_config(ADC1, ADC_INSERTED_CHANNEL,1);
     adc_channel_length_config(ADC2, ADC_INSERTED_CHANNEL,1);
@@ -739,10 +739,11 @@ void adc_config(void)
     adc_regular_channel_config(ADC0, 1, ADC_CHANNEL_6, ADC_SAMPLETIME_239POINT5); // PA6 Throttle?
     adc_regular_channel_config(ADC0, 2, ADC_CHANNEL_7, ADC_SAMPLETIME_239POINT5); // PA7 Torque
     adc_regular_channel_config(ADC0, 3, ADC_CHANNEL_13, ADC_SAMPLETIME_239POINT5);// PC3 battery voltage
-    adc_regular_channel_config(ADC0, 4, ADC_CHANNEL_1, ADC_SAMPLETIME_239POINT5); // shunt current unfiltered (used for encoder on M510)
+    adc_regular_channel_config(ADC0, 4, ADC_CHANNEL_5, ADC_SAMPLETIME_239POINT5); // Phase3 current
     adc_regular_channel_config(ADC0, 5, ADC_CHANNEL_4, ADC_SAMPLETIME_239POINT5); // on/off button
     adc_regular_channel_config(ADC0, 6, ADC_CHANNEL_8, ADC_SAMPLETIME_239POINT5);//Motor temperature
-    adc_regular_channel_config(ADC0, 7, ADC_CHANNEL_15, ADC_SAMPLETIME_239POINT5);
+    adc_regular_channel_config(ADC0, 7, ADC_CHANNEL_2, ADC_SAMPLETIME_239POINT5);// Phase1 current
+    adc_regular_channel_config(ADC0, 8, ADC_CHANNEL_3, ADC_SAMPLETIME_239POINT5);// Phase2 current
 
     adc_inserted_channel_config(ADC0, 0, ADC_CHANNEL_5, ADC_SAMPLETIME_55POINT5);
     adc_inserted_channel_offset_config(ADC0, ADC_INSERTED_CHANNEL_0, 2033); //hardcoded, to be improved
@@ -1199,7 +1200,7 @@ void PAS_processing(void)
 		MS.cadence=10000/PAS_counter;//20 Pulses per crank revolution, 4000 Hz Timer interrupt frequency (for M510 about 40 pulses on speed/direction pn)
 		uint16_cadence_filtered-=uint16_cadence_filtered>>3;
 		uint16_cadence_filtered+=MS.cadence;
-		MS.torque_on_crank=(adc_value[2]*3300)>>12; //map ADC value to mV
+
 		PAS_counter=0;
     	PAS_flag = 0;
     	if(gpio_input_bit_get(GPIOC,GPIO_PIN_10))Backwards_flag=RESET;
@@ -1227,7 +1228,7 @@ void reg_ADC_processing(void)
 	MS.Battery_Current=(int32_t)((float)(battery_current_cumulated>>6)*CAL_BAT_I); //Battery current in mA
 	MS.Voltage=adc_value[3]*CAL_BAT_V;//Battery voltage in mV
 	MS.calories=Backwards_flag;
-
+	MS.torque_on_crank=(adc_value[2]*3300)>>12; //map ADC value to mV
     slow_loop_counter ++;
     if(PAS_counter<64000)PAS_counter++;
     if(Speed_counter<64000)Speed_counter++;
@@ -1543,12 +1544,12 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_dlen = 8;
 	transmit_message.tx_data[0] = (MS.Battery_Current>>8)&0xFF;//(GPIO_ISTAT(GPIOC)>>6)&0x07;
 	transmit_message.tx_data[1] = (MS.Battery_Current)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
-	transmit_message.tx_data[2] = (MS.i_q_setpoint>>8)&0xFF;;
-	transmit_message.tx_data[3] = (MS.i_q_setpoint)&0xFF;
-	transmit_message.tx_data[4] = (MS.i_q>>8)&0xFF;
-	transmit_message.tx_data[5] = (MS.i_q)&0xFF;
-	transmit_message.tx_data[6] = (MS.i_d>>8)&0xFF; //(adc_value[1]>>8)&0xFF;
-	transmit_message.tx_data[7] = (MS.i_d)&0xFF;
+	transmit_message.tx_data[2] = (MS.torque_on_crank>>8)&0xFF;;
+	transmit_message.tx_data[3] = (MS.torque_on_crank)&0xFF;
+	transmit_message.tx_data[4] = (i16_ph2_current>>8)&0xFF;
+	transmit_message.tx_data[5] = (i16_ph2_current)&0xFF;
+	transmit_message.tx_data[6] = (i16_ph3_current>>8)&0xFF; //(adc_value[1]>>8)&0xFF;
+	transmit_message.tx_data[7] = (i16_ph3_current)&0xFF;
 
 	/* transmit message */
 	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
