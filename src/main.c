@@ -1546,10 +1546,10 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[1] = (MS.Battery_Current)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
 	transmit_message.tx_data[2] = (MS.torque_on_crank>>8)&0xFF;;
 	transmit_message.tx_data[3] = (MS.torque_on_crank)&0xFF;
-	transmit_message.tx_data[4] = (i16_ph2_current>>8)&0xFF;
-	transmit_message.tx_data[5] = (i16_ph2_current)&0xFF;
-	transmit_message.tx_data[6] = (i16_ph3_current>>8)&0xFF; //(adc_value[1]>>8)&0xFF;
-	transmit_message.tx_data[7] = (i16_ph3_current)&0xFF;
+	transmit_message.tx_data[4] = (MS.p_human>>8)&0xFF;
+	transmit_message.tx_data[5] = (MS.p_human)&0xFF;
+	transmit_message.tx_data[6] = (MS.i_q_setpoint>>8)&0xFF; //(adc_value[1]>>8)&0xFF;
+	transmit_message.tx_data[7] = (MS.i_q_setpoint)&0xFF;
 
 	/* transmit message */
 	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
