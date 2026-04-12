@@ -314,8 +314,6 @@ int main(void)
 	MP.reverse = REVERSE;
 	MP.MagicNumber=202;
 	MP.Override_Duration=8000;
-	MP.Cadence_exponent=2; //dritte Wurzel für Wichtung Kadenz
-
 
 	//init PI structs
 	PI_id.gain_i=I_FACTOR_I_D;
@@ -346,7 +344,7 @@ int main(void)
     while((adc_value[1])>3000){
 
     }
-	MP.Cadence_exponent=2;
+	MP.Cadence_exponent=10;
 	float helper=((float)1.0/((float)1.0+(float)MP.Cadence_exponent));
     //autodetect();
 
@@ -1238,7 +1236,7 @@ void reg_ADC_processing(void)
 	battery_current_cumulated+= (adc_value[0]-CAL_BAT_I_OFFSET);
 	MS.Battery_Current=(int32_t)((float)(battery_current_cumulated>>6)*CAL_BAT_I); //Battery current in mA
 	MS.Voltage=adc_value[3]*CAL_BAT_V;//Battery voltage in mV
-	MS.calories=temp1;
+	MS.calories=MS.i_q_setpoint;
 	MS.torque_on_crank=(adc_value[2]*3300)>>12; //map ADC value to mV
     slow_loop_counter ++;
     if(PAS_counter<64000)PAS_counter++;
