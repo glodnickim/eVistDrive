@@ -25,7 +25,7 @@
 #define CAL_BAT_I_OFFSET 1360
 #define CAL_V 15LL<<8
 #define CAL_I 70 //Zurückgerechnet aus Batteriestrom = Tastverhältnis * Motorstrom
-#define BOOTLOADER 38
+#define BOOTLOADER 0
 // BionX IGH3
 //#define INDUCTANCE 12LL
 //#define RESISTANCE 220LL
@@ -44,7 +44,7 @@
 //#define INDIVIDUAL_MODES
 //#define SPEEDTHROTTLE
 //#define PRINTDEBUG_UART
-#define PRINTDEBUG_CAN
+//#define PRINTDEBUG_CAN
 #define R_TEMP_PULLUP 3100
 #define SIXSTEPTHRESHOLD 5000
 #define SPEED_PLL 0 //1 for using PLL, 0 for angle extrapolation

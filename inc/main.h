@@ -87,6 +87,7 @@ typedef struct
 	int32_t       	sin_delay_filter;
 	int32_t       	cos_delay_filter;
 	uint16_t 		torque_on_crank;
+	uint16_t 		torque_filtered;
 	uint16_t 		p_human;
 	uint16_t        calories;
 	int16_t         int_Temperature;
@@ -117,7 +118,7 @@ typedef struct
 
 	uint16_t       	wheel_cirumference;
 	uint16_t       	p_Iq;
-	uint16_t       	i_Iq;
+	uint16_t       	Cadence_exponent;
 	uint16_t       	Override_Duration;
 	uint16_t       	MagicNumber;
 	uint16_t       	TS_coeff;

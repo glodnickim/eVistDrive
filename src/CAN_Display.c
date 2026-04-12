@@ -27,6 +27,7 @@ Ext_ID_t Ext_ID_Rx;
 Ext_ID_t Ext_ID_Tx;
 void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS);
 void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS);
+void sendCAN_Poll(MotorParams_t* MP, MotorState_t* MS, uint16_t command);
 void sendAcknoledge(void);
 void send_multiframe(uint16_t command, char* data, uint8_t length );
 void append_multiframe(uint16_t command, char* data);
@@ -72,7 +73,9 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 					//save received setting
 					write_virtual_eeprom();
 				}
+
 				else sendCAN_Tx(MP,MS);
+				sendAcknoledge();
 				break;
 			case READ_CMD:
 				sendCAN_Tx(MP,MS);
@@ -210,7 +213,7 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 			InitEEPROM(MP);
 			read_virtual_eeprom();
 			parse_MOparams(MP);
-			sendAcknoledge();
+
 		}
 
 
@@ -241,11 +244,11 @@ void sendAcknoledge(void){
 
 }
 
-void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
+void sendCAN_Poll(MotorParams_t* MP, MotorState_t* MS, uint16_t command){
 
-	switch (Ext_ID_Rx.command){
+	switch (command){
 
-		case 0x6300: //speed and power
+		case 0x3201: //speed and power
 			/* initialize transmit message */
 			transmit_message.tx_sfid = 0x00;
 			transmit_message.tx_efid = 0x02F83201;
@@ -276,7 +279,7 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 				}
 			break;
 
-		case 0x6301: //battery and distance
+		case 0x3200: //battery and distance
 			/* initialize transmit message */
 			if(delay_counter<10)delay_counter++;
 			else{
@@ -314,7 +317,7 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 
 			break;
 
-		case 0x6302: //to do
+		case 0x3205: //to do
 			/* initialize transmit message */
 			transmit_message.tx_sfid = 0x00;
 			transmit_message.tx_efid = 0x02F83205;
@@ -333,6 +336,15 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 				timeout--;
 				}
 			break;
+
+
+	}//end case
+}
+
+void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
+
+	switch (Ext_ID_Rx.command){
+
 
 		case 0x6001: //to do
 			/* initialize transmit message */

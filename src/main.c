@@ -61,7 +61,7 @@ FlagStatus Speed_flag=0;
 FlagStatus reg_ADC_flag=0;
 FlagStatus OnOffButton_flag=0;
 FlagStatus BC_limit_flag=0;
-FlagStatus Backwards_flag=RESET;
+uint8_t Backwards_counter=0;
 
 void nvic_config(void);
 void led_config(void);
@@ -185,7 +185,8 @@ uint32_t torque_cumulated=0;
 uint8_t array_temp[88];
 
 uint8_t level_to_array_element[10]={0,0,1,0,2,0,3,0,4,5}; //map assist Level to array element
-
+uint16_t Poll_commands[3]={0x3201,0x3200,0x3205};
+uint8_t pollnumber=0;
 int32_t ic1value = 0,AngleFromPWM = 0;
 __IO uint16_t dutycycle = 0;
 __IO uint16_t frequency = 0;
@@ -313,6 +314,7 @@ int main(void)
 	MP.reverse = REVERSE;
 	MP.MagicNumber=202;
 	MP.Override_Duration=8000;
+	MP.Cadence_exponent=2; //dritte Wurzel für Wichtung Kadenz
 
 
 	//init PI structs
@@ -344,6 +346,8 @@ int main(void)
     while((adc_value[1])>3000){
 
     }
+	MP.Cadence_exponent=2;
+	float helper=((float)1.0/((float)1.0+(float)MP.Cadence_exponent));
     //autodetect();
 
     while (1){
@@ -364,7 +368,7 @@ int main(void)
     	if(Speed_flag)Speed_processing();
     	if(reg_ADC_flag)reg_ADC_processing();
     	if(PAS_counter>MP.PAS_timeout){
-    		Backwards_flag=RESET;
+    		Backwards_counter=0;
     		MS.cadence=0;
     		//MS.torque_on_crank=750;
     		MS.p_human=0;
@@ -415,6 +419,9 @@ int main(void)
 #ifdef PRINTDEBUG_CAN
             	print_debug_on_CAN();
 #endif
+            	if(pollnumber>2)pollnumber=0;
+            	sendCAN_Poll(&MP,&MS,Poll_commands[pollnumber]);
+            	pollnumber++;
             	MS.int_Temperature = T_NTC(adc_value[6]);
             	MS.SOC = calculate_SOC(MS.Voltage, (uint8_t) ((float)MP.system_voltage/3.6));
             	//toggle speed pin
@@ -437,17 +444,16 @@ int main(void)
             }
             //calculate iq setpoint
             //check brake with first priority
-            if(MS.brake_active_flag||Backwards_flag)MS.i_q_setpoint_temp=0;
+            if(MS.brake_active_flag||Backwards_counter>5)MS.i_q_setpoint_temp=0;
             // check push assist active
             else if(MS.pushassist_flag)MS.i_q_setpoint_temp=100;
             //calculate setpoint, if brake is not activated
             else{
 				mapped_throttle= map(adc_value[1], THROTTLE_OFFSET, THROTTLE_MAX, 0, phase_current_max_scaled);
 				mapped_torque= map(MS.torque_on_crank, MP.TQO_threshold[level_to_array_element[MS.assist_level]], 3300, 0, phase_current_max_scaled);
-				//MS.Speedx100=250;
+				temp1 = powf((float)MS.cadence,helper);
+				MS.i_q_setpoint_temp=(uint32_t)((float) (MP.TS_coeff*powf((float)MS.cadence,helper))*(MS.torque_filtered)*0.0005*interpolate_assistfactor());//factor 0.0005 from various constants
 
-				MS.i_q_setpoint_temp= MP.TS_coeff*MS.p_human*interpolate_assistfactor()/400;//factor 4 lower assistance for better tunability
-				temp1 = MS.i_q_setpoint_temp;
 
 				//throttle override
 				if(mapped_throttle>MS.i_q_setpoint_temp)MS.i_q_setpoint_temp=mapped_throttle;
@@ -1203,14 +1209,19 @@ void PAS_processing(void)
 
 		PAS_counter=0;
     	PAS_flag = 0;
-    	if(gpio_input_bit_get(GPIOC,GPIO_PIN_10))Backwards_flag=RESET;
-    	else Backwards_flag=SET;
+    	if(gpio_input_bit_get(GPIOC,GPIO_PIN_10)){
+    		if(Backwards_counter)Backwards_counter--;
+    	}
+    	else{
+    		if(Backwards_counter<10)Backwards_counter++;
+    	}
     	torque_cumulated-=torque_cumulated>>MS.TQfilter;
     	if(MS.torque_on_crank>750){
     		torque_cumulated+=(MS.torque_on_crank-750);
     	}
     	//Power=2*Pi*speed*torque, calibration factors: rpm to 1/s for cadence: /60, mV to Nm: 750 to 3200 --> 0 to 80 Nm. (from Bafang data sheet)
-    	MS.p_human=(uint16_t)((float)(MS.cadence*(torque_cumulated>>MS.TQfilter))*0.00342); //in Watt
+    	MS.torque_filtered=(torque_cumulated>>MS.TQfilter);
+    	MS.p_human=(uint16_t)((float)(MS.cadence*MS.torque_filtered)*0.00342); //in Watt
 }
 
 void Speed_processing(void)
@@ -1227,7 +1238,7 @@ void reg_ADC_processing(void)
 	battery_current_cumulated+= (adc_value[0]-CAL_BAT_I_OFFSET);
 	MS.Battery_Current=(int32_t)((float)(battery_current_cumulated>>6)*CAL_BAT_I); //Battery current in mA
 	MS.Voltage=adc_value[3]*CAL_BAT_V;//Battery voltage in mV
-	MS.calories=Backwards_flag;
+	MS.calories=temp1;
 	MS.torque_on_crank=(adc_value[2]*3300)>>12; //map ADC value to mV
     slow_loop_counter ++;
     if(PAS_counter<64000)PAS_counter++;
