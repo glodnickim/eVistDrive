@@ -20,6 +20,7 @@ void parse_DPparams(MotorParams_t* MP){
 	MP->throttle_offset=(Para1[34]<<12)/33; //map 3.3V to 12 bit ADC resolution
 	MP->throttle_max=(Para1[35]<<12)/33; //map 3.3V to 12 bit ADC resolution
 	MP->voltage_min=(Para1[3]+(Para1[4]<<8))/CAL_BAT_V;
+	MP->Cadence_exponent=Para1[12];
 	MP->legalflag=Para1[14];
 	if (!Para1[18])MP->reverse=-1;
 	else MP->reverse=1;
@@ -58,6 +59,7 @@ void parse_MOparams(MotorParams_t* MP){
 	Para1[3] = (MP->voltage_min*CAL_BAT_V)&0xFF;
 	Para1[4] = ((MP->voltage_min*CAL_BAT_V)>>8)&0xFF;
 	Para1[9]= MP->phase_current_max*CAL_I/1000;
+	Para1[12]= MP->Cadence_exponent;
 	Para1[14]= MP->legalflag;
 	if (MP->reverse==-1)Para1[18]=0;
 	else Para1[18]=1;
@@ -101,6 +103,7 @@ void InitEEPROM(MotorParams_t* MP){
 	MP->throttle_offset=THROTTLE_OFFSET; //map 3.3V to 12 bit ADC resolution
 	MP->throttle_max=THROTTLE_MAX; //map 3.3V to 12 bit ADC resolution
 	MP->reverse=REVERSE;
+	MP->Cadence_exponent=10;
 	MP->pulses_per_revolution=PULSES_PER_REVOLUTION;
 	MP->phase_current_max = PH_CURRENT_MAX;
 	MP->voltage_min=VOLTAGE_MIN;

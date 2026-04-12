@@ -181,6 +181,7 @@ uint16_t Overrun_counter = 0;
 uint32_t timeout = 0xFFFF;
 uint8_t transmit_mailbox = 0;
 int32_t battery_current_cumulated=0;
+uint32_t Speedx100_cumulated=0;
 uint32_t torque_cumulated=0;
 uint8_t array_temp[88];
 
@@ -346,7 +347,7 @@ int main(void)
     while((adc_value[1])>3000){
 
     }
-	MP.Cadence_exponent=2;
+
 	float helper=((float)1.0/((float)1.0+(float)MP.Cadence_exponent));
     //autodetect();
 
@@ -444,14 +445,13 @@ int main(void)
             }
             //calculate iq setpoint
             //check brake with first priority
-            if(MS.brake_active_flag||Backwards_counter>5)MS.i_q_setpoint_temp=0;
+            if(MS.brake_active_flag||Backwards_counter>4)MS.i_q_setpoint_temp=0;
             // check push assist active
             else if(MS.pushassist_flag)MS.i_q_setpoint_temp=100;
             //calculate setpoint, if brake is not activated
             else{
 				mapped_throttle= map(adc_value[1], THROTTLE_OFFSET, THROTTLE_MAX, 0, phase_current_max_scaled);
 				mapped_torque= map(MS.torque_on_crank, MP.TQO_threshold[level_to_array_element[MS.assist_level]], 3300, 0, phase_current_max_scaled);
-				temp1 = powf((float)MS.cadence,helper);
 				MS.i_q_setpoint_temp=(uint32_t)((float) (MP.TS_coeff*powf((float)MS.cadence,helper))*(MS.torque_filtered)*0.0005*interpolate_assistfactor());//factor 0.0005 from various constants
 
 
@@ -1226,7 +1226,9 @@ void PAS_processing(void)
 
 void Speed_processing(void)
 {
-		MS.Speedx100=MP.wheel_cirumference*4*360/(MP.pulses_per_revolution*Speed_counter);// 4000 Hz Timer interrupt frequency
+		Speedx100_cumulated-=Speedx100_cumulated>>MP.pulses_per_revolution;
+		Speedx100_cumulated+=MP.wheel_cirumference*4*360/(MP.pulses_per_revolution*Speed_counter);// 4000 Hz Timer interrupt frequency
+		MS.Speedx100=Speedx100_cumulated>>MP.pulses_per_revolution;
 		Speed_counter=0;
 		Speed_flag=0;
 		MS.distance_since_startup+=MP.wheel_cirumference/(MP.pulses_per_revolution*1000); //in m
@@ -1238,7 +1240,7 @@ void reg_ADC_processing(void)
 	battery_current_cumulated+= (adc_value[0]-CAL_BAT_I_OFFSET);
 	MS.Battery_Current=(int32_t)((float)(battery_current_cumulated>>6)*CAL_BAT_I); //Battery current in mA
 	MS.Voltage=adc_value[3]*CAL_BAT_V;//Battery voltage in mV
-	MS.calories=temp1;
+	MS.calories=Backwards_counter;
 	MS.torque_on_crank=(adc_value[2]*3300)>>12; //map ADC value to mV
     slow_loop_counter ++;
     if(PAS_counter<64000)PAS_counter++;
