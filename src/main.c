@@ -315,7 +315,6 @@ int main(void)
 	MP.reverse = REVERSE;
 	MP.MagicNumber=202;
 	MP.Override_Duration=8000;
-	MP.Cadence_exponent=2; //dritte Wurzel für Wichtung Kadenz
 
 
 	//init PI structs
