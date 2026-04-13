@@ -1225,9 +1225,9 @@ void PAS_processing(void)
 
 void Speed_processing(void)
 {
-		Speedx100_cumulated-=Speedx100_cumulated>>MP.pulses_per_revolution;
+		Speedx100_cumulated-=Speedx100_cumulated/MP.pulses_per_revolution;
 		Speedx100_cumulated+=MP.wheel_cirumference*4*360/(MP.pulses_per_revolution*Speed_counter);// 4000 Hz Timer interrupt frequency
-		MS.Speedx100=Speedx100_cumulated>>MP.pulses_per_revolution;
+		MS.Speedx100=Speedx100_cumulated/MP.pulses_per_revolution;
 		Speed_counter=0;
 		Speed_flag=0;
 		MS.distance_since_startup+=MP.wheel_cirumference/(MP.pulses_per_revolution*1000); //in m
@@ -1241,6 +1241,7 @@ void reg_ADC_processing(void)
 	MS.Voltage=adc_value[3]*CAL_BAT_V;//Battery voltage in mV
 	MS.calories=Backwards_counter;
 	MS.torque_on_crank=(adc_value[2]*3300)>>12; //map ADC value to mV
+	MS.range=adc_value[5];//on/off button line
     slow_loop_counter ++;
     if(PAS_counter<64000)PAS_counter++;
     if(Speed_counter<64000)Speed_counter++;
@@ -1594,8 +1595,8 @@ int16_t T_NTC(uint16_t ADC) // ADC 12 Bit, 10k NTC, RÃ¼ckgabewert in Â°C
 }
 
 int8_t calculate_SOC(uint16_t voltage, uint8_t cells_in_series){ //interpolate from lookup table
-    float voltages[] = {3.00, 3.15, 3.30, 3.42, 3.55, 3.60, 3.65, 3.70, 3.75, 3.80, 3.85, 3.90, 4.00, 4.10, 4.20};
-    float soc_values[] = {0, 5, 15, 30, 50, 60, 75, 85, 90, 95, 97, 99, 99.5, 99.8, 100};
+    float voltages[] = {2.9, 3.15, 3.30, 3.42, 3.55, 3.60, 3.65, 3.70, 3.75, 3.80, 3.85, 3.90, 4.00, 4.10, 4.20};
+    float soc_values[] = {0, 12, 22, 32, 44, 48, 55, 60, 68, 72, 77, 88, 95, 97, 100};
     int length = sizeof(voltages) / sizeof(voltages[0]);
     float cell_voltage = (float)voltage/((float)cells_in_series*1000);
     if (cell_voltage <= voltages[0]) {

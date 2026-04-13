@@ -90,6 +90,7 @@ typedef struct
 	uint16_t 		torque_filtered;
 	uint16_t 		p_human;
 	uint16_t        calories;
+	uint16_t        range;
 	int16_t         int_Temperature;
 	int16_t 		KV_detect_flag;
 	uint8_t 		hall_angle_detect_flag;

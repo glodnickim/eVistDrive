@@ -304,8 +304,8 @@ void sendCAN_Poll(MotorParams_t* MP, MotorState_t* MS, uint16_t command){
 			transmit_message.tx_data[3] = MS->cadence; //cadence
 			transmit_message.tx_data[4] = MS->torque_on_crank&0xFF; //torque mV LSB
 			transmit_message.tx_data[5] = (MS->torque_on_crank>>8)&0xFF; //torque mv MSB
-			transmit_message.tx_data[6] = 0x00;//range LSB
-			transmit_message.tx_data[7] = MS->offroadflag<<4;//range MSB
+			transmit_message.tx_data[6] = MS->range&0xFF;//range LSB
+			transmit_message.tx_data[7] = (MS->range>>8)&0xFF;//range MSB
 
 			/* transmit message */
 			transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
