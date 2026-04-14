@@ -429,11 +429,7 @@ int main(void)
             	if(Speed_counter>20000) MS.Speedx100=0;
 				slow_loop_counter = 0;
 
-				//Check ratio form battery voltage to power button voltage
-				ButtonVoltageCumulated-=ButtonVoltageCumulated>>6;
-				ButtonVoltageCumulated+=adc_value[5];
-
-				if((ButtonVoltageCumulated>>6)-adc_value[5]>5)shutoffcounter++;
+				if(adc_value[5]<2800)shutoffcounter++; //raw value is 4095 without button pressed, about 3300 with "down" button pressed and about 2400 with on/off button pressed.
 				else shutoffcounter=0;
 				if(shutoffcounter>20){
 					timer_primary_output_config(TIMER0,DISABLE); //stop PWM output
@@ -1242,7 +1238,7 @@ void reg_ADC_processing(void)
 	MS.Voltage=adc_value[3]*CAL_BAT_V;//Battery voltage in mV
 	MS.calories=adc_value[5];
 	MS.torque_on_crank=(adc_value[2]*3300)>>12; //map ADC value to mV
-	MS.range=adc_value[5];//on/off button line
+	MS.range=Backwards_counter*100;//on/off button line
     slow_loop_counter ++;
     if(PAS_counter<64000)PAS_counter++;
     if(Speed_counter<64000)Speed_counter++;
