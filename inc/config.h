@@ -44,7 +44,7 @@
 //#define INDIVIDUAL_MODES
 //#define SPEEDTHROTTLE
 //#define PRINTDEBUG_UART
-//#define PRINTDEBUG_CAN
+#define PRINTDEBUG_CAN
 #define R_TEMP_PULLUP 3100
 #define SIXSTEPTHRESHOLD 5000
 #define SPEED_PLL 0 //1 for using PLL, 0 for angle extrapolation

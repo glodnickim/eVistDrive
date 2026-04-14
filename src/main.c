@@ -633,14 +633,14 @@ void gpio_config(void)
     //gpio_init(GPIOB, GPIO_MODE_OUT_OD, GPIO_OSPEED_50MHZ, GPIO_PIN_0);
     //PB6: switch for DC/DC
     //PB5: switch for BatteryPlus display supply
-    delay_1ms(500);
+    //delay_1ms(500);
     gpio_init(GPIOB, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_10);
-    GPIO_BC(GPIOB) = GPIO_PIN_4; //reset Pin4 from Bootloader
+    //GPIO_BC(GPIOB) = GPIO_PIN_4; //reset Pin4 from Bootloader
 
     delay_1ms(50);
     GPIO_BOP(GPIOB) = GPIO_PIN_5; // Display on
     delay_1ms(50);
-    GPIO_BOP(GPIOB) = GPIO_PIN_6; //DC/DC on
+    //GPIO_BOP(GPIOB) = GPIO_PIN_6; //DC/DC on
 	GPIO_BOP(GPIOB) = GPIO_PIN_3; //12V on
 // PB3 and PB10 have to be high to get 12V on the brake line.
 //    gpio_init(GPIOB, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_2|GPIO_PIN_7|GPIO_PIN_1|GPIO_PIN_10|GPIO_PIN_11);
@@ -1240,7 +1240,7 @@ void reg_ADC_processing(void)
 	battery_current_cumulated+= (adc_value[0]-CAL_BAT_I_OFFSET);
 	MS.Battery_Current=(int32_t)((float)(battery_current_cumulated>>6)*CAL_BAT_I); //Battery current in mA
 	MS.Voltage=adc_value[3]*CAL_BAT_V;//Battery voltage in mV
-	MS.calories=Backwards_counter;
+	MS.calories=adc_value[5];
 	MS.torque_on_crank=(adc_value[2]*3300)>>12; //map ADC value to mV
 	MS.range=adc_value[5];//on/off button line
     slow_loop_counter ++;
@@ -1562,8 +1562,8 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[3] = (MS.torque_on_crank)&0xFF;
 	transmit_message.tx_data[4] = (MS.p_human>>8)&0xFF;
 	transmit_message.tx_data[5] = (MS.p_human)&0xFF;
-	transmit_message.tx_data[6] = (MS.i_q_setpoint>>8)&0xFF; //(adc_value[1]>>8)&0xFF;
-	transmit_message.tx_data[7] = (MS.i_q_setpoint)&0xFF;
+	transmit_message.tx_data[6] = (adc_value[5]>>8)&0xFF; //(adc_value[1]>>8)&0xFF;
+	transmit_message.tx_data[7] = (adc_value[5])&0xFF;
 
 	/* transmit message */
 	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
