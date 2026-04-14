@@ -620,32 +620,33 @@ void gpio_config(void)
     rcu_periph_clock_enable(RCU_GPIOB);
     rcu_periph_clock_enable(RCU_GPIOC);
     rcu_periph_clock_enable(RCU_GPIOD);
-    /* configure CAN0 GPIO, CAN0_TX(PD1) and CAN0_RX(PD0) */
+    /* configure CAN0 GPIO, CAN0_TX(PA12) and CAN0_RX(PA11) */
     gpio_init(GPIOA, GPIO_MODE_AF_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_12);
-
     gpio_init(GPIOA, GPIO_MODE_IPU, GPIO_OSPEED_50MHZ, GPIO_PIN_11);
+	
     /* config the GPIO as analog mode */
     gpio_init(GPIOA, GPIO_MODE_AIN, GPIO_OSPEED_MAX, GPIO_PIN_0|GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7);
     gpio_init(GPIOC, GPIO_MODE_AIN, GPIO_OSPEED_MAX, GPIO_PIN_3); //Battery Voltage
     gpio_init(GPIOB, GPIO_MODE_AIN, GPIO_OSPEED_MAX, GPIO_PIN_0); // Motor Temp
 
-    gpio_init(GPIOA, GPIO_MODE_AF_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_8);
+    //gpio_init(GPIOA, GPIO_MODE_AF_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_8);
     //gpio_init(GPIOB, GPIO_MODE_OUT_OD, GPIO_OSPEED_50MHZ, GPIO_PIN_0);
     //PB6: switch for DC/DC
     //PB5: switch for BatteryPlus display supply
     delay_1ms(500);
-    gpio_init(GPIOB, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6);
+    gpio_init(GPIOB, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_10);
     GPIO_BC(GPIOB) = GPIO_PIN_4; //reset Pin4 from Bootloader
 
     delay_1ms(50);
     GPIO_BOP(GPIOB) = GPIO_PIN_5; // Display on
     delay_1ms(50);
     GPIO_BOP(GPIOB) = GPIO_PIN_6; //DC/DC on
+	GPIO_BOP(GPIOB) = GPIO_PIN_3; //12V on
 // PB3 and PB10 have to be high to get 12V on the brake line.
-    gpio_init(GPIOB, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_7|GPIO_PIN_1|GPIO_PIN_10|GPIO_PIN_11);
+//    gpio_init(GPIOB, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_2|GPIO_PIN_7|GPIO_PIN_1|GPIO_PIN_10|GPIO_PIN_11);
 //    GPIO_BOP(GPIOB) = GPIO_PIN_1;
 //    GPIO_BOP(GPIOB) = GPIO_PIN_2;
-    GPIO_BOP(GPIOB) = GPIO_PIN_3;
+    
 //    GPIO_BOP(GPIOB) = GPIO_PIN_7;
     //GPIO_BOP(GPIOB) = GPIO_PIN_10;
     //GPIO_BC(GPIOB) = GPIO_PIN_11;
@@ -654,11 +655,11 @@ void gpio_config(void)
 
     //PA15 Dual PAS input pin (green wire)
     gpio_init(GPIOA, GPIO_MODE_IPU, GPIO_OSPEED_50MHZ, GPIO_PIN_15);
-    //PC0 brake sensor floatinig
+    //PC0 light short circuit detectionß1
     gpio_init(GPIOC, GPIO_MODE_IN_FLOATING, GPIO_OSPEED_50MHZ, GPIO_PIN_0);
-
+	//PC10 PAS1 (white), PC11 PAS2 (pink), PC13 brake
     gpio_init(GPIOC, GPIO_MODE_IPU, GPIO_OSPEED_50MHZ, GPIO_PIN_10|GPIO_PIN_11|GPIO_PIN_13);
-    gpio_exti_source_select(GPIO_PORT_SOURCE_GPIOC, GPIO_PIN_SOURCE_11);
+    gpio_exti_source_select(GPIO_PORT_SOURCE_GPIOC, GPIO_PIN_SOURCE_11); //Pas2 interrupt
     /* configure key EXTI line */
     exti_init(EXTI_11, EXTI_INTERRUPT, EXTI_TRIG_FALLING);
     exti_interrupt_flag_clear(EXTI_11);
