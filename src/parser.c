@@ -30,6 +30,9 @@ void parse_DPparams(MotorParams_t* MP){
 	MP->ramp_end = 11250/Para1[39]; //use field Current Shedding Time (Ramp Down), calculate timer tics from theshold cadence
 
 	memcpy(&MP->assist_profile[0][0],&Para2[0],30);
+	memcpy(&MP->ext_boost_duration[0],&Para2[0]+30,5);
+	memcpy(&MP->ext_boost_strength[0],&Para2[0]+35,5);
+
 	for (k=0; k < 4; k++){
 		MP->assist_settings[k+1][0]=Para1[k*2+41]; //current limit (%)
 		MP->assist_settings[k+1][1]=Para1[k*2+50]; //speed limit (%)
@@ -73,6 +76,8 @@ void parse_MOparams(MotorParams_t* MP){
 	Para1[38]= MP->PAS_timeout*10/4000; //in Zehntelsekunden, use field Current Loading Time (Ramp Up)
 	Para1[39]= 11250/MP->ramp_end; //use field Current Shedding Time (Ramp Down), calculate threshold cadence from timer tics
 	memcpy(&Para2[0],&MP->assist_profile[0][0],30);
+	memcpy(&Para2[0]+30,&MP->ext_boost_duration[0],5);
+	memcpy(&Para2[0]+35,&MP->ext_boost_strength[0],5);
 	for (k=0; k < 4; k++){
 		Para1[k*2+41]= MP->assist_settings[k+1][0]; //current limit (%)
 		Para1[k*2+50]= MP->assist_settings[k+1][1]; //speed limit (%)
@@ -117,6 +122,10 @@ void InitEEPROM(MotorParams_t* MP){
 		for (l=0; l < 7; l++){
 			MP->assist_profile[k][l]=(k+1)*20;
 		}
+	}
+	for (l=0; l < 5; l++){
+		MP->ext_boost_duration[l]=(1+1)*20;
+		MP->ext_boost_strength[l]=(1+1)*20;
 	}
 
 	for (k=0; k < 4; k++){

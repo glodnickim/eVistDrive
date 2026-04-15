@@ -392,6 +392,8 @@ int main(void)
     		phase_current_max_scaled=MP.phase_current_max*MP.assist_settings[level_to_array_element[MS.assist_level]][0]/100;
         	MS.TQfilter=level_to_array_element[MS.assist_level];
         	MS.TQfilter=MP.assist_settings[MS.TQfilter][2];
+        	MS.ext_boost_duration=MP.ext_boost_duration[level_to_array_element[MS.assist_level]-1];
+        	MS.ext_boost_strength=MP.ext_boost_strength[level_to_array_element[MS.assist_level]-1];
         	if(offroadcounter<4000&&offroadcounter>1000){
         		offroadcode+=pow(10,MS.offroadtics)*MS.assist_level;
         		MS.offroadtics++;
@@ -460,7 +462,7 @@ int main(void)
 					}
 					MS.i_q_setpoint_temp=mapped_torque;
 				}
-				if(Overrun_counter<MP.Override_Duration)MS.i_q_setpoint_temp=Overrun_strength;
+				if(Overrun_counter<MP.Override_Duration*MS.ext_boost_duration/100)MS.i_q_setpoint_temp=Overrun_strength*MS.ext_boost_strength/100;
 				else Overrun_strength=0;
 				//limit setpoint to the max value according to the current setting.
 				if(MS.i_q_setpoint_temp>phase_current_max_scaled)MS.i_q_setpoint_temp = phase_current_max_scaled;
