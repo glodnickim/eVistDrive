@@ -121,6 +121,8 @@ uint32_t uint32_tics_filtered=128000;
 uint16_t uint16_cadence_filtered=0;
 uint8_t ui8_overflow_flag=0;
 uint8_t ui8_SPEED_control_flag=0;
+uint32_t voltage_raw_cumulated=0;
+uint16_t voltage_raw_filtered=0;
 
 int32_t q31_rotorposition_hall=0;
 q31_t q31_rotorposition_absolute=0;
@@ -467,7 +469,13 @@ int main(void)
 				//limit setpoint to the max value according to the current setting.
 				if(MS.i_q_setpoint_temp>phase_current_max_scaled)MS.i_q_setpoint_temp = phase_current_max_scaled;
             }// else brake not active
-			if(MP.legalflag&&!MS.offroadflag){
+
+            //low battery ramp down with 3V above battery min voltage
+            MS.i_q_setpoint_temp=map(voltage_raw_filtered, MP.voltage_min,(MP.voltage_min+176),0,MS.i_q_setpoint_temp);
+
+            //motor temperature ramp down between 110 and 130°C
+            MS.i_q_setpoint_temp=map(MS.int_Temperature,110,130,MS.i_q_setpoint_temp,0);
+            if(MP.legalflag&&!MS.offroadflag){
 
 				if((uint16_cadence_filtered>>3)>15){
 					MS.i_q_setpoint_temp=map(MS.Speedx100, speedlimitx100_scaled,(speedlimitx100_scaled+200),MS.i_q_setpoint_temp,0);
@@ -1237,8 +1245,12 @@ void reg_ADC_processing(void)
 	battery_current_cumulated-=battery_current_cumulated>>6;
 	battery_current_cumulated+= (adc_value[0]-CAL_BAT_I_OFFSET);
 	MS.Battery_Current=(int32_t)((float)(battery_current_cumulated>>6)*CAL_BAT_I); //Battery current in mA
-	MS.Voltage=adc_value[3]*CAL_BAT_V;//Battery voltage in mV
-	MS.calories=adc_value[5];
+	voltage_raw_cumulated-=voltage_raw_cumulated>>6;
+	voltage_raw_cumulated+=adc_value[3];
+	voltage_raw_filtered=voltage_raw_cumulated>>6;
+
+	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
+	MS.calories=MP.Override_Duration*MS.ext_boost_duration/100;
 	MS.torque_on_crank=(adc_value[2]*3300)>>12; //map ADC value to mV
 	MS.range=Backwards_counter*100;//on/off button line
     slow_loop_counter ++;
