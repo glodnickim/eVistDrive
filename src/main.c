@@ -459,12 +459,13 @@ int main(void)
 				//torque override
 				if(mapped_torque>MS.i_q_setpoint_temp){
 					if(mapped_torque>Overrun_strength){
-						Overrun_strength=mapped_torque;
+						Overrun_strength=mapped_torque*MS.ext_boost_strength/100;
+						if(Overrun_strength>MP.phase_current_max)Overrun_strength=MP.phase_current_max;
 						Overrun_counter = 0;
 					}
 					MS.i_q_setpoint_temp=mapped_torque;
 				}
-				if(Overrun_counter<MP.Override_Duration*MS.ext_boost_duration/100)MS.i_q_setpoint_temp=Overrun_strength*MS.ext_boost_strength/100;
+				if(Overrun_counter<MP.Override_Duration*MS.ext_boost_duration/100)MS.i_q_setpoint_temp=Overrun_strength;
 				else Overrun_strength=0;
 				//limit setpoint to the max value according to the current setting.
 				if(MS.i_q_setpoint_temp>phase_current_max_scaled)MS.i_q_setpoint_temp = phase_current_max_scaled;
