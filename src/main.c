@@ -370,17 +370,20 @@ int main(void)
     	if(PAS_flag)PAS_processing();
     	if(Speed_flag)Speed_processing();
     	if(reg_ADC_flag)reg_ADC_processing();
-    	if(PAS_counter>MP.PAS_timeout&&!Overrun_flag){
-    		Backwards_counter=0;
-    		MS.cadence=0;
-    		//MS.torque_on_crank=750;
-    		MS.p_human=0;
-    		uint16_cadence_filtered=0;
-    		if(!MS.i_q_setpoint){
-				PI_iq.integral_part=0;
-				PI_id.integral_part=0;
+    	if(PAS_counter>MP.PAS_timeout){
+    		if(!Overrun_flag){
+				Backwards_counter=0;
+				MS.cadence=0;
+				//MS.torque_on_crank=750;
+				MS.p_human=0;
+				uint16_cadence_filtered=0;
+				if(!MS.i_q_setpoint){
+					PI_iq.integral_part=0;
+					PI_id.integral_part=0;
+					}
+				if(torque_cumulated)torque_cumulated--;
     		}
-    		if(torque_cumulated)torque_cumulated--;
+    		else torque_cumulated=0;
     	}
     	// switch lights
     	if(MS.light_flag&&!gpio_input_bit_get(GPIOB,GPIO_PIN_10))GPIO_BOP(GPIOB) = GPIO_PIN_10;
@@ -470,6 +473,7 @@ int main(void)
 					MS.i_q_setpoint_temp=(Overrun_strength*MS.ext_boost_strength)/100;
 					if(MS.i_q_setpoint_temp>MP.phase_current_max)MS.i_q_setpoint_temp = MP.phase_current_max;
 					Overrun_flag=1;
+					PAS_counter=MP.PAS_timeout+1;
 				}
 				else {
 					Overrun_strength=0;
@@ -1259,7 +1263,7 @@ void reg_ADC_processing(void)
 	voltage_raw_filtered=voltage_raw_cumulated>>6;
 
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
-	MS.calories=MS.ext_boost_strength;
+	MS.calories=MP.PAS_timeout;
 	MS.torque_on_crank=(adc_value[2]*3300)>>12; //map ADC value to mV
 	MS.range=BC_limit_flag*100;//on/off button line
     slow_loop_counter ++;
@@ -1579,7 +1583,7 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[1] = (MS.Battery_Current)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
 	transmit_message.tx_data[2] = (MS.torque_on_crank>>8)&0xFF;;
 	transmit_message.tx_data[3] = (MS.torque_on_crank)&0xFF;
-	transmit_message.tx_data[4] = ((Overrun_strength*MS.ext_boost_strength)/100>>8)&0xFF;
+	transmit_message.tx_data[4] = (((Overrun_strength*MS.ext_boost_strength)/100)>>8)&0xFF;
 	transmit_message.tx_data[5] = ((Overrun_strength*MS.ext_boost_strength)/100)&0xFF;
 	transmit_message.tx_data[6] = (MS.i_q_setpoint>>8)&0xFF;
 	transmit_message.tx_data[7] = (MS.i_q_setpoint)&0xFF;
