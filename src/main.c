@@ -1250,9 +1250,9 @@ void reg_ADC_processing(void)
 	voltage_raw_filtered=voltage_raw_cumulated>>6;
 
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
-	MS.calories=MP.Override_Duration*MS.ext_boost_duration/100;
+	MS.calories=MP.battery_current_max;
 	MS.torque_on_crank=(adc_value[2]*3300)>>12; //map ADC value to mV
-	MS.range=Backwards_counter*100;//on/off button line
+	MS.range=BC_limit_flag*100;//on/off button line
     slow_loop_counter ++;
     if(PAS_counter<64000)PAS_counter++;
     if(Speed_counter<64000)Speed_counter++;
@@ -1570,10 +1570,10 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[1] = (MS.Battery_Current)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
 	transmit_message.tx_data[2] = (MS.torque_on_crank>>8)&0xFF;;
 	transmit_message.tx_data[3] = (MS.torque_on_crank)&0xFF;
-	transmit_message.tx_data[4] = (MS.p_human>>8)&0xFF;
-	transmit_message.tx_data[5] = (MS.p_human)&0xFF;
-	transmit_message.tx_data[6] = (adc_value[5]>>8)&0xFF; //(adc_value[1]>>8)&0xFF;
-	transmit_message.tx_data[7] = (adc_value[5])&0xFF;
+	transmit_message.tx_data[4] = ((MS.i_q*CAL_I*_T/MS.u_abs)>>8)&0xFF;
+	transmit_message.tx_data[5] = ((MS.i_q*CAL_I*_T/MS.u_abs))&0xFF;
+	transmit_message.tx_data[6] = (MS.i_q_setpoint>>8)&0xFF; //(adc_value[1]>>8)&0xFF;
+	transmit_message.tx_data[7] = (MS.i_q_setpoint)&0xFF;
 
 	/* transmit message */
 	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
