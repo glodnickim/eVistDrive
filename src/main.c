@@ -1299,7 +1299,7 @@ void runPIcontrol(void){
 	//check, if Battery Current limit is exceeded
 	if(MS.Battery_Current>MP.battery_current_max) BC_limit_flag=1;
 	//check, if theoretical Battery current would be below limit with some hysteresis
-	if(((MP.reverse*MS.i_q_setpoint*MS.u_abs)>>5)<(MP.battery_current_max*0.9)) BC_limit_flag=0;
+	if((MS.i_q_setpoint*CAL_I*MS.u_abs)/_U_MAX<(MP.battery_current_max*0.9)) BC_limit_flag=0;
 
 	if(!BC_limit_flag){
 	//control iq
@@ -1570,9 +1570,9 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[1] = (MS.Battery_Current)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
 	transmit_message.tx_data[2] = (MS.torque_on_crank>>8)&0xFF;;
 	transmit_message.tx_data[3] = (MS.torque_on_crank)&0xFF;
-	transmit_message.tx_data[4] = ((MS.i_q*CAL_I*_T/MS.u_abs)>>8)&0xFF;
-	transmit_message.tx_data[5] = ((MS.i_q*CAL_I*_T/MS.u_abs))&0xFF;
-	transmit_message.tx_data[6] = (MS.i_q_setpoint>>8)&0xFF; //(adc_value[1]>>8)&0xFF;
+	transmit_message.tx_data[4] = ((iabs(MS.i_q)*CAL_I*MS.u_abs/_U_MAX)>>8)&0xFF;
+	transmit_message.tx_data[5] = (iabs(MS.i_q)*CAL_I*MS.u_abs/_U_MAX)&0xFF;
+	transmit_message.tx_data[6] = (MS.i_q_setpoint>>8)&0xFF; 
 	transmit_message.tx_data[7] = (MS.i_q_setpoint)&0xFF;
 
 	/* transmit message */
