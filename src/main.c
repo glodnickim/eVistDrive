@@ -180,6 +180,7 @@ uint8_t i = 0;
 uint16_t p = 0;
 uint16_t Overrun_strength = 0;
 uint16_t Overrun_counter = 0;
+uint8_t Overrun_flag = 0;
 uint32_t timeout = 0xFFFF;
 uint8_t transmit_mailbox = 0;
 int32_t battery_current_cumulated=0;
@@ -369,7 +370,7 @@ int main(void)
     	if(PAS_flag)PAS_processing();
     	if(Speed_flag)Speed_processing();
     	if(reg_ADC_flag)reg_ADC_processing();
-    	if(PAS_counter>MP.PAS_timeout){
+    	if(PAS_counter>MP.PAS_timeout&&!Overrun_flag){
     		Backwards_counter=0;
     		MS.cadence=0;
     		//MS.torque_on_crank=750;
@@ -459,16 +460,23 @@ int main(void)
 				//torque override
 				if(mapped_torque>MS.i_q_setpoint_temp){
 					if(mapped_torque>Overrun_strength){
-						Overrun_strength=mapped_torque*MS.ext_boost_strength/100;
-						if(Overrun_strength>MP.phase_current_max)Overrun_strength=MP.phase_current_max;
-						Overrun_counter = 0;
+						Overrun_strength=mapped_torque;
+						if(!Overrun_flag)Overrun_counter = 0;
 					}
 					MS.i_q_setpoint_temp=mapped_torque;
 				}
-				if(Overrun_counter<MP.Override_Duration*MS.ext_boost_duration/100)MS.i_q_setpoint_temp=Overrun_strength;
-				else Overrun_strength=0;
-				//limit setpoint to the max value according to the current setting.
 				if(MS.i_q_setpoint_temp>phase_current_max_scaled)MS.i_q_setpoint_temp = phase_current_max_scaled;
+				if(Overrun_counter<(MP.Override_Duration*MS.ext_boost_duration)/100){
+					MS.i_q_setpoint_temp=(Overrun_strength*(uint16_t)MS.ext_boost_strength)/100;
+					if(MS.i_q_setpoint_temp>MP.phase_current_max)MS.i_q_setpoint_temp = MP.phase_current_max;
+					Overrun_flag=1;
+				}
+				else {
+					Overrun_strength=0;
+					Overrun_flag=0;
+				}
+				//limit setpoint to the max value according to the current setting.
+
             }// else brake not active
 
             //low battery ramp down with 3V above battery min voltage
@@ -1251,7 +1259,7 @@ void reg_ADC_processing(void)
 	voltage_raw_filtered=voltage_raw_cumulated>>6;
 
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
-	MS.calories=MP.battery_current_max;
+	MS.calories=MS.ext_boost_strength;
 	MS.torque_on_crank=(adc_value[2]*3300)>>12; //map ADC value to mV
 	MS.range=BC_limit_flag*100;//on/off button line
     slow_loop_counter ++;
@@ -1571,10 +1579,10 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[1] = (MS.Battery_Current)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
 	transmit_message.tx_data[2] = (MS.torque_on_crank>>8)&0xFF;;
 	transmit_message.tx_data[3] = (MS.torque_on_crank)&0xFF;
-	transmit_message.tx_data[4] = (((iabs(MS.i_q)*CAL_I*MS.u_abs)>>11)>>8)&0xFF;
-	transmit_message.tx_data[5] = ((iabs(MS.i_q)*CAL_I*MS.u_abs)>>11)&0xFF;
-	transmit_message.tx_data[6] = (MS.i_q_setpoint>>8)&0xFF; 
-	transmit_message.tx_data[7] = (MS.i_q_setpoint)&0xFF;
+	transmit_message.tx_data[4] = (Overrun_counter>>8)&0xFF;
+	transmit_message.tx_data[5] = (Overrun_counter)&0xFF;
+	transmit_message.tx_data[6] = (Overrun_strength>>8)&0xFF;
+	transmit_message.tx_data[7] = (Overrun_strength)&0xFF;
 
 	/* transmit message */
 	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);

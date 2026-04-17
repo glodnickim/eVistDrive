@@ -53,15 +53,15 @@ na=na.astype(int)
 
 x1=np.int16(na[:,0:1])
 writer.writerow(x1)
-#x2=na[:,1:2]
+x2=na[:,2:3]
 #x3=na[:,1:2]
-z=np.uint16(na[:,1:2])
+y=np.uint16(na[:,1:2])
 #writer.writerow(x2)
-z1=np.int16(na[:,2:3])
+z=np.int16(na[:,3:4])
 #writer.writerow(y)
 
-y=np.int16(na[:,3:4])
-writer.writerow(z1)
+#y=np.int16(na[:,3:4])
+#writer.writerow(z1)
 f.close()
 #y=na[:,8:9]
 #fig, axs = plt.subplots(3,sharex='all')
@@ -75,7 +75,7 @@ fig.set_figwidth(10)
 fig.suptitle('EBiCS log plotter')
 
 axs[0].plot(x1, label="Battery Current (mA)")
-#axs[0].plot(x2, label="Battery Voltage (mV)")
+axs[0].plot(x2, label="Battery Current calulated (mA)")
 
 #axs[0].plot(x3, label="Drehmoment an der Kassette")
 #axs[2].plot(z1, label="i_q")
@@ -84,8 +84,8 @@ axs[0].legend(bbox_to_anchor=(1.01, 0), loc="lower left",
 axs[1].plot(y,color='g', label="Torque Signal (mV)")
 axs[1].legend(bbox_to_anchor=(1.01, 0), loc="lower left",
               mode="expand", borderaxespad=0)
-axs[2].plot(z,color='r', label="Cadence (1/min)")
-axs[2].plot(z1,color='b', label="iq_setpoint")
+axs[2].plot(z,color='r', label="iq_setpoint")
+#axs[2].plot(z1,color='b', label="iq_setpoint")
 axs[2].legend(bbox_to_anchor=(1.01, 0), loc="lower left",
               mode="expand", borderaxespad=0)
 
