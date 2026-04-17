@@ -467,7 +467,7 @@ int main(void)
 				}
 				if(MS.i_q_setpoint_temp>phase_current_max_scaled)MS.i_q_setpoint_temp = phase_current_max_scaled;
 				if(Overrun_counter<(MP.Override_Duration*MS.ext_boost_duration)/100){
-					MS.i_q_setpoint_temp=(Overrun_strength*(uint16_t)MS.ext_boost_strength)/100;
+					MS.i_q_setpoint_temp=(Overrun_strength*MS.ext_boost_strength)/100;
 					if(MS.i_q_setpoint_temp>MP.phase_current_max)MS.i_q_setpoint_temp = MP.phase_current_max;
 					Overrun_flag=1;
 				}
@@ -1579,10 +1579,10 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[1] = (MS.Battery_Current)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
 	transmit_message.tx_data[2] = (MS.torque_on_crank>>8)&0xFF;;
 	transmit_message.tx_data[3] = (MS.torque_on_crank)&0xFF;
-	transmit_message.tx_data[4] = (Overrun_counter>>8)&0xFF;
-	transmit_message.tx_data[5] = (Overrun_counter)&0xFF;
-	transmit_message.tx_data[6] = (Overrun_strength>>8)&0xFF;
-	transmit_message.tx_data[7] = (Overrun_strength)&0xFF;
+	transmit_message.tx_data[4] = ((Overrun_strength*MS.ext_boost_strength)/100>>8)&0xFF;
+	transmit_message.tx_data[5] = ((Overrun_strength*MS.ext_boost_strength)/100)&0xFF;
+	transmit_message.tx_data[6] = (MS.i_q_setpoint>>8)&0xFF;
+	transmit_message.tx_data[7] = (MS.i_q_setpoint)&0xFF;
 
 	/* transmit message */
 	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
