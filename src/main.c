@@ -383,7 +383,7 @@ int main(void)
 					}
 				if(torque_cumulated)torque_cumulated--;
     		}
-    		else torque_cumulated=0;
+
     	}
     	// switch lights
     	if(MS.light_flag&&!gpio_input_bit_get(GPIOB,GPIO_PIN_10))GPIO_BOP(GPIOB) = GPIO_PIN_10;
@@ -427,6 +427,9 @@ int main(void)
 #ifdef PRINTDEBUG_CAN
             	print_debug_on_CAN();
 #endif
+//            	if((Overrun_strength-mapped_torque)>>3>0){
+//            		Overrun_strength-=(Overrun_strength-mapped_torque)>>3;
+//            	}
             	if(pollnumber>2)pollnumber=0;
             	sendCAN_Poll(&MP,&MS,Poll_commands[pollnumber]);
             	pollnumber++;
@@ -464,7 +467,7 @@ int main(void)
 				if(mapped_torque>MS.i_q_setpoint_temp){
 					if(mapped_torque>Overrun_strength){
 						Overrun_strength=mapped_torque;
-						if(!Overrun_flag)Overrun_counter = 0;
+						Overrun_counter = 0;
 					}
 					MS.i_q_setpoint_temp=mapped_torque;
 				}
@@ -1263,9 +1266,9 @@ void reg_ADC_processing(void)
 	voltage_raw_filtered=voltage_raw_cumulated>>6;
 
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
-	MS.calories=MP.PAS_timeout;
+	MS.calories=Overrun_strength-mapped_torque;
 	MS.torque_on_crank=(adc_value[2]*3300)>>12; //map ADC value to mV
-	MS.range=BC_limit_flag*100;//on/off button line
+	MS.range=Overrun_flag*100;//on/off button line
     slow_loop_counter ++;
     if(PAS_counter<64000)PAS_counter++;
     if(Speed_counter<64000)Speed_counter++;
@@ -1583,10 +1586,10 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[1] = (MS.Battery_Current)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
 	transmit_message.tx_data[2] = (MS.torque_on_crank>>8)&0xFF;;
 	transmit_message.tx_data[3] = (MS.torque_on_crank)&0xFF;
-	transmit_message.tx_data[4] = (((Overrun_strength*MS.ext_boost_strength)/100)>>8)&0xFF;
-	transmit_message.tx_data[5] = ((Overrun_strength*MS.ext_boost_strength)/100)&0xFF;
-	transmit_message.tx_data[6] = (MS.i_q_setpoint>>8)&0xFF;
-	transmit_message.tx_data[7] = (MS.i_q_setpoint)&0xFF;
+	transmit_message.tx_data[4] = (((Overrun_strength*MS.ext_boost_strength)/100)>>8)&0xFF;//
+	transmit_message.tx_data[5] = (((Overrun_strength*MS.ext_boost_strength)/100))&0xFF;
+	transmit_message.tx_data[6] = ((iabs(MS.i_q))>>8)&0xFF;
+	transmit_message.tx_data[7] = (iabs(MS.i_q))&0xFF;
 
 	/* transmit message */
 	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
