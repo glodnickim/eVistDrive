@@ -235,6 +235,9 @@ int main(void)
 
 #elif (BOOTLOADER== 38)
 	nvic_vector_table_set(NVIC_VECTTAB_FLASH, 0xA800); //for bootloader v3.8
+
+#elif (BOOTLOADER== 820)
+	nvic_vector_table_set(NVIC_VECTTAB_FLASH, 0x5000); //for bootloader from M820
 #endif
 
 
@@ -1266,7 +1269,7 @@ void reg_ADC_processing(void)
 	voltage_raw_filtered=voltage_raw_cumulated>>6;
 
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
-	MS.calories=Overrun_strength-mapped_torque;
+	MS.calories=PAS_counter;
 	MS.torque_on_crank=(adc_value[2]*3300)>>12; //map ADC value to mV
 	MS.range=Overrun_flag*100;//on/off button line
     slow_loop_counter ++;
