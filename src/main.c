@@ -445,7 +445,7 @@ int main(void)
 
 				if(adc_value[5]<2800)shutoffcounter++; //raw value is 4095 without button pressed, about 3300 with "down" button pressed and about 2400 with on/off button pressed.
 				else shutoffcounter=0;
-				if(shutoffcounter>20){
+				if(shutoffcounter>50){
 					timer_primary_output_config(TIMER0,DISABLE); //stop PWM output
 					GPIO_BC(GPIOB) = GPIO_PIN_4; //reset Pin4 from Bootloader
 				    GPIO_BC(GPIOB) = GPIO_PIN_5; // Display off
@@ -459,7 +459,7 @@ int main(void)
             else if(MS.pushassist_flag)MS.i_q_setpoint_temp=100;
             //calculate setpoint, if brake is not activated
             else{
-				mapped_throttle= map(adc_value[1], THROTTLE_OFFSET, THROTTLE_MAX, 0, phase_current_max_scaled);
+				mapped_throttle= map(adc_value[1], MP.throttle_offset, MP.throttle_max, 0, phase_current_max_scaled);
 				mapped_torque= map(MS.torque_on_crank, MP.TQO_threshold[level_to_array_element[MS.assist_level]], 3300, 0, phase_current_max_scaled);
 				MS.i_q_setpoint_temp=(uint32_t)((float) (MP.TS_coeff*powf((float)MS.cadence,helper))*(MS.torque_filtered)*0.0005*interpolate_assistfactor());//factor 0.0005 from various constants
 
@@ -1269,7 +1269,7 @@ void reg_ADC_processing(void)
 	voltage_raw_filtered=voltage_raw_cumulated>>6;
 
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
-	MS.calories=PAS_counter;
+	MS.calories=MS.int_Temperature;
 	MS.torque_on_crank=(adc_value[2]*3300)>>12; //map ADC value to mV
 	MS.range=Overrun_flag*100;//on/off button line
     slow_loop_counter ++;
@@ -1589,9 +1589,9 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[1] = (MS.Battery_Current)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
 	transmit_message.tx_data[2] = (MS.torque_on_crank>>8)&0xFF;;
 	transmit_message.tx_data[3] = (MS.torque_on_crank)&0xFF;
-	transmit_message.tx_data[4] = (((Overrun_strength*MS.ext_boost_strength)/100)>>8)&0xFF;//
-	transmit_message.tx_data[5] = (((Overrun_strength*MS.ext_boost_strength)/100))&0xFF;
-	transmit_message.tx_data[6] = ((iabs(MS.i_q))>>8)&0xFF;
+	transmit_message.tx_data[4] = (PAS_counter>>8)&0xFF;//
+	transmit_message.tx_data[5] = (PAS_counter)&0xFF;
+	transmit_message.tx_data[6] = (iabs(MS.i_q)>>8)&0xFF;
 	transmit_message.tx_data[7] = (iabs(MS.i_q))&0xFF;
 
 	/* transmit message */

@@ -21,11 +21,12 @@ with open(file_path, 'rb') as f:
 
 with open(file_path, 'rb') as source_file:
     original_data = source_file.read()
-    Bytes14and15=len(original_data)-65536
+    Bytes14and15=len(original_data)%65536
     f.close
 
 print(f"CRC16-Wert für {file_path}: {crc_value:04X}") # Ausgabe als 4-stellige Hexadezimalzahl
-
+print(f"CRC16-Wert für {file_path}: {Bytes14and15:04X}")
+print(f"CRC16-Wert für {file_path}: {len(original_data)}")
 
 
 
