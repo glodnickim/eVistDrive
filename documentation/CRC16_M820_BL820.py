@@ -5,13 +5,13 @@ from tkinter import filedialog
 # '0x1021' ist das Polynom, '0xFFFF' der Initialwert, 'True' das XOR-Ergebnis nachher
 crc16_func = crcmod.mkCrcFun(0x11021, initCrc=0x0000, rev=False, xorOut=0x0000)
 
-#crc16_func = crcmod.mkCrcFun(0x1A833982B, initCrc=0x0000000, rev=False, xorOut=0x0000)
-
 file_path = filedialog.askopenfilename()
 chunk_size = 4096 # Leseblockgröße für große Dateien
 
 crc_value = 0 # Initialwert für den CRC
 with open(file_path, 'rb') as f:
+   
+
     while True:
         chunk = f.read(chunk_size)
         if not chunk:
@@ -19,13 +19,18 @@ with open(file_path, 'rb') as f:
         # Berechne den CRC für den aktuellen Chunk und update den Gesamtwert
         crc_value = crc16_func(chunk, crc_value)
 
+with open(file_path, 'rb') as source_file:
+    original_data = source_file.read()
+    Bytes14and15=len(original_data)-65536
+    f.close
+
 print(f"CRC16-Wert für {file_path}: {crc_value:04X}") # Ausgabe als 4-stellige Hexadezimalzahl
 
 
 
 
 # Angenommen, dies ist Ihre Hex-Daten-Zeichenkette
-hex_string_data = "0145824040000000000000000000676C" 
+hex_string_data = "0145824040000000000000000000" 
 filling_zeros = "0000000000000000000000000000"
 
 # Konvertiere die gesamte Hex-Zeichenkette in ein Byte-Objekt
@@ -38,6 +43,7 @@ out_file = filedialog.asksaveasfile(mode="wb", defaultextension='.bin')
     # Schreibe die konvertierten Binärdaten
 binary_data = bytes.fromhex(hex_string_data)
 out_file.write(binary_data)
+out_file.write(Bytes14and15.to_bytes(2, byteorder='big'))
 out_file.write(crc_value.to_bytes(2, byteorder='big'))
 binary_data = bytes.fromhex(filling_zeros)
 out_file.write(binary_data)
