@@ -1228,8 +1228,8 @@ void EXTI2_IRQHandler(void)
 
 void PAS_processing(void)
 {
-		MS.cadence=10000/PAS_counter;//20 Pulses per crank revolution, 4000 Hz Timer interrupt frequency (for M510 about 40 pulses on speed/direction pn)
-		uint16_cadence_filtered-=uint16_cadence_filtered>>3;
+		MS.cadence=10000/PAS_counter;//24 Pulses per crank revolution, 4000 Hz Timer interrupt frequency (for M560 about 48 pulses on speed/direction pin)(4000*60/24)=10000
+ 		uint16_cadence_filtered-=uint16_cadence_filtered>>3;
 		uint16_cadence_filtered+=MS.cadence;
 
 
