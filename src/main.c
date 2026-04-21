@@ -329,7 +329,7 @@ int main(void)
 	PI_id.setpoint = 0;
 	PI_id.limit_output = _U_MAX;
 	PI_id.max_step=5000;
-	PI_id.shift=8;
+	PI_id.shift=9;
 	PI_id.limit_i=1800;
 
 	PI_iq.gain_i=I_FACTOR_I_Q;
@@ -337,7 +337,7 @@ int main(void)
 	PI_iq.setpoint = 0;
 	PI_iq.limit_output = _U_MAX;
 	PI_iq.max_step=5000;
-	PI_iq.shift=8;
+	PI_iq.shift=9;
 	PI_iq.limit_i=_U_MAX;
 
     //Check, if virtual EEPROM was ever written. If not, fill it with default values
@@ -1232,10 +1232,11 @@ void PAS_processing(void)
 		uint16_cadence_filtered-=uint16_cadence_filtered>>3;
 		uint16_cadence_filtered+=MS.cadence;
 
-		PAS_counter=0;
+
     	PAS_flag = 0;
     	if(gpio_input_bit_get(GPIOC,GPIO_PIN_10)){
     		if(Backwards_counter)Backwards_counter--;
+    		PAS_counter=0;
     	}
     	else{
     		if(Backwards_counter<10)Backwards_counter++;
