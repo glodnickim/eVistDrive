@@ -329,7 +329,7 @@ int main(void)
 	PI_id.setpoint = 0;
 	PI_id.limit_output = _U_MAX;
 	PI_id.max_step=5000;
-	PI_id.shift=9;
+	PI_id.shift=8;
 	PI_id.limit_i=1800;
 
 	PI_iq.gain_i=I_FACTOR_I_Q;
@@ -337,7 +337,7 @@ int main(void)
 	PI_iq.setpoint = 0;
 	PI_iq.limit_output = _U_MAX;
 	PI_iq.max_step=5000;
-	PI_iq.shift=9;
+	PI_iq.shift=8;
 	PI_iq.limit_i=_U_MAX;
 
     //Check, if virtual EEPROM was ever written. If not, fill it with default values
@@ -1228,6 +1228,7 @@ void EXTI2_IRQHandler(void)
 
 void PAS_processing(void)
 {
+	if(PAS_counter>70)	{
 		MS.cadence=10000/PAS_counter;//24 Pulses per crank revolution, 4000 Hz Timer interrupt frequency (for M560 about 48 pulses on speed/direction pin)(4000*60/24)=10000
  		uint16_cadence_filtered-=uint16_cadence_filtered>>3;
 		uint16_cadence_filtered+=MS.cadence;
@@ -1248,6 +1249,7 @@ void PAS_processing(void)
     	//Power=2*Pi*speed*torque, calibration factors: rpm to 1/s for cadence: /60, mV to Nm: 750 to 3200 --> 0 to 80 Nm. (from Bafang data sheet)
     	MS.torque_filtered=(torque_cumulated>>MS.TQfilter);
     	MS.p_human=(uint16_t)((float)(MS.cadence*MS.torque_filtered)*0.00342); //in Watt
+	}
 }
 
 void Speed_processing(void)
@@ -1590,8 +1592,8 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[1] = (MS.Battery_Current)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
 	transmit_message.tx_data[2] = (MS.torque_on_crank>>8)&0xFF;;
 	transmit_message.tx_data[3] = (MS.torque_on_crank)&0xFF;
-	transmit_message.tx_data[4] = (PAS_counter>>8)&0xFF;//
-	transmit_message.tx_data[5] = (PAS_counter)&0xFF;
+	transmit_message.tx_data[4] = (iabs(MS.i_q_setpoint)>>8)&0xFF;//
+	transmit_message.tx_data[5] = (iabs(MS.i_q_setpoint))&0xFF;
 	transmit_message.tx_data[6] = (iabs(MS.i_q)>>8)&0xFF;
 	transmit_message.tx_data[7] = (iabs(MS.i_q))&0xFF;
 

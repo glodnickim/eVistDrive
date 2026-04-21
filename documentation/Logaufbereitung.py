@@ -85,7 +85,7 @@ axs[1].plot(y,color='g', label="Torque Signal (mV)")
 axs[1].legend(bbox_to_anchor=(1.01, 0), loc="lower left",
               mode="expand", borderaxespad=0)
 axs[2].plot(z,color='r', label="i_q")
-axs[2].plot(z1,color='b', label="PAS counter")
+axs[2].plot(z1,color='b', label="i_q_setpoint")
 axs[2].legend(bbox_to_anchor=(1.01, 0), loc="lower left",
               mode="expand", borderaxespad=0)
 
