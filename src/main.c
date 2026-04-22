@@ -323,6 +323,7 @@ int main(void)
 	MP.reverse = REVERSE;
 	MP.MagicNumber=202;
 	MP.Override_Duration=8000;
+	MP.decay_base=16;
 
 
 	//init PI structs
@@ -446,7 +447,7 @@ int main(void)
             	//gpio_bit_write(GPIOB, GPIO_PIN_0,(bit_status)(1-gpio_input_bit_get(GPIOB, GPIO_PIN_0)));
             	if(Speed_counter>20000) MS.Speedx100=0;
 				slow_loop_counter = 0;
-
+#if (BOOTLOADER!= 0)
 				if(adc_value[5]<2800)shutoffcounter++; //raw value is 4095 without button pressed, about 3300 with "down" button pressed and about 2400 with on/off button pressed.
 				else shutoffcounter=0;
 				if(shutoffcounter>50){
@@ -455,6 +456,7 @@ int main(void)
 				    GPIO_BC(GPIOB) = GPIO_PIN_5; // Display off
 				    GPIO_BC(GPIOB) = GPIO_PIN_6; // DC/DC off
 				}
+#endif
             }//end slow loop
 
             if(MS.i_q_setpoint){
@@ -593,8 +595,9 @@ void gpio_config(void)
     delay_1ms(50);
 	GPIO_BOP(GPIOB) = GPIO_PIN_3; //12V on
 	delay_1ms(200);
+#if (BOOTLOADER!= 0)
 	GPIO_BC(GPIOB) = GPIO_PIN_6; //reset Pin6 for releasing on/off button
-
+#endif
     //PA15 Dual PAS input pin (green wire)
     gpio_init(GPIOA, GPIO_MODE_IPU, GPIO_OSPEED_50MHZ, GPIO_PIN_15);
     //PC0 light short circuit detectionß1
@@ -1145,28 +1148,28 @@ void EXTI2_IRQHandler(void)
 
 void PAS_processing(void)
 {
-	if(PAS_counter>70)	{
-		MS.cadence=10000/PAS_counter;//24 Pulses per crank revolution, 4000 Hz Timer interrupt frequency (for M560 about 48 pulses on speed/direction pin)(4000*60/24)=10000
- 		uint16_cadence_filtered-=uint16_cadence_filtered>>3;
-		uint16_cadence_filtered+=MS.cadence;
+
+	MS.cadence=10000/PAS_counter;//24 Pulses per crank revolution, 4000 Hz Timer interrupt frequency (for M560 about 48 pulses on speed/direction pin)(4000*60/24)=10000
+	uint16_cadence_filtered-=uint16_cadence_filtered>>3;
+	uint16_cadence_filtered+=MS.cadence;
 
 
-    	PAS_flag = 0;
-    	if(gpio_input_bit_get(GPIOC,GPIO_PIN_10)){
-    		if(Backwards_counter)Backwards_counter--;
-    		PAS_counter=0;
-    	}
-    	else{
-    		if(Backwards_counter<10)Backwards_counter++;
-    	}
-    	torque_cumulated-=torque_cumulated>>MS.TQfilter;
-    	if(MS.torque_on_crank>750){
-    		torque_cumulated+=(MS.torque_on_crank-750);
-    	}
-    	//Power=2*Pi*speed*torque, calibration factors: rpm to 1/s for cadence: /60, mV to Nm: 750 to 3200 --> 0 to 80 Nm. (from Bafang data sheet)
-    	MS.torque_filtered=(torque_cumulated>>MS.TQfilter);
-    	MS.p_human=(uint16_t)((float)(MS.cadence*MS.torque_filtered)*0.00342); //in Watt
+	PAS_flag = 0;
+	if(gpio_input_bit_get(GPIOC,GPIO_PIN_10)){
+		if(Backwards_counter)Backwards_counter--;
+		//PAS_counter=0;
 	}
+	else{
+		if(Backwards_counter<10)Backwards_counter++;
+	}
+	torque_cumulated-=torque_cumulated>>MS.TQfilter;
+	if(MS.torque_on_crank>750){
+		torque_cumulated+=(MS.torque_on_crank-750);
+	}
+	//Power=2*Pi*speed*torque, calibration factors: rpm to 1/s for cadence: /60, mV to Nm: 750 to 3200 --> 0 to 80 Nm. (from Bafang data sheet)
+	MS.torque_filtered=(torque_cumulated>>MS.TQfilter);
+	MS.p_human=(uint16_t)((float)(MS.cadence*MS.torque_filtered)*0.00342); //in Watt
+
 }
 
 void Speed_processing(void)
@@ -1189,7 +1192,7 @@ void reg_ADC_processing(void)
 	voltage_raw_filtered=voltage_raw_cumulated>>6;
 
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
-	MS.calories=temp2;
+	MS.calories=MP.decay_base;
 	MS.torque_on_crank=(adc_value[2]*3300)>>12; //map ADC value to mV
 	if(MS.torque_on_crank>750)PAS_counter=0;//reset
 	MS.range=Overrun_flag*100;//on/off button line
@@ -1201,7 +1204,7 @@ void reg_ADC_processing(void)
     if(ui16_erps_counter<64000)ui16_erps_counter++;
     if(Overrun_counter<64000)Overrun_counter++;
     MS.i_q_setpoint = update_setpoint();
-    if (!MS.i_q_setpoint){
+    if (PAS_counter>MP.PAS_timeout){
 		Backwards_counter=0;
 		MS.cadence=0;
 		MS.p_human=0;
@@ -1723,7 +1726,7 @@ void read_virtual_eeprom(void)
 
 uint16_t map_rezi(int32_t actual_value, int32_t actual_time, int32_t timeout, int32_t decay_base){
     if(actual_time<timeout)return actual_value;
-    else if(actual_time<3000) return (actual_value<<decay_base)/((1<<decay_base)+(actual_time-timeout));
+    else if(actual_time<3000) return (uint16_t)((float)actual_value/((1+(float)decay_base/1000*(float)(actual_time-timeout))));
     else return 0;
 }
 

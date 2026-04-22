@@ -25,6 +25,7 @@ void parse_DPparams(MotorParams_t* MP){
 	if (!Para1[18])MP->reverse=-1;
 	else MP->reverse=1;
 	MP->pulses_per_revolution=Para1[20];
+	MP->decay_base=Para1[21];
 	MP->Override_Duration=Para1[37]*40;
 	MP->PAS_timeout= Para1[38]*400; //in Zehntelsekunden, use field Current Loading Time (Ramp Up)
 	MP->ramp_end = 11250/Para1[39]; //use field Current Shedding Time (Ramp Down), calculate timer tics from theshold cadence
@@ -70,6 +71,7 @@ void parse_MOparams(MotorParams_t* MP){
 	else Para1[18]=1;
 	Para1[19]= MP->gear_ratio;
 	Para1[20]= MP->pulses_per_revolution;
+	Para1[21]= MP->decay_base;
 	Para1[24]= (MP->MagicNumber)&0xFF;
 	Para1[25]= ((MP->MagicNumber)>>8)&0xFF;
 	Para1[34]= (MP->throttle_offset*33)>>12; //map 3.3V to 12 bit ADC resolution
@@ -120,6 +122,7 @@ void InitEEPROM(MotorParams_t* MP){
 	MP->ramp_end = RAMP_END;
 	MP->system_voltage = SYSTEM_VOLTAGE;
 	MP->max_voltage = MAX_VOLTAGE;
+	MP->decay_base =20;
 	for (k=0; k < 6; k++){
 		for (l=0; l < 7; l++){
 			MP->assist_profile[k][l]=(k+1)*20;
@@ -148,6 +151,6 @@ void InitEEPROM(MotorParams_t* MP){
 	}
 	MP->TQO_threshold[0]=3299;
 	PWM_offset=0;
-	Z_position=450;
+	Z_position=60;
 	write_virtual_eeprom();
 }
