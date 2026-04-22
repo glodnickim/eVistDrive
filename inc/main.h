@@ -120,7 +120,7 @@ typedef struct
 {
 
 	uint16_t       	wheel_cirumference;
-	uint16_t       	p_Iq;
+	uint16_t       	decay_base;
 	uint16_t       	Cadence_exponent;
 	uint16_t       	Override_Duration;
 	uint16_t       	MagicNumber;

@@ -97,6 +97,8 @@ uint8_t interpolate_assistfactor(void);
 int8_t calculate_SOC(uint16_t voltage, uint8_t cells_in_series);
 void print_debug_on_CAN(void);
 void Speed_processing(void);
+uint16_t map_rezi(int32_t actual_value, int32_t actual_time, int32_t timeout, int32_t decay_base);
+uint16_t update_setpoint(void);
 int16_t T_NTC(uint16_t ADC);
 float u32_to_deg=0.00000008381903171539;
 uint16_t slow_loop_counter=0;
@@ -152,7 +154,7 @@ int32_t Hall_26 = -966367405;
 int32_t Encoder_raw_angle = 0;
 int32_t PWM_offset_cumulated = 0;
 int32_t PWM_offset = 0;
-
+float 	helper=0;
 int32_t q31_PLL_error=0;
 int32_t q31_rotorposition_PLL=0;
 uint8_t ui_8_PLL_counter=0;
@@ -353,12 +355,12 @@ int main(void)
 
     }
 
-	float helper=((float)1.0/((float)1.0+(float)MP.Cadence_exponent));
+	helper=((float)1.0/((float)1.0+(float)MP.Cadence_exponent));
     //autodetect();
 
     while (1){
     	fwdgt_counter_reload();
-
+    	temp1++;
 #if (DISPLAY_TYPE == DISPLAY_TYPE_BAFANG)
     	if(receive_flag){
     		receive_flag = RESET;
@@ -373,21 +375,21 @@ int main(void)
     	if(PAS_flag)PAS_processing();
     	if(Speed_flag)Speed_processing();
     	if(reg_ADC_flag)reg_ADC_processing();
-    	if(PAS_counter>MP.PAS_timeout){
-    		if(!Overrun_flag){
-				Backwards_counter=0;
-				MS.cadence=0;
-				//MS.torque_on_crank=750;
-				MS.p_human=0;
-				uint16_cadence_filtered=0;
-				if(!MS.i_q_setpoint){
-					PI_iq.integral_part=0;
-					PI_id.integral_part=0;
-					}
-				if(torque_cumulated)torque_cumulated--;
-    		}
+//    	if(PAS_counter>MP.PAS_timeout){
+//    		if(!Overrun_flag){
+//				Backwards_counter=0;
+//				MS.cadence=0;
+//				//MS.torque_on_crank=750;
+//				MS.p_human=0;
+//				uint16_cadence_filtered=0;
+//				if(!MS.i_q_setpoint){
+//					PI_iq.integral_part=0;
+//					PI_id.integral_part=0;
+//					}
+//				if(torque_cumulated)torque_cumulated--;
+//    		}
 
-    	}
+//    	}
     	// switch lights
     	if(MS.light_flag&&!gpio_input_bit_get(GPIOB,GPIO_PIN_10))GPIO_BOP(GPIOB) = GPIO_PIN_10;
     	if(!MS.light_flag&&gpio_input_bit_get(GPIOB,GPIO_PIN_10)) GPIO_BC(GPIOB) = GPIO_PIN_10;
@@ -433,6 +435,8 @@ int main(void)
 //            	if((Overrun_strength-mapped_torque)>>3>0){
 //            		Overrun_strength-=(Overrun_strength-mapped_torque)>>3;
 //            	}
+            	temp2=temp1;
+            	temp1=0;
             	if(pollnumber>2)pollnumber=0;
             	sendCAN_Poll(&MP,&MS,Poll_commands[pollnumber]);
             	pollnumber++;
@@ -451,81 +455,8 @@ int main(void)
 				    GPIO_BC(GPIOB) = GPIO_PIN_5; // Display off
 				    GPIO_BC(GPIOB) = GPIO_PIN_6; // DC/DC off
 				}
-            }
-            //calculate iq setpoint
-            //check brake with first priority
-            if(MS.brake_active_flag||Backwards_counter>4)MS.i_q_setpoint_temp=0;
-            // check push assist active
-            else if(MS.pushassist_flag)MS.i_q_setpoint_temp=100;
-            //calculate setpoint, if brake is not activated
-            else{
-				mapped_throttle= map(adc_value[1], MP.throttle_offset, MP.throttle_max, 0, phase_current_max_scaled);
-				mapped_torque= map(MS.torque_on_crank, MP.TQO_threshold[level_to_array_element[MS.assist_level]], 3300, 0, phase_current_max_scaled);
-				MS.i_q_setpoint_temp=(uint32_t)((float) (MP.TS_coeff*powf((float)MS.cadence,helper))*(MS.torque_filtered)*0.0005*interpolate_assistfactor());//factor 0.0005 from various constants
+            }//end slow loop
 
-
-				//throttle override
-				if(mapped_throttle>MS.i_q_setpoint_temp)MS.i_q_setpoint_temp=mapped_throttle;
-				//torque override
-				if(mapped_torque>MS.i_q_setpoint_temp){
-					if(mapped_torque>Overrun_strength){
-						Overrun_strength=mapped_torque;
-						Overrun_counter = 0;
-					}
-					MS.i_q_setpoint_temp=mapped_torque;
-				}
-				if(MS.i_q_setpoint_temp>phase_current_max_scaled)MS.i_q_setpoint_temp = phase_current_max_scaled;
-				if(Overrun_counter<(MP.Override_Duration*MS.ext_boost_duration)/100){
-					MS.i_q_setpoint_temp=(Overrun_strength*MS.ext_boost_strength)/100;
-					if(MS.i_q_setpoint_temp>MP.phase_current_max)MS.i_q_setpoint_temp = MP.phase_current_max;
-					Overrun_flag=1;
-					PAS_counter=MP.PAS_timeout+1;
-				}
-				else {
-					Overrun_strength=0;
-					Overrun_flag=0;
-				}
-				//limit setpoint to the max value according to the current setting.
-
-            }// else brake not active
-
-            //low battery ramp down with 3V above battery min voltage
-            MS.i_q_setpoint_temp=map(voltage_raw_filtered, MP.voltage_min,(MP.voltage_min+176),0,MS.i_q_setpoint_temp);
-
-            //motor temperature ramp down between 110 and 130°C
-            MS.i_q_setpoint_temp=map(MS.int_Temperature,110,130,MS.i_q_setpoint_temp,0);
-            if(MP.legalflag&&!MS.offroadflag){
-
-				if((uint16_cadence_filtered>>3)>15){
-					MS.i_q_setpoint_temp=map(MS.Speedx100, speedlimitx100_scaled,(speedlimitx100_scaled+200),MS.i_q_setpoint_temp,0);
-				}
-				else{ //limit to 6km/h if pedals are not turning
-					MS.i_q_setpoint_temp=map(MS.Speedx100, 500,700,MS.i_q_setpoint_temp,0);
-				}
-
-			}//end legalflag
-			if(MS.hall_angle_detect_flag>1){ // part 2 of positions calibration
-				MS.i_q_setpoint_temp=200;
-				temp6-=temp6>>4;
-				temp6+=MS.u_d;
-				if (p>30){
-					p=0;
-					if ((MP.reverse*temp6>>4)>-40)Z_position++;
-					else if ((MP.reverse*temp6>>4)<-50)Z_position--;
-					else {
-						MS.i_q_setpoint_temp=0;
-						timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,_T>>1);
-						timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,_T>>1);
-						timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,_T>>1);
-						timer_primary_output_config(TIMER0,DISABLE); //Disable PWM if motor is not turning
-						write_virtual_eeprom();
-						MS.hall_angle_detect_flag=1;
-					}
-				}
-
-			}
-
-    		MS.i_q_setpoint=MS.i_q_setpoint_temp;
             if(MS.i_q_setpoint){
             	if(!ui_8_PWM_ON_Flag){
 					timer_primary_output_config(TIMER0,ENABLE);
@@ -543,14 +474,7 @@ int main(void)
 					i8_recent_rotor_direction=0;
 
             	}
-            	 //Disable PWM if motor is not turning
-//    			if(TIMER_CCHP(TIMER0)&(uint32_t)TIMER_CCHP_POEN){
-//    				timer_primary_output_config(TIMER0,DISABLE);
-//    				PI_id.integral_part=0;
-//    				PI_iq.integral_part=0;
-//
-//    			}
-            }
+            }//end half rotation counter
 
 
     }
@@ -660,23 +584,16 @@ void gpio_config(void)
     //PB5: switch for BatteryPlus display supply
     //delay_1ms(500);
     gpio_init(GPIOB, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_10);
-    //GPIO_BC(GPIOB) = GPIO_PIN_4; //reset Pin4 from Bootloader
 
+    GPIO_BOP(GPIOB) = GPIO_PIN_6; //DC/DC on
     delay_1ms(50);
     GPIO_BOP(GPIOB) = GPIO_PIN_5; // Display on
     delay_1ms(50);
-    //GPIO_BOP(GPIOB) = GPIO_PIN_6; //DC/DC on
+    GPIO_BOP(GPIOB) = GPIO_PIN_4; //reset Pin4 from Bootloader
+    delay_1ms(50);
 	GPIO_BOP(GPIOB) = GPIO_PIN_3; //12V on
-// PB3 and PB10 have to be high to get 12V on the brake line.
-//    gpio_init(GPIOB, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_2|GPIO_PIN_7|GPIO_PIN_1|GPIO_PIN_10|GPIO_PIN_11);
-//    GPIO_BOP(GPIOB) = GPIO_PIN_1;
-//    GPIO_BOP(GPIOB) = GPIO_PIN_2;
-    
-//    GPIO_BOP(GPIOB) = GPIO_PIN_7;
-    //GPIO_BOP(GPIOB) = GPIO_PIN_10;
-    //GPIO_BC(GPIOB) = GPIO_PIN_11;
-
-
+	delay_1ms(200);
+	GPIO_BC(GPIOB) = GPIO_PIN_6; //reset Pin6 for releasing on/off button
 
     //PA15 Dual PAS input pin (green wire)
     gpio_init(GPIOA, GPIO_MODE_IPU, GPIO_OSPEED_50MHZ, GPIO_PIN_15);
@@ -1272,8 +1189,9 @@ void reg_ADC_processing(void)
 	voltage_raw_filtered=voltage_raw_cumulated>>6;
 
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
-	MS.calories=MS.int_Temperature;
+	MS.calories=temp2;
 	MS.torque_on_crank=(adc_value[2]*3300)>>12; //map ADC value to mV
+	if(MS.torque_on_crank>750)PAS_counter=0;//reset
 	MS.range=Overrun_flag*100;//on/off button line
     slow_loop_counter ++;
     if(PAS_counter<64000)PAS_counter++;
@@ -1282,7 +1200,18 @@ void reg_ADC_processing(void)
     if(offroadcounter<64000)offroadcounter++;
     if(ui16_erps_counter<64000)ui16_erps_counter++;
     if(Overrun_counter<64000)Overrun_counter++;
+    MS.i_q_setpoint = update_setpoint();
+    if (!MS.i_q_setpoint){
+		Backwards_counter=0;
+		MS.cadence=0;
+		MS.p_human=0;
+		uint16_cadence_filtered=0;
+		PI_iq.integral_part=0;
+		PI_id.integral_part=0;
 
+		if(torque_cumulated)torque_cumulated--;
+
+    }
 
 	reg_ADC_flag=0;
 }
@@ -1791,6 +1720,91 @@ void read_virtual_eeprom(void)
 
      memcpy(&MP,(uint32_t *)(FMC_WRITE_START_ADDR+FMC_OFFSET_MP),sizeof(MP));
 	}
+
+uint16_t map_rezi(int32_t actual_value, int32_t actual_time, int32_t timeout, int32_t decay_base){
+    if(actual_time<timeout)return actual_value;
+    else if(actual_time<3000) return (actual_value<<decay_base)/((1<<decay_base)+(actual_time-timeout));
+    else return 0;
+}
+
+uint16_t update_setpoint(void){
+
+				//calculate iq setpoint
+	            //check brake with first priority
+	            if(MS.brake_active_flag||Backwards_counter>4)MS.i_q_setpoint_temp=0;
+	            // check push assist active
+	            else if(MS.pushassist_flag)MS.i_q_setpoint_temp=100;
+	            //calculate setpoint, if brake is not activated
+	            else{
+					mapped_throttle= map(adc_value[1], MP.throttle_offset, MP.throttle_max, 0, phase_current_max_scaled);
+					mapped_torque= map(MS.torque_on_crank, MP.TQO_threshold[level_to_array_element[MS.assist_level]], 3300, 0, phase_current_max_scaled);
+					MS.i_q_setpoint_temp=(uint32_t)((float) (MP.TS_coeff*powf((float)MS.cadence,helper))*(MS.torque_filtered)*0.0005*interpolate_assistfactor());//factor 0.0005 from various constants
+					MS.i_q_setpoint_temp=map_rezi(MS.i_q_setpoint_temp, PAS_counter, MP.PAS_timeout, MP.decay_base);
+
+					//throttle override
+					if(mapped_throttle>MS.i_q_setpoint_temp)MS.i_q_setpoint_temp=mapped_throttle;
+					//torque override
+					if(mapped_torque>MS.i_q_setpoint_temp){
+						if(mapped_torque>Overrun_strength){
+							Overrun_strength=mapped_torque;
+							Overrun_counter = 0;
+						}
+						MS.i_q_setpoint_temp=mapped_torque;
+					}
+					if(MS.i_q_setpoint_temp>phase_current_max_scaled)MS.i_q_setpoint_temp = phase_current_max_scaled;
+					if(Overrun_counter<(MP.Override_Duration*MS.ext_boost_duration)/100){
+						MS.i_q_setpoint_temp=(Overrun_strength*MS.ext_boost_strength)/100;
+						if(MS.i_q_setpoint_temp>MP.phase_current_max)MS.i_q_setpoint_temp = MP.phase_current_max;
+						Overrun_flag=1;
+						PAS_counter=MP.PAS_timeout+1;
+					}
+					else {
+						Overrun_strength=0;
+						Overrun_flag=0;
+					}
+					//limit setpoint to the max value according to the current setting.
+
+	            }// else brake not active
+
+	            //low battery ramp down with 3V above battery min voltage
+	            MS.i_q_setpoint_temp=map(voltage_raw_filtered, MP.voltage_min,(MP.voltage_min+176),0,MS.i_q_setpoint_temp);
+
+	            //motor temperature ramp down between 110 and 130°C
+	            MS.i_q_setpoint_temp=map(MS.int_Temperature,110,130,MS.i_q_setpoint_temp,0);
+	            if(MP.legalflag&&!MS.offroadflag){
+
+					if((uint16_cadence_filtered>>3)>15){
+						MS.i_q_setpoint_temp=map(MS.Speedx100, speedlimitx100_scaled,(speedlimitx100_scaled+200),MS.i_q_setpoint_temp,0);
+					}
+					else{ //limit to 6km/h if pedals are not turning
+						MS.i_q_setpoint_temp=map(MS.Speedx100, 500,700,MS.i_q_setpoint_temp,0);
+					}
+
+				}//end legalflag
+				if(MS.hall_angle_detect_flag>1){ // part 2 of positions calibration
+					MS.i_q_setpoint_temp=200;
+					temp6-=temp6>>4;
+					temp6+=MS.u_d;
+					if (p>30){
+						p=0;
+						if ((MP.reverse*temp6>>4)>-40)Z_position++;
+						else if ((MP.reverse*temp6>>4)<-50)Z_position--;
+						else {
+							MS.i_q_setpoint_temp=0;
+							timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,_T>>1);
+							timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,_T>>1);
+							timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,_T>>1);
+							timer_primary_output_config(TIMER0,DISABLE); //Disable PWM if motor is not turning
+							write_virtual_eeprom();
+							MS.hall_angle_detect_flag=1;
+						}
+					}
+
+				}
+
+	    		return MS.i_q_setpoint_temp;
+
+}
 
 
 #ifdef GD_ECLIPSE_GCC
