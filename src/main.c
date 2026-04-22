@@ -1726,7 +1726,7 @@ void read_virtual_eeprom(void)
 
 uint16_t map_rezi(int32_t actual_value, int32_t actual_time, int32_t timeout, int32_t decay_base){
     if(actual_time<timeout)return actual_value;
-    else if(actual_time<3000) return (uint16_t)((float)actual_value/((1+(float)decay_base/1000*(float)(actual_time-timeout))));
+    else if(actual_time<3000) return (uint16_t)((float)actual_value/((1+(float)decay_base/10000*(float)(actual_time-timeout))));
     else return 0;
 }
 
