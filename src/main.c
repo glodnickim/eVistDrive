@@ -125,7 +125,7 @@ uint8_t ui8_overflow_flag=0;
 uint8_t ui8_SPEED_control_flag=0;
 uint32_t voltage_raw_cumulated=0;
 uint16_t voltage_raw_filtered=0;
-
+int32_t torque_offset_correction=0;
 int32_t q31_rotorposition_hall=0;
 q31_t q31_rotorposition_absolute=0;
 int8_t i8_recent_rotor_direction=0;
@@ -352,9 +352,20 @@ int main(void)
     read_virtual_eeprom();
     parse_MOparams(&MP);
 
-    while((adc_value[1])>3000){
+    for (int i = 0; i < 255; i++) {//let the ADC stabilize
+    	while(!reg_ADC_flag);
+    	reg_ADC_flag=0;
+    }
+
+    for (int i = 0; i < 64; i++) {// get torquesensor offset
+    	torque_offset_correction+=adc_value[2];
+    	while(!reg_ADC_flag);
+    	reg_ADC_flag=0;
 
     }
+    torque_offset_correction=(torque_offset_correction>>6);
+    torque_offset_correction=740-((torque_offset_correction*3300)>>12);
+    while((adc_value[1])>3000);//safety for bricked throttle
 
 	helper=((float)1.0/((float)1.0+(float)MP.Cadence_exponent));
     //autodetect();
@@ -1192,9 +1203,9 @@ void reg_ADC_processing(void)
 	voltage_raw_filtered=voltage_raw_cumulated>>6;
 
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
-	MS.calories=MP.decay_base;
-	MS.torque_on_crank=(adc_value[2]*3300)>>12; //map ADC value to mV
-	if(MS.torque_on_crank>750)PAS_counter=0;//reset
+	MS.calories=MS.i_q_setpoint;
+	MS.torque_on_crank=(((adc_value[2])*3300)>>12)+torque_offset_correction; //map ADC value to mV
+	if(MS.torque_on_crank>760)PAS_counter=0;//reset
 	MS.range=Overrun_flag*100;//on/off button line
     slow_loop_counter ++;
     if(PAS_counter<64000)PAS_counter++;
