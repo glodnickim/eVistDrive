@@ -103,6 +103,7 @@ int16_t T_NTC(uint16_t ADC);
 float u32_to_deg=0.00000008381903171539;
 uint16_t slow_loop_counter=0;
 uint16_t PAS_counter=0;
+uint16_t torque_counter=0;
 uint16_t Speed_counter=0;
 int32_t ButtonVoltageCumulated=620<<6;
 #define iabs(x) (((x) >= 0)?(x):-(x))
@@ -1181,6 +1182,8 @@ void PAS_processing(void)
 	MS.torque_filtered=(torque_cumulated>>MS.TQfilter);
 	MS.p_human=(uint16_t)((float)(MS.cadence*MS.torque_filtered)*0.00342); //in Watt
 
+	PAS_counter=0;
+
 }
 
 void Speed_processing(void)
@@ -1205,9 +1208,10 @@ void reg_ADC_processing(void)
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
 	MS.calories=MS.i_q_setpoint;
 	MS.torque_on_crank=(((adc_value[2])*3300)>>12)+torque_offset_correction; //map ADC value to mV
-	if(MS.torque_on_crank>760)PAS_counter=0;//reset
+	if(MS.torque_on_crank>760)torque_counter=0;//reset
 	MS.range=Overrun_flag*100;//on/off button line
     slow_loop_counter ++;
+    if(torque_counter<64000)torque_counter++;
     if(PAS_counter<64000)PAS_counter++;
     if(Speed_counter<64000)Speed_counter++;
     if(uint16_half_rotation_counter<64000)uint16_half_rotation_counter++;
@@ -1215,7 +1219,7 @@ void reg_ADC_processing(void)
     if(ui16_erps_counter<64000)ui16_erps_counter++;
     if(Overrun_counter<64000)Overrun_counter++;
     MS.i_q_setpoint = update_setpoint();
-    if (PAS_counter>4000&&!Overrun_flag){ //reset after one second without torque on the pedal
+    if (torque_counter>4000&&!Overrun_flag){ //reset after one second without torque on the pedal
 		Backwards_counter=0;
 		MS.cadence=0;
 		MS.p_human=0;
@@ -1531,8 +1535,8 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_ft = CAN_FT_DATA;
 	transmit_message.tx_ff = CAN_FF_EXTENDED;
 	transmit_message.tx_dlen = 8;
-	transmit_message.tx_data[0] = (MS.Battery_Current>>8)&0xFF;//(GPIO_ISTAT(GPIOC)>>6)&0x07;
-	transmit_message.tx_data[1] = (MS.Battery_Current)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
+	transmit_message.tx_data[0] = (MS.cadence>>8)&0xFF;//(GPIO_ISTAT(GPIOC)>>6)&0x07;
+	transmit_message.tx_data[1] = (MS.cadence)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
 	transmit_message.tx_data[2] = (MS.torque_on_crank>>8)&0xFF;;
 	transmit_message.tx_data[3] = (MS.torque_on_crank)&0xFF;
 	transmit_message.tx_data[4] = (iabs(MS.i_q_setpoint)>>8)&0xFF;//
@@ -1753,7 +1757,7 @@ uint16_t update_setpoint(void){
 					mapped_throttle= map(adc_value[1], MP.throttle_offset, MP.throttle_max, 0, phase_current_max_scaled);
 					mapped_torque= map(MS.torque_on_crank, MP.TQO_threshold[level_to_array_element[MS.assist_level]], 3300, 0, phase_current_max_scaled);
 					MS.i_q_setpoint_temp=(uint32_t)((float) (MP.TS_coeff*powf((float)MS.cadence,helper))*(MS.torque_filtered)*0.0005*interpolate_assistfactor());//factor 0.0005 from various constants
-					MS.i_q_setpoint_temp=map_rezi(MS.i_q_setpoint_temp, PAS_counter, MP.PAS_timeout, MP.decay_base);
+					MS.i_q_setpoint_temp=map_rezi(MS.i_q_setpoint_temp, torque_counter, MP.PAS_timeout, MP.decay_base);
 
 					//throttle override
 					if(mapped_throttle>MS.i_q_setpoint_temp)MS.i_q_setpoint_temp=mapped_throttle;
@@ -1770,7 +1774,7 @@ uint16_t update_setpoint(void){
 						MS.i_q_setpoint_temp=(Overrun_strength*MS.ext_boost_strength)/100;
 						if(MS.i_q_setpoint_temp>MP.phase_current_max)MS.i_q_setpoint_temp = MP.phase_current_max;
 						Overrun_flag=1;
-						PAS_counter=MP.PAS_timeout+1;
+						torque_counter=MP.PAS_timeout+1;
 					}
 					else {
 						Overrun_strength=0;
