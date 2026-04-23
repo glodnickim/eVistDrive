@@ -1204,7 +1204,7 @@ void reg_ADC_processing(void)
     if(ui16_erps_counter<64000)ui16_erps_counter++;
     if(Overrun_counter<64000)Overrun_counter++;
     MS.i_q_setpoint = update_setpoint();
-    if (PAS_counter>4000){ //reset after one second without torque on the pedal
+    if (PAS_counter>4000&&!Overrun_flag){ //reset after one second without torque on the pedal
 		Backwards_counter=0;
 		MS.cadence=0;
 		MS.p_human=0;
