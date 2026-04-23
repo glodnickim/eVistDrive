@@ -1204,16 +1204,16 @@ void reg_ADC_processing(void)
     if(ui16_erps_counter<64000)ui16_erps_counter++;
     if(Overrun_counter<64000)Overrun_counter++;
     MS.i_q_setpoint = update_setpoint();
-    if (PAS_counter>MP.PAS_timeout){
+    if (PAS_counter>4000){ //reset after one second without torque on the pedal
 		Backwards_counter=0;
 		MS.cadence=0;
 		MS.p_human=0;
 		uint16_cadence_filtered=0;
-		PI_iq.integral_part=0;
-		PI_id.integral_part=0;
-
-		if(torque_cumulated)torque_cumulated--;
-
+		torque_cumulated=0;
+		if (!MS.i_q_setpoint){//reset integral part, if no power from throttle signal is wanted
+			PI_iq.integral_part=0;
+			PI_id.integral_part=0;
+		}
     }
 
 	reg_ADC_flag=0;
@@ -1726,7 +1726,7 @@ void read_virtual_eeprom(void)
 
 uint16_t map_rezi(int32_t actual_value, int32_t actual_time, int32_t timeout, int32_t decay_base){
     if(actual_time<timeout)return actual_value;
-    else if(actual_time<3000) return (uint16_t)((float)actual_value/((1+(float)decay_base/10000*(float)(actual_time-timeout))));
+    else if(actual_time<4000) return (uint16_t)((float)actual_value/((1+(float)(actual_value*decay_base)/500000*(float)(actual_time-timeout))));
     else return 0;
 }
 
