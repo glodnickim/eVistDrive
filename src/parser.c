@@ -64,7 +64,7 @@ void parse_MOparams(MotorParams_t* MP){
 	Para1[2] = MP->max_voltage;
 	Para1[3] = (MP->voltage_min*CAL_BAT_V)&0xFF;
 	Para1[4] = ((MP->voltage_min*CAL_BAT_V)>>8)&0xFF;
-	Para1[9]= (MP->phase_current_max*CAL_I/1000)+1;
+	Para1[9]= (MP->phase_current_max*CAL_I/1000);
 	Para1[12]= MP->Cadence_exponent;
 	Para1[14]= MP->legalflag;
 	if (MP->reverse==-1)Para1[18]=0;
