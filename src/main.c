@@ -1160,30 +1160,30 @@ void EXTI2_IRQHandler(void)
 
 void PAS_processing(void)
 {
+	if(PAS_counter>70){
+		MS.cadence=10000/PAS_counter;//24 Pulses per crank revolution, 4000 Hz Timer interrupt frequency (for M560 about 48 pulses on speed/direction pin)(4000*60/24)=10000
+		uint16_cadence_filtered-=uint16_cadence_filtered>>3;
+		uint16_cadence_filtered+=MS.cadence;
 
-	MS.cadence=10000/PAS_counter;//24 Pulses per crank revolution, 4000 Hz Timer interrupt frequency (for M560 about 48 pulses on speed/direction pin)(4000*60/24)=10000
-	uint16_cadence_filtered-=uint16_cadence_filtered>>3;
-	uint16_cadence_filtered+=MS.cadence;
 
+		PAS_flag = 0;
+		if(gpio_input_bit_get(GPIOC,GPIO_PIN_10)){
+			if(Backwards_counter)Backwards_counter--;
+			//PAS_counter=0;
+		}
+		else{
+			if(Backwards_counter<10)Backwards_counter++;
+		}
+		torque_cumulated-=torque_cumulated>>MS.TQfilter;
+		if(MS.torque_on_crank>750){
+			torque_cumulated+=(MS.torque_on_crank-750);
+		}
+		//Power=2*Pi*speed*torque, calibration factors: rpm to 1/s for cadence: /60, mV to Nm: 750 to 3200 --> 0 to 80 Nm. (from Bafang data sheet)
+		MS.torque_filtered=(torque_cumulated>>MS.TQfilter);
+		MS.p_human=(uint16_t)((float)(MS.cadence*MS.torque_filtered)*0.00342); //in Watt
 
-	PAS_flag = 0;
-	if(gpio_input_bit_get(GPIOC,GPIO_PIN_10)){
-		if(Backwards_counter)Backwards_counter--;
-		//PAS_counter=0;
+		PAS_counter=0;
 	}
-	else{
-		if(Backwards_counter<10)Backwards_counter++;
-	}
-	torque_cumulated-=torque_cumulated>>MS.TQfilter;
-	if(MS.torque_on_crank>750){
-		torque_cumulated+=(MS.torque_on_crank-750);
-	}
-	//Power=2*Pi*speed*torque, calibration factors: rpm to 1/s for cadence: /60, mV to Nm: 750 to 3200 --> 0 to 80 Nm. (from Bafang data sheet)
-	MS.torque_filtered=(torque_cumulated>>MS.TQfilter);
-	MS.p_human=(uint16_t)((float)(MS.cadence*MS.torque_filtered)*0.00342); //in Watt
-
-	PAS_counter=0;
-
 }
 
 void Speed_processing(void)
@@ -1208,7 +1208,7 @@ void reg_ADC_processing(void)
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
 	MS.calories=MS.i_q_setpoint;
 	MS.torque_on_crank=(((adc_value[2])*3300)>>12)+torque_offset_correction; //map ADC value to mV
-	if(MS.torque_on_crank>760)torque_counter=0;//reset
+	if(MS.torque_on_crank>760&&PAS_counter<MP.PAS_timeout)torque_counter=0;//reset counter, if pressure on pedal and pedals rotating
 	MS.range=Overrun_flag*100;//on/off button line
     slow_loop_counter ++;
     if(torque_counter<64000)torque_counter++;
