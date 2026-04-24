@@ -64,7 +64,7 @@ void parse_MOparams(MotorParams_t* MP){
 	Para1[2] = MP->max_voltage;
 	Para1[3] = (MP->voltage_min*CAL_BAT_V)&0xFF;
 	Para1[4] = ((MP->voltage_min*CAL_BAT_V)>>8)&0xFF;
-	Para1[9]= MP->phase_current_max*CAL_I/1000;
+	Para1[9]= (MP->phase_current_max*CAL_I/1000)+1;
 	Para1[12]= MP->Cadence_exponent;
 	Para1[14]= MP->legalflag;
 	if (MP->reverse==-1)Para1[18]=0;
@@ -74,8 +74,8 @@ void parse_MOparams(MotorParams_t* MP){
 	Para1[21]= MP->decay_base;
 	Para1[24]= (MP->MagicNumber)&0xFF;
 	Para1[25]= ((MP->MagicNumber)>>8)&0xFF;
-	Para1[34]= (MP->throttle_offset*33)>>12; //map 3.3V to 12 bit ADC resolution
-	Para1[35]= (MP->throttle_max*33)>>12; //map 3.3V to 12 bit ADC resolution
+	Para1[34]= ((MP->throttle_offset*33)>>12)+1; //map 3.3V to 12 bit ADC resolution
+	Para1[35]= ((MP->throttle_max*33)>>12)+1; //map 3.3V to 12 bit ADC resolution
 	Para1[37]= MP->Override_Duration/40;// used for override duration
 	Para1[38]= MP->PAS_timeout*10/4000; //in Zehntelsekunden, use field Current Loading Time (Ramp Up)
 	Para1[39]= 11250/MP->ramp_end; //use field Current Shedding Time (Ramp Down), calculate threshold cadence from timer tics
