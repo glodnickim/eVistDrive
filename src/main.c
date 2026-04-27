@@ -1749,27 +1749,35 @@ uint16_t update_setpoint(void){
 
 				//calculate iq setpoint
 	            //check brake with first priority
-	            if(MS.brake_active_flag||Backwards_counter>4)MS.i_q_setpoint_temp=0;
+	            if(MS.brake_active_flag)MS.i_q_setpoint_temp=0;
 	            // check push assist active
 	            else if(MS.pushassist_flag)MS.i_q_setpoint_temp=100;
 	            //calculate setpoint, if brake is not activated
 	            else{
 					mapped_throttle= map(adc_value[1], MP.throttle_offset, MP.throttle_max, 0, phase_current_max_scaled);
 					mapped_torque= map(MS.torque_on_crank, MP.TQO_threshold[level_to_array_element[MS.assist_level]], 3300, 0, phase_current_max_scaled);
-					MS.i_q_setpoint_temp=(uint32_t)((float) (MP.TS_coeff*powf((float)MS.cadence,helper))*(MS.torque_filtered)*0.0005*interpolate_assistfactor());//factor 0.0005 from various constants
-					MS.i_q_setpoint_temp=map_rezi(MS.i_q_setpoint_temp, torque_counter, MP.PAS_timeout, MP.decay_base);
 
-					//throttle override
-					if(mapped_throttle>MS.i_q_setpoint_temp)MS.i_q_setpoint_temp=mapped_throttle;
-					//torque override
-					if(mapped_torque>MS.i_q_setpoint_temp){
-						if(mapped_torque>Overrun_strength){
-							Overrun_strength=mapped_torque;
-							Overrun_counter = 0;
+					if(Backwards_counter<4){//normal ride mode, motor power only if pedals are not turned backwards
+						MS.i_q_setpoint_temp=(uint32_t)((float) (MP.TS_coeff*powf((float)MS.cadence,helper))*(MS.torque_filtered)*0.0005*interpolate_assistfactor());//factor 0.0005 from various constants
+						//limit setpoint to the max value according to the current setting.
+						if(MS.i_q_setpoint_temp>phase_current_max_scaled)MS.i_q_setpoint_temp = phase_current_max_scaled;
+						MS.i_q_setpoint_temp=map_rezi(MS.i_q_setpoint_temp, torque_counter, MP.PAS_timeout, MP.decay_base);
+
+
+						//torque override
+						if(mapped_torque>MS.i_q_setpoint_temp){
+							if(mapped_torque>Overrun_strength){
+								Overrun_strength=mapped_torque;
+								Overrun_counter = 0;
+							}
+							MS.i_q_setpoint_temp=mapped_torque;
 						}
-						MS.i_q_setpoint_temp=mapped_torque;
 					}
-					if(MS.i_q_setpoint_temp>phase_current_max_scaled)MS.i_q_setpoint_temp = phase_current_max_scaled;
+					else MS.i_q_setpoint_temp=0; //cut motor power on pedaling backwards
+						//throttle override
+					if(mapped_throttle>MS.i_q_setpoint_temp)MS.i_q_setpoint_temp=mapped_throttle;
+
+					//apply Extended Boost
 					if(Overrun_counter<(MP.Override_Duration*MS.ext_boost_duration)/100){
 						MS.i_q_setpoint_temp=(Overrun_strength*MS.ext_boost_strength)/100;
 						if(MS.i_q_setpoint_temp>MP.phase_current_max)MS.i_q_setpoint_temp = MP.phase_current_max;
@@ -1780,7 +1788,7 @@ uint16_t update_setpoint(void){
 						Overrun_strength=0;
 						Overrun_flag=0;
 					}
-					//limit setpoint to the max value according to the current setting.
+
 
 	            }// else brake not active
 
