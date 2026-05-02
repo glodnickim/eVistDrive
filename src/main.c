@@ -373,7 +373,7 @@ int main(void)
 
     while (1){
     	fwdgt_counter_reload();
-    	temp1++;
+
 #if (DISPLAY_TYPE == DISPLAY_TYPE_BAFANG)
     	if(receive_flag){
     		receive_flag = RESET;
@@ -596,20 +596,26 @@ void gpio_config(void)
     //gpio_init(GPIOB, GPIO_MODE_OUT_OD, GPIO_OSPEED_50MHZ, GPIO_PIN_0);
     //PB6: switch for DC/DC
     //PB5: switch for BatteryPlus display supply
-    //delay_1ms(500);
-    gpio_init(GPIOB, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_10);
+	//delay_1ms(100);
+	gpio_init(GPIOC, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ,GPIO_PIN_9);
+	GPIO_BOP(GPIOC) = GPIO_PIN_9;
+    //delay_1ms(100);
+    gpio_init(GPIOB, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_10|GPIO_PIN_12);
 
-    GPIO_BOP(GPIOB) = GPIO_PIN_6; //DC/DC on
-    delay_1ms(50);
+	//delay_1ms(200);
+    //GPIO_BOP(GPIOB) = GPIO_PIN_4; //set Pin4 (set by Bootloader on BL38)
+    //delay_1ms(200);
+    GPIO_BOP(GPIOB) = GPIO_PIN_3; //12V on
+    //delay_1ms(200);
     GPIO_BOP(GPIOB) = GPIO_PIN_5; // Display on
-    delay_1ms(50);
-    GPIO_BOP(GPIOB) = GPIO_PIN_4; //reset Pin4 from Bootloader
-    delay_1ms(50);
-	GPIO_BOP(GPIOB) = GPIO_PIN_3; //12V on
-	delay_1ms(200);
-#if (BOOTLOADER!= 0)
-	GPIO_BC(GPIOB) = GPIO_PIN_6; //reset Pin6 for releasing on/off button
-#endif
+    //delay_1ms(200);
+	//GPIO_BOP(GPIOB) = GPIO_PIN_6; //DC/DC on
+//#if (BOOTLOADER!= 0)
+//	GPIO_BC(GPIOB) = GPIO_PIN_6; //reset Pin6 for releasing on/off button
+//#endif
+	//delay_1ms(200);
+	gpio_init(GPIOD, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ,GPIO_PIN_2);
+	GPIO_BOP(GPIOD) = GPIO_PIN_2;
     //PA15 Dual PAS input pin (green wire)
     gpio_init(GPIOA, GPIO_MODE_IPU, GPIO_OSPEED_50MHZ, GPIO_PIN_15);
     //PC0 light short circuit detectionß1
@@ -636,6 +642,7 @@ void gpio_config(void)
     gpio_init(GPIOB,GPIO_MODE_AF_PP,GPIO_OSPEED_50MHZ,GPIO_PIN_13);
     gpio_init(GPIOB,GPIO_MODE_AF_PP,GPIO_OSPEED_50MHZ,GPIO_PIN_14);
     gpio_init(GPIOB,GPIO_MODE_AF_PP,GPIO_OSPEED_50MHZ,GPIO_PIN_15);
+
 }
 /*!
     \brief      configure the DMA peripheral
@@ -1204,7 +1211,7 @@ void reg_ADC_processing(void)
 	voltage_raw_cumulated-=voltage_raw_cumulated>>6;
 	voltage_raw_cumulated+=adc_value[3];
 	voltage_raw_filtered=voltage_raw_cumulated>>6;
-
+	temp1++;
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
 	MS.calories=MS.i_q_setpoint;
 	MS.torque_on_crank=(((adc_value[2])*3300)>>12)+torque_offset_correction; //map ADC value to mV
