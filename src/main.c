@@ -162,6 +162,7 @@ uint8_t ui_8_PLL_counter=0;
 uint8_t shutoffcounter=0;
 uint16_t offroadcode=0;
 uint16_t offroadcounter=0;
+uint16_t pulse_counter=0;
 uint8_t ui_8_PWM_ON_Flag=0;
 int32_t q31_angle_per_tic=0;
 //Rotor angle scaled from degree to q31 for arm_math. -180Ã‚Â°-->-2^31, 0Ã‚Â°-->0, +180Ã‚Â°-->+2^31
@@ -597,15 +598,15 @@ void gpio_config(void)
     //PB6: switch for DC/DC
     //PB5: switch for BatteryPlus display supply
 	//delay_1ms(100);
-	gpio_init(GPIOC, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ,GPIO_PIN_9);
-	GPIO_BOP(GPIOC) = GPIO_PIN_9;
+//	gpio_init(GPIOC, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ,GPIO_PIN_9);
+//	GPIO_BOP(GPIOC) = GPIO_PIN_9;
     //delay_1ms(100);
-    gpio_init(GPIOB, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_10|GPIO_PIN_12);
+    gpio_init(GPIOB, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_8|GPIO_PIN_12);
 
 	//delay_1ms(200);
-    //GPIO_BOP(GPIOB) = GPIO_PIN_4; //set Pin4 (set by Bootloader on BL38)
+    GPIO_BOP(GPIOB) = GPIO_PIN_4; //set Pin4 (set by Bootloader on BL38)
     //delay_1ms(200);
-    GPIO_BOP(GPIOB) = GPIO_PIN_3; //12V on
+    //GPIO_BOP(GPIOB) = GPIO_PIN_3; //12V on
     //delay_1ms(200);
     GPIO_BOP(GPIOB) = GPIO_PIN_5; // Display on
     //delay_1ms(200);
@@ -1094,6 +1095,10 @@ void TIMER1_IRQHandler(void) // regular ADC processing and common slow timing ta
         timer_interrupt_flag_clear(TIMER1,TIMER_INT_FLAG_UP);
 
         reg_ADC_flag=1;
+        pulse_counter++;
+        if(pulse_counter>1000)gpio_bit_set(GPIOB,GPIO_PIN_8);
+        else gpio_bit_reset(GPIOB,GPIO_PIN_8);
+        if(pulse_counter>1020)pulse_counter=0;
     }
 }
 
