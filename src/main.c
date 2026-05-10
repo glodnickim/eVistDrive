@@ -584,6 +584,9 @@ void gpio_config(void)
     rcu_periph_clock_enable(RCU_GPIOB);
     rcu_periph_clock_enable(RCU_GPIOC);
     rcu_periph_clock_enable(RCU_GPIOD);
+
+    rcu_periph_clock_enable(RCU_AF);
+    gpio_pin_remap_config(GPIO_SWJ_SWDPENABLE_REMAP, ENABLE);
     /* configure CAN0 GPIO, CAN0_TX(PA12) and CAN0_RX(PA11) */
     gpio_init(GPIOA, GPIO_MODE_AF_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_12);
     gpio_init(GPIOA, GPIO_MODE_IPU, GPIO_OSPEED_50MHZ, GPIO_PIN_11);
@@ -601,22 +604,17 @@ void gpio_config(void)
 //	gpio_init(GPIOC, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ,GPIO_PIN_9);
 //	GPIO_BOP(GPIOC) = GPIO_PIN_9;
     //delay_1ms(100);
-    gpio_init(GPIOB, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_8|GPIO_PIN_12);
+    gpio_init(GPIOB, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_12);
 
 	//delay_1ms(200);
     GPIO_BOP(GPIOB) = GPIO_PIN_4; //set Pin4 (set by Bootloader on BL38)
     //delay_1ms(200);
-    //GPIO_BOP(GPIOB) = GPIO_PIN_3; //12V on
+    GPIO_BOP(GPIOB) = GPIO_PIN_3; //12V on
     //delay_1ms(200);
     GPIO_BOP(GPIOB) = GPIO_PIN_5; // Display on
     //delay_1ms(200);
 	//GPIO_BOP(GPIOB) = GPIO_PIN_6; //DC/DC on
-//#if (BOOTLOADER!= 0)
-//	GPIO_BC(GPIOB) = GPIO_PIN_6; //reset Pin6 for releasing on/off button
-//#endif
-	//delay_1ms(200);
-	gpio_init(GPIOD, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ,GPIO_PIN_2);
-	GPIO_BOP(GPIOD) = GPIO_PIN_2;
+
     //PA15 Dual PAS input pin (green wire)
     gpio_init(GPIOA, GPIO_MODE_IPU, GPIO_OSPEED_50MHZ, GPIO_PIN_15);
     //PC0 light short circuit detectionß1
@@ -1095,10 +1093,10 @@ void TIMER1_IRQHandler(void) // regular ADC processing and common slow timing ta
         timer_interrupt_flag_clear(TIMER1,TIMER_INT_FLAG_UP);
 
         reg_ADC_flag=1;
-        pulse_counter++;
-        if(pulse_counter>1000)gpio_bit_set(GPIOB,GPIO_PIN_8);
-        else gpio_bit_reset(GPIOB,GPIO_PIN_8);
-        if(pulse_counter>1020)pulse_counter=0;
+//        pulse_counter++;
+//        if(pulse_counter>1000)gpio_bit_set(GPIOB,GPIO_PIN_8);
+//        else gpio_bit_reset(GPIOB,GPIO_PIN_8);
+//        if(pulse_counter>1020)pulse_counter=0;
     }
 }
 
