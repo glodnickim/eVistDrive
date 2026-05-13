@@ -22,7 +22,7 @@
 #define DYNAMIC_ADC_THRESHOLD 3750 //to be tested
 #define CAL_BAT_V 17
 #define CAL_BAT_I 28.0
-#define CAL_BAT_I_OFFSET 1360
+#define CAL_BAT_I_OFFSET 2025
 #define CAL_V 15LL<<8
 #define CAL_I 70 //Zurückgerechnet aus Batteriestrom = Tastverhältnis * Motorstrom
 #define BOOTLOADER 0

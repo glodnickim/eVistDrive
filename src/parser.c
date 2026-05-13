@@ -150,7 +150,6 @@ void InitEEPROM(MotorParams_t* MP){
 		MP->TQO_threshold[k+1]=3299;
 	}
 	MP->TQO_threshold[0]=3299;
-	PWM_offset=0;
-	Z_position=60;
+
 	write_virtual_eeprom();
 }
