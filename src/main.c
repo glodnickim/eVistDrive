@@ -597,14 +597,6 @@ void gpio_config(void)
     gpio_init(GPIOC, GPIO_MODE_AIN, GPIO_OSPEED_MAX, GPIO_PIN_3|GPIO_PIN_4); //Battery Voltage
     gpio_init(GPIOB, GPIO_MODE_AIN, GPIO_OSPEED_MAX, GPIO_PIN_0); // Motor Temp
 
-    //gpio_init(GPIOA, GPIO_MODE_AF_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_8);
-    //gpio_init(GPIOB, GPIO_MODE_OUT_OD, GPIO_OSPEED_50MHZ, GPIO_PIN_0);
-    //PB6: switch for DC/DC
-    //PB5: switch for BatteryPlus display supply
-	//delay_1ms(100);
-//	gpio_init(GPIOC, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ,GPIO_PIN_9);
-//	GPIO_BOP(GPIOC) = GPIO_PIN_9;
-    //delay_1ms(100);
     gpio_init(GPIOB, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_12);
 
 	//delay_1ms(200);
@@ -616,16 +608,16 @@ void gpio_config(void)
     //delay_1ms(200);
 	//GPIO_BOP(GPIOB) = GPIO_PIN_6; //DC/DC on
 
-    //PA15 Dual PAS input pin (green wire)
-    gpio_init(GPIOA, GPIO_MODE_IPU, GPIO_OSPEED_50MHZ, GPIO_PIN_15);
+    //PD2 Dual PAS2 input pin
+    gpio_init(GPIOD, GPIO_MODE_IPU, GPIO_OSPEED_50MHZ, GPIO_PIN_2);
     //PC0 light short circuit detectionß1
     gpio_init(GPIOC, GPIO_MODE_IN_FLOATING, GPIO_OSPEED_50MHZ, GPIO_PIN_0);
 	//PC10 PAS1 (white), PC11 PAS2 (pink), PC13 brake
-    gpio_init(GPIOC, GPIO_MODE_IPU, GPIO_OSPEED_50MHZ, GPIO_PIN_10|GPIO_PIN_11|GPIO_PIN_13);
-    gpio_exti_source_select(GPIO_PORT_SOURCE_GPIOC, GPIO_PIN_SOURCE_11); //Pas2 interrupt
+    gpio_init(GPIOC, GPIO_MODE_IPU, GPIO_OSPEED_50MHZ, GPIO_PIN_10|GPIO_PIN_12|GPIO_PIN_13);
+    gpio_exti_source_select(GPIO_PORT_SOURCE_GPIOC, GPIO_PIN_SOURCE_12); //Pas1 interrupt
     /* configure key EXTI line */
-    exti_init(EXTI_11, EXTI_INTERRUPT, EXTI_TRIG_FALLING);
-    exti_interrupt_flag_clear(EXTI_11);
+    exti_init(EXTI_12, EXTI_INTERRUPT, EXTI_TRIG_FALLING);
+    exti_interrupt_flag_clear(EXTI_12);
 
 //    gpio_exti_source_select(GPIO_PORT_SOURCE_GPIOC, GPIO_PIN_SOURCE_8); //Encoder z-Pulse interrupt
 //    exti_init(EXTI_8, EXTI_INTERRUPT, EXTI_TRIG_RISING);
@@ -1164,9 +1156,9 @@ void TIMER2_IRQHandler(void)
 
 void EXTI10_15_IRQHandler(void)
 {
-    if(RESET != exti_interrupt_flag_get(EXTI_11)) {
+    if(RESET != exti_interrupt_flag_get(EXTI_12)) {
     	PAS_flag = 1;
-        exti_interrupt_flag_clear(EXTI_11);
+        exti_interrupt_flag_clear(EXTI_12);
     }
 }
 
@@ -1187,12 +1179,12 @@ void PAS_processing(void)
 
 
 		PAS_flag = 0;
-		if(gpio_input_bit_get(GPIOC,GPIO_PIN_10)){
-			if(Backwards_counter)Backwards_counter--;
+		if(gpio_input_bit_get(GPIOD,GPIO_PIN_2)){
+			if(Backwards_counter<10)Backwards_counter++;
 			//PAS_counter=0;
 		}
 		else{
-			if(Backwards_counter<10)Backwards_counter++;
+			if(Backwards_counter)Backwards_counter--;
 		}
 		torque_cumulated-=torque_cumulated>>MS.TQfilter;
 		if(MS.torque_on_crank>750){
@@ -1600,14 +1592,14 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_ft = CAN_FT_DATA;
 	transmit_message.tx_ff = CAN_FF_EXTENDED;
 	transmit_message.tx_dlen = 8;
-	transmit_message.tx_data[0] = (gpio_input_bit_get(GPIOC,GPIO_PIN_6)>>8)&0xFF;//(GPIO_ISTAT(GPIOC)>>6)&0x07;
-	transmit_message.tx_data[1] = (gpio_input_bit_get(GPIOC,GPIO_PIN_6))&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
-	transmit_message.tx_data[2] = (gpio_input_bit_get(GPIOC,GPIO_PIN_7)>>8)&0xFF;;
-	transmit_message.tx_data[3] = (gpio_input_bit_get(GPIOC,GPIO_PIN_7))&0xFF;
-	transmit_message.tx_data[4] = (gpio_input_bit_get(GPIOC,GPIO_PIN_8)>>8)&0xFF;//
-	transmit_message.tx_data[5] = (gpio_input_bit_get(GPIOC,GPIO_PIN_8))&0xFF;
-	transmit_message.tx_data[6] = (TIMER_CNT(TIMER2)>>8)&0xFF;
-	transmit_message.tx_data[7] = (TIMER_CNT(TIMER2))&0xFF;
+	transmit_message.tx_data[0] = (MS.Battery_Current>>8)&0xFF;//(GPIO_ISTAT(GPIOC)>>6)&0x07;
+	transmit_message.tx_data[1] = (MS.Battery_Current)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
+	transmit_message.tx_data[2] = (MS.i_q_setpoint>>8)&0xFF;;
+	transmit_message.tx_data[3] = (MS.i_q_setpoint)&0xFF;
+	transmit_message.tx_data[4] = (MS.i_d>>8)&0xFF;//
+	transmit_message.tx_data[5] = (MS.i_d)&0xFF;
+	transmit_message.tx_data[6] = (Backwards_counter>>8)&0xFF;
+	transmit_message.tx_data[7] = (Backwards_counter)&0xFF;
 
 	/* transmit message */
 	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
