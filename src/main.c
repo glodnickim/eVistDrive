@@ -1594,8 +1594,8 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_dlen = 8;
 	transmit_message.tx_data[0] = (MS.Battery_Current>>8)&0xFF;//(GPIO_ISTAT(GPIOC)>>6)&0x07;
 	transmit_message.tx_data[1] = (MS.Battery_Current)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
-	transmit_message.tx_data[2] = (MS.i_q_setpoint>>8)&0xFF;;
-	transmit_message.tx_data[3] = (MS.i_q_setpoint)&0xFF;
+	transmit_message.tx_data[2] = (((MS.i_q*MS.u_abs*CAL_I)>>11)>>8)&0xFF;;
+	transmit_message.tx_data[3] = ((MS.i_q*MS.u_abs*CAL_I)>>11)&0xFF;
 	transmit_message.tx_data[4] = (MS.i_d>>8)&0xFF;//
 	transmit_message.tx_data[5] = (MS.i_d)&0xFF;
 	transmit_message.tx_data[6] = (Backwards_counter>>8)&0xFF;
