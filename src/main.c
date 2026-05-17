@@ -335,7 +335,7 @@ int main(void)
 	PI_id.setpoint = 0;
 	PI_id.limit_output = _U_MAX;
 	PI_id.max_step=5000;
-	PI_id.shift=8;
+	PI_id.shift=7;
 	PI_id.limit_i=1800;
 
 	PI_iq.gain_i=I_FACTOR_I_Q;
@@ -343,7 +343,7 @@ int main(void)
 	PI_iq.setpoint = 0;
 	PI_iq.limit_output = _U_MAX;
 	PI_iq.max_step=5000;
-	PI_iq.shift=8;
+	PI_iq.shift=7;
 	PI_iq.limit_i=_U_MAX;
 
     //Check, if virtual EEPROM was ever written. If not, fill it with default values
@@ -712,17 +712,17 @@ void adc_config(void)
     adc_regular_channel_config(ADC0, 8, ADC_CHANNEL_3, ADC_SAMPLETIME_239POINT5);// Phase2 current
 
     adc_inserted_channel_config(ADC0, 0, ADC_CHANNEL_5, ADC_SAMPLETIME_55POINT5);
-    adc_inserted_channel_offset_config(ADC0, ADC_INSERTED_CHANNEL_0, 2033); //hardcoded, to be improved
+    adc_inserted_channel_offset_config(ADC0, ADC_INSERTED_CHANNEL_0, 2012); //hardcoded, to be improved
 
     adc_inserted_channel_config(ADC1, 0, ADC_CHANNEL_3, ADC_SAMPLETIME_55POINT5);
 //    adc_inserted_channel_config(ADC1, 1, ADC_CHANNEL_5, ADC_SAMPLETIME_55POINT5);
 
-    adc_inserted_channel_offset_config(ADC1, ADC_INSERTED_CHANNEL_0, 2045); //hardcoded, to be improved
+    adc_inserted_channel_offset_config(ADC1, ADC_INSERTED_CHANNEL_0, 2028); //hardcoded, to be improved
 //    adc_inserted_channel_offset_config(ADC1, ADC_INSERTED_CHANNEL_1, 2033); //hardcoded, to be improved
 
 
     adc_inserted_channel_config(ADC2, 0, ADC_CHANNEL_2, ADC_SAMPLETIME_55POINT5);
-    adc_inserted_channel_offset_config(ADC2, ADC_INSERTED_CHANNEL_0, 2033); //hardcoded, to be improved
+    adc_inserted_channel_offset_config(ADC2, ADC_INSERTED_CHANNEL_0, 2020); //hardcoded, to be improved
 
 
     /* ADC trigger config */
@@ -1594,12 +1594,12 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_dlen = 8;
 	transmit_message.tx_data[0] = (MS.Battery_Current>>8)&0xFF;//(GPIO_ISTAT(GPIOC)>>6)&0x07;
 	transmit_message.tx_data[1] = (MS.Battery_Current)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
-	transmit_message.tx_data[2] = (((MS.i_q*MS.u_abs*CAL_I)>>11)>>8)&0xFF;;
-	transmit_message.tx_data[3] = ((MS.i_q*MS.u_abs*CAL_I)>>11)&0xFF;
-	transmit_message.tx_data[4] = (MS.i_d>>8)&0xFF;//
-	transmit_message.tx_data[5] = (MS.i_d)&0xFF;
-	transmit_message.tx_data[6] = (Backwards_counter>>8)&0xFF;
-	transmit_message.tx_data[7] = (Backwards_counter)&0xFF;
+	transmit_message.tx_data[2] = (iabs(MS.i_q_setpoint)>>8)&0xFF;;
+	transmit_message.tx_data[3] = (iabs(MS.i_q_setpoint))&0xFF;
+	transmit_message.tx_data[4] = (iabs(MS.i_q)>>8)&0xFF;//
+	transmit_message.tx_data[5] = (iabs(MS.i_q))&0xFF;
+	transmit_message.tx_data[6] = (MS.cadence>>8)&0xFF;
+	transmit_message.tx_data[7] = (MS.cadence)&0xFF;
 
 	/* transmit message */
 	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
