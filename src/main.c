@@ -475,6 +475,7 @@ int main(void)
 
             if(MS.i_q_setpoint){
             	if(!ui_8_PWM_ON_Flag){
+            		get_standstill_position();
 					timer_primary_output_config(TIMER0,ENABLE);
 					uint16_half_rotation_counter=0;
 					ui_8_PWM_ON_Flag=1;
@@ -1592,14 +1593,14 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_ft = CAN_FT_DATA;
 	transmit_message.tx_ff = CAN_FF_EXTENDED;
 	transmit_message.tx_dlen = 8;
-	transmit_message.tx_data[0] = (MS.Battery_Current>>8)&0xFF;//(GPIO_ISTAT(GPIOC)>>6)&0x07;
-	transmit_message.tx_data[1] = (MS.Battery_Current)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
+	transmit_message.tx_data[0] = (iabs(MS.u_q)>>8)&0xFF;//(GPIO_ISTAT(GPIOC)>>6)&0x07;
+	transmit_message.tx_data[1] = (iabs(MS.u_q))&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
 	transmit_message.tx_data[2] = (iabs(MS.i_q_setpoint)>>8)&0xFF;;
 	transmit_message.tx_data[3] = (iabs(MS.i_q_setpoint))&0xFF;
 	transmit_message.tx_data[4] = (iabs(MS.i_q)>>8)&0xFF;//
 	transmit_message.tx_data[5] = (iabs(MS.i_q))&0xFF;
-	transmit_message.tx_data[6] = (MS.cadence>>8)&0xFF;
-	transmit_message.tx_data[7] = (MS.cadence)&0xFF;
+	transmit_message.tx_data[6] = (iabs(MS.u_d)>>8)&0xFF;
+	transmit_message.tx_data[7] = (iabs(MS.u_d))&0xFF;
 
 	/* transmit message */
 	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
@@ -1629,6 +1630,37 @@ int16_t T_NTC(uint16_t ADC) // ADC 12 Bit, 10k NTC, RÃ¼ckgabewert in Â°C
     float T = (1 / A2) - 273.15;
 	return (int)T; // Rundung
 
+}
+
+void get_standstill_position(){
+
+	  delay_1ms(25);
+	  ui8_hall_state = (GPIO_ISTAT(GPIOC)>>6)&0x07;
+		switch (ui8_hall_state) {
+			//6 cases for forward direction
+			case 2:
+				q31_rotorposition_hall = Hall_32;
+				break;
+			case 6:
+				q31_rotorposition_hall = Hall_26;
+				break;
+			case 4:
+				q31_rotorposition_hall = Hall_64;
+				break;
+			case 5:
+				q31_rotorposition_hall = Hall_45;
+				break;
+			case 1:
+				q31_rotorposition_hall = Hall_51;
+
+				break;
+			case 3:
+				q31_rotorposition_hall = Hall_13;
+				break;
+
+			}
+
+			q31_rotorposition_absolute = q31_rotorposition_hall;
 }
 
 int8_t calculate_SOC(uint16_t voltage, uint8_t cells_in_series){ //interpolate from lookup table
