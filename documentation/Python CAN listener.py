@@ -26,7 +26,7 @@ while 1:
             Ch1=np.int16((np.uint16(received_message.data[0]<<8)+np.uint16(received_message.data[1])))
             Ch2=np.int16((np.uint16(received_message.data[2]<<8)+np.uint16(received_message.data[3])))
             Ch3=np.int16((np.uint16(received_message.data[4]<<8)+np.uint16(received_message.data[5])))
-            Ch4=np.int16((np.uint16(received_message.data[6]<<8)+np.uint16(received_message.data[7])))
+            Ch4=np.uint16((np.uint16(received_message.data[6]<<8)+np.uint16(received_message.data[7])))
             print(Ch1,
                   Ch2,
                   Ch3,

@@ -390,21 +390,10 @@ int main(void)
     	if(PAS_flag)PAS_processing();
     	if(Speed_flag)Speed_processing();
     	if(reg_ADC_flag)reg_ADC_processing();
-//    	if(PAS_counter>MP.PAS_timeout){
-//    		if(!Overrun_flag){
-//				Backwards_counter=0;
-//				MS.cadence=0;
-//				//MS.torque_on_crank=750;
-//				MS.p_human=0;
-//				uint16_cadence_filtered=0;
-//				if(!MS.i_q_setpoint){
-//					PI_iq.integral_part=0;
-//					PI_id.integral_part=0;
-//					}
-//				if(torque_cumulated)torque_cumulated--;
-//    		}
 
-//    	}
+
+
+
     	// switch lights
     	if(MS.light_flag&&!gpio_input_bit_get(GPIOB,GPIO_PIN_10))GPIO_BOP(GPIOB) = GPIO_PIN_10;
     	if(!MS.light_flag&&gpio_input_bit_get(GPIOB,GPIO_PIN_10)) GPIO_BC(GPIOB) = GPIO_PIN_10;
@@ -450,8 +439,7 @@ int main(void)
 //            	if((Overrun_strength-mapped_torque)>>3>0){
 //            		Overrun_strength-=(Overrun_strength-mapped_torque)>>3;
 //            	}
-            	temp2=temp1;
-            	temp1=0;
+
             	if(pollnumber>2)pollnumber=0;
             	sendCAN_Poll(&MP,&MS,Poll_commands[pollnumber]);
             	pollnumber++;
@@ -1182,10 +1170,11 @@ void PAS_processing(void)
 		PAS_flag = 0;
 		if(gpio_input_bit_get(GPIOD,GPIO_PIN_2)){
 			if(Backwards_counter<10)Backwards_counter++;
-			//PAS_counter=0;
+
 		}
 		else{
 			if(Backwards_counter)Backwards_counter--;
+			PAS_counter=0;
 		}
 		torque_cumulated-=torque_cumulated>>MS.TQfilter;
 		if(MS.torque_on_crank>750){
@@ -1195,7 +1184,7 @@ void PAS_processing(void)
 		MS.torque_filtered=(torque_cumulated>>MS.TQfilter);
 		MS.p_human=(uint16_t)((float)(MS.cadence*MS.torque_filtered)*0.00342); //in Watt
 
-		PAS_counter=0;
+		//PAS_counter=0;
 	}
 }
 
@@ -1217,9 +1206,9 @@ void reg_ADC_processing(void)
 	voltage_raw_cumulated-=voltage_raw_cumulated>>6;
 	voltage_raw_cumulated+=adc_value[3];
 	voltage_raw_filtered=voltage_raw_cumulated>>6;
-	temp1++;
+
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
-	MS.calories=MS.i_q_setpoint;
+	MS.calories=Backwards_counter;
 	MS.torque_on_crank=(((adc_value[2])*3300)>>12)+torque_offset_correction; //map ADC value to mV
 	if(MS.torque_on_crank>760&&PAS_counter<MP.PAS_timeout)torque_counter=0;//reset counter, if pressure on pedal and pedals rotating
 	MS.range=Overrun_flag*100;//on/off button line
@@ -1593,14 +1582,14 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_ft = CAN_FT_DATA;
 	transmit_message.tx_ff = CAN_FF_EXTENDED;
 	transmit_message.tx_dlen = 8;
-	transmit_message.tx_data[0] = (iabs(MS.u_q)>>8)&0xFF;//(GPIO_ISTAT(GPIOC)>>6)&0x07;
-	transmit_message.tx_data[1] = (iabs(MS.u_q))&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
+	transmit_message.tx_data[0] = (MS.Battery_Current>>8)&0xFF;//(GPIO_ISTAT(GPIOC)>>6)&0x07;
+	transmit_message.tx_data[1] = (MS.Battery_Current)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
 	transmit_message.tx_data[2] = (iabs(MS.i_q_setpoint)>>8)&0xFF;;
 	transmit_message.tx_data[3] = (iabs(MS.i_q_setpoint))&0xFF;
 	transmit_message.tx_data[4] = (iabs(MS.i_q)>>8)&0xFF;//
 	transmit_message.tx_data[5] = (iabs(MS.i_q))&0xFF;
-	transmit_message.tx_data[6] = (iabs(MS.u_d)>>8)&0xFF;
-	transmit_message.tx_data[7] = (iabs(MS.u_d))&0xFF;
+	transmit_message.tx_data[6] = (Backwards_counter>>8)&0xFF;
+	transmit_message.tx_data[7] = (Backwards_counter)&0xFF;
 
 	/* transmit message */
 	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
@@ -1880,6 +1869,7 @@ uint16_t update_setpoint(void){
 
 
 	            }// else brake not active
+	        	//if(PAS_counter>MP.PAS_timeout)MS.i_q_setpoint_temp=0;
 
 	            //low battery ramp down with 3V above battery min voltage
 	            MS.i_q_setpoint_temp=map(voltage_raw_filtered, MP.voltage_min,(MP.voltage_min+176),0,MS.i_q_setpoint_temp);
