@@ -338,7 +338,7 @@ int main(void)
 	PI_id.setpoint = 0;
 	PI_id.limit_output = _U_MAX;
 	PI_id.max_step=5000;
-	PI_id.shift=7;
+	PI_id.shift=9;
 	PI_id.limit_i=1800;
 
 	PI_iq.gain_i=I_FACTOR_I_Q;
@@ -346,7 +346,7 @@ int main(void)
 	PI_iq.setpoint = 0;
 	PI_iq.limit_output = _U_MAX;
 	PI_iq.max_step=5000;
-	PI_iq.shift=7;
+	PI_iq.shift=9;
 	PI_iq.limit_i=_U_MAX;
 
     //Check, if virtual EEPROM was ever written. If not, fill it with default values
@@ -442,7 +442,7 @@ int main(void)
 //            	if((Overrun_strength-mapped_torque)>>3>0){
 //            		Overrun_strength-=(Overrun_strength-mapped_torque)>>3;
 //            	}
-
+            	p++;
             	if(pollnumber>2)pollnumber=0;
             	sendCAN_Poll(&MP,&MS,Poll_commands[pollnumber]);
             	pollnumber++;
@@ -1587,14 +1587,14 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_ft = CAN_FT_DATA;
 	transmit_message.tx_ff = CAN_FF_EXTENDED;
 	transmit_message.tx_dlen = 8;
-	transmit_message.tx_data[0] = (MS.Battery_Current>>8)&0xFF;//(GPIO_ISTAT(GPIOC)>>6)&0x07;
-	transmit_message.tx_data[1] = (MS.Battery_Current)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
-	transmit_message.tx_data[2] = (iabs(MS.i_q_setpoint)>>8)&0xFF;;
-	transmit_message.tx_data[3] = (iabs(MS.i_q_setpoint))&0xFF;
+	transmit_message.tx_data[0] = (MS.torque_on_crank>>8)&0xFF;//(GPIO_ISTAT(GPIOC)>>6)&0x07;
+	transmit_message.tx_data[1] = (MS.torque_on_crank)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
+	transmit_message.tx_data[2] = ((MS.i_q_setpoint)>>8)&0xFF;;
+	transmit_message.tx_data[3] = ((MS.i_q_setpoint))&0xFF;
 	transmit_message.tx_data[4] = (iabs(MS.i_q)>>8)&0xFF;//
 	transmit_message.tx_data[5] = (iabs(MS.i_q))&0xFF;
-	transmit_message.tx_data[6] = (Backwards_counter>>8)&0xFF;
-	transmit_message.tx_data[7] = (Backwards_counter)&0xFF;
+	transmit_message.tx_data[6] = (MS.u_d>>8)&0xFF;
+	transmit_message.tx_data[7] = (MS.u_d)&0xFF;
 
 	/* transmit message */
 	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
@@ -1897,10 +1897,10 @@ uint16_t update_setpoint(void){
 					MS.i_q_setpoint_temp=200;
 					temp6-=temp6>>4;
 					temp6+=MS.u_d;
-					if (p>30){
+					if (p>10){
 						p=0;
-						if ((MP.reverse*temp6>>4)>-40)MP.angle_correction+=one_deg;
-						else if ((MP.reverse*temp6>>4)<-50)MP.angle_correction-=one_deg;
+						if ((MP.reverse*temp6>>4)>-50)MP.angle_correction+=one_deg;
+						else if ((MP.reverse*temp6>>4)<-100)MP.angle_correction-=one_deg;
 						else {
 							MS.i_q_setpoint_temp=0;
 							PI_iq.integral_part=0;
