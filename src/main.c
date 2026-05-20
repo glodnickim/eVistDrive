@@ -128,7 +128,7 @@ uint32_t ui32_erps_cumulated=0;
 int32_t q31_rotorposition_hall=0;
 q31_t q31_rotorposition_absolute=0;
 int8_t i8_recent_rotor_direction=0;
-q31_t Z_position=0;
+
 
 uint16_t ui16_tim2_recent=0;
 uint16_t uint16_full_rotation_counter=0;
@@ -152,6 +152,8 @@ int32_t Hall_26 = -966367405;
 int32_t Hall_64 = -322122295;
 int32_t Hall_45 = 381775140;
 int32_t Hall_51 = 1169185830;
+
+const int32_t one_deg = 11930465; //one degree in 2^32 logic
 
 int8_t statehistory[36];
 uint8_t historycounter=0;
@@ -327,6 +329,7 @@ int main(void)
 	MP.MagicNumber=202;
 	MP.Override_Duration=8000;
 	MP.decay_base=16;
+	MP.angle_correction=0;
 
 
 	//init PI structs
@@ -477,6 +480,8 @@ int main(void)
 					timer_primary_output_config(TIMER0,DISABLE); //Disable PWM if motor is not turning
 					ui_8_PWM_ON_Flag=0;
 					i8_recent_rotor_direction=0;
+					PI_iq.integral_part=0;
+					PI_id.integral_part=0;
 
             	}
             }//end half rotation counter
@@ -1319,8 +1324,8 @@ void autodetect(void) {
 	MS.i_q_setpoint= 0;
 
 	for (int i = 0; i < 1080; i++) {
-		q31_rotorposition_absolute += 11930465; //drive motor in open loop with steps of 1 deg
-		delay_1ms(25);
+		q31_rotorposition_absolute += one_deg; //drive motor in open loop with steps of 1 deg
+		delay_1ms(5);
 
 
 		if (ui8_hall_state_old != ui8_hall_state) {
@@ -1415,9 +1420,9 @@ void autodetect(void) {
 		i32_hall_order = -1;
 	}
 
-	write_virtual_eeprom();
+	//write_virtual_eeprom();
 
-	MS.hall_angle_detect_flag = 1;
+	MS.hall_angle_detect_flag = 2;
 
 	delay_1ms(20);
    // ui8_KV_detect_flag = 30;
@@ -1488,7 +1493,7 @@ void ADC0_1_IRQHandler(void)
     if(MS.hall_angle_detect_flag){//q31_rotorposition_absolute = q31_rotorposition_hall + (q31_t) ((float)(i8_recent_rotor_direction * (deg_30<<1) * ui16_tim2_recent)/(float)(uint32_tics_filtered>>3));//
 //Speed PLL not implemented yet.
     	if(!ui8_6step_flag){
-    	q31_rotorposition_absolute = q31_rotorposition_hall
+    	q31_rotorposition_absolute = q31_rotorposition_hall + MP.angle_correction +
     									+ (q31_t) (i8_recent_rotor_direction
     											* ((10923 * ui16_tim2_recent)
     													/ (uint32_tics_filtered>>3)) << 16);//interpolate angle between two hallevents by scaling timer2 tics, 10923<<16 is 715827883 = 60deg
@@ -1829,7 +1834,9 @@ uint16_t update_setpoint(void){
 	            //check brake with first priority
 	            if(MS.brake_active_flag)MS.i_q_setpoint_temp=0;
 	            // check push assist active
-	            else if(MS.pushassist_flag)MS.i_q_setpoint_temp=100;
+	            else if(MS.pushassist_flag&&MS.button_down_flag){
+	            	MS.i_q_setpoint_temp=map(MS.Speedx100, 500,700,100,0);
+	            }
 	            //calculate setpoint, if brake is not activated
 	            else{
 					mapped_throttle= map(adc_value[1], MP.throttle_offset, MP.throttle_max, 0, phase_current_max_scaled);
@@ -1886,26 +1893,28 @@ uint16_t update_setpoint(void){
 					}
 
 				}//end legalflag
-//				if(MS.hall_angle_detect_flag>1){ // part 2 of positions calibration
-//					MS.i_q_setpoint_temp=200;
-//					temp6-=temp6>>4;
-//					temp6+=MS.u_d;
-//					if (p>30){
-//						p=0;
-//						if ((MP.reverse*temp6>>4)>-40)Z_position++;
-//						else if ((MP.reverse*temp6>>4)<-50)Z_position--;
-//						else {
-//							MS.i_q_setpoint_temp=0;
-//							timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,_T>>1);
-//							timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,_T>>1);
-//							timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,_T>>1);
-//							timer_primary_output_config(TIMER0,DISABLE); //Disable PWM if motor is not turning
-//							write_virtual_eeprom();
-//							MS.hall_angle_detect_flag=1;
-//						}
-//					}
-//
-//				}
+				if(MS.hall_angle_detect_flag>1){ // part 2 of positions calibration
+					MS.i_q_setpoint_temp=200;
+					temp6-=temp6>>4;
+					temp6+=MS.u_d;
+					if (p>30){
+						p=0;
+						if ((MP.reverse*temp6>>4)>-40)MP.angle_correction+=one_deg;
+						else if ((MP.reverse*temp6>>4)<-50)MP.angle_correction-=one_deg;
+						else {
+							MS.i_q_setpoint_temp=0;
+							PI_iq.integral_part=0;
+							PI_id.integral_part=0;
+							timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,_T>>1);
+							timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,_T>>1);
+							timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,_T>>1);
+							timer_primary_output_config(TIMER0,DISABLE); //Disable PWM
+							write_virtual_eeprom();
+							MS.hall_angle_detect_flag=1;
+						}
+					}
+
+				}
 
 	    		return MS.i_q_setpoint_temp;
 
