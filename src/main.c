@@ -1215,6 +1215,11 @@ void reg_ADC_processing(void)
 	voltage_raw_cumulated+=adc_value[3];
 	voltage_raw_filtered=voltage_raw_cumulated>>6;
 
+	temp1=MS.Battery_Current;
+	temp2=MS.u_d;
+	temp3=MS.i_q;
+	temp4=MS.i_q_setpoint;
+
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
 	MS.calories=MS.torque_on_crank;
 	MS.torque_on_crank=(((adc_value[2])*3300)>>12)+torque_offset_correction; //map ADC value to mV
@@ -1293,8 +1298,6 @@ void runPIcontrol(void){
 
 	}
 	q31_u_q_temp =  PI_control(&PI_iq);
-	temp1=temp5;
-	temp2=PI_iq.integral_part;
 	//control id
 	  PI_id.recent_value = MS.i_d;
 	  PI_id.setpoint = MS.i_d_setpoint;
@@ -1448,10 +1451,7 @@ void ADC0_1_IRQHandler(void)
     i16_ph1_current = adc_inserted_data_read(ADC2, ADC_INSERTED_CHANNEL_0);
     i16_ph2_current = adc_inserted_data_read(ADC1, ADC_INSERTED_CHANNEL_0);
     i16_ph3_current = adc_inserted_data_read(ADC0, ADC_INSERTED_CHANNEL_0);
-//    temp1=MS.u_q;
-//    temp2=MS.u_d;
-    temp3=MS.i_q;
-    temp4=MS.i_q_setpoint;
+
 
 	switch (MS.char_dyn_adc_state) //read in according to state
 		{
@@ -1925,6 +1925,11 @@ uint16_t update_setpoint(void){
 					}
 
 				}
+				if(!MS.i_q_setpoint_temp&&iabs(MS.i_q)<50){
+					PI_iq.integral_part=0;
+					PI_id.integral_part=0;
+				}
+
 
 	    		return MS.i_q_setpoint_temp;
 
