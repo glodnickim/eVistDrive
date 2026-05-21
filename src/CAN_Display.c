@@ -146,9 +146,9 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 			level_code=receive_message.rx_data[1];
 			if(level_code==level_code_old&&level_counter<3)level_counter++;
 			if(level_code!=level_code_old){
+
 				level_counter=0;
-				MS->level_counter_global++;
-			}
+				}
 			level_code_old=level_code;
 
 			if(level_counter==3){

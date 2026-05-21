@@ -338,7 +338,7 @@ int main(void)
 	PI_id.setpoint = 0;
 	PI_id.limit_output = _U_MAX;
 	PI_id.max_step=5000;
-	PI_id.shift=9;
+	PI_id.shift=11;
 	PI_id.limit_i=1800;
 
 	PI_iq.gain_i=I_FACTOR_I_Q;
@@ -346,7 +346,7 @@ int main(void)
 	PI_iq.setpoint = 0;
 	PI_iq.limit_output = _U_MAX;
 	PI_iq.max_step=5000;
-	PI_iq.shift=9;
+	PI_iq.shift=11;
 	PI_iq.limit_i=_U_MAX;
 
     //Check, if virtual EEPROM was ever written. If not, fill it with default values
@@ -358,7 +358,7 @@ int main(void)
     read_virtual_eeprom();
     parse_MOparams(&MP);
 
-    for (int i = 0; i < 255; i++) {//let the ADC stabilize
+    for (int i = 0; i < 2000; i++) {//let the ADC stabilize
     	while(!reg_ADC_flag);
     	reg_ADC_flag=0;
     }
@@ -443,6 +443,7 @@ int main(void)
 //            		Overrun_strength-=(Overrun_strength-mapped_torque)>>3;
 //            	}
             	p++;
+
             	if(pollnumber>2)pollnumber=0;
             	sendCAN_Poll(&MP,&MS,Poll_commands[pollnumber]);
             	pollnumber++;
@@ -827,7 +828,9 @@ void timer0_config(void)
 	    timer_breakpara.protectmode      = TIMER_CCHP_PROT_0;
 	    timer_breakpara.breakstate       = TIMER_BREAK_DISABLE;
 	    timer_break_config(TIMER0,&timer_breakpara);
-
+		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,(_T>>1)-0);
+		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,(_T>>1)+0);
+		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,(_T>>1)+0);
 	    timer_primary_output_config(TIMER0,DISABLE);
 
 	    /* auto-reload preload disable */
@@ -1213,7 +1216,7 @@ void reg_ADC_processing(void)
 	voltage_raw_filtered=voltage_raw_cumulated>>6;
 
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
-	MS.calories=Backwards_counter;
+	MS.calories=MS.torque_on_crank;
 	MS.torque_on_crank=(((adc_value[2])*3300)>>12)+torque_offset_correction; //map ADC value to mV
 	if(MS.torque_on_crank>760&&PAS_counter<MP.PAS_timeout)torque_counter=0;//reset counter, if pressure on pedal and pedals rotating
 	MS.range=Overrun_flag*100;//on/off button line
@@ -1290,6 +1293,8 @@ void runPIcontrol(void){
 
 	}
 	q31_u_q_temp =  PI_control(&PI_iq);
+	temp1=temp5;
+	temp2=PI_iq.integral_part>>PI_iq.shift;
 	//control id
 	  PI_id.recent_value = MS.i_d;
 	  PI_id.setpoint = MS.i_d_setpoint;
@@ -1443,6 +1448,11 @@ void ADC0_1_IRQHandler(void)
     i16_ph1_current = adc_inserted_data_read(ADC2, ADC_INSERTED_CHANNEL_0);
     i16_ph2_current = adc_inserted_data_read(ADC1, ADC_INSERTED_CHANNEL_0);
     i16_ph3_current = adc_inserted_data_read(ADC0, ADC_INSERTED_CHANNEL_0);
+//    temp1=MS.u_q;
+//    temp2=MS.u_d;
+    temp3=MS.i_q;
+    temp4=MS.i_q_setpoint;
+
 	switch (MS.char_dyn_adc_state) //read in according to state
 		{
 		case 1: //Phase C at high dutycycles, read from A+B directly
@@ -1587,14 +1597,14 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_ft = CAN_FT_DATA;
 	transmit_message.tx_ff = CAN_FF_EXTENDED;
 	transmit_message.tx_dlen = 8;
-	transmit_message.tx_data[0] = (MS.torque_on_crank>>8)&0xFF;//(GPIO_ISTAT(GPIOC)>>6)&0x07;
-	transmit_message.tx_data[1] = (MS.torque_on_crank)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
-	transmit_message.tx_data[2] = ((MS.i_q_setpoint)>>8)&0xFF;;
-	transmit_message.tx_data[3] = ((MS.i_q_setpoint))&0xFF;
-	transmit_message.tx_data[4] = (iabs(MS.i_q)>>8)&0xFF;//
-	transmit_message.tx_data[5] = (iabs(MS.i_q))&0xFF;
-	transmit_message.tx_data[6] = (MS.u_d>>8)&0xFF;
-	transmit_message.tx_data[7] = (MS.u_d)&0xFF;
+	transmit_message.tx_data[0] = (temp1>>8)&0xFF;//(GPIO_ISTAT(GPIOC)>>6)&0x07;
+	transmit_message.tx_data[1] = (temp1)&0xFF; //ui16_timertics>>8;//(GPIO_ISTAT(GPIOA)>>8)&0xFF;
+	transmit_message.tx_data[2] = (temp2>>8)&0xFF;;
+	transmit_message.tx_data[3] = (temp2)&0xFF;
+	transmit_message.tx_data[4] = (temp3>>8)&0xFF;//
+	transmit_message.tx_data[5] = (temp3)&0xFF;
+	transmit_message.tx_data[6] = (temp4>>8)&0xFF;
+	transmit_message.tx_data[7] = (temp4)&0xFF;
 
 	/* transmit message */
 	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
