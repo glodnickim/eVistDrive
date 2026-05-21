@@ -1294,7 +1294,7 @@ void runPIcontrol(void){
 	}
 	q31_u_q_temp =  PI_control(&PI_iq);
 	temp1=temp5;
-	temp2=PI_iq.integral_part>>PI_iq.shift;
+	temp2=PI_iq.integral_part;
 	//control id
 	  PI_id.recent_value = MS.i_d;
 	  PI_id.setpoint = MS.i_d_setpoint;
