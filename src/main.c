@@ -1216,7 +1216,7 @@ void reg_ADC_processing(void)
 	voltage_raw_filtered=voltage_raw_cumulated>>6;
 
 	temp1=MS.Battery_Current;
-	temp2=MS.u_d;
+	temp2=MS.u_q;
 	temp3=MS.i_q;
 	temp4=MS.i_q_setpoint;
 

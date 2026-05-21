@@ -62,9 +62,9 @@
 //----------------------------------------------------------------------
 //PI-control factor settings
 #define P_FACTOR_I_Q 1.5
-#define I_FACTOR_I_Q 0.045
+#define I_FACTOR_I_Q 0.03
 #define P_FACTOR_I_D 1.5
-#define I_FACTOR_I_D 0.045
+#define I_FACTOR_I_D 0.03
 #define P_FACTOR_SPEED 1
 #define I_FACTOR_SPEED 10
 
