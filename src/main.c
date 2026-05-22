@@ -590,7 +590,7 @@ void gpio_config(void)
     /* config the GPIO as analog mode */
     gpio_init(GPIOA, GPIO_MODE_AIN, GPIO_OSPEED_MAX, GPIO_PIN_0|GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7);
     gpio_init(GPIOC, GPIO_MODE_AIN, GPIO_OSPEED_MAX, GPIO_PIN_3|GPIO_PIN_4); //Battery Voltage
-    gpio_init(GPIOB, GPIO_MODE_AIN, GPIO_OSPEED_MAX, GPIO_PIN_0); // Motor Temp
+    gpio_init(GPIOB, GPIO_MODE_AIN, GPIO_OSPEED_MAX, GPIO_PIN_1); // Motor Temp
 
     gpio_init(GPIOB, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_12);
 
@@ -702,7 +702,7 @@ void adc_config(void)
     adc_regular_channel_config(ADC0, 3, ADC_CHANNEL_13, ADC_SAMPLETIME_239POINT5);// PC3 battery voltage
     adc_regular_channel_config(ADC0, 4, ADC_CHANNEL_5, ADC_SAMPLETIME_239POINT5); // Phase3 current
     adc_regular_channel_config(ADC0, 5, ADC_CHANNEL_4, ADC_SAMPLETIME_239POINT5); // on/off button
-    adc_regular_channel_config(ADC0, 6, ADC_CHANNEL_8, ADC_SAMPLETIME_239POINT5);//Motor temperature
+    adc_regular_channel_config(ADC0, 6, ADC_CHANNEL_9, ADC_SAMPLETIME_239POINT5);//Motor temperature
     adc_regular_channel_config(ADC0, 7, ADC_CHANNEL_2, ADC_SAMPLETIME_239POINT5);// Phase1 current
     adc_regular_channel_config(ADC0, 8, ADC_CHANNEL_3, ADC_SAMPLETIME_239POINT5);// Phase2 current
 
@@ -1235,10 +1235,12 @@ void reg_ADC_processing(void)
     if(Overrun_counter<64000)Overrun_counter++;
     MS.i_q_setpoint = update_setpoint();
     if (torque_counter>4000&&!Overrun_flag){ //reset after one second without torque on the pedal
-		Backwards_counter=0;
-		MS.cadence=0;
-		MS.p_human=0;
-		uint16_cadence_filtered=0;
+    	if (PAS_counter>MP.PAS_timeout){
+			Backwards_counter=0;
+			MS.cadence=0;
+			MS.p_human=0;
+			uint16_cadence_filtered=0;
+    	}
 		torque_cumulated=0;
 		if (!MS.i_q_setpoint){//reset integral part, if no power from throttle signal is wanted
 			PI_iq.integral_part=0;
