@@ -122,7 +122,7 @@ void InitEEPROM(MotorParams_t* MP){
 	MP->ramp_end = RAMP_END;
 	MP->system_voltage = SYSTEM_VOLTAGE;
 	MP->max_voltage = MAX_VOLTAGE;
-	MP->decay_base =20;
+	MP->decay_base =255;
 	for (k=0; k < 6; k++){
 		for (l=0; l < 7; l++){
 			MP->assist_profile[k][l]=(k+1)*20;

@@ -337,7 +337,7 @@ int main(void)
 	PI_id.gain_p=P_FACTOR_I_D;
 	PI_id.setpoint = 0;
 	PI_id.limit_output = _U_MAX;
-	PI_id.max_step=5000;
+	PI_id.max_step=15;
 	PI_id.shift=11;
 	PI_id.limit_i=1800;
 
@@ -345,7 +345,7 @@ int main(void)
 	PI_iq.gain_p=P_FACTOR_I_Q;
 	PI_iq.setpoint = 0;
 	PI_iq.limit_output = _U_MAX;
-	PI_iq.max_step=5000;
+	PI_iq.max_step=15;
 	PI_iq.shift=11;
 	PI_iq.limit_i=_U_MAX;
 
@@ -1844,8 +1844,8 @@ uint16_t update_setpoint(void){
 	            //check brake with first priority
 	            if(MS.brake_active_flag)MS.i_q_setpoint_temp=0;
 	            // check push assist active
-	            else if(MS.pushassist_flag&&MS.button_down_flag){
-	            	MS.i_q_setpoint_temp=map(MS.Speedx100, 500,700,100,0);
+	            else if(MS.pushassist_flag){
+	            	MS.i_q_setpoint_temp=map(MS.Speedx100, 500,700,75,0);
 	            }
 	            //calculate setpoint, if brake is not activated
 	            else{
@@ -1909,8 +1909,8 @@ uint16_t update_setpoint(void){
 					temp6+=MS.u_d;
 					if (p>10){
 						p=0;
-						if ((MP.reverse*temp6>>4)>-50)MP.angle_correction+=one_deg;
-						else if ((MP.reverse*temp6>>4)<-100)MP.angle_correction-=one_deg;
+						if ((MP.reverse*temp6>>4)>50)MP.angle_correction+=one_deg;
+						else if ((MP.reverse*temp6>>4)<-50)MP.angle_correction-=one_deg;
 						else {
 							MS.i_q_setpoint_temp=0;
 							PI_iq.integral_part=0;
@@ -1925,7 +1925,7 @@ uint16_t update_setpoint(void){
 					}
 
 				}
-				if(!MS.i_q_setpoint_temp&&iabs(MS.i_q)<50){
+				if(!MS.i_q_setpoint_temp&&PI_iq.integral_part){
 					PI_iq.integral_part=0;
 					PI_id.integral_part=0;
 				}
