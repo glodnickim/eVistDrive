@@ -1221,7 +1221,7 @@ void reg_ADC_processing(void)
 	temp4=MS.i_q_setpoint;
 
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
-	MS.calories=MS.torque_on_crank;
+	MS.calories=MP.angle_correction/one_deg;
 	MS.torque_on_crank=(((adc_value[2])*3300)>>12)+torque_offset_correction; //map ADC value to mV
 	if(MS.torque_on_crank>760&&PAS_counter<MP.PAS_timeout)torque_counter=0;//reset counter, if pressure on pedal and pedals rotating
 	MS.range=Overrun_flag*100;//on/off button line
@@ -1431,7 +1431,7 @@ void autodetect(void) {
 	}
 
 	//write_virtual_eeprom();
-
+	p=0;
 	MS.hall_angle_detect_flag = 2;
 
 	delay_1ms(20);
@@ -1622,7 +1622,7 @@ int16_t T_NTC(uint16_t ADC) // ADC 12 Bit, 10k NTC, RÃ¼ckgabewert in Â°C
 
 {
 	int R = R_TEMP_PULLUP;                                    // Spannungsteiler, fester Widerstand
-	float Rn = 20000;                                         // gemessen (Ohm)
+	float Rn = 5000;                                         // gemessen (Ohm)
 	float Tn = 23;                                            // gemessen (°C)
 	float B = 3398;
     float U_ntc = (3.3 * ADC) / 4095;             // Spannung
@@ -1906,13 +1906,13 @@ uint16_t update_setpoint(void){
 
 				}//end legalflag
 				if(MS.hall_angle_detect_flag>1){ // part 2 of positions calibration
-					MS.i_q_setpoint_temp=200;
+					MS.i_q_setpoint_temp=100;
 					temp6-=temp6>>4;
 					temp6+=MS.u_d;
-					if (p>10){
-						p=0;
-						if ((MP.reverse*temp6>>4)>50)MP.angle_correction+=one_deg;
-						else if ((MP.reverse*temp6>>4)<-50)MP.angle_correction-=one_deg;
+					if (p>70){
+						p=60;
+						if ((MP.reverse*temp6>>4)>100)MP.angle_correction+=one_deg;
+						else if ((MP.reverse*temp6>>4)<50)MP.angle_correction-=one_deg;
 						else {
 							MS.i_q_setpoint_temp=0;
 							PI_iq.integral_part=0;
