@@ -136,6 +136,8 @@ typedef struct
 	uint16_t		battery_current_max;
 	int16_t       	voltage_min;
 	uint16_t       	speedLimitx100;
+	uint16_t       	walk_assist_speed; // in km/h x100, e.g. 600 = 6.0 km/h
+	uint8_t        	walk_assist_current; // 0-100 %, maps to Para1[36] (speed_limit_enabled in JS)
 	uint16_t       	TQO_threshold[6];
 	uint8_t       	com_mode;
 	int8_t       	system_voltage;
