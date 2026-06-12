@@ -1847,7 +1847,7 @@ uint16_t update_setpoint(void){
 	            if(MS.brake_active_flag)MS.i_q_setpoint_temp=0;
 	            // check push assist active
 	            else if(MS.pushassist_flag){
-	            	MS.i_q_setpoint_temp=map(MS.Speedx100, 500,700,75,0);
+	            	MS.i_q_setpoint_temp=map(MS.Speedx100, (int32_t)MP.walk_assist_speed-200, MP.walk_assist_speed, MP.phase_current_max*MP.walk_assist_current/100, 0);
 	            }
 	            //calculate setpoint, if brake is not activated
 	            else{
@@ -1912,7 +1912,7 @@ uint16_t update_setpoint(void){
 					if (p>70){
 						p=60;
 						if ((MP.reverse*temp6>>4)>100)MP.angle_correction+=one_deg;
-						else if ((MP.reverse*temp6>>4)<50)MP.angle_correction-=one_deg;
+						else if ((MP.reverse*temp6>>4)<-50)MP.angle_correction-=one_deg;
 						else {
 							MS.i_q_setpoint_temp=0;
 							PI_iq.integral_part=0;
