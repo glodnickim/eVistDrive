@@ -1239,13 +1239,15 @@ void reg_ADC_processing(void)
     if(ui16_erps_counter<64000)ui16_erps_counter++;
     if(Overrun_counter<64000)Overrun_counter++;
 
-    //--- Walk Assist physical button (PA4) ---
-    if(adc_value[5]>=WA_BUTTON_THRESHOLD_LOW && adc_value[5]<=WA_BUTTON_THRESHOLD_HIGH){
-        if(ui8_walk_btn_counter<255)ui8_walk_btn_counter++;
+    //--- Walk Assist physical button (PA4), debounce z histereza (press + release) ---
+    uint8_t wa_btn_in_range=(adc_value[5]>=WA_BUTTON_THRESHOLD_LOW && adc_value[5]<=WA_BUTTON_THRESHOLD_HIGH);
+    if(!ui8_walk_btn_state){
+        if(wa_btn_in_range){ if(++ui8_walk_btn_counter>=WA_BUTTON_DEBOUNCE){ui8_walk_btn_state=1; ui8_walk_btn_counter=0;} }
+        else ui8_walk_btn_counter=0;
     }else{
-        ui8_walk_btn_counter=0;
+        if(!wa_btn_in_range){ if(++ui8_walk_btn_counter>=WA_BUTTON_RELEASE){ui8_walk_btn_state=0; ui8_walk_btn_counter=0;} }
+        else ui8_walk_btn_counter=0;
     }
-    ui8_walk_btn_state=(ui8_walk_btn_counter>=WA_BUTTON_DEBOUNCE)?1:0;
 
     //--- walk_active = AND wszystkich warunkow ---
     uint8_t walk_speed_ok=(MS.Speedx100<700);
