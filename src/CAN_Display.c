@@ -49,6 +49,8 @@ uint16_t k=0;
 uint8_t level_code;
 uint8_t level_code_old;
 uint8_t level_counter;
+uint8_t walk_can_code_old;
+uint8_t walk_can_counter;
 
 uint16_t Rx_MF_active=0;
 uint16_t checksum=0;
@@ -187,8 +189,20 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 						break;
 				}
 			}
-			if (receive_message.rx_data[1]==6)MS->pushassist_flag=SET;
-			else MS->pushassist_flag=RESET;
+			// Walk Assist request from display: only sets walk_can_request (with debounce).
+			// pushassist_flag itself is derived in main.c (requires physical PA4 button held).
+			if (receive_message.rx_data[1]==6){
+				if(receive_message.rx_data[1]==walk_can_code_old){
+					if(walk_can_counter<3)walk_can_counter++;
+				}else{
+					walk_can_counter=0;
+				}
+				if(walk_can_counter>=3)MS->walk_can_request=SET;
+			}else{
+				walk_can_counter=0;
+				MS->walk_can_request=RESET;
+			}
+			walk_can_code_old=receive_message.rx_data[1];
 			if (receive_message.rx_data[2]&0b1)MS->light_flag=SET;
 			else MS->light_flag=RESET;
 			if (receive_message.rx_data[2]&0b10)MS->button_up_flag=SET;

@@ -121,6 +121,10 @@ uint32_t uint32_tics_filtered=128000;
 uint16_t uint16_cadence_filtered=0;
 uint8_t ui8_overflow_flag=0;
 uint8_t ui8_SPEED_control_flag=0;
+uint8_t ui8_walk_btn_counter=0;
+uint8_t ui8_walk_btn_state=0;
+uint8_t ui8_WA_blocked=0;
+uint32_t ui32_WA_timer=0;
 uint32_t voltage_raw_cumulated=0;
 uint16_t voltage_raw_filtered=0;
 int32_t torque_offset_correction=0;
@@ -317,6 +321,7 @@ int main(void)
 	MS.offroadflag=RESET;
 	MS.offroadtics=0;
 	MS.pushassist_flag=RESET;
+	MS.walk_can_request=RESET;
 	MS.distance_since_startup=0;
 
 	MP.pulses_per_revolution = PULSES_PER_REVOLUTION;
@@ -1233,6 +1238,43 @@ void reg_ADC_processing(void)
     if(offroadcounter<64000)offroadcounter++;
     if(ui16_erps_counter<64000)ui16_erps_counter++;
     if(Overrun_counter<64000)Overrun_counter++;
+
+    //--- Walk Assist physical button (PA4) ---
+    if(adc_value[5]>=WA_BUTTON_THRESHOLD_LOW && adc_value[5]<=WA_BUTTON_THRESHOLD_HIGH){
+        if(ui8_walk_btn_counter<255)ui8_walk_btn_counter++;
+    }else{
+        ui8_walk_btn_counter=0;
+    }
+    ui8_walk_btn_state=(ui8_walk_btn_counter>=WA_BUTTON_DEBOUNCE)?1:0;
+
+    //--- walk_active = AND wszystkich warunkow ---
+    uint8_t walk_speed_ok=(MS.Speedx100<700);
+    uint8_t walk_active=MS.walk_can_request
+                     && ui8_walk_btn_state
+                     && walk_speed_ok
+                     && !MS.brake_active_flag
+                     && !MS.error_state
+                     && !ui8_WA_blocked;
+
+    //--- pushassist_flag — tylko main.c ustawia ---
+    MS.pushassist_flag=walk_active?SET:RESET;
+
+    //--- WA timer - timeout 10s ---
+    if(walk_active){
+        if(ui32_WA_timer<(WA_TIMEOUT_TICKS+1))ui32_WA_timer++;
+    }else{
+        ui32_WA_timer=0;
+    }
+    if(ui32_WA_timer>WA_TIMEOUT_TICKS){
+        ui8_WA_blocked=1;
+        MS.pushassist_flag=RESET;
+        ui32_WA_timer=0;
+    }
+    //--- WA_blocked release: tylko po puszczeniu PA4 i zaniku walk_can_request ---
+    if(ui8_WA_blocked && !MS.walk_can_request && !ui8_walk_btn_state){
+        ui8_WA_blocked=0;
+    }
+
     MS.i_q_setpoint = update_setpoint();
     if (torque_counter>4000&&!Overrun_flag){ //reset after one second without torque on the pedal
     	if (PAS_counter>MP.PAS_timeout){
