@@ -114,6 +114,14 @@ typedef struct
 	FlagStatus 		button_down_flag;
 	FlagStatus 		brake_active_flag;
 
+	//--- SOC / Range (runtime, not persisted in EEPROM) ---
+	float       	remaining_mah;   // coulomb counter: charge left in pack [mAh]
+	float       	used_wh;         // energy drawn this trip [Wh] (signed; regen subtracts)
+	float       	avg_wh_per_km;   // EMA consumption used for range [Wh/km]
+	float       	soc_real;        // SOC from coulomb counting [%]
+	float       	soc_display;     // SOC shown to user (filtered) [%]
+	int8_t        	soc_voltage;     // SOC from IR-compensated OCV lookup [%]
+
 }MotorState_t;
 
 typedef struct
@@ -151,6 +159,13 @@ typedef struct
 	uint8_t 		ext_boost_duration[6];
 	uint8_t 		ext_boost_strength[6];
 	q31_t 			angle_correction;
+
+	//--- Battery SOC / Range params (appended at end to keep EEPROM offsets stable) ---
+	uint16_t       	battery_capacity_mah;           // expected capacity, Canable Para1[7..8]
+	uint16_t       	battery_capacity_estimated_mah; // learned capacity (slow adaptation)
+	uint16_t       	r_batt_mohm;                    // pack internal resistance for IR comp [mOhm]
+	uint8_t       	limp_soc_limit;                 // Canable Para1[10], 0xFF = disabled
+	uint8_t       	limp_soc_limit_stage2;          // Canable Para1[11], 0xFF = disabled
 
 }MotorParams_t;
 

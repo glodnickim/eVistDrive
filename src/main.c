@@ -36,11 +36,31 @@ OF SUCH DAMAGE.
 #include "FOC.h"
 #include "CAN_Display.h"
 #include "parser.h"
+#include <math.h>
+#include <string.h>
 uint16_t adc_value[9];
 
 #define FMC_PAGE_SIZE           ((uint16_t)0x800U)
 #define FMC_WRITE_START_ADDR    ((uint32_t)0x0803F000U) //Page 126, Page size 2kB
 #define FMC_WRITE_END_ADDR      ((uint32_t)0x0803F800U) //just one page
+
+//--- SOC state persistence: dedicated wear-leveled page 127 (above the param page) ---
+#define SOC_FLASH_ADDR          ((uint32_t)0x0803F800U) //Page 127, separate from params
+#define SOC_SLOT_SIZE           ((uint32_t)32U)         //bytes per slot
+#define SOC_SLOT_WORDS          (SOC_SLOT_SIZE/4U)      //8 words
+#define SOC_NUM_SLOTS           (FMC_PAGE_SIZE/SOC_SLOT_SIZE) //64 slots
+
+typedef struct {
+	uint32_t seq;             //monotonic sequence (0xFFFFFFFF = empty)
+	float    remaining_mah;
+	float    used_wh;
+	uint16_t capacity_est_mah;
+	uint16_t soc_real_x10;    //SOC*10
+	uint32_t last_voltage_mv;
+	uint32_t cycle_charge_mah;
+	uint32_t reserved;
+	uint32_t crc;             //crc32 over first 28 bytes
+} soc_slot_t;
 //#define FMC_OFFSET_PARA0      	((uint32_t)28) //starts after hall angles
 //#define FMC_OFFSET_PARA1      	FMC_OFFSET_PARA0 + ((uint32_t)64) //starts after Para1
 //#define FMC_OFFSET_PARA2      	FMC_OFFSET_PARA1 + ((uint32_t)64) //starts after Para1
@@ -93,6 +113,14 @@ void read_virtual_eeprom(void);
 uint8_t interpolate_assistfactor(void);
 int8_t calculate_SOC(uint16_t voltage, uint8_t cells_in_series);
 void print_debug_on_CAN(void);
+//--- SOC / Range ---
+void soc_init(void);
+void soc_update(void);            //called at ~1 Hz
+uint8_t soc_state_load(void);
+void soc_state_save(void);
+uint32_t soc_crc32(const uint8_t* data, uint32_t len);
+float compute_limp_factor(float soc);
+float default_wh_km_for_level(uint8_t lvl);
 void Speed_processing(void);
 uint16_t map_rezi(int32_t actual_value, int32_t actual_time, int32_t timeout, int32_t decay_base);
 uint16_t update_setpoint(void);
@@ -192,6 +220,22 @@ uint8_t Overrun_flag = 0;
 uint32_t timeout = 0xFFFF;
 uint8_t transmit_mailbox = 0;
 int32_t battery_current_cumulated=0;
+//--- SOC / Range runtime globals ---
+int32_t bat_current_offset=CAL_BAT_I_OFFSET; //zero-current ADC offset, calibrated at startup
+float soc_mAs_acc=0;                 //charge accumulator [mA*s] within current 1s window
+uint16_t soc_tick_counter=0;        //counts reg_ADC ticks (~4kHz) towards 1s
+uint8_t soc_one_second_flag=0;
+uint32_t rest_seconds=0;            //consecutive seconds with |I| < I_REST_MA
+uint32_t soc_save_seconds=0;        //seconds since last flash save
+float soc_last_saved=0;            //SOC_real at last save
+float trip_distance_m_last=0;      //distance marker for range-learning window
+uint8_t soc_have_real_consumption=0; //set once EMA learns real Wh/km this power cycle
+float limp_factor=1.0f;            //motor power scale from limp mode (1.0 = full)
+uint32_t soc_seq=0;                //current highest slot sequence
+int32_t soc_slot_index=-1;        //index of latest written slot (-1 = none)
+float cycle_start_soc=-1.0f;      //SOC at start of a discharge cycle (-1 = none)
+float cycle_discharge_mah=0;      //accumulated discharge during the cycle
+uint8_t shutdown_saved=0;         //guard: save state only once on shutdown
 uint32_t Speedx100_cumulated=0;
 uint32_t torque_cumulated=0;
 uint8_t array_temp[88];
@@ -376,6 +420,24 @@ int main(void)
 	helper=((float)1.0/((float)1.0+(float)MP.Cadence_exponent));
     //autodetect();
 
+    // calibrate battery current zero offset (motor off, ~no load) for coulomb counting
+    {
+        int32_t acc=0;
+        for (int i = 0; i < 64; i++){
+            acc+=adc_value[0];
+            while(!reg_ADC_flag);
+            reg_ADC_flag=0;
+        }
+        acc>>=6;
+        if(acc>CAL_BAT_I_OFFSET-200 && acc<CAL_BAT_I_OFFSET+200) bat_current_offset=acc;
+    }
+    // settle voltage/current filters, then seed SOC from flash or open-circuit voltage
+    for (int i = 0; i < 256; i++){
+        while(!reg_ADC_flag);
+        reg_ADC_processing();
+    }
+    soc_init();
+
     while (1){
     	fwdgt_counter_reload();
 
@@ -406,6 +468,8 @@ int main(void)
     	else MS.brake_active_flag=0;
     	// update scaled current and speed
     	if(MS.assist_level!=assist_level_old){
+    		//re-seed range consumption to the new mode's default until real ride data is learned
+    		if(!soc_have_real_consumption) MS.avg_wh_per_km=default_wh_km_for_level(MS.assist_level);
     		speedlimitx100_scaled=MP.speedLimitx100*MP.assist_settings[level_to_array_element[MS.assist_level]][1]/100;
     		phase_current_max_scaled=MP.phase_current_max*MP.assist_settings[level_to_array_element[MS.assist_level]][0]/100;
         	MS.TQfilter=level_to_array_element[MS.assist_level];
@@ -448,7 +512,16 @@ int main(void)
             	sendCAN_Poll(&MP,&MS,Poll_commands[pollnumber]);
             	pollnumber++;
             	MS.int_Temperature = T_NTC(adc_value[6]);
-            	MS.SOC = calculate_SOC(MS.Voltage, (uint8_t) ((float)MP.system_voltage/3.6));
+            	if(soc_one_second_flag){
+            		soc_one_second_flag=0;
+            		soc_update(); //1 Hz: coulomb -> SOC_real, OCV correction, SOC_display, range, periodic save
+            		//apply limp-mode power scaling to the phase current limit (recompute base to avoid compounding)
+            		limp_factor = compute_limp_factor(MS.soc_display);
+            		{
+            			uint16_t base_phase = MP.phase_current_max*MP.assist_settings[level_to_array_element[MS.assist_level]][0]/100;
+            			phase_current_max_scaled = (int16_t)((float)base_phase * limp_factor);
+            		}
+            	}
             	//toggle speed pin
             	//gpio_bit_write(GPIOB, GPIO_PIN_0,(bit_status)(1-gpio_input_bit_get(GPIOB, GPIO_PIN_0)));
             	if(Speed_counter>20000) MS.Speedx100=0;
@@ -457,6 +530,7 @@ int main(void)
 				if(adc_value[5]<2800)shutoffcounter++; //raw value is 4095 without button pressed, about 3300 with "down" button pressed and about 2400 with on/off button pressed.
 				else shutoffcounter=0;
 				if(shutoffcounter>50){
+					if(!shutdown_saved){ soc_state_save(); shutdown_saved=1; } //persist SOC before power down
 					timer_primary_output_config(TIMER0,DISABLE); //stop PWM output
 					GPIO_BC(GPIOB) = GPIO_PIN_4; //DC/DC enable off
 				    GPIO_BC(GPIOB) = GPIO_PIN_5; // Display off
@@ -1209,7 +1283,7 @@ void Speed_processing(void)
 void reg_ADC_processing(void)
 {
 	battery_current_cumulated-=battery_current_cumulated>>6;
-	battery_current_cumulated+= (adc_value[0]-CAL_BAT_I_OFFSET);
+	battery_current_cumulated+= (adc_value[0]-bat_current_offset);
 	MS.Battery_Current=(int32_t)((float)(battery_current_cumulated>>6)*CAL_BAT_I); //Battery current in mA
 	voltage_raw_cumulated-=voltage_raw_cumulated>>6;
 	voltage_raw_cumulated+=adc_value[3];
@@ -1224,7 +1298,12 @@ void reg_ADC_processing(void)
 	MS.calories=MP.angle_correction/one_deg;
 	MS.torque_on_crank=(((adc_value[2])*3300)>>12)+torque_offset_correction; //map ADC value to mV
 	if(MS.torque_on_crank>760&&PAS_counter<MP.PAS_timeout)torque_counter=0;//reset counter, if pressure on pedal and pedals rotating
-	MS.range=Overrun_flag*100;//on/off button line
+	//--- coulomb counting (signed: discharge>0 reduces charge, regen<0 adds back) ---
+	soc_mAs_acc += (float)MS.Battery_Current / 4000.0f; //mA * (1/4000 s) per ~4kHz tick
+	if(++soc_tick_counter >= 4000){                      //~1 second elapsed
+		soc_tick_counter = 0;
+		soc_one_second_flag = 1;
+	}
     slow_loop_counter ++;
     if(torque_counter<64000)torque_counter++;
     if(PAS_counter<64000)PAS_counter++;
@@ -1670,8 +1749,9 @@ void get_standstill_position(){
 }
 
 int8_t calculate_SOC(uint16_t voltage, uint8_t cells_in_series){ //interpolate from lookup table
-    float voltages[] = {2.9, 3.15, 3.30, 3.42, 3.55, 3.60, 3.65, 3.70, 3.75, 3.80, 3.85, 3.90, 4.00, 4.10, 4.20};
-    float soc_values[] = {0, 12, 22, 32, 44, 48, 55, 60, 68, 72, 77, 88, 95, 97, 100};
+    //measured LG M58T discharge curve @3A (home measurements, "Srednia LG" per-cell average), ascending
+    float voltages[]   = {2.799, 2.968, 3.086, 3.247, 3.450, 3.569, 3.681, 3.774, 3.853, 3.946, 3.989, 4.070};
+    float soc_values[] = {0,     5,     10,    20,    30,    40,    50,    60,    70,    80,    90,    100};
     int length = sizeof(voltages) / sizeof(voltages[0]);
     float cell_voltage = (float)voltage/((float)cells_in_series*1000);
     if (cell_voltage <= voltages[0]) {
@@ -1689,6 +1769,220 @@ int8_t calculate_SOC(uint16_t voltage, uint8_t cells_in_series){ //interpolate f
         }
     }
     return (int8_t)soc_values[length - 1];
+}
+
+//=====================  SOC / Range implementation  =====================
+
+uint32_t soc_crc32(const uint8_t* data, uint32_t len){
+	uint32_t crc=0xFFFFFFFFU;
+	for(uint32_t i=0;i<len;i++){
+		crc^=data[i];
+		for(int b=0;b<8;b++){
+			crc=(crc>>1)^(0xEDB88320U & (uint32_t)(-(int32_t)(crc&1U)));
+		}
+	}
+	return ~crc;
+}
+
+float compute_limp_factor(float soc){
+	uint8_t lim=MP.limp_soc_limit;
+	if(lim==LIMP_DISABLED || lim==0) return 1.0f;          //disabled
+	float fl=(float)LIMP_FLOOR_PCT/100.0f;
+	if(soc<0) soc=0;
+	if(soc>=lim) return 1.0f;
+	uint8_t s2=MP.limp_soc_limit_stage2;
+	float f;
+	if(s2!=LIMP_DISABLED && s2>0 && s2<lim){
+		float p2=(float)LIMP_STAGE2_PCT/100.0f;
+		if(soc>s2) f=p2+(1.0f-p2)*(soc-(float)s2)/(float)(lim-s2);  //s2..lim : p2 -> 1.0
+		else       f=fl+(p2-fl)*soc/(float)s2;                      //0..s2  : floor -> p2
+	} else {
+		f=fl+(1.0f-fl)*soc/(float)lim;                             //0..lim : floor -> 1.0
+	}
+	if(f<fl) f=fl;
+	if(f>1.0f) f=1.0f;
+	return f;
+}
+
+float default_wh_km_for_level(uint8_t lvl){
+	//seed consumption per assist level (0..9). Eco=2:7, Tour=4:9, Sport=6:12, Sport+=8:16, Boost=9:18
+	static const uint8_t t[10]={6,6,7,7,9,9,12,13,16,18};
+	if(lvl>9) lvl=5;
+	return (float)t[lvl];
+}
+
+uint8_t soc_state_load(void){
+	soc_slot_t* slot;
+	uint32_t best_seq=0; int32_t best=-1;
+	for(int i=0;i<SOC_NUM_SLOTS;i++){
+		slot=(soc_slot_t*)(SOC_FLASH_ADDR+(uint32_t)i*SOC_SLOT_SIZE);
+		if(slot->seq==0xFFFFFFFFU) continue;
+		if(soc_crc32((const uint8_t*)slot,28)!=slot->crc) continue;
+		if(slot->seq>=best_seq){ best_seq=slot->seq; best=i; }
+	}
+	if(best<0) return 0;
+	slot=(soc_slot_t*)(SOC_FLASH_ADDR+(uint32_t)best*SOC_SLOT_SIZE);
+	MS.remaining_mah=slot->remaining_mah;
+	MS.soc_real=(float)slot->soc_real_x10/10.0f;
+	if(slot->capacity_est_mah && slot->capacity_est_mah!=0xFFFF) MP.battery_capacity_estimated_mah=slot->capacity_est_mah;
+	soc_seq=best_seq; soc_slot_index=best;
+	return 1;
+}
+
+void soc_state_save(void){
+	fwdgt_counter_reload();
+	soc_slot_t s;
+	memset(&s,0,sizeof(s));
+	s.seq=++soc_seq;
+	s.remaining_mah=MS.remaining_mah;
+	s.used_wh=MS.used_wh;
+	s.capacity_est_mah=MP.battery_capacity_estimated_mah;
+	s.soc_real_x10=(uint16_t)(MS.soc_real*10.0f);
+	s.last_voltage_mv=(uint32_t)MS.Voltage;
+	s.cycle_charge_mah=0;
+	s.reserved=0;
+	s.crc=soc_crc32((const uint8_t*)&s,28);
+
+	int32_t next=soc_slot_index+1;
+	uint32_t* chk=(uint32_t*)(SOC_FLASH_ADDR+(uint32_t)((next>=0 && next<SOC_NUM_SLOTS)?next:0)*SOC_SLOT_SIZE);
+	if(next>=SOC_NUM_SLOTS || next<0 || *chk!=0xFFFFFFFFU){
+		//page full or target slot not erased -> erase whole page and restart at slot 0
+		fmc_unlock();
+		fmc_flag_clear(FMC_FLAG_BANK0_END); fmc_flag_clear(FMC_FLAG_BANK0_WPERR); fmc_flag_clear(FMC_FLAG_BANK0_PGERR);
+		fmc_page_erase(SOC_FLASH_ADDR);
+		fmc_flag_clear(FMC_FLAG_BANK0_END); fmc_flag_clear(FMC_FLAG_BANK0_WPERR); fmc_flag_clear(FMC_FLAG_BANK0_PGERR);
+		fmc_lock();
+		fwdgt_counter_reload();
+		next=0;
+	}
+	uint32_t addr=SOC_FLASH_ADDR+(uint32_t)next*SOC_SLOT_SIZE;
+	uint32_t* w=(uint32_t*)&s;
+	fmc_unlock();
+	for(uint32_t k=0;k<SOC_SLOT_WORDS;k++){
+		fmc_word_program(addr,w[k]);
+		addr+=4;
+		fmc_flag_clear(FMC_FLAG_BANK0_END); fmc_flag_clear(FMC_FLAG_BANK0_WPERR); fmc_flag_clear(FMC_FLAG_BANK0_PGERR);
+	}
+	fmc_lock();
+	soc_slot_index=next;
+	soc_last_saved=MS.soc_real;
+	soc_save_seconds=0;
+	fwdgt_counter_reload();
+}
+
+void soc_init(void){
+	//sanitize EEPROM-loaded params (new fields read 0xFF on first boot after firmware upgrade)
+	if(MP.battery_capacity_mah==0 || MP.battery_capacity_mah==0xFFFF) MP.battery_capacity_mah=BATTERY_CAPACITY_MAH;
+	if(MP.battery_capacity_estimated_mah==0 || MP.battery_capacity_estimated_mah==0xFFFF) MP.battery_capacity_estimated_mah=MP.battery_capacity_mah;
+	if(MP.r_batt_mohm==0 || MP.r_batt_mohm==0xFFFF) MP.r_batt_mohm=R_BATT_MOHM;
+
+	soc_mAs_acc=0; soc_tick_counter=0; soc_one_second_flag=0;
+	uint8_t cells=(uint8_t)((float)MP.system_voltage/3.6f);
+	float i_a=(float)MS.Battery_Current/1000.0f;
+	uint16_t u_comp=(uint16_t)((float)MS.Voltage + i_a*(float)MP.r_batt_mohm);
+	int8_t soc_ocv=calculate_SOC(u_comp,cells);
+
+	//seed range consumption with a per-mode default
+	MS.avg_wh_per_km=default_wh_km_for_level(MS.assist_level);
+	MS.used_wh=0;
+	trip_distance_m_last=MS.distance_since_startup;
+	soc_have_real_consumption=0;
+
+	if(soc_state_load()){
+		//restart: detect recharge while powered off (no RTC -> OCV jump vs stored SOC)
+		if((float)soc_ocv-MS.soc_real > (float)RECHARGE_MARGIN_PCT){
+			MS.soc_real=(float)soc_ocv;                 //battery was charged -> trust OCV
+			if(MS.soc_real>100)MS.soc_real=100;
+			MS.remaining_mah=MS.soc_real/100.0f*(float)MP.battery_capacity_estimated_mah;
+		}
+	} else {
+		//first ever boot: seed from OCV
+		MS.soc_real=(float)soc_ocv;
+		MS.remaining_mah=MS.soc_real/100.0f*(float)MP.battery_capacity_estimated_mah;
+	}
+	MS.soc_voltage=soc_ocv;
+	MS.soc_display=MS.soc_real;
+	MS.SOC=(uint8_t)(MS.soc_real+0.5f);
+	soc_last_saved=MS.soc_real;
+	soc_save_seconds=0;
+	cycle_start_soc=-1.0f;
+	cycle_discharge_mah=0;
+}
+
+void soc_update(void){
+	//--- integrate this second's charge ---
+	float dmah=soc_mAs_acc/3600.0f;   //mA*s -> mAh (signed)
+	soc_mAs_acc=0;
+	MS.remaining_mah-=dmah;            //discharge reduces; regen (dmah<0) adds back
+	if(MS.remaining_mah>(float)MP.battery_capacity_estimated_mah) MS.remaining_mah=(float)MP.battery_capacity_estimated_mah;
+	if(MS.remaining_mah<0) MS.remaining_mah=0;
+	MS.used_wh+=(dmah/1000.0f)*((float)MS.Voltage/1000.0f); //Wh this second (signed)
+	MS.soc_real=MS.remaining_mah/(float)MP.battery_capacity_estimated_mah*100.0f;
+
+	//--- IR-compensated OCV lookup ---
+	uint8_t cells=(uint8_t)((float)MP.system_voltage/3.6f);
+	float i_a=(float)MS.Battery_Current/1000.0f;
+	uint16_t u_comp=(uint16_t)((float)MS.Voltage + i_a*(float)MP.r_batt_mohm);
+	MS.soc_voltage=calculate_SOC(u_comp,cells);
+
+	//--- slow OCV correction only at rest (anti-drift), never a hard jump ---
+	if(MS.Battery_Current<I_REST_MA && MS.Battery_Current>-I_REST_MA){
+		if(rest_seconds<65000) rest_seconds++;
+		if(rest_seconds>=REST_TIME_S){
+			MS.soc_real+=OCV_CORR_GAIN*((float)MS.soc_voltage-MS.soc_real);
+			MS.remaining_mah=MS.soc_real/100.0f*(float)MP.battery_capacity_estimated_mah;
+		}
+	} else {
+		rest_seconds=0;
+	}
+
+	//--- SOC_display low-pass with max step per minute (anti-jump) ---
+	float diff=MS.soc_real-MS.soc_display;
+	float step=SOC_DISP_GAIN*diff;
+	float max_step=SOC_DISP_MAX_STEP/60.0f; //per second
+	if(MS.soc_real<10.0f) step=diff;        //near cutoff: converge fast, don't lag high
+	if(step>max_step)step=max_step;
+	if(step<-max_step)step=-max_step;
+	MS.soc_display+=step;
+	if(MS.soc_display<0)MS.soc_display=0;
+	if(MS.soc_display>100)MS.soc_display=100;
+	MS.SOC=(uint8_t)(MS.soc_display+0.5f);
+
+	//--- Range from remaining energy / average consumption ---
+	float remaining_wh=(MS.remaining_mah/1000.0f)*(float)MP.system_voltage;
+	float dist_m=MS.distance_since_startup-trip_distance_m_last;
+	if(dist_m>=RANGE_LEARN_MIN_M && MS.Speedx100>300){ //moving > 3 km/h
+		float wh_km_now=MS.used_wh/(dist_m/1000.0f);
+		if(wh_km_now>1.0f && wh_km_now<100.0f){
+			MS.avg_wh_per_km+=RANGE_EMA_ALPHA*(wh_km_now-MS.avg_wh_per_km);
+			soc_have_real_consumption=1; //real data available -> stop re-seeding on mode change
+		}
+		trip_distance_m_last=MS.distance_since_startup;
+		MS.used_wh=0;
+	}
+	if(MS.avg_wh_per_km>0.5f) MS.range=(uint16_t)(remaining_wh/MS.avg_wh_per_km);
+	else MS.range=0;
+
+	//--- capacity adaptation over (near) full discharge cycles ---
+	if(dmah>0) cycle_discharge_mah+=dmah;
+	if(cycle_start_soc<0 && MS.soc_real>92.0f && rest_seconds>=REST_TIME_S){
+		cycle_start_soc=MS.soc_real; cycle_discharge_mah=0;
+	}
+	if(cycle_start_soc>90.0f && MS.soc_real<12.0f){
+		float frac=(cycle_start_soc-MS.soc_real)/100.0f;
+		if(frac>0.7f){
+			float measured=cycle_discharge_mah/frac;
+			float lo=(float)MP.battery_capacity_mah*0.5f, hi=(float)MP.battery_capacity_mah*1.5f;
+			if(measured>lo && measured<hi)
+				MP.battery_capacity_estimated_mah=(uint16_t)(0.95f*(float)MP.battery_capacity_estimated_mah+0.05f*measured);
+		}
+		cycle_start_soc=-1.0f; cycle_discharge_mah=0;
+	}
+
+	//--- periodic save (flash wear protection) ---
+	if(soc_save_seconds<4000000000U) soc_save_seconds++;
+	if(fabsf(MS.soc_real-soc_last_saved)>=(float)SOC_SAVE_DELTA && soc_save_seconds>=SAVE_MIN_INTERVAL_S)
+		soc_state_save();
 }
 
 /*!

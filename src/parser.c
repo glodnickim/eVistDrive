@@ -34,6 +34,14 @@ void parse_DPparams(MotorParams_t* MP){
 	MP->walk_assist_current = Para1[36];
 	if (MP->walk_assist_current == 0 || MP->walk_assist_current > 100) MP->walk_assist_current = 30; // fallback: 30%
 
+	// Battery capacity (Canable "Expected Battery Capacity", Para1[7..8], mAh)
+	MP->battery_capacity_mah = Para1[7] + (Para1[8]<<8);
+	if (MP->battery_capacity_mah == 0 || MP->battery_capacity_mah == 0xFFFF)
+		MP->battery_capacity_mah = BATTERY_CAPACITY_MAH; // fallback when not set in Canable
+	// Limp mode SoC thresholds (Canable Para1[10] / Para1[11], 0xFF = disabled)
+	MP->limp_soc_limit        = Para1[10];
+	MP->limp_soc_limit_stage2 = Para1[11];
+
 	memcpy(&MP->assist_profile[0][0],&Para2[0],30);
 	memcpy(&MP->ext_boost_duration[0]+1,&Para2[0]+31,5);
 	memcpy(&MP->ext_boost_strength[0]+1,&Para2[0]+37,5);
@@ -86,6 +94,11 @@ void parse_MOparams(MotorParams_t* MP){
 	Para1[36]= MP->walk_assist_current;
 	Para1[60]= MP->walk_assist_speed&0xFF;
 	Para1[61]= (MP->walk_assist_speed>>8)&0xFF;
+	// Battery capacity + limp mode (echo back so Canable shows current values)
+	Para1[7] = MP->battery_capacity_mah & 0xFF;
+	Para1[8] = (MP->battery_capacity_mah>>8) & 0xFF;
+	Para1[10]= MP->limp_soc_limit;
+	Para1[11]= MP->limp_soc_limit_stage2;
 	memcpy(&Para2[0],&MP->assist_profile[0][0],30);
 	memcpy(&Para2[0]+31,&MP->ext_boost_duration[0]+1,5);
 	memcpy(&Para2[0]+37,&MP->ext_boost_strength[0]+1,5);
@@ -132,6 +145,11 @@ void InitEEPROM(MotorParams_t* MP){
 	MP->system_voltage = SYSTEM_VOLTAGE;
 	MP->max_voltage = MAX_VOLTAGE;
 	MP->decay_base =255;
+	MP->battery_capacity_mah = BATTERY_CAPACITY_MAH;
+	MP->battery_capacity_estimated_mah = BATTERY_CAPACITY_MAH;
+	MP->r_batt_mohm = R_BATT_MOHM;
+	MP->limp_soc_limit = LIMP_DISABLED;
+	MP->limp_soc_limit_stage2 = LIMP_DISABLED;
 	for (k=0; k < 6; k++){
 		for (l=0; l < 7; l++){
 			MP->assist_profile[k][l]=(k+1)*20;

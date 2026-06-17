@@ -104,6 +104,26 @@
 #define MAX_VOLTAGE 59// in V
 
 //---------------------------------------------------------------------
+//Battery SOC & Range settings (coulomb counting + voltage correction)
+#define BATTERY_CAPACITY_MAH 14000   // default expected capacity (mAh), overwritten by Canable "Expected Battery Capacity" (Para1[7..8])
+#define R_BATT_MOHM 80               // pack internal resistance for IR compensation [mOhm]
+#define I_REST_MA 500                // |battery current| below this counts as "at rest" for OCV correction [mA]
+#define REST_TIME_S 30               // seconds at rest before slow OCV correction is applied
+#define OCV_CORR_GAIN 0.02f          // gain pulling SOC_real towards SOC_voltage when at rest
+#define SOC_DISP_GAIN 0.05f          // SOC_display low-pass gain per slow update towards SOC_real
+#define SOC_DISP_MAX_STEP 1.0f       // max SOC_display change per minute [%] (anti-jump)
+#define SOC_SAVE_DELTA 3             // save state to flash when |SOC change since last save| >= this [%]
+#define SAVE_MIN_INTERVAL_S 600      // ...but not more often than this [s]
+#define WH_PER_KM_DEFAULT 12         // fallback consumption seed [Wh/km] before real data is available
+#define RANGE_LEARN_MIN_M 300        // start blending real consumption after this distance [m]
+#define RANGE_EMA_ALPHA 0.05f        // EMA gain for avg_wh_per_km
+#define RECHARGE_MARGIN_PCT 5        // min OCV-vs-stored SOC rise to treat restart as a recharge [%]
+//Limp mode (motor power reduction at low SoC), Canable Para1[10] / Para1[11], 0xFF = disabled
+#define LIMP_FLOOR_PCT 30            // motor power floor at 0% SoC [%]
+#define LIMP_STAGE2_PCT 15           // motor power at/below stage-2 SoC threshold [%]
+#define LIMP_DISABLED 0xFF
+
+//---------------------------------------------------------------------
 //torquesensor settings
 #define TS_COEF 4
 #define TS_MODE
