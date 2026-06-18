@@ -132,6 +132,7 @@ uint16_t torque_counter=0;
 uint16_t last_pas_period=CAD_TO_MAX; //last PAS inter-pulse period (ticks) for adaptive cadence-hold
 uint8_t pedaling_active=0;           //1 while cranks turning (PAS within adaptive timeout)
 uint8_t overtemp_stage=0;           //thermal protection stage: 0 ok, 1 derate/warn, 2 cutoff
+uint8_t assist_latched=0;           //1 after assist engaged: hold MIN_ASSIST_CURRENT until a stop condition
 uint16_t err_pulse_counter=0;       //seconds counter for pulsed Error 10 in stage 1
 uint16_t Speed_counter=0;
 int32_t ButtonVoltageCumulated=620<<6;
@@ -2210,6 +2211,8 @@ uint16_t map_rezi(int32_t actual_value, int32_t actual_time, int32_t timeout, in
 
 uint16_t update_setpoint(void){
 
+				//clear latched minimum assist on hard stop conditions
+				if(MS.brake_active_flag || Backwards_counter>=4 || !pedaling_active || overtemp_stage>=2) assist_latched=0;
 				//calculate iq setpoint
 	            //check brake with first priority
 	            if(MS.brake_active_flag)MS.i_q_setpoint_temp=0;
@@ -2239,6 +2242,9 @@ uint16_t update_setpoint(void){
 						}
 						//driveline preload: small current floor while pedalling to take up slack (instant response on press)
 						if(pedaling_active && MS.i_q_setpoint_temp<PRELOAD_CURRENT) MS.i_q_setpoint_temp=PRELOAD_CURRENT;
+						//latched minimum assist: once engaged (assist ran), hold a floor while pedalling instead of cutting to 0 on eased pressure
+						if(MS.i_q_setpoint_temp > MIN_ASSIST_CURRENT) assist_latched=1;
+						if(assist_latched && pedaling_active && MS.i_q_setpoint_temp < MIN_ASSIST_CURRENT) MS.i_q_setpoint_temp = MIN_ASSIST_CURRENT;
 					}
 					else MS.i_q_setpoint_temp=0; //cut motor power on pedaling backwards
 						//throttle override
