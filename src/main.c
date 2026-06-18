@@ -131,6 +131,8 @@ uint16_t PAS_counter=0;
 uint16_t torque_counter=0;
 uint16_t last_pas_period=CAD_TO_MAX; //last PAS inter-pulse period (ticks) for adaptive cadence-hold
 uint8_t pedaling_active=0;           //1 while cranks turning (PAS within adaptive timeout)
+uint8_t overtemp_stage=0;           //thermal protection stage: 0 ok, 1 derate/warn, 2 cutoff
+uint16_t err_pulse_counter=0;       //seconds counter for pulsed Error 10 in stage 1
 uint16_t Speed_counter=0;
 int32_t ButtonVoltageCumulated=620<<6;
 #define iabs(x) (((x) >= 0)?(x):-(x))
@@ -529,6 +531,20 @@ int main(void)
             			uint16_t base_phase = MP.phase_current_max*MP.assist_settings[level_to_array_element[MS.assist_level]][0]/100;
             			phase_current_max_scaled = (int16_t)((float)base_phase * limp_factor);
             		}
+            		//--- thermal protection state (hysteresis) + Error 10 signalling ---
+            		if(overtemp_stage==0){
+            			if(MS.int_Temperature>=TEMP_CUTOFF) overtemp_stage=2;
+            			else if(MS.int_Temperature>=TEMP_WARN) overtemp_stage=1;
+            		} else { //already warm: drop only below TEMP_CLEAR (hysteresis)
+            			if(MS.int_Temperature>=TEMP_CUTOFF) overtemp_stage=2;
+            			else if(MS.int_Temperature<TEMP_CLEAR) overtemp_stage=0;
+            			else overtemp_stage=1;
+            		}
+            		if(overtemp_stage==2){ MS.error_state=ERR_OVERTEMP; err_pulse_counter=0; } //solid
+            		else if(overtemp_stage==1){ //pulsed: ON for ERR_PULSE_ON_S, OFF for ERR_PULSE_OFF_S (HMI blinks)
+            			if(++err_pulse_counter>=(ERR_PULSE_ON_S+ERR_PULSE_OFF_S)) err_pulse_counter=0;
+            			MS.error_state=(err_pulse_counter<ERR_PULSE_ON_S)?ERR_OVERTEMP:0;
+            		} else { MS.error_state=0; err_pulse_counter=0; }
             	}
             	//toggle speed pin
             	//gpio_bit_write(GPIOB, GPIO_PIN_0,(bit_status)(1-gpio_input_bit_get(GPIOB, GPIO_PIN_0)));

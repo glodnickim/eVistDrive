@@ -488,6 +488,13 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 			send_multiframe(Ext_ID_Rx.command, &tx_data[0],tx_data_length );
 			}
 			break;
+		case 0x6007: //Error codes read by HMI; report active code (e.g. 10 overtemp). FORMAT TBD - verify vs real HMI
+			if(Ext_ID_Rx.operation==1){
+				if(MS->error_state) tx_data_length=sprintf(tx_data, "%d", MS->error_state); //active error as ASCII
+				else                tx_data_length=sprintf(tx_data, "0");                    //no error
+				send_multiframe(Ext_ID_Rx.command, &tx_data[0], tx_data_length);
+			}
+			break;
 		case 0x6010: //to do
 			/* initialize transmit message */
 			if(Ext_ID_Rx.operation==1){

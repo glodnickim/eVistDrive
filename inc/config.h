@@ -131,6 +131,15 @@
 #define PRELOAD_CURRENT 10 // i_q units (like phase_current_max): small floor while pedaling to take up driveline slack; 0 = off
 
 //---------------------------------------------------------------------
+//Thermal protection (controller NTC) + Error 10 (overtemperature) signalling
+#define TEMP_WARN 75       // degC: start of power derating + stage 1 (pulsed Error 10)
+#define TEMP_CUTOFF 90     // degC: power -> 0 + stage 2 (solid Error 10)
+#define TEMP_CLEAR 68      // degC: clear thermal state (hysteresis)
+#define ERR_OVERTEMP 10    // Bafang error code 10 = motor/overtemperature
+#define ERR_PULSE_ON_S 2   // stage 1: seconds the error code is reported (HMI shows it)
+#define ERR_PULSE_OFF_S 6  // stage 1: seconds the error code is cleared (so HMI blinks, not too often)
+
+//---------------------------------------------------------------------
 //torquesensor settings
 #define TS_COEF 4
 #define TS_MODE
