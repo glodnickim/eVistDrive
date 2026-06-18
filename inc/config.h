@@ -128,7 +128,7 @@
 #define CAD_TO_FACTOR 2   // assist-hold timeout = factor x last PAS pulse period (wait this long for next pulse before "stopped")
 #define CAD_TO_MIN 320    // ticks @4kHz = 80 ms : lower clamp (anti-jitter at high cadence)
 #define CAD_TO_MAX 2800   // ticks @4kHz = 700 ms: upper clamp (bounds stop-lag at very low cadence / stale period)
-#define PRELOAD_CURRENT 10 // i_q units (like phase_current_max): small floor while pedaling to take up driveline slack; 0 = off
+#define PRELOAD_CURRENT 0 // i_q units (like phase_current_max): small floor while pedaling to take up driveline slack; 0 = off (disabled after test: caused motion without pedal pressure)
 
 //---------------------------------------------------------------------
 //Thermal protection (controller NTC) + Error 10 (overtemperature) signalling
