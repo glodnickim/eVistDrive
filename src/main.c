@@ -511,7 +511,13 @@ int main(void)
             	if(pollnumber>2)pollnumber=0;
             	sendCAN_Poll(&MP,&MS,Poll_commands[pollnumber]);
             	pollnumber++;
-            	MS.int_Temperature = T_NTC(adc_value[6]);
+            	// filtr EMA /16 surowego ADC temperatury (wzorzec jak filtr napiecia), tlumi szum/glitch
+            	// TODO(temp-sensor): detekcja rozwartego (ADC~4095) / zwartego (ADC~0) NTC i fail-safe
+            	static uint32_t temp_adc_cumulated = 0;
+            	if(temp_adc_cumulated == 0) temp_adc_cumulated = (uint32_t)adc_value[6] << 4; //init, brak zimnego startu od 0
+            	temp_adc_cumulated -= temp_adc_cumulated >> 4;
+            	temp_adc_cumulated += adc_value[6];
+            	MS.int_Temperature = T_NTC(temp_adc_cumulated >> 4);
             	if(soc_one_second_flag){
             		soc_one_second_flag=0;
             		soc_update(); //1 Hz: coulomb -> SOC_real, OCV correction, SOC_display, range, periodic save
@@ -1295,7 +1301,7 @@ void reg_ADC_processing(void)
 	temp4=MS.i_q_setpoint;
 
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
-	MS.calories=MP.angle_correction/one_deg;
+	MS.calories=(uint16_t)(MS.int_Temperature+3); //temp sterownika na pole calories w HMI (+3 korekta jak w backupie)
 	MS.torque_on_crank=(((adc_value[2])*3300)>>12)+torque_offset_correction; //map ADC value to mV
 	if(MS.torque_on_crank>760&&PAS_counter<MP.PAS_timeout)torque_counter=0;//reset counter, if pressure on pedal and pedals rotating
 	//--- coulomb counting (signed: discharge>0 reduces charge, regen<0 adds back) ---
@@ -2187,8 +2193,8 @@ uint16_t update_setpoint(void){
 	            //low battery ramp down with 3V above battery min voltage
 	            MS.i_q_setpoint_temp=map(voltage_raw_filtered, MP.voltage_min,(MP.voltage_min+176),0,MS.i_q_setpoint_temp);
 
-	            //motor temperature ramp down between 110 and 130°C
-	            MS.i_q_setpoint_temp=map(MS.int_Temperature,110,130,MS.i_q_setpoint_temp,0);
+	            //controller temperature ramp down between 75 and 90°C (M820: NTC mierzy temp sterownika)
+	            MS.i_q_setpoint_temp=map(MS.int_Temperature,75,90,MS.i_q_setpoint_temp,0);
 	            if(MP.legalflag&&!MS.offroadflag){
 
 					if((uint16_cadence_filtered>>3)>15){

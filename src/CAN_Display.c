@@ -267,8 +267,8 @@ void sendCAN_Poll(MotorParams_t* MP, MotorState_t* MS, uint16_t command){
 			transmit_message.tx_data[3] = ((abs(MS->Battery_Current)/10)>>8)&0xFF;
 			transmit_message.tx_data[4] = (MS->Voltage/10)&0xFF;
 			transmit_message.tx_data[5] = ((MS->Voltage/10)>>8)&0xFF;
-			transmit_message.tx_data[6] = MS->u_abs/10+40; //internal temperature
-			transmit_message.tx_data[7] = MS->int_Temperature+40; //motor temperature
+			transmit_message.tx_data[6] = MS->int_Temperature+40; //temp sterownika (M820: jeden czujnik); +40 = offset protokolu, parser PC odejmuje 40
+			transmit_message.tx_data[7] = MS->int_Temperature+40; //ta sama temp sterownika jako "motor temp"; +40 = offset protokolu (NIE przeklamanie)
 
 			/* transmit message */
 			transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
