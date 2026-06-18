@@ -158,6 +158,15 @@
 //#define ADC_BRAKE
 
 //---------------------------------------------------------------------
+//Walk Assist safety settings
+#define WA_BUTTON_THRESHOLD_LOW  3000
+#define WA_BUTTON_THRESHOLD_HIGH 3700
+#define WA_BUTTON_DEBOUNCE       20
+#define WA_BUTTON_RELEASE        20    // probki poza zakresem [LOW,HIGH] by wylaczyc przycisk (anty-chatter)
+#define WA_TIMEOUT_MS            10000
+#define WA_TIMEOUT_TICKS         (WA_TIMEOUT_MS * 4)
+
+//---------------------------------------------------------------------
 #define AUTODETECT 0
 
 #endif /* CONFIG_H_ */

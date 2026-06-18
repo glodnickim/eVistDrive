@@ -109,6 +109,7 @@ typedef struct
 	int8_t 			ext_boost_duration;
 	int8_t 			ext_boost_strength;
 	FlagStatus 		pushassist_flag;
+	FlagStatus 		walk_can_request;
 	FlagStatus 		light_flag;
 	FlagStatus 		button_up_flag;
 	FlagStatus 		button_down_flag;
