@@ -129,6 +129,8 @@ float u32_to_deg=0.00000008381903171539;
 uint16_t slow_loop_counter=0;
 uint16_t PAS_counter=0;
 uint16_t torque_counter=0;
+uint16_t last_pas_period=CAD_TO_MAX; //last PAS inter-pulse period (ticks) for adaptive cadence-hold
+uint8_t pedaling_active=0;           //1 while cranks turning (PAS within adaptive timeout)
 uint16_t Speed_counter=0;
 int32_t ButtonVoltageCumulated=620<<6;
 #define iabs(x) (((x) >= 0)?(x):-(x))
@@ -1250,6 +1252,7 @@ void EXTI2_IRQHandler(void)
 void PAS_processing(void)
 {
 	if(PAS_counter>70){
+		last_pas_period=PAS_counter;//time since previous pulse = pedalling period, for adaptive cadence-hold
 		MS.cadence=10000/PAS_counter;//24 Pulses per crank revolution, 4000 Hz Timer interrupt frequency (for M560 about 48 pulses on speed/direction pin)(4000*60/24)=10000
 		uint16_cadence_filtered-=uint16_cadence_filtered>>3;
 		uint16_cadence_filtered+=MS.cadence;
@@ -1303,7 +1306,12 @@ void reg_ADC_processing(void)
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
 	MS.calories=(uint16_t)(MS.int_Temperature+3); //temp sterownika na pole calories w HMI (+3 korekta jak w backupie)
 	MS.torque_on_crank=(((adc_value[2])*3300)>>12)+torque_offset_correction; //map ADC value to mV
-	if(MS.torque_on_crank>760&&PAS_counter<MP.PAS_timeout)torque_counter=0;//reset counter, if pressure on pedal and pedals rotating
+	//adaptive cadence-hold: keep assist alive while cranks turn; timeout scales with last pedalling period
+	uint16_t cad_to = last_pas_period*CAD_TO_FACTOR;
+	if(cad_to<CAD_TO_MIN) cad_to=CAD_TO_MIN;
+	if(cad_to>CAD_TO_MAX) cad_to=CAD_TO_MAX;
+	pedaling_active = (PAS_counter<cad_to);
+	if(pedaling_active) torque_counter=0; //hold while pedalling; torque only scales force (torque_filtered)
 	//--- coulomb counting (signed: discharge>0 reduces charge, regen<0 adds back) ---
 	soc_mAs_acc += (float)MS.Battery_Current / 4000.0f; //mA * (1/4000 s) per ~4kHz tick
 	if(++soc_tick_counter >= 4000){                      //~1 second elapsed
@@ -2169,6 +2177,8 @@ uint16_t update_setpoint(void){
 							}
 							MS.i_q_setpoint_temp=mapped_torque;
 						}
+						//driveline preload: small current floor while pedalling to take up slack (instant response on press)
+						if(pedaling_active && MS.i_q_setpoint_temp<PRELOAD_CURRENT) MS.i_q_setpoint_temp=PRELOAD_CURRENT;
 					}
 					else MS.i_q_setpoint_temp=0; //cut motor power on pedaling backwards
 						//throttle override
