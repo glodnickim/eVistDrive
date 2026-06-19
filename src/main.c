@@ -527,7 +527,7 @@ int main(void)
             	if(temp_adc_cumulated == 0) temp_adc_cumulated = (uint32_t)adc_value[6] << 4; //init, brak zimnego startu od 0
             	temp_adc_cumulated -= temp_adc_cumulated >> 4;
             	temp_adc_cumulated += adc_value[6];
-            	MS.int_Temperature = T_NTC(temp_adc_cumulated >> 4);
+            	MS.int_Temperature = T_NTC(temp_adc_cumulated >> 4) + TEMP_OFFSET_C; //offset at source -> affects CAN/thermal/HMI
             	if(soc_one_second_flag){
             		soc_one_second_flag=0;
             		soc_update(); //1 Hz: coulomb -> SOC_real, OCV correction, SOC_display, range, periodic save
@@ -1326,7 +1326,7 @@ void reg_ADC_processing(void)
 	temp4=MS.i_q_setpoint;
 
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
-	MS.calories=(uint16_t)(MS.int_Temperature+3); //temp sterownika na pole calories w HMI (+3 korekta jak w backupie)
+	MS.calories=(uint16_t)(MS.int_Temperature); //temp sterownika na pole calories w HMI (offset +3 juz w int_Temperature)
 	MS.torque_on_crank=(((adc_value[2])*3300)>>12)+torque_offset_correction; //map ADC value to mV
 	//adaptive cadence-hold: keep assist alive while cranks turn; timeout scales with last pedalling period
 	uint16_t cad_to = last_pas_period*CAD_TO_FACTOR;

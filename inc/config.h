@@ -139,6 +139,7 @@
 #define ERR_OVERTEMP 10    // Bafang error code 10 = motor/overtemperature
 #define ERR_PULSE_ON_S 2   // stage 1: seconds the error code is reported (HMI shows it)
 #define ERR_PULSE_OFF_S 6  // stage 1: seconds the error code is cleared (so HMI blinks, not too often)
+#define TEMP_OFFSET_C 3    // global calibration offset added to int_Temperature at source (affects CAN, thermal, HMI)
 
 //---------------------------------------------------------------------
 //torquesensor settings
