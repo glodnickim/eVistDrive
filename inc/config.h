@@ -130,6 +130,7 @@
 #define CAD_TO_MIN 320    // ticks @4kHz = 80 ms : lower clamp (anti-jitter at high cadence)
 #define CAD_TO_MAX 2000   // ticks @4kHz = 500 ms: upper clamp (bounds stop-lag at very low cadence / stale period)
 #define STOP_RAMP_TICKS 800 // ticks @4kHz = 200 ms: linear assist ramp-down once pedalling stop is detected
+#define WA_RAMP_TICKS 2800  // ticks @4kHz = 700 ms: linear power ramp-up when Walk Assist engages (no sudden jump)
 #define PRELOAD_CURRENT 0 // i_q units (like phase_current_max): small floor while pedaling to take up driveline slack; 0 = off (disabled after test: caused motion without pedal pressure)
 #define MIN_ASSIST_CURRENT 20 // i_q units: latched minimum assist AFTER engagement (eases off pressure -> hold this instead of 0); 0 = off
 

@@ -134,6 +134,7 @@ uint8_t pedaling_active=0;           //1 while cranks turning (PAS within adapti
 uint8_t overtemp_stage=0;           //thermal protection stage: 0 ok, 1 derate/warn, 2 cutoff
 uint8_t assist_latched=0;           //1 after assist engaged: hold MIN_ASSIST_CURRENT until a stop condition
 uint16_t stop_ramp_ticks=0;         //counts up while not pedalling: linear assist ramp-down to 0 over STOP_RAMP_TICKS
+uint16_t wa_ramp_ticks=0;           //counts up while Walk Assist engaged: linear power ramp-up over WA_RAMP_TICKS
 uint16_t err_pulse_counter=0;       //seconds counter for pulsed Error 10 in stage 1
 uint16_t Speed_counter=0;
 int32_t ButtonVoltageCumulated=620<<6;
@@ -2215,12 +2216,16 @@ uint16_t update_setpoint(void){
 
 				//clear latched minimum assist on hard stop conditions
 				if(MS.brake_active_flag || Backwards_counter>=4 || !pedaling_active || overtemp_stage>=2) assist_latched=0;
+				//reset Walk Assist ramp when WA not engaged (so each engagement ramps up from 0)
+				if(!MS.pushassist_flag) wa_ramp_ticks=0;
 				//calculate iq setpoint
 	            //check brake with first priority
 	            if(MS.brake_active_flag)MS.i_q_setpoint_temp=0;
 	            // check push assist active
 	            else if(MS.pushassist_flag){
-	            	MS.i_q_setpoint_temp=map(MS.Speedx100, (int32_t)MP.walk_assist_speed-200, MP.walk_assist_speed, MP.phase_current_max*MP.walk_assist_current/100, 0);
+	            	uint16_t wa_target=map(MS.Speedx100, (int32_t)MP.walk_assist_speed-200, MP.walk_assist_speed, MP.phase_current_max*MP.walk_assist_current/100, 0);
+	            	if(wa_ramp_ticks<WA_RAMP_TICKS) wa_ramp_ticks++; //ramp power up over WA_RAMP_TICKS (no sudden jump)
+	            	MS.i_q_setpoint_temp=(uint32_t)wa_target*wa_ramp_ticks/WA_RAMP_TICKS;
 	            }
 	            //calculate setpoint, if brake is not activated
 	            else{
