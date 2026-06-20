@@ -133,6 +133,7 @@ uint16_t last_pas_period=CAD_TO_MAX; //last PAS inter-pulse period (ticks) for a
 uint8_t pedaling_active=0;           //1 while cranks turning (PAS within adaptive timeout)
 uint8_t overtemp_stage=0;           //thermal protection stage: 0 ok, 1 derate/warn, 2 cutoff
 uint8_t assist_latched=0;           //1 after assist engaged: hold MIN_ASSIST_CURRENT until a stop condition
+uint16_t stop_ramp_ticks=0;         //counts up while not pedalling: linear assist ramp-down to 0 over STOP_RAMP_TICKS
 uint16_t err_pulse_counter=0;       //seconds counter for pulsed Error 10 in stage 1
 uint16_t Speed_counter=0;
 int32_t ButtonVoltageCumulated=620<<6;
@@ -1328,12 +1329,13 @@ void reg_ADC_processing(void)
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
 	MS.calories=(uint16_t)(MS.int_Temperature); //temp sterownika na pole calories w HMI (offset +3 juz w int_Temperature)
 	MS.torque_on_crank=(((adc_value[2])*3300)>>12)+torque_offset_correction; //map ADC value to mV
-	//adaptive cadence-hold: keep assist alive while cranks turn; timeout scales with last pedalling period
-	uint16_t cad_to = last_pas_period*CAD_TO_FACTOR;
+	//adaptive cadence-hold: keep assist alive while cranks turn; timeout = 1.5x last pedalling period (fast stop detect)
+	uint16_t cad_to = (uint16_t)(((uint32_t)last_pas_period*CAD_TO_NUM)/CAD_TO_DEN);
 	if(cad_to<CAD_TO_MIN) cad_to=CAD_TO_MIN;
 	if(cad_to>CAD_TO_MAX) cad_to=CAD_TO_MAX;
 	pedaling_active = (PAS_counter<cad_to);
-	if(pedaling_active) torque_counter=0; //hold while pedalling; torque only scales force (torque_filtered)
+	if(pedaling_active){ torque_counter=0; stop_ramp_ticks=0; } //hold while pedalling; torque only scales force
+	else if(stop_ramp_ticks<STOP_RAMP_TICKS) stop_ramp_ticks++; //pedalling stopped -> advance ramp-down
 	//--- coulomb counting (signed: discharge>0 reduces charge, regen<0 adds back) ---
 	soc_mAs_acc += (float)MS.Battery_Current / 4000.0f; //mA * (1/4000 s) per ~4kHz tick
 	if(++soc_tick_counter >= 4000){                      //~1 second elapsed
@@ -2245,6 +2247,8 @@ uint16_t update_setpoint(void){
 						//latched minimum assist: once engaged (assist ran), hold a floor while pedalling instead of cutting to 0 on eased pressure
 						if(MS.i_q_setpoint_temp > MIN_ASSIST_CURRENT) assist_latched=1;
 						if(assist_latched && pedaling_active && MS.i_q_setpoint_temp < MIN_ASSIST_CURRENT) MS.i_q_setpoint_temp = MIN_ASSIST_CURRENT;
+						//pedalling stopped -> short linear ramp of pedal-assist to 0 (fast detect + clean fade, TSDZ2-style)
+						if(!pedaling_active) MS.i_q_setpoint_temp = (uint32_t)MS.i_q_setpoint_temp * (STOP_RAMP_TICKS - stop_ramp_ticks) / STOP_RAMP_TICKS;
 					}
 					else MS.i_q_setpoint_temp=0; //cut motor power on pedaling backwards
 						//throttle override
