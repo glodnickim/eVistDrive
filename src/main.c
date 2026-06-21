@@ -1291,12 +1291,7 @@ void PAS_processing(void)
 			if(Backwards_counter)Backwards_counter--;
 			PAS_counter=0;
 		}
-		torque_cumulated-=torque_cumulated>>MS.TQfilter;
-		if(MS.torque_on_crank>750){
-			torque_cumulated+=(MS.torque_on_crank-750);
-		}
-		//Power=2*Pi*speed*torque, calibration factors: rpm to 1/s for cadence: /60, mV to Nm: 750 to 3200 --> 0 to 80 Nm. (from Bafang data sheet)
-		MS.torque_filtered=(torque_cumulated>>MS.TQfilter);
+		//torque is now filtered in real time (every tick) in reg_ADC_processing, not here
 		MS.p_human=(uint16_t)((float)(MS.cadence*MS.torque_filtered)*0.00342); //in Watt
 
 		//PAS_counter=0;
@@ -1330,6 +1325,14 @@ void reg_ADC_processing(void)
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
 	MS.calories=(uint16_t)(MS.int_Temperature); //temp sterownika na pole calories w HMI (offset +3 juz w int_Temperature)
 	MS.torque_on_crank=(((adc_value[2])*3300)>>12)+torque_offset_correction; //map ADC value to mV
+	//real-time torque filter (every ~4kHz tick, not per PAS pulse) -> assist follows pedal pressure; drops fast & consistently on release
+	{
+		int32_t tq = (int32_t)MS.torque_on_crank - TQ_DEADBAND_MV;
+		if(tq<0) tq=0;
+		torque_cumulated -= torque_cumulated>>TQ_FILTER_SHIFT;
+		torque_cumulated += tq;
+		MS.torque_filtered = (uint16_t)(torque_cumulated>>TQ_FILTER_SHIFT);
+	}
 	//adaptive cadence-hold: keep assist alive while cranks turn; timeout = 1.5x last pedalling period (fast stop detect)
 	uint16_t cad_to = (uint16_t)(((uint32_t)last_pas_period*CAD_TO_NUM)/CAD_TO_DEN);
 	if(cad_to<CAD_TO_MIN) cad_to=CAD_TO_MIN;
