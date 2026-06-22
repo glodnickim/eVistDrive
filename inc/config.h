@@ -128,6 +128,12 @@
 #define WA_RAMP_TICKS 2800  // ticks @4kHz = 700 ms: linear power ramp-up when Walk Assist engages (no sudden jump)
 
 //---------------------------------------------------------------------
+//Quadrature PAS decoder (PC12=A, PD2=B), polled @4kHz. Confirmed by CAN log: forward = negative raw step.
+#define PAS_DIR_SIGN -1       // sign applied to raw quadrature step so that FORWARD pedalling => +1 (from test)
+#define PAS_STEPS_PER_PULSE 4 // quadrature steps per magnet (=1 old PC12 pulse) -> keeps cadence scale (10000/period)
+#define PAS_STOP_TICKS 2000   // ticks @4kHz = 500 ms with no quadrature transition -> pedalling stopped (cadence=0)
+
+//---------------------------------------------------------------------
 //Thermal protection (controller NTC) + Error 10 (overtemperature) signalling
 #define TEMP_WARN 75       // degC: start of power derating + stage 1 (pulsed Error 10)
 #define TEMP_CUTOFF 90     // degC: power -> 0 + stage 2 (solid Error 10)

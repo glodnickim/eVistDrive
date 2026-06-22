@@ -150,6 +150,12 @@ uint8_t ui8_hall_state_old=0;
 uint8_t ui8_hall_case=0;
 uint32_t uint32_tics_filtered=128000;
 uint16_t uint16_cadence_filtered=0;
+//--- Quadrature PAS decoder state ---
+uint8_t pas_qstate=0xFF;     //last quadrature state (0..3), 0xFF=uninit
+int8_t pas_fwd_steps=0;      //net forward steps toward one magnet pulse (PAS_STEPS_PER_PULSE)
+uint16_t pas_cycle_ticks=0;  //ticks since last forward magnet pulse (for cadence)
+uint16_t pas_idle_ticks=0;   //ticks since last quadrature transition (for stop detection)
+uint8_t forward_pedaling=0;  //1 = cranks turning forward (cadence>0, not reverse, not stopped)
 uint8_t ui8_overflow_flag=0;
 uint8_t ui8_SPEED_control_flag=0;
 uint8_t ui8_walk_btn_counter=0;
@@ -460,7 +466,8 @@ int main(void)
     		offroadcode=0;
     		MS.offroadtics=0;
     	}
-    	if(PAS_flag)PAS_processing();
+    	//if(PAS_flag)PAS_processing(); //disabled: cadence/direction now from quadrature decoder in reg_ADC_processing
+    	PAS_flag=0;
     	if(Speed_flag)Speed_processing();
     	if(reg_ADC_flag)reg_ADC_processing();
 
@@ -1326,6 +1333,42 @@ void reg_ADC_processing(void)
 	MS.calories=(uint16_t)(MS.int_Temperature); //temp sterownika na pole calories w HMI (offset +3 juz w int_Temperature)
 	MS.torque_on_crank=(((adc_value[2])*3300)>>12)+torque_offset_correction; //map ADC value to mV
 	if(MS.torque_on_crank>760&&PAS_counter<MP.PAS_timeout)torque_counter=0;//reset counter, if pressure on pedal and pedals rotating
+	//--- Quadrature PAS decoder (PC12=A, PD2=B) @4kHz -> feeds cadence/Backwards/torque/p_human/PAS_counter ---
+	{
+		static const int8_t qd[16]={0,1,-1,0, -1,0,0,1, 1,0,0,-1, 0,-1,1,0};
+		uint8_t s = ((GPIO_ISTAT(GPIOC)&GPIO_PIN_12)?1:0) | ((GPIO_ISTAT(GPIOD)&GPIO_PIN_2)?2:0);
+		if(pas_idle_ticks<64000) pas_idle_ticks++;
+		if(pas_cycle_ticks<64000) pas_cycle_ticks++;
+		if(pas_qstate==0xFF){ pas_qstate=s; }
+		else if(s!=pas_qstate){
+			int8_t st = qd[(pas_qstate<<2)|s]*PAS_DIR_SIGN; //+1 = forward
+			pas_qstate=s;
+			if(st>0){            //forward step
+				pas_idle_ticks=0;
+				if(Backwards_counter)Backwards_counter--;
+				if(++pas_fwd_steps>=PAS_STEPS_PER_PULSE){ //one magnet forward -> cadence pulse
+					pas_fwd_steps=0;
+					if(pas_cycle_ticks>70){
+						MS.cadence=10000/pas_cycle_ticks;
+						uint16_cadence_filtered-=uint16_cadence_filtered>>3;
+						uint16_cadence_filtered+=MS.cadence;
+						torque_cumulated-=torque_cumulated>>MS.TQfilter; //torque filtering per pulse (as old PAS_processing)
+						if(MS.torque_on_crank>750) torque_cumulated+=(MS.torque_on_crank-750);
+						MS.torque_filtered=(torque_cumulated>>MS.TQfilter);
+						MS.p_human=(uint16_t)((float)(MS.cadence*MS.torque_filtered)*0.00342);
+					}
+					pas_cycle_ticks=0;
+					PAS_counter=0;
+				}
+			}else if(st<0){      //backward step
+				pas_idle_ticks=0;
+				pas_fwd_steps=0;
+				if(Backwards_counter<10)Backwards_counter++;
+			}
+		}
+		if(pas_idle_ticks>PAS_STOP_TICKS){ MS.cadence=0; uint16_cadence_filtered=0; pas_fwd_steps=0; } //stop
+		forward_pedaling = (MS.cadence>0 && Backwards_counter<4 && pas_idle_ticks<=PAS_STOP_TICKS);
+	}
 	//--- coulomb counting (signed: discharge>0 reduces charge, regen<0 adds back) ---
 	soc_mAs_acc += (float)MS.Battery_Current / 4000.0f; //mA * (1/4000 s) per ~4kHz tick
 	if(++soc_tick_counter >= 4000){                      //~1 second elapsed
