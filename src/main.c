@@ -129,11 +129,7 @@ float u32_to_deg=0.00000008381903171539;
 uint16_t slow_loop_counter=0;
 uint16_t PAS_counter=0;
 uint16_t torque_counter=0;
-uint16_t last_pas_period=CAD_TO_MAX; //last PAS inter-pulse period (ticks) for adaptive cadence-hold
-uint8_t pedaling_active=0;           //1 while cranks turning (PAS within adaptive timeout)
 uint8_t overtemp_stage=0;           //thermal protection stage: 0 ok, 1 derate/warn, 2 cutoff
-uint8_t assist_latched=0;           //1 after assist engaged: hold MIN_ASSIST_CURRENT until a stop condition
-uint16_t stop_ramp_ticks=0;         //counts up while not pedalling: linear assist ramp-down to 0 over STOP_RAMP_TICKS
 uint16_t wa_ramp_ticks=0;           //counts up while Walk Assist engaged: linear power ramp-up over WA_RAMP_TICKS
 uint16_t err_pulse_counter=0;       //seconds counter for pulsed Error 10 in stage 1
 uint16_t Speed_counter=0;
@@ -1276,7 +1272,6 @@ void EXTI2_IRQHandler(void)
 void PAS_processing(void)
 {
 	if(PAS_counter>70){
-		last_pas_period=PAS_counter;//time since previous pulse = pedalling period, for adaptive cadence-hold
 		MS.cadence=10000/PAS_counter;//24 Pulses per crank revolution, 4000 Hz Timer interrupt frequency (for M560 about 48 pulses on speed/direction pin)(4000*60/24)=10000
 		uint16_cadence_filtered-=uint16_cadence_filtered>>3;
 		uint16_cadence_filtered+=MS.cadence;
@@ -1291,7 +1286,12 @@ void PAS_processing(void)
 			if(Backwards_counter)Backwards_counter--;
 			PAS_counter=0;
 		}
-		//torque is now filtered in real time (every tick) in reg_ADC_processing, not here
+		torque_cumulated-=torque_cumulated>>MS.TQfilter;
+		if(MS.torque_on_crank>750){
+			torque_cumulated+=(MS.torque_on_crank-750);
+		}
+		//Power=2*Pi*speed*torque, calibration factors: rpm to 1/s for cadence: /60, mV to Nm: 750 to 3200 --> 0 to 80 Nm. (from Bafang data sheet)
+		MS.torque_filtered=(torque_cumulated>>MS.TQfilter);
 		MS.p_human=(uint16_t)((float)(MS.cadence*MS.torque_filtered)*0.00342); //in Watt
 
 		//PAS_counter=0;
@@ -1325,21 +1325,7 @@ void reg_ADC_processing(void)
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
 	MS.calories=(uint16_t)(MS.int_Temperature); //temp sterownika na pole calories w HMI (offset +3 juz w int_Temperature)
 	MS.torque_on_crank=(((adc_value[2])*3300)>>12)+torque_offset_correction; //map ADC value to mV
-	//real-time torque filter (every ~4kHz tick, not per PAS pulse) -> assist follows pedal pressure; drops fast & consistently on release
-	{
-		int32_t tq = (int32_t)MS.torque_on_crank - TQ_DEADBAND_MV;
-		if(tq<0) tq=0;
-		torque_cumulated -= torque_cumulated>>TQ_FILTER_SHIFT;
-		torque_cumulated += tq;
-		MS.torque_filtered = (uint16_t)(torque_cumulated>>TQ_FILTER_SHIFT);
-	}
-	//adaptive cadence-hold: keep assist alive while cranks turn; timeout = 1.5x last pedalling period (fast stop detect)
-	uint16_t cad_to = (uint16_t)(((uint32_t)last_pas_period*CAD_TO_NUM)/CAD_TO_DEN);
-	if(cad_to<CAD_TO_MIN) cad_to=CAD_TO_MIN;
-	if(cad_to>CAD_TO_MAX) cad_to=CAD_TO_MAX;
-	pedaling_active = (PAS_counter<cad_to);
-	if(pedaling_active){ torque_counter=0; stop_ramp_ticks=0; } //hold while pedalling; torque only scales force
-	else if(stop_ramp_ticks<STOP_RAMP_TICKS) stop_ramp_ticks++; //pedalling stopped -> advance ramp-down
+	if(MS.torque_on_crank>760&&PAS_counter<MP.PAS_timeout)torque_counter=0;//reset counter, if pressure on pedal and pedals rotating
 	//--- coulomb counting (signed: discharge>0 reduces charge, regen<0 adds back) ---
 	soc_mAs_acc += (float)MS.Battery_Current / 4000.0f; //mA * (1/4000 s) per ~4kHz tick
 	if(++soc_tick_counter >= 4000){                      //~1 second elapsed
@@ -2217,8 +2203,6 @@ uint16_t map_rezi(int32_t actual_value, int32_t actual_time, int32_t timeout, in
 
 uint16_t update_setpoint(void){
 
-				//clear latched minimum assist on hard stop conditions
-				if(MS.brake_active_flag || Backwards_counter>=4 || !pedaling_active || overtemp_stage>=2) assist_latched=0;
 				//reset Walk Assist ramp when WA not engaged (so each engagement ramps up from 0)
 				if(!MS.pushassist_flag) wa_ramp_ticks=0;
 				//calculate iq setpoint
@@ -2250,13 +2234,6 @@ uint16_t update_setpoint(void){
 							}
 							MS.i_q_setpoint_temp=mapped_torque;
 						}
-						//driveline preload: small current floor while pedalling to take up slack (instant response on press)
-						if(pedaling_active && MS.i_q_setpoint_temp<PRELOAD_CURRENT) MS.i_q_setpoint_temp=PRELOAD_CURRENT;
-						//latched minimum assist: once engaged (assist ran), hold a floor while pedalling instead of cutting to 0 on eased pressure
-						if(MS.i_q_setpoint_temp > MIN_ASSIST_CURRENT) assist_latched=1;
-						if(assist_latched && pedaling_active && MS.i_q_setpoint_temp < MIN_ASSIST_CURRENT) MS.i_q_setpoint_temp = MIN_ASSIST_CURRENT;
-						//pedalling stopped -> short linear ramp of pedal-assist to 0 (fast detect + clean fade, TSDZ2-style)
-						if(!pedaling_active) MS.i_q_setpoint_temp = (uint32_t)MS.i_q_setpoint_temp * (STOP_RAMP_TICKS - stop_ramp_ticks) / STOP_RAMP_TICKS;
 					}
 					else MS.i_q_setpoint_temp=0; //cut motor power on pedaling backwards
 						//throttle override
