@@ -5,3 +5,5 @@ documentation/~$BANFANGHUB Pinout.pptx
 .settings/language.settings.xml
 *.xml
 documentation/export.txt
+# Auto-generated build version header (injected at build time, never committed)
+inc/build_version.h

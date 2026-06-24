@@ -32,7 +32,7 @@ void parse_DPparams(MotorParams_t* MP){
 	MP->walk_assist_speed = Para1[60]+(Para1[61]<<8);
 	if (MP->walk_assist_speed == 0) MP->walk_assist_speed = 600; // fallback: 6.0 km/h
 	MP->walk_assist_current = Para1[36];
-	if (MP->walk_assist_current == 0 || MP->walk_assist_current > 100) MP->walk_assist_current = 30; // fallback: 30%
+	if (MP->walk_assist_current == 0 || MP->walk_assist_current > 100) MP->walk_assist_current = 50; // fallback: 50%
 
 	// Battery capacity (Canable "Expected Battery Capacity", Para1[7..8], mAh)
 	MP->battery_capacity_mah = Para1[7] + (Para1[8]<<8);
@@ -141,7 +141,7 @@ void InitEEPROM(MotorParams_t* MP){
 	MP->PAS_timeout = PAS_TIMEOUT;
 	MP->ramp_end = RAMP_END;
 	MP->walk_assist_speed = 600; // default 6.0 km/h
-	MP->walk_assist_current = 30; // default 80%
+	MP->walk_assist_current = 50; // default 50% of phase_current_max
 	MP->system_voltage = SYSTEM_VOLTAGE;
 	MP->max_voltage = MAX_VOLTAGE;
 	MP->decay_base =255;

@@ -95,7 +95,7 @@
 
 //---------------------------------------------------------------------
 //power settings
-#define PH_CURRENT_MAX 700 //uses field Max current on low charge Para1[9]
+#define PH_CURRENT_MAX (BATTERYCURRENT_MAX / CAL_I)  //ties phase ceiling to battery limit; Para1[9]
 #define BATTERYCURRENT_MAX 12000
 #define REVERSE -1 //1 for normal direction, -1 for reverse //use field Motor Type (Para1[18]) 1 = 1, 0 = -1
 #define PUSHASSIST_CURRENT 300
@@ -124,13 +124,37 @@
 #define LIMP_DISABLED 0xFF
 
 //---------------------------------------------------------------------
-//Walk Assist power ramp (kept). Pedal-assist/torque tweaks reverted to origin/M820 baseline for re-analysis.
-#define WA_RAMP_TICKS 2800  // ticks @4kHz = 700 ms: linear power ramp-up when Walk Assist engages (no sudden jump)
+//Walk Assist closed-loop speed PI (holds MP.walk_assist_speed). Integer fixed-point gains; tune on bike.
+#define WA_RAMP_TICKS 720   // ticks @4kHz = 180 ms: kickstart slew (caps output rise so the kick is firm, not a jerk)
+#define WA_KP_NUM    3      // P gain numerator -> out_p = (err * WA_KP_NUM) >> WA_KP_SHIFT
+#define WA_KP_SHIFT  4      //   3/16 ~= 0.19 i_q per 0.01km/h error: full error (~600) saturates ceiling => kick from standstill
+#define WA_KI_SHIFT  11     // I gain: integral term = wa_integral >> WA_KI_SHIFT (larger = slower trim @4kHz). TUNE.
+#define WA_KICK_SPEED 50    // Speedx100 < 0.5 km/h at engage = standstill -> apply kick; above -> resume without kick
+
+//---------------------------------------------------------------------
+//Minimal engage/disengage slew on commanded current (i_q) to soften the mechanical "click" (gear lash). @4kHz tick.
+#define IQ_SLEW_UP    5     // max i_q rise per tick (~35 ms 0..700): gentle torque build-up on engage
+#define IQ_SLEW_DOWN  10    // max i_q fall per tick (~17 ms): prompt but soft release on disengage
+
+//---------------------------------------------------------------------
+//Torque sensor: fault detection (Bafang Error 25) + cyclic offset re-zero on coast (thermal drift)
+#define ERR_TORQUE          25    // Bafang error 25 = torque sensor signal failure
+#define TQ_FAULT_LOW_MV     300   // torque_on_crank < this = disconnect/short-to-gnd -> Error 25 (rest ~740 mV)
+#define TQ_FAULT_HIGH_MV    4300  // factory value; NOTE: EBiCS scale caps ~3300 mV so high never fires here (kept for parity)
+#define TQ_FAULT_TICKS      400   // ~100 ms @4kHz out-of-range before raising fault (debounce)
+#define TQ_RECAL_IDLE_TICKS 6000  // ~1.5 s @4kHz of no pedalling -> coast/idle -> eligible for re-zero (catches in-ride coasting)
+#define TQ_RECAL_SETTLE_TICKS 2000// coast must last this long (~0.5 s) before its averaged rest is trusted
+#define TQ_RECAL_BAND_MV    100   // re-zero immediately if rest within 740±this (~3 Nm @32mV/Nm) - guard vs static pedal load
+#define TQ_RECAL_MAX_STEP   20    // max offset correction per coast (mV) - rate limit so one coast can't jump the zero
+#define TQ_REACQUIRE_COASTS 3     // out-of-band rest must REPEAT consistently over this many coasts -> real drift -> re-acquire (anti-stuck)
+#define TQ_REACQUIRE_TOL_MV 30    // consecutive coasts must agree within this to count as "consistent" (not a random load)
+#define TQ_REST_RAW_MIN     300   // absolute plausible UNLOADED raw baseline window (mV, pre-normalization): re-zero only within...
+#define TQ_REST_RAW_MAX     1500  // ...this window (anti-infinite-drift); outside => pedal pressed/sensor fault -> Error 25, no re-zero
 
 //---------------------------------------------------------------------
 //Quadrature PAS decoder (PC12=A, PD2=B), polled @4kHz. Confirmed by CAN log: forward = negative raw step.
 #define PAS_DIR_SIGN -1       // sign applied to raw quadrature step so that FORWARD pedalling => +1 (from test)
-#define PAS_STEPS_PER_PULSE 4 // quadrature steps per magnet (=1 old PC12 pulse) -> keeps cadence scale (10000/period)
+#define PAS_STEPS_PER_PULSE 4 // cadence pulse every 4 quadrature transitions. Tested OK on HMI (=true RPM) -> implies ~96 transitions/rev (24 magnets). Reverser says "48 pulses/rev"; if that means 48 transitions, this would read half - VERIFY by measuring before changing to 2.
 #define PAS_STOP_TICKS 2000   // ticks @4kHz = 500 ms with no quadrature transition -> pedalling stopped (cadence=0)
 
 //---------------------------------------------------------------------
@@ -148,7 +172,7 @@
 #define TS_COEF 4
 #define TS_MODE
 #define TQONAD1
-#define TQFILTER 4
+#define TQFILTER 6
 
 //---------------------------------------------------------------------
 //Display settings

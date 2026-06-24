@@ -127,10 +127,13 @@ uint16_t update_setpoint(void);
 int16_t T_NTC(uint16_t ADC);
 float u32_to_deg=0.00000008381903171539;
 uint16_t slow_loop_counter=0;
+uint16_t t3100_counter=0;
 uint16_t PAS_counter=0;
 uint16_t torque_counter=0;
 uint8_t overtemp_stage=0;           //thermal protection stage: 0 ok, 1 derate/warn, 2 cutoff
-uint16_t wa_ramp_ticks=0;           //counts up while Walk Assist engaged: linear power ramp-up over WA_RAMP_TICKS
+uint16_t wa_ramp_ticks=0;           //counts up while Walk Assist engaged: kickstart slew envelope over WA_RAMP_TICKS
+int32_t wa_integral=0;              //Walk Assist speed PI integrator
+uint8_t wa_engaged=0;              //edge-detect: WA engaged this cycle (decide kick vs resume once)
 uint16_t err_pulse_counter=0;       //seconds counter for pulsed Error 10 in stage 1
 uint16_t Speed_counter=0;
 int32_t ButtonVoltageCumulated=620<<6;
@@ -165,6 +168,15 @@ uint32_t ui32_WA_timer=0;
 uint32_t voltage_raw_cumulated=0;
 uint16_t voltage_raw_filtered=0;
 int32_t torque_offset_correction=0;
+//--- torque sensor fault + cyclic offset re-zero state ---
+uint8_t  torque_fault=0;        // Error 25 active (out-of-range signal debounced, or implausible rest)
+uint16_t tq_fault_ticks=0;      // debounce for out-of-range signal
+uint8_t  tq_cal_fault=0;        // implausible rest at startup/coast (raw outside plausible window)
+int32_t  tq_rest_acc=0;         // EMA(<<6) of torque_on_crank accumulated during a coast
+uint8_t  tq_coast_active=0;     // currently in a qualifying coast (pedals idle)
+uint16_t tq_coast_ticks=0;      // ticks accumulated in current coast (settle)
+int32_t  tq_last_coast_rest=0;  // rest from previous out-of-band coast (consistency check)
+uint8_t  tq_reacq_count=0;      // consecutive consistent out-of-band coasts
 uint32_t ui32_erps_cumulated=0;
 int32_t q31_rotorposition_hall=0;
 q31_t q31_rotorposition_absolute=0;
@@ -196,8 +208,6 @@ int32_t Hall_51 = 1169185830;
 
 const int32_t one_deg = 11930465; //one degree in 2^32 logic
 
-int8_t statehistory[36];
-uint8_t historycounter=0;
 int32_t i32_full_rotation_flag =-1;
 
 float 	helper=0;
@@ -242,7 +252,7 @@ uint32_t rest_seconds=0;            //consecutive seconds with |I| < I_REST_MA
 uint32_t soc_save_seconds=0;        //seconds since last flash save
 float soc_last_saved=0;            //SOC_real at last save
 float trip_distance_m_last=0;      //distance marker for range-learning window
-uint8_t soc_have_real_consumption=0; //set once EMA learns real Wh/km this power cycle
+float wh_km_level[10]={0};         //per-assist-level learned consumption [Wh/km] -> per-level range
 float limp_factor=1.0f;            //motor power scale from limp mode (1.0 = full)
 uint32_t soc_seq=0;                //current highest slot sequence
 int32_t soc_slot_index=-1;        //index of latest written slot (-1 = none)
@@ -254,8 +264,6 @@ uint32_t torque_cumulated=0;
 uint8_t array_temp[88];
 
 uint8_t level_to_array_element[10]={0,0,1,0,2,0,3,0,4,5}; //map assist Level to array element
-uint16_t Poll_commands[3]={0x3201,0x3200,0x3205};
-uint8_t pollnumber=0;
 int32_t ic1value = 0,AngleFromPWM = 0;
 __IO uint16_t dutycycle = 0;
 __IO uint16_t frequency = 0;
@@ -429,6 +437,14 @@ int main(void)
     }
     torque_offset_correction=(torque_offset_correction>>6);
     torque_offset_correction=740-((torque_offset_correction*3300)>>12);
+    //sanity-check: raw unloaded baseline must be plausible; else pedal pressed/sensor bad at boot -> don't trust zero
+    {
+        int32_t raw_baseline = 740 - torque_offset_correction; // = (avg_adc*3300)>>12
+        if(raw_baseline<TQ_REST_RAW_MIN || raw_baseline>TQ_REST_RAW_MAX){
+            torque_offset_correction = 0;  // nominal (read sensor as-is) instead of a bad zero
+            tq_cal_fault = 1;              // raise Error 25 until a valid coast re-zero
+        }
+    }
   //  while((adc_value[1])>3000);//safety for bricked throttle
 
 	helper=((float)1.0/((float)1.0+(float)MP.Cadence_exponent));
@@ -483,8 +499,8 @@ int main(void)
     	else MS.brake_active_flag=0;
     	// update scaled current and speed
     	if(MS.assist_level!=assist_level_old){
-    		//re-seed range consumption to the new mode's default until real ride data is learned
-    		if(!soc_have_real_consumption) MS.avg_wh_per_km=default_wh_km_for_level(MS.assist_level);
+    		//range learns per level -> reset the learning window so a window stays within one level
+    		trip_distance_m_last=MS.distance_since_startup; MS.used_wh=0;
     		speedlimitx100_scaled=MP.speedLimitx100*MP.assist_settings[level_to_array_element[MS.assist_level]][1]/100;
     		phase_current_max_scaled=MP.phase_current_max*MP.assist_settings[level_to_array_element[MS.assist_level]][0]/100;
         	MS.TQfilter=level_to_array_element[MS.assist_level];
@@ -507,7 +523,9 @@ int main(void)
 
     	}
 
-            if (slow_loop_counter > 200){ //slow loop every 500ms, Timer1 @4kHz interrupt frequency
+            if(t3100_counter > 40){ t3100_counter=0; sendCAN_3100(&MS); } //40/4000Hz=10ms torque sensor emulation
+
+            if (slow_loop_counter > 160){ //slow loop base tick 40ms (160/4000Hz); CAN messages use own counters
             	gd_eval_led_toggle(LED2);
 #ifdef PRINTDEBUG_UART
 
@@ -523,9 +541,12 @@ int main(void)
 //            	}
             	p++;
 
-            	if(pollnumber>2)pollnumber=0;
-            	sendCAN_Poll(&MP,&MS,Poll_commands[pollnumber]);
-            	pollnumber++;
+            	static uint8_t hb_tick=0, speed_tick=0, cad_tick=0, misc_tick=0, s202_tick=0;
+            	if(++hb_tick    >=12){hb_tick=0;    sendCAN_status_broadcast(&MS);}     //12x40ms=480ms  (orig 490ms)
+            	if(++speed_tick >= 7){speed_tick=0; sendCAN_Poll(&MP,&MS,0x3201);}   // 7x40ms=280ms  (orig 280ms)
+            	if(++cad_tick   >=37){cad_tick=0;   sendCAN_Poll(&MP,&MS,0x3200);}   //37x40ms=1480ms (orig 1500ms)
+            	if(++misc_tick  >= 8){misc_tick=0;  sendCAN_Poll(&MP,&MS,0x3205);}
+            	if(++s202_tick >= 3){s202_tick=0;  sendCAN_3202();}              // 3x40ms=120ms  (orig 100ms)
             	// filtr EMA /16 surowego ADC temperatury (wzorzec jak filtr napiecia), tlumi szum/glitch
             	// TODO(temp-sensor): detekcja rozwartego (ADC~4095) / zwartego (ADC~0) NTC i fail-safe
             	static uint32_t temp_adc_cumulated = 0;
@@ -551,7 +572,8 @@ int main(void)
             			else if(MS.int_Temperature<TEMP_CLEAR) overtemp_stage=0;
             			else overtemp_stage=1;
             		}
-            		if(overtemp_stage==2){ MS.error_state=ERR_OVERTEMP; err_pulse_counter=0; } //solid
+            		if(overtemp_stage==2){ MS.error_state=ERR_OVERTEMP; err_pulse_counter=0; } //solid (highest priority)
+            		else if(torque_fault){ MS.error_state=ERR_TORQUE; err_pulse_counter=0; } //torque sensor signal failure
             		else if(overtemp_stage==1){ //pulsed: ON for ERR_PULSE_ON_S, OFF for ERR_PULSE_OFF_S (HMI blinks)
             			if(++err_pulse_counter>=(ERR_PULSE_ON_S+ERR_PULSE_OFF_S)) err_pulse_counter=0;
             			MS.error_state=(err_pulse_counter<ERR_PULSE_ON_S)?ERR_OVERTEMP:0;
@@ -564,7 +586,7 @@ int main(void)
 
 				if(adc_value[5]<2800)shutoffcounter++; //raw value is 4095 without button pressed, about 3300 with "down" button pressed and about 2400 with on/off button pressed.
 				else shutoffcounter=0;
-				if(shutoffcounter>50){
+				if(shutoffcounter>62){ //62x40ms=2480ms, poprzednio 50x50ms=2500ms
 					if(!shutdown_saved){ soc_state_save(); shutdown_saved=1; } //persist SOC before power down
 					timer_primary_output_config(TIMER0,DISABLE); //stop PWM output
 					GPIO_BC(GPIOB) = GPIO_PIN_4; //DC/DC enable off
@@ -1141,9 +1163,6 @@ void TIMER2_IRQHandler(void)
             		ui8_hall_state = (GPIO_ISTAT(GPIOC)>>6)&0x07; //Mask input register with Hall 1 - 3 bits
 
             		ui8_hall_case=ui8_hall_state_old*10+ui8_hall_state;
-            		statehistory[historycounter]=ui8_hall_case;
-            		historycounter++;
-            		if (historycounter>35)historycounter=0;
 
             		if(MS.hall_angle_detect_flag){ //only process, if autodetect procedere is fininshed
             		ui8_hall_state_old=ui8_hall_state;
@@ -1346,15 +1365,17 @@ void reg_ADC_processing(void)
 			if(st>0){            //forward step
 				pas_idle_ticks=0;
 				if(Backwards_counter)Backwards_counter--;
-				if(++pas_fwd_steps>=PAS_STEPS_PER_PULSE){ //one magnet forward -> cadence pulse
+				// torque EMA @ 3.75deg (96 updates/rev) - full quadrature resolution so all algorithms see torque every step, not only every 15deg
+				torque_cumulated-=torque_cumulated>>MS.TQfilter;
+				if(MS.torque_on_crank>750) torque_cumulated+=(MS.torque_on_crank-750);
+				MS.torque_filtered=(torque_cumulated>>MS.TQfilter);
+				if(MS.torque_filtered>0) torque_counter=0; // cadence-gate: hold motor engaged while pedalling with any torque
+				if(++pas_fwd_steps>=PAS_STEPS_PER_PULSE){ //one cadence pulse every PAS_STEPS_PER_PULSE forward transitions (see config.h)
 					pas_fwd_steps=0;
 					if(pas_cycle_ticks>70){
 						MS.cadence=10000/pas_cycle_ticks;
 						uint16_cadence_filtered-=uint16_cadence_filtered>>3;
 						uint16_cadence_filtered+=MS.cadence;
-						torque_cumulated-=torque_cumulated>>MS.TQfilter; //torque filtering per pulse (as old PAS_processing)
-						if(MS.torque_on_crank>750) torque_cumulated+=(MS.torque_on_crank-750);
-						MS.torque_filtered=(torque_cumulated>>MS.TQfilter);
 						MS.p_human=(uint16_t)((float)(MS.cadence*MS.torque_filtered)*0.00342);
 					}
 					pas_cycle_ticks=0;
@@ -1369,13 +1390,50 @@ void reg_ADC_processing(void)
 		if(pas_idle_ticks>PAS_STOP_TICKS){ MS.cadence=0; uint16_cadence_filtered=0; pas_fwd_steps=0; } //stop
 		forward_pedaling = (MS.cadence>0 && Backwards_counter<4 && pas_idle_ticks<=PAS_STOP_TICKS);
 	}
+	//--- torque sensor fault detection (debounced) -> Error 25 ---
+	if(MS.torque_on_crank<TQ_FAULT_LOW_MV || MS.torque_on_crank>TQ_FAULT_HIGH_MV){
+		if(tq_fault_ticks<64000) tq_fault_ticks++;
+	}else tq_fault_ticks=0;
+	torque_fault = (tq_fault_ticks>TQ_FAULT_TICKS) || tq_cal_fault;
+	//--- cyclic offset re-zero on coast (pedals idle >= TQ_RECAL_IDLE_TICKS; catches in-ride coasting) ---
+	if(pas_idle_ticks>TQ_RECAL_IDLE_TICKS && tq_fault_ticks==0){
+		if(!tq_coast_active){ tq_coast_active=1; tq_coast_ticks=0; tq_rest_acc=(int32_t)MS.torque_on_crank<<6; } //coast start: seed EMA
+		else { tq_rest_acc-=tq_rest_acc>>6; tq_rest_acc+=MS.torque_on_crank; if(tq_coast_ticks<64000)tq_coast_ticks++; } //accumulate rest
+	}else{
+		if(tq_coast_active && tq_coast_ticks>TQ_RECAL_SETTLE_TICKS){ //a settled coast just ended -> evaluate re-zero
+			int32_t rest = tq_rest_acc>>6;
+			int32_t raw_rest = rest - torque_offset_correction;          //physical unloaded reading (pre-normalization)
+			if(raw_rest<TQ_REST_RAW_MIN || raw_rest>TQ_REST_RAW_MAX){
+				tq_cal_fault=1;                                          //implausible zero -> Error 25, no re-zero (anti-infinite-drift)
+			}else{
+				tq_cal_fault=0;
+				int32_t diff = 740-rest;                                 //>0: reading too low, raise it
+				int32_t adiff = diff<0?-diff:diff;
+				uint8_t do_rezero=0;
+				if(adiff<=TQ_RECAL_BAND_MV){ do_rezero=1; tq_reacq_count=0; }       //in band -> re-zero now
+				else{                                                              //out of band -> need consistency over coasts
+					int32_t d2 = rest-tq_last_coast_rest; if(d2<0)d2=-d2;
+					if(tq_reacq_count>0 && d2<=TQ_REACQUIRE_TOL_MV) tq_reacq_count++; else tq_reacq_count=1;
+					tq_last_coast_rest=rest;
+					if(tq_reacq_count>=TQ_REACQUIRE_COASTS){ do_rezero=1; tq_reacq_count=0; } //real drift confirmed
+				}
+				if(do_rezero){ //rate-limited step; absolute bound guaranteed by raw_rest window check above
+					int32_t step=diff;
+					if(step>TQ_RECAL_MAX_STEP)step=TQ_RECAL_MAX_STEP; else if(step<-TQ_RECAL_MAX_STEP)step=-TQ_RECAL_MAX_STEP;
+					torque_offset_correction += step;
+				}
+			}
+		}
+		tq_coast_active=0;
+	}
 	//--- coulomb counting (signed: discharge>0 reduces charge, regen<0 adds back) ---
 	soc_mAs_acc += (float)MS.Battery_Current / 4000.0f; //mA * (1/4000 s) per ~4kHz tick
 	if(++soc_tick_counter >= 4000){                      //~1 second elapsed
 		soc_tick_counter = 0;
 		soc_one_second_flag = 1;
 	}
-    slow_loop_counter ++;
+    slow_loop_counter++;
+    t3100_counter++;
     if(torque_counter<64000)torque_counter++;
     if(PAS_counter<64000)PAS_counter++;
     if(Speed_counter<64000)Speed_counter++;
@@ -1422,7 +1480,17 @@ void reg_ADC_processing(void)
         ui8_WA_blocked=0;
     }
 
-    MS.i_q_setpoint = update_setpoint();
+    {
+    	//minimal engage/disengage slew on i_q to soften the mechanical "click" (gear lash); protects drivetrain.
+    	int32_t iq_target = update_setpoint();
+    	if(MS.brake_active_flag || Backwards_counter>=4 || overtemp_stage>=2){
+    		MS.i_q_setpoint = iq_target;                                       //safety cuts = immediate, no ramp
+    	}else if(iq_target > MS.i_q_setpoint){
+    		int32_t d=iq_target-MS.i_q_setpoint; MS.i_q_setpoint += (d>IQ_SLEW_UP)?IQ_SLEW_UP:d;
+    	}else{
+    		int32_t d=MS.i_q_setpoint-iq_target; MS.i_q_setpoint -= (d>IQ_SLEW_DOWN)?IQ_SLEW_DOWN:d;
+    	}
+    }
     if (torque_counter>4000&&!Overrun_flag){ //reset after one second without torque on the pedal
     	if (PAS_counter>MP.PAS_timeout){
 			Backwards_counter=0;
@@ -1526,6 +1594,13 @@ void autodetect(void) {
 		q31_rotorposition_absolute += one_deg; //drive motor in open loop with steps of 1 deg
 		delay_1ms(5);
 
+		fwdgt_counter_reload(); //procedure blocks main loop >5 s: keep watchdog from resetting
+		if((i%50)==0){ //~every 250 ms: keep HMI link alive (heartbeat+telemetry) -> no E30 (comm timeout)
+			sendCAN_status_broadcast(&MS);
+			sendCAN_Poll(&MP,&MS,0x3201);
+			sendCAN_Poll(&MP,&MS,0x3200);
+			sendCAN_Poll(&MP,&MS,0x3205);
+		}
 
 		if (ui8_hall_state_old != ui8_hall_state) {
 //			printf_("angle: %d, hallstate:  %d, hallcase %d \n",
@@ -1584,6 +1659,12 @@ void autodetect(void) {
             transmit_message.tx_data[5] = (int8_t) (((Hall_26 >> 23) * 180) >> 9);
             transmit_message.tx_data[6] = (adc_value[1]>>8)&0xFF;
             transmit_message.tx_data[7] = (adc_value[1])&0xFF;
+            //self-contained hall-report frame (was relying on stale efid/dlen=0 from prior 0x6200 ACK)
+            transmit_message.tx_sfid = 0x00;
+            transmit_message.tx_efid = 0x6200 + (NORMAL_ACK<<16) + (0x05<<19) + (0x02<<24); //to BESST(5), source controller(2)
+            transmit_message.tx_ft = CAN_FT_DATA;
+            transmit_message.tx_ff = CAN_FF_EXTENDED;
+            transmit_message.tx_dlen = 8;
 
             /* transmit message */
             transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
@@ -1992,11 +2073,11 @@ void soc_init(void){
 	uint16_t u_comp=(uint16_t)((float)MS.Voltage + i_a*(float)MP.r_batt_mohm);
 	int8_t soc_ocv=calculate_SOC(u_comp,cells);
 
-	//seed range consumption with a per-mode default
-	MS.avg_wh_per_km=default_wh_km_for_level(MS.assist_level);
+	//seed per-level range consumption with per-mode defaults
+	for(uint8_t i=0;i<10;i++) wh_km_level[i]=default_wh_km_for_level(i);
+	MS.avg_wh_per_km=wh_km_level[MS.assist_level<10?MS.assist_level:5];
 	MS.used_wh=0;
 	trip_distance_m_last=MS.distance_since_startup;
-	soc_have_real_consumption=0;
 
 	if(soc_state_load()){
 		//restart: detect recharge while powered off (no RTC -> OCV jump vs stored SOC)
@@ -2058,19 +2139,19 @@ void soc_update(void){
 	if(MS.soc_display>100)MS.soc_display=100;
 	MS.SOC=(uint8_t)(MS.soc_display+0.5f);
 
-	//--- Range from remaining energy / average consumption ---
+	//--- Range from remaining energy / PER-LEVEL average consumption ---
 	float remaining_wh=(MS.remaining_mah/1000.0f)*(float)MP.system_voltage;
+	uint8_t lvl=MS.assist_level<10?MS.assist_level:5;
 	float dist_m=MS.distance_since_startup-trip_distance_m_last;
 	if(dist_m>=RANGE_LEARN_MIN_M && MS.Speedx100>300){ //moving > 3 km/h
 		float wh_km_now=MS.used_wh/(dist_m/1000.0f);
-		if(wh_km_now>1.0f && wh_km_now<100.0f){
-			MS.avg_wh_per_km+=RANGE_EMA_ALPHA*(wh_km_now-MS.avg_wh_per_km);
-			soc_have_real_consumption=1; //real data available -> stop re-seeding on mode change
-		}
+		if(wh_km_now>1.0f && wh_km_now<100.0f)
+			wh_km_level[lvl]+=RANGE_EMA_ALPHA*(wh_km_now-wh_km_level[lvl]); //learn THIS level's consumption
 		trip_distance_m_last=MS.distance_since_startup;
 		MS.used_wh=0;
 	}
-	if(MS.avg_wh_per_km>0.5f) MS.range=(uint16_t)(remaining_wh/MS.avg_wh_per_km);
+	MS.avg_wh_per_km=wh_km_level[lvl]; //for display/debug
+	if(wh_km_level[lvl]>0.5f) MS.range=(uint16_t)(remaining_wh/wh_km_level[lvl]);
 	else MS.range=0;
 
 	//--- capacity adaptation over (near) full discharge cycles ---
@@ -2246,16 +2327,31 @@ uint16_t map_rezi(int32_t actual_value, int32_t actual_time, int32_t timeout, in
 
 uint16_t update_setpoint(void){
 
-				//reset Walk Assist ramp when WA not engaged (so each engagement ramps up from 0)
-				if(!MS.pushassist_flag) wa_ramp_ticks=0;
+				//Walk Assist engage edge: decide kick (from standstill) vs smooth resume (already rolling), clear integrator
+				if(MS.pushassist_flag && !wa_engaged){
+					wa_integral=0;                                                      //bumpless: clean integrator each engage
+					wa_ramp_ticks=(MS.Speedx100<WA_KICK_SPEED)?0:WA_RAMP_TICKS;          //kick only from standstill; rolling -> cap open, no extra kick
+					wa_engaged=1;
+				}
+				if(!MS.pushassist_flag) wa_engaged=0;
 				//calculate iq setpoint
 	            //check brake with first priority
 	            if(MS.brake_active_flag)MS.i_q_setpoint_temp=0;
-	            // check push assist active
+	            // check push assist active: closed-loop speed PI holding MP.walk_assist_speed
 	            else if(MS.pushassist_flag){
-	            	uint16_t wa_target=map(MS.Speedx100, (int32_t)MP.walk_assist_speed-200, MP.walk_assist_speed, MP.phase_current_max*MP.walk_assist_current/100, 0);
-	            	if(wa_ramp_ticks<WA_RAMP_TICKS) wa_ramp_ticks++; //ramp power up over WA_RAMP_TICKS (no sudden jump)
-	            	MS.i_q_setpoint_temp=(uint32_t)wa_target*wa_ramp_ticks/WA_RAMP_TICKS;
+	            	int32_t wa_max = MP.phase_current_max*MP.walk_assist_current/100;     //WA current ceiling
+	            	int32_t err    = (int32_t)MP.walk_assist_speed - (int32_t)MS.Speedx100; //speed error (0.01 km/h)
+	            	int32_t out = ((err*WA_KP_NUM)>>WA_KP_SHIFT) + (wa_integral>>WA_KI_SHIFT); //P + I
+	            	//anti-windup: integrate only when not pushing further into saturation (kills >6km/h overshoot)
+	            	if(!((out>=wa_max && err>0) || (out<=0 && err<0)) && wa_ramp_ticks>=WA_RAMP_TICKS) wa_integral += err;
+	            	int32_t imax = wa_max << WA_KI_SHIFT;
+	            	if(wa_integral>imax) wa_integral=imax; else if(wa_integral<0) wa_integral=0;
+	            	out = ((err*WA_KP_NUM)>>WA_KP_SHIFT) + (wa_integral>>WA_KI_SHIFT);    //recompute after I update
+	            	if(out>wa_max) out=wa_max; else if(out<0) out=0;                      //clamp (0 = coast, no braking)
+	            	if(wa_ramp_ticks<WA_RAMP_TICKS) wa_ramp_ticks++;                      //kickstart slew ~180 ms (firm, no jerk)
+	            	int32_t cap = wa_max*(int32_t)wa_ramp_ticks/WA_RAMP_TICKS;
+	            	if(out>cap) out=cap;
+	            	MS.i_q_setpoint_temp=(uint32_t)out;
 	            }
 	            //calculate setpoint, if brake is not activated
 	            else{
@@ -2303,7 +2399,7 @@ uint16_t update_setpoint(void){
 
 	            //controller temperature ramp down between 75 and 90°C (M820: NTC mierzy temp sterownika)
 	            MS.i_q_setpoint_temp=map(MS.int_Temperature,75,90,MS.i_q_setpoint_temp,0);
-	            if(MP.legalflag&&!MS.offroadflag){
+	            if(MP.legalflag&&!MS.offroadflag&&!MS.pushassist_flag){
 
 					if((uint16_cadence_filtered>>3)>15){
 						MS.i_q_setpoint_temp=map(MS.Speedx100, speedlimitx100_scaled,(speedlimitx100_scaled+200),MS.i_q_setpoint_temp,0);
