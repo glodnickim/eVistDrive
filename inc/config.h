@@ -145,6 +145,11 @@
 #define IQ_SLEW_UP    5     // max i_q rise per tick (~35 ms 0..700): gentle torque build-up on engage
 #define IQ_SLEW_DOWN  10    // max i_q fall per tick (~17 ms): prompt but soft release on disengage
 
+// Extended Boost ("Override"): holds motor current for a while AFTER the rider stops pushing on the pedal.
+// This is what causes the motor to "drag on" / power not dropping smoothly when you stop pedalling.
+// 0 = OFF (default): power follows the pedal directly (Bosch-like, smooth power-down). 1 = ON (legacy carry).
+#define EXTENDED_BOOST_ENABLE 0
+
 //---------------------------------------------------------------------
 //Torque sensor: fault detection (Bafang Error 25) + cyclic offset re-zero on coast (thermal drift)
 #define ERR_TORQUE          25    // Bafang error 25 = torque sensor signal failure
