@@ -73,7 +73,8 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 	Ext_ID_Rx.target = (receive_message.rx_efid>>19)&0x1F; //only 5 bit width
 	Ext_ID_Rx.source = (receive_message.rx_efid>>24)&0x1F;
 
-	if(Ext_ID_Rx.target==2){
+	//HMI queries controller info on BOTH target=2 (0x8311xxxx) and target=4 (0x8321xxxx). Factory answers both.
+	if(Ext_ID_Rx.target==2 || Ext_ID_Rx.target==4){
 		switch (Ext_ID_Rx.operation){
 			case WRITE_CMD:
 
@@ -546,10 +547,23 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 				send_multiframe(Ext_ID_Rx.command, &tx_data[0], tx_data_length);
 			}
 			break;
-		case 0x6010: //to do
-			/* initialize transmit message */
+		case 0x6010: //factory replies with a 4-byte mini config block (0x821B6003 Data:01 00 02 06), NOT Para0.
+			//Sending Para0 (64B multiframe) here breaks the HMI info handshake -> whole Info/Settings screen stays blank.
 			if(Ext_ID_Rx.operation==1){
-			send_multiframe(Ext_ID_Rx.command, &Para0[0],64 );
+				Ext_ID_Tx.command  = 0x6003;              //factory tags this reply as 0x6003, op=3
+				Ext_ID_Tx.operation= 3;
+				Ext_ID_Tx.target   = Ext_ID_Rx.source;    //reply to requester (display=3)
+				Ext_ID_Tx.source   = 0x02;                //controller
+				transmit_message.tx_sfid = 0x00;
+				transmit_message.tx_efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
+				transmit_message.tx_ft = CAN_FT_DATA;
+				transmit_message.tx_ff = CAN_FF_EXTENDED;
+				transmit_message.tx_dlen = 4;
+				transmit_message.tx_data[0]=0x01; transmit_message.tx_data[1]=0x00;
+				transmit_message.tx_data[2]=0x02; transmit_message.tx_data[3]=0x06;
+				transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
+				timeout = 0xFFFF;
+				while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)) timeout--;
 			}
 			break;
 		case 0x6011: //to do
