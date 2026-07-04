@@ -597,6 +597,15 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 			/* initialize transmit message */
 			if(Ext_ID_Rx.operation==1){
 			send_multiframe(Ext_ID_Rx.command, &Para2[0],64 );
+			//Trailing mini-block AFTER Para2: factory sends 0x821B6012 Data:01 00 02 06 as the
+			//"config transfer complete" marker. Without it the HMI never renders the Info/Settings screen.
+			Ext_ID_Tx.command = 0x6012; Ext_ID_Tx.operation = 3; Ext_ID_Tx.target = Ext_ID_Rx.source; Ext_ID_Tx.source = 0x02;
+			transmit_message.tx_sfid = 0x00;
+			transmit_message.tx_efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
+			transmit_message.tx_ft = CAN_FT_DATA; transmit_message.tx_ff = CAN_FF_EXTENDED; transmit_message.tx_dlen = 4;
+			transmit_message.tx_data[0]=0x01; transmit_message.tx_data[1]=0x00; transmit_message.tx_data[2]=0x02; transmit_message.tx_data[3]=0x06;
+			transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
+			timeout = 0xFFFF; while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)) timeout--;
 			}
 			break;
 
