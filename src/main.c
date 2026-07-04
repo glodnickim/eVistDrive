@@ -523,7 +523,9 @@ int main(void)
 
     	}
 
-            if(t3100_counter > 40){ t3100_counter=0; sendCAN_3100(&MS); } //40/4000Hz=10ms torque sensor emulation
+#if SEND_DEV_TELEMETRY
+            if(t3100_counter > 40){ t3100_counter=0; sendCAN_3100(&MS); } //40/4000Hz=10ms torque sensor emulation (dev telemetry - OFF by default; floods bus & can block HMI info at startup)
+#endif
 
             if (slow_loop_counter > 160){ //slow loop base tick 40ms (160/4000Hz); CAN messages use own counters
             	gd_eval_led_toggle(LED2);

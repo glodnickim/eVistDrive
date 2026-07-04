@@ -44,7 +44,16 @@
 //#define INDIVIDUAL_MODES
 //#define SPEEDTHROTTLE
 //#define PRINTDEBUG_UART
+// --- Developer motor-tuning telemetry on CAN ---
+// Controls the two EXTRA frames used only for developer tuning:
+//   0x81F83100 (torque/cadence, every 10 ms) and 0x80010203 (FOC debug: Ibat, u_q, i_q).
+// 0 = OFF (default). Factory M820 does NOT send these; EBICS flooding them at startup can stop the
+//     HMI from completing its firmware/info readout. Keep 0 for normal riding.
+// 1 = ON (developer only).
+#define SEND_DEV_TELEMETRY 0
+#if SEND_DEV_TELEMETRY
 #define PRINTDEBUG_CAN
+#endif
 #define R_TEMP_PULLUP 3500
 #define SIXSTEPTHRESHOLD 10000
 #define SPEED_PLL 0 //1 for using PLL, 0 for angle extrapolation
