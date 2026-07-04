@@ -73,8 +73,7 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 	Ext_ID_Rx.target = (receive_message.rx_efid>>19)&0x1F; //only 5 bit width
 	Ext_ID_Rx.source = (receive_message.rx_efid>>24)&0x1F;
 
-	//HMI queries controller info on BOTH target=2 (0x8311xxxx) and target=4 (0x8321xxxx). Factory answers both.
-	if(Ext_ID_Rx.target==2 || Ext_ID_Rx.target==4){
+	if(Ext_ID_Rx.target==2){ //controller answers on target=2 only (factory ignores tgt=4 info queries; answering duplicates pollutes target=3)
 		switch (Ext_ID_Rx.operation){
 			case WRITE_CMD:
 
@@ -245,6 +244,27 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 
 
 	}
+	// 0x6400/0x6401 READ: NEW-HMI controller-info queries (arrive on target=4). Reply as single-frame
+	// 0x8228xxxx (target=5). 0x6400 = version field, 0x6401 = model field (new HMI shows these, not 0x6001/0x6002).
+	if(Ext_ID_Rx.command==0x6400 && Ext_ID_Rx.operation==READ_CMD){
+		Ext_ID_Tx.command=0x6400; Ext_ID_Tx.operation=WRITE_CMD; Ext_ID_Tx.target=5; Ext_ID_Tx.source=0x02;
+		transmit_message.tx_sfid=0x00;
+		transmit_message.tx_efid=Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
+		transmit_message.tx_ft=CAN_FT_DATA; transmit_message.tx_ff=CAN_FF_EXTENDED; transmit_message.tx_dlen=8;
+		transmit_message.tx_data[0]='E'; transmit_message.tx_data[1]='B';
+		memcpy(&transmit_message.tx_data[2], EBICS_BUILD_VERSION, 6);
+		transmit_mailbox=can_message_transmit(CAN0,&transmit_message);
+		timeout=0xFFFF; while((CAN_TRANSMIT_OK!=can_transmit_states(CAN0,transmit_mailbox))&&(0!=timeout))timeout--;
+	}
+	if(Ext_ID_Rx.command==0x6401 && Ext_ID_Rx.operation==READ_CMD){
+		Ext_ID_Tx.command=0x6401; Ext_ID_Tx.operation=WRITE_CMD; Ext_ID_Tx.target=5; Ext_ID_Tx.source=0x02;
+		transmit_message.tx_sfid=0x00;
+		transmit_message.tx_efid=Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
+		transmit_message.tx_ft=CAN_FT_DATA; transmit_message.tx_ff=CAN_FF_EXTENDED; transmit_message.tx_dlen=8;
+		memcpy(transmit_message.tx_data, "CR X30P.", 8);
+		transmit_mailbox=can_message_transmit(CAN0,&transmit_message);
+		timeout=0xFFFF; while((CAN_TRANSMIT_OK!=can_transmit_states(CAN0,transmit_mailbox))&&(0!=timeout))timeout--;
+	}
 	if(Ext_ID_Rx.command==0x3005){ //jump to bootloader for firmware update
 		NVIC_SystemReset();
 	}
@@ -252,7 +272,8 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 void sendAcknoledge(void){
 	Ext_ID_Tx.command = Ext_ID_Rx.command;
 	Ext_ID_Tx.operation = 2; //acknoledge OK
-	Ext_ID_Tx.target = Ext_ID_Rx.source; //reply to the requester - was hardcoded 5
+	Ext_ID_Tx.target = 5; //WRITE-ACK ALWAYS to target=5 (HMI write-ACK port). Replying to source(=3) pollutes
+	                      //the target=3 READ channel with ACKs and breaks the info multiframe -> blank HMI info.
 	Ext_ID_Tx.source = 0x02; //controller
 	transmit_message.tx_sfid = 0x00;
 	transmit_message.tx_efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
@@ -464,8 +485,8 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 			/* initialize transmit message */
 
 			Ext_ID_Tx.command = 0x62D9;
-			Ext_ID_Tx.operation = 0; //write
-			Ext_ID_Tx.target = Ext_ID_Rx.source; //reply to the requester (display=3, BESST=5...) - was hardcoded 5
+			Ext_ID_Tx.operation = 2; //NORMAL_ACK — factory sends 0x821A62D9 (op=NORMAL_ACK), NOT WRITE. HMI needs this for wheel data.
+			Ext_ID_Tx.target = Ext_ID_Rx.source; //reply to the requester (display=3, BESST=5...)
 			Ext_ID_Tx.source = 0x02; //controller
 			transmit_message.tx_sfid = 0x00;
 			transmit_message.tx_efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
