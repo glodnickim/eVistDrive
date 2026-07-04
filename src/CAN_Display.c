@@ -88,7 +88,9 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 				}
 
 				else sendCAN_Tx(MP,MS);
-				sendAcknoledge();
+				//Factory sends NO WRITE-ACK for the continuous operational data 0x6300-0x6304; only for
+				//config writes. ACKing 0x630x floods 0x822A630x that the factory never emits -> exact-match test.
+				if(!(Ext_ID_Rx.command>=0x6300 && Ext_ID_Rx.command<=0x6304)) sendAcknoledge();
 				break;
 			case READ_CMD:
 				sendCAN_Tx(MP,MS);
@@ -244,27 +246,8 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 
 
 	}
-	// 0x6400/0x6401 READ: NEW-HMI controller-info queries (arrive on target=4). Reply as single-frame
-	// 0x8228xxxx (target=5). 0x6400 = version field, 0x6401 = model field (new HMI shows these, not 0x6001/0x6002).
-	if(Ext_ID_Rx.command==0x6400 && Ext_ID_Rx.operation==READ_CMD){
-		Ext_ID_Tx.command=0x6400; Ext_ID_Tx.operation=WRITE_CMD; Ext_ID_Tx.target=5; Ext_ID_Tx.source=0x02;
-		transmit_message.tx_sfid=0x00;
-		transmit_message.tx_efid=Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
-		transmit_message.tx_ft=CAN_FT_DATA; transmit_message.tx_ff=CAN_FF_EXTENDED; transmit_message.tx_dlen=8;
-		transmit_message.tx_data[0]='E'; transmit_message.tx_data[1]='B';
-		memcpy(&transmit_message.tx_data[2], EBICS_BUILD_VERSION, 6);
-		transmit_mailbox=can_message_transmit(CAN0,&transmit_message);
-		timeout=0xFFFF; while((CAN_TRANSMIT_OK!=can_transmit_states(CAN0,transmit_mailbox))&&(0!=timeout))timeout--;
-	}
-	if(Ext_ID_Rx.command==0x6401 && Ext_ID_Rx.operation==READ_CMD){
-		Ext_ID_Tx.command=0x6401; Ext_ID_Tx.operation=WRITE_CMD; Ext_ID_Tx.target=5; Ext_ID_Tx.source=0x02;
-		transmit_message.tx_sfid=0x00;
-		transmit_message.tx_efid=Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
-		transmit_message.tx_ft=CAN_FT_DATA; transmit_message.tx_ff=CAN_FF_EXTENDED; transmit_message.tx_dlen=8;
-		memcpy(transmit_message.tx_data, "CR X30P.", 8);
-		transmit_mailbox=can_message_transmit(CAN0,&transmit_message);
-		timeout=0xFFFF; while((CAN_TRANSMIT_OK!=can_transmit_states(CAN0,transmit_mailbox))&&(0!=timeout))timeout--;
-	}
+	// NOTE: 0x6400/0x6401 (single-frame 0x8228 version/model) handlers REMOVED for exact factory match —
+	// the factory M820 does NOT answer these and the HMI shows info without them. See git history if needed.
 	if(Ext_ID_Rx.command==0x3005){ //jump to bootloader for firmware update
 		NVIC_SystemReset();
 	}
