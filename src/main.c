@@ -159,6 +159,7 @@ int8_t pas_fwd_steps=0;      //net forward steps toward one magnet pulse (PAS_ST
 uint16_t pas_cycle_ticks=0;  //ticks since last forward magnet pulse (for cadence)
 uint16_t pas_idle_ticks=0;   //ticks since last quadrature transition (for stop detection)
 uint8_t forward_pedaling=0;  //1 = cranks turning forward (cadence>0, not reverse, not stopped)
+uint8_t fwd_run=0;           //consecutive forward quadrature steps (reset on any backward step or stop) -> jiggle-proof engage gate
 uint8_t ui8_overflow_flag=0;
 uint8_t ui8_SPEED_control_flag=0;
 uint8_t ui8_walk_btn_counter=0;
@@ -1366,6 +1367,7 @@ void reg_ADC_processing(void)
 			pas_qstate=s;
 			if(st>0){            //forward step
 				pas_idle_ticks=0;
+				if(fwd_run<250)fwd_run++;   //consecutive forward steps (jiggle-proof engage)
 				if(Backwards_counter)Backwards_counter--;
 				// torque EMA @ 3.75deg (96 updates/rev) - full quadrature resolution so all algorithms see torque every step, not only every 15deg
 				torque_cumulated-=torque_cumulated>>MS.TQfilter;
@@ -1386,10 +1388,11 @@ void reg_ADC_processing(void)
 			}else if(st<0){      //backward step
 				pas_idle_ticks=0;
 				pas_fwd_steps=0;
+				fwd_run=0;                  //any reverse step cancels the forward run -> rejects back/forth crank jiggle
 				if(Backwards_counter<10)Backwards_counter++;
 			}
 		}
-		if(pas_idle_ticks>PAS_STOP_TICKS){ MS.cadence=0; uint16_cadence_filtered=0; pas_fwd_steps=0; } //stop
+		if(pas_idle_ticks>PAS_STOP_TICKS){ MS.cadence=0; uint16_cadence_filtered=0; pas_fwd_steps=0; fwd_run=0; } //stop
 		forward_pedaling = (MS.cadence>0 && Backwards_counter<4 && pas_idle_ticks<=PAS_STOP_TICKS);
 	}
 	//--- torque sensor fault detection (debounced) -> Error 25 ---
@@ -2370,28 +2373,27 @@ uint16_t update_setpoint(void){
 					mapped_torque= map(MS.torque_on_crank, MP.TQO_threshold[level_to_array_element[MS.assist_level]], TQ_FULL_SCALE_MV, 0, phase_current_max_scaled); //#4 upper span configurable (3300=old; lower=more pressure-linear)
 
 					if(Backwards_counter<4){//normal ride mode, motor power only if pedals are not turned backwards
-#if ASSIST_TORQUE_MODE
-						//KROK 2 Bosch-like PRESSURE mode: assist ∝ pedal pressure (mapped_torque), only while pedalling
-						//forward with real load; cadence NOT used -> no wiggle-excite, consistent engage, fades with pressure.
-						MS.i_q_setpoint_temp = (forward_pedaling && MS.torque_filtered > TQ_GATE_MIN) ? (uint32_t)mapped_torque : 0;
-#else
-						//#D torque gate: cadence-based assist only with REAL pedal pressure (kills back/forth wiggle-excite without load)
-						if(MS.torque_filtered > TQ_GATE_MIN)
-							MS.i_q_setpoint_temp=(uint32_t)((float) (MP.TS_coeff*powf((float)MS.cadence,helper))*(MS.torque_filtered)*0.0005*interpolate_assistfactor());//factor 0.0005 from various constants
-						else
+						//CONSISTENT ENGAGEMENT: assist arms only with REAL pressure AND >=START_MIN_STEPS consecutive
+						//forward crank steps. Reverse step / stop resets fwd_run -> back/forth jiggle on descents & dead
+						//spots CANNOT engage, and pressure-without-rotation cannot engage either. Same trigger every time.
+						uint8_t engaged = (fwd_run>=START_MIN_STEPS) && (MS.torque_on_crank > (750+TQ_GATE_MIN));
+						if(!engaged){
 							MS.i_q_setpoint_temp=0;
-						//limit setpoint to the max value according to the current setting.
-						if(MS.i_q_setpoint_temp>phase_current_max_scaled)MS.i_q_setpoint_temp = phase_current_max_scaled;
-						MS.i_q_setpoint_temp=map_rezi(MS.i_q_setpoint_temp, torque_counter, MP.PAS_timeout, MP.decay_base);
-#endif
-
-						//torque override
-						if(mapped_torque>MS.i_q_setpoint_temp){
-							if(mapped_torque>Overrun_strength){
-								Overrun_strength=mapped_torque;
-								Overrun_counter = 0;
+						}else{
+#if ASSIST_TORQUE_MODE
+							//Bosch-like PRESSURE mode: assist ∝ pedal pressure (cadence not used)
+							MS.i_q_setpoint_temp = (uint32_t)mapped_torque;
+#else
+							//cadence-based assist (TS_coeff * cadence^helper * torque_filtered)
+							MS.i_q_setpoint_temp=(uint32_t)((float) (MP.TS_coeff*powf((float)MS.cadence,helper))*(MS.torque_filtered)*0.0005*interpolate_assistfactor());//factor 0.0005 from various constants
+							if(MS.i_q_setpoint_temp>phase_current_max_scaled)MS.i_q_setpoint_temp = phase_current_max_scaled;
+							MS.i_q_setpoint_temp=map_rezi(MS.i_q_setpoint_temp, torque_counter, MP.PAS_timeout, MP.decay_base);
+							//torque override: immediate pressure floor (only while engaged)
+							if(mapped_torque>MS.i_q_setpoint_temp){
+								if(mapped_torque>Overrun_strength){ Overrun_strength=mapped_torque; Overrun_counter = 0; }
+								MS.i_q_setpoint_temp=mapped_torque;
 							}
-							MS.i_q_setpoint_temp=mapped_torque;
+#endif
 						}
 					}
 					else MS.i_q_setpoint_temp=0; //cut motor power on pedaling backwards

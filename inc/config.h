@@ -172,11 +172,18 @@
 // pressure-linear / "naciskowe" (Bosch-like): a firm press reaches full assist. Tune to taste.
 #define TQ_FULL_SCALE_MV 3300
 
-// --- Torque gate (#D): minimum filtered pedal torque before the CADENCE-based assist term fires. ---
-// Without it, wiggling the cranks back/forth with almost no pressure excites the motor (cadence>0 + tiny
-// torque). Gate = "no real pressure -> no cadence assist". Pure-pressure path (mapped_torque) is unaffected.
-// Higher = needs firmer press to engage (more consistent, less twitchy). Too high = light pedalling won't assist.
-#define TQ_GATE_MIN 15
+// --- Torque gate (#D): min pedal pressure [mV above the ~750 mV rest] before cadence-based assist fires. ---
+// Gates on RAW torque_on_crank (level-independent) so it works the same on every assist level (S+/Boost too).
+// Without it, wiggling the cranks back/forth with almost no pressure excites the motor. Pure-pressure path
+// (mapped_torque) is unaffected. Higher = firmer press to engage; too high = light pedalling won't assist.
+// (Was gating on torque_filtered which is TQfilter/EMA-dependent per level -> broke high levels; fixed.)
+#define TQ_GATE_MIN 25
+
+// --- Consistent engagement (#engage): forward crank steps required to arm assist (jiggle-proof). ---
+// Assist engages only with REAL pressure (TQ_GATE_MIN) AND >=START_MIN_STEPS consecutive forward quadrature
+// steps. Any reverse step resets the counter -> back/forth wiggle on descents/dead-spots can't engage.
+// ~96 steps/rev, so 4 steps ≈ 15° of crank -> fast & repeatable. Higher = firmer/longer push to start.
+#define START_MIN_STEPS 4
 
 // --- Assist character (KROK 2): torque/pressure mode vs cadence mode ---
 // 0 = OFF (default): legacy cadence-based assist (TS_coeff * cadence^helper * torque_filtered). Cadence-driven.
