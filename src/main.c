@@ -2370,11 +2370,20 @@ uint16_t update_setpoint(void){
 					mapped_torque= map(MS.torque_on_crank, MP.TQO_threshold[level_to_array_element[MS.assist_level]], TQ_FULL_SCALE_MV, 0, phase_current_max_scaled); //#4 upper span configurable (3300=old; lower=more pressure-linear)
 
 					if(Backwards_counter<4){//normal ride mode, motor power only if pedals are not turned backwards
-						MS.i_q_setpoint_temp=(uint32_t)((float) (MP.TS_coeff*powf((float)MS.cadence,helper))*(MS.torque_filtered)*0.0005*interpolate_assistfactor());//factor 0.0005 from various constants
+#if ASSIST_TORQUE_MODE
+						//KROK 2 Bosch-like PRESSURE mode: assist ∝ pedal pressure (mapped_torque), only while pedalling
+						//forward with real load; cadence NOT used -> no wiggle-excite, consistent engage, fades with pressure.
+						MS.i_q_setpoint_temp = (forward_pedaling && MS.torque_filtered > TQ_GATE_MIN) ? (uint32_t)mapped_torque : 0;
+#else
+						//#D torque gate: cadence-based assist only with REAL pedal pressure (kills back/forth wiggle-excite without load)
+						if(MS.torque_filtered > TQ_GATE_MIN)
+							MS.i_q_setpoint_temp=(uint32_t)((float) (MP.TS_coeff*powf((float)MS.cadence,helper))*(MS.torque_filtered)*0.0005*interpolate_assistfactor());//factor 0.0005 from various constants
+						else
+							MS.i_q_setpoint_temp=0;
 						//limit setpoint to the max value according to the current setting.
 						if(MS.i_q_setpoint_temp>phase_current_max_scaled)MS.i_q_setpoint_temp = phase_current_max_scaled;
 						MS.i_q_setpoint_temp=map_rezi(MS.i_q_setpoint_temp, torque_counter, MP.PAS_timeout, MP.decay_base);
-
+#endif
 
 						//torque override
 						if(mapped_torque>MS.i_q_setpoint_temp){

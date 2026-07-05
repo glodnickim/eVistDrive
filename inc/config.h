@@ -153,10 +153,10 @@
 // --- Adaptive i_q ramp (#1): how fast motor current rises/falls, scaled by wheel speed + cadence (TSDZ2-style) ---
 // 1 = adaptive (gentle at low speed, snappy at speed -> smooth transitions & start). 0 = fixed IQ_SLEW_UP/DOWN.
 #define IQ_RAMP_ADAPTIVE   1
-#define IQ_SLEW_UP_SLOW    3    // i_q rise/tick at standstill/low cadence (soft engage)
-#define IQ_SLEW_UP_FAST    7    // i_q rise/tick at speed/high cadence (responsive)
-#define IQ_SLEW_DOWN_SLOW  6    // i_q fall/tick at low speed (soft power-down)
-#define IQ_SLEW_DOWN_FAST  12   // i_q fall/tick at speed (quick, clean cut)
+#define IQ_SLEW_UP_SLOW    6    // i_q rise/tick at standstill/low cadence (was 3 - too slow to build up)
+#define IQ_SLEW_UP_FAST    12   // i_q rise/tick at speed/high cadence (was 7 - snappier response)
+#define IQ_SLEW_DOWN_SLOW  4    // i_q fall/tick at low speed (softer -> power FADES, not cuts, when easing off)
+#define IQ_SLEW_DOWN_FAST  8    // i_q fall/tick at speed
 #define IQ_RAMP_SPEED_LO   400  // Speedx100 = 4.0 km/h (below -> SLOW)
 #define IQ_RAMP_SPEED_HI   2000 // 20.0 km/h (above -> FAST)
 #define IQ_RAMP_CAD_LO     20   // rpm
@@ -171,6 +171,19 @@
 // 3300 = current behaviour (hard pedal pressure barely reaches full assist). Lower (~1800-2200) = more
 // pressure-linear / "naciskowe" (Bosch-like): a firm press reaches full assist. Tune to taste.
 #define TQ_FULL_SCALE_MV 3300
+
+// --- Torque gate (#D): minimum filtered pedal torque before the CADENCE-based assist term fires. ---
+// Without it, wiggling the cranks back/forth with almost no pressure excites the motor (cadence>0 + tiny
+// torque). Gate = "no real pressure -> no cadence assist". Pure-pressure path (mapped_torque) is unaffected.
+// Higher = needs firmer press to engage (more consistent, less twitchy). Too high = light pedalling won't assist.
+#define TQ_GATE_MIN 15
+
+// --- Assist character (KROK 2): torque/pressure mode vs cadence mode ---
+// 0 = OFF (default): legacy cadence-based assist (TS_coeff * cadence^helper * torque_filtered). Cadence-driven.
+// 1 = ON: Bosch-like PRESSURE mode - assist proportional to pedal pressure (mapped_torque), only while pedalling
+//     forward with real load; cadence NOT used. Fixes twitchy/irregular engage + "wiggle without pressure".
+//     IMPORTANT: in this mode LOWER TQ_FULL_SCALE_MV (~1800-2200), otherwise assist is weak.
+#define ASSIST_TORQUE_MODE 0
 
 //---------------------------------------------------------------------
 //Torque sensor: fault detection (Bafang Error 25) + cyclic offset re-zero on coast (thermal drift)
