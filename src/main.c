@@ -506,6 +506,9 @@ int main(void)
     		phase_current_max_scaled=MP.phase_current_max*MP.assist_settings[level_to_array_element[MS.assist_level]][0]/100;
         	MS.TQfilter=level_to_array_element[MS.assist_level];
         	MS.TQfilter=MP.assist_settings[MS.TQfilter][2];
+        	//SAFETY: TQfilter is used as a bit-shift (torque_cumulated>>TQfilter). Ride-mode values >7 (or, via
+        	//int8_t, negative) make the shift undefined -> torque_filtered=0 -> that level's assist dies (hit S+/Boost).
+        	if(MS.TQfilter<1 || MS.TQfilter>7) MS.TQfilter=4;
         	MS.ext_boost_duration=MP.ext_boost_duration[level_to_array_element[MS.assist_level]];
         	MS.ext_boost_strength=MP.ext_boost_strength[level_to_array_element[MS.assist_level]];
         	if(offroadcounter<4000&&offroadcounter>1000){
