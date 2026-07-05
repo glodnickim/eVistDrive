@@ -51,11 +51,22 @@ Zmieniasz wartość → przebudowa (`build_firmware.ps1`) → wgranie. Domyślne
 | `IQ_RAMP_ADAPTIVE` | **1 (on)** | Tempo narastania/opadania prądu **zależne od prędkości i kadencji** (miękko na wolno, żwawo przy prędkości). Gdy `0` — stałe `IQ_SLEW_UP/DOWN`. | `0` by wrócić do stałego tempa. Progi: `IQ_SLEW_UP/DOWN_SLOW/FAST`. |
 | `SMOOTH_START_ENABLE` | **0 (off)** | Miękkie ruszanie: tłumi wspomaganie 0→100% przez `START_RAMP_TICKS` po postoju. | `1` jeśli ruszanie nadal zbyt „kopie" (rampa adaptacyjna już to łagodzi). |
 | `TQ_FULL_SCALE_MV` | `3300` | Górna granica mapy „nacisk → moc". 3300 = jak dziś (nacisk słabo się przekłada). **Niżej (~1800–2200) = bardziej naciskowe/przewidywalne (Bosch)**. | Obniż by mocniej czuć nacisk pedału. |
+| `TQ_GATE_MIN` | `15` | Próg momentu, poniżej którego brak wspomagania kadencyjnego. Blokuje „wzbudzanie przód-tył" bez nacisku i porządkuje załączanie. | Wyżej = trzeba mocniej nacisnąć by ruszyć (spokojniej); za wysoko = lekkie pedałowanie nie wspomaga. |
+| `ASSIST_TORQUE_MODE` | **0 (off)** | Charakter wspomagania: `0`=kadencyjny (jak dziś), **`1`=naciskowy Bosch** (moc ∝ nacisk, kadencja tylko jako „pedałujesz"). Naprawia B/C/D u źródła. | `1` do wypróbowania — **wtedy obniż `TQ_FULL_SCALE_MV`** (~1800–2200), inaczej wspomaganie za słabe. |
 | `IQ_SLEW_UP` / `IQ_SLEW_DOWN` | `5` / `10` | Stałe tempo (używane gdy `IQ_RAMP_ADAPTIVE=0`). | — |
 
 ---
 
 ## 4. Co zmieniliśmy (changelog — od najnowszego)
+
+### 0.0124 — Strojenie wg feedbacku z jazdy (0.0123) + tryb naciskowy
+Feedback: narastanie za wolne, moc odcina zamiast opadać, wzbudzanie „przód-tył" bez nacisku, nieregularne załączanie.
+- **A** narastanie za wolne → `IQ_SLEW_UP_SLOW 3→6`, `FAST 7→12`.
+- **B** odcięcie zamiast opadania → `IQ_SLEW_DOWN_SLOW 6→4`, `FAST 12→8` (łagodniej).
+- **D** wzbudzanie bez nacisku → **`TQ_GATE_MIN=15`** (człon kadencyjny tylko przy realnym momencie).
+- **C** nieregularne załączanie → bramka momentu daje spójny próg.
+- **KROK 2 opcja:** `ASSIST_TORQUE_MODE` (flaga, off) — tryb czysto naciskowy Bosch. **Commit `7e74c10`.**
+- **Test:** jak niżej — sprawdź narastanie (szybsze), opadanie (łagodne, nie cięte), i czy „przód-tył" już NIE wzbudza silnika.
 
 ### 0.0123 — Paczka jakości jazdy (3 gałki, każda flagą)
 - **#1 Adaptacyjna rampa i_q** (`IQ_RAMP_ADAPTIVE=1`, aktywna): tempo zmiany prądu zależne od
