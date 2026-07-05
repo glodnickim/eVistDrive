@@ -59,6 +59,13 @@ Zmieniasz wartość → przebudowa (`build_firmware.ps1`) → wgranie. Domyślne
 
 ## 4. Co zmieniliśmy (changelog — od najnowszego)
 
+### 0.0125 — Fix S+/Boost + spójne załączanie (odporne na jiggle)
+Feedback z 0.0124: tryby S+ i B nie działały; załączanie nieregularne (raz od razu, raz po 0,5–1 obrotu, czasem fałszywie na dołku/zjeździe).
+- **S+/Boost martwe:** bramka używała `torque_filtered` (zależnego od `TQfilter` per poziom) → na wysokich poziomach zawsze poniżej progu → blokada. **Fix:** bramka na **surowym `torque_on_crank`** (`>750+TQ_GATE_MIN`) — identyczna na każdym poziomie.
+- **Spójne załączanie:** nowy licznik `fwd_run` = kroki korby **z rzędu do przodu** (kasowany przy KAŻDYM kroku wstecz i przy postoju). Wspomaganie startuje tylko gdy `fwd_run ≥ START_MIN_STEPS` **i** realny nacisk. Jiggle przód-tył zeruje licznik → brak fałszywego załączenia; nacisk bez obrotu też nie wzbudza; realne pedałowanie uzbraja w ~4 krokach (~15°) — **za każdym razem tak samo**. Zgodne z TSDZ2.
+- Nowe flagi: `TQ_GATE_MIN` (mV nad spoczynkiem), `START_MIN_STEPS`. **Commit `286f77d`.**
+- **Test:** (a) S+/B wspomagają; (b) naciśnij+ruszaj → załącza szybko i spójnie; (c) na dołku pokręć korbą **przód-tył bez nacisku** → silnik NIE załącza.
+
 ### 0.0124 — Strojenie wg feedbacku z jazdy (0.0123) + tryb naciskowy
 Feedback: narastanie za wolne, moc odcina zamiast opadać, wzbudzanie „przód-tył" bez nacisku, nieregularne załączanie.
 - **A** narastanie za wolne → `IQ_SLEW_UP_SLOW 3→6`, `FAST 7→12`.
