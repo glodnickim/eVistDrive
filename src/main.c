@@ -2376,10 +2376,18 @@ uint16_t update_setpoint(void){
 					mapped_torque= map(MS.torque_on_crank, MP.TQO_threshold[level_to_array_element[MS.assist_level]], TQ_FULL_SCALE_MV, 0, phase_current_max_scaled); //#4 upper span configurable (3300=old; lower=more pressure-linear)
 
 					if(Backwards_counter<4){//normal ride mode, motor power only if pedals are not turned backwards
-						//CONSISTENT ENGAGEMENT: assist arms only with REAL pressure AND >=START_MIN_STEPS consecutive
-						//forward crank steps. Reverse step / stop resets fwd_run -> back/forth jiggle on descents & dead
-						//spots CANNOT engage, and pressure-without-rotation cannot engage either. Same trigger every time.
-						uint8_t engaged = (fwd_run>=START_MIN_STEPS) && (MS.torque_on_crank > (750+TQ_GATE_MIN));
+						//CONSISTENT ENGAGEMENT with HYSTERESIS: arm on firm press + >=START_MIN_STEPS forward steps;
+						//once armed, HOLD until pressure drops near rest (TQ_GATE_RELEASE) or crank movement stops.
+						//This stops the shudder (assist unloads pedal -> pressure dips -> would cut without hold).
+						//Reverse/stop resets fwd_run -> can't false-engage on descent jiggle or dead-spots.
+						static uint8_t assist_latched=0;
+						uint8_t fwd_ok=(fwd_run>=START_MIN_STEPS);
+						if(!assist_latched){
+							if(fwd_ok && MS.torque_on_crank > (750+TQ_GATE_MIN)) assist_latched=1;
+						}else{
+							if(!fwd_ok) assist_latched=0;   //HOLD assist the whole time cranks turn forward; release ONLY when pedalling stops/reverses (not on pressure dips)
+						}
+						uint8_t engaged = assist_latched;
 						if(!engaged){
 							MS.i_q_setpoint_temp=0;
 						}else{

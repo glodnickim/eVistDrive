@@ -185,6 +185,12 @@
 // ~96 steps/rev, so 4 steps ≈ 15° of crank -> fast & repeatable. Higher = firmer/longer push to start.
 #define START_MIN_STEPS 4
 
+// --- Engagement HYSTERESIS (#hold): once engaged, stay engaged until pressure drops to TQ_GATE_RELEASE mV
+// above rest (must be < TQ_GATE_MIN). Without it the assist unloads the pedal -> pressure falls below the
+// engage threshold -> cut -> pressure rises -> re-engage... = shudder. With it, assist holds and its
+// magnitude just scales down with pressure. Release near rest so soft-pedalling still relaxes it.
+#define TQ_GATE_RELEASE 5
+
 // --- Assist character (KROK 2): torque/pressure mode vs cadence mode ---
 // 0 = OFF (default): legacy cadence-based assist (TS_coeff * cadence^helper * torque_filtered). Cadence-driven.
 // 1 = ON: Bosch-like PRESSURE mode - assist proportional to pedal pressure (mapped_torque), only while pedalling
