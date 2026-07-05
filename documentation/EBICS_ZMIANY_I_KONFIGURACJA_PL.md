@@ -48,12 +48,28 @@ Zmieniasz wartość → przebudowa (`build_firmware.ps1`) → wgranie. Domyślne
 |---|---|---|---|
 | `EXTENDED_BOOST_ENABLE` | **0 (off)** | „Przeciąganie": trzymanie mocy PO puszczeniu pedału. Off = moc schodzi płynnie za pedałem (jak Bosch). | `1` jeśli chcesz starego „dociągania". |
 | `SEND_DEV_TELEMETRY` | **0 (off)** | Wysyłanie 2 deweloperskich ramek (`0x81F83100` moment/kadencja co 10 ms, `0x80010203` debug FOC). Fabryka ich nie wysyła. | `1` tylko gdy deweloper stroi silnik i chce te dane. |
-| `IQ_SLEW_UP` | `5` | Jak szybko prąd silnika NARASTA. Większy = ostrzejszy kop. | Miększy start → zmniejsz. |
-| `IQ_SLEW_DOWN` | `10` | Jak szybko prąd silnika OPADA. Większy = szybsze odcięcie. | Miększe schodzenie → zmniejsz. |
+| `IQ_RAMP_ADAPTIVE` | **1 (on)** | Tempo narastania/opadania prądu **zależne od prędkości i kadencji** (miękko na wolno, żwawo przy prędkości). Gdy `0` — stałe `IQ_SLEW_UP/DOWN`. | `0` by wrócić do stałego tempa. Progi: `IQ_SLEW_UP/DOWN_SLOW/FAST`. |
+| `SMOOTH_START_ENABLE` | **0 (off)** | Miękkie ruszanie: tłumi wspomaganie 0→100% przez `START_RAMP_TICKS` po postoju. | `1` jeśli ruszanie nadal zbyt „kopie" (rampa adaptacyjna już to łagodzi). |
+| `TQ_FULL_SCALE_MV` | `3300` | Górna granica mapy „nacisk → moc". 3300 = jak dziś (nacisk słabo się przekłada). **Niżej (~1800–2200) = bardziej naciskowe/przewidywalne (Bosch)**. | Obniż by mocniej czuć nacisk pedału. |
+| `IQ_SLEW_UP` / `IQ_SLEW_DOWN` | `5` / `10` | Stałe tempo (używane gdy `IQ_RAMP_ADAPTIVE=0`). | — |
 
 ---
 
 ## 4. Co zmieniliśmy (changelog — od najnowszego)
+
+### 0.0123 — Paczka jakości jazdy (3 gałki, każda flagą)
+- **#1 Adaptacyjna rampa i_q** (`IQ_RAMP_ADAPTIVE=1`, aktywna): tempo zmiany prądu zależne od
+  prędkości i kadencji → miękkie ruszanie, płynne przejścia w jeździe, gładkie schodzenie.
+- **#2 Smooth-start** (`SMOOTH_START_ENABLE=0`, uśpiona): miękkie tłumienie startu — włącz jeśli trzeba.
+- **#4 `TQ_FULL_SCALE_MV=3300`** (gałka, domyślnie bez zmian): obniż → bardziej naciskowe czucie.
+- Domyślnie zmienia odczucie tylko **#1**; #2/#4 to uśpione gałki do strojenia. **Commit `76609bf`.**
+- **Test:** patrz sekcja 4a poniżej.
+
+#### 4a. Jak testować 0.0123
+1. **Przejścia w jeździe** (główny cel #1): zwalniaj/dodawaj nacisk → moc płynie gładko, bez skoków.
+2. **Ruszanie:** miękkie, bez kopa? (jak za miękko/ospale — zmniejsz progi lub włącz #2).
+3. **Nacisk (opcjonalnie #4):** obniż `TQ_FULL_SCALE_MV` do ~2000, przebuduj → mocniej czujesz nacisk.
+4. Regresja: WA działa, hamulec ucina natychmiast, brak dziwnego zachowania przy prędkości.
 
 ### 0.0122 — Koniec „przeciągania" mocy
 - **Problem:** po zaprzestaniu pedałowania silnik „dociągał", moc nie schodziła gładko.
