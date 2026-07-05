@@ -150,6 +150,28 @@
 // 0 = OFF (default): power follows the pedal directly (Bosch-like, smooth power-down). 1 = ON (legacy carry).
 #define EXTENDED_BOOST_ENABLE 0
 
+// --- Adaptive i_q ramp (#1): how fast motor current rises/falls, scaled by wheel speed + cadence (TSDZ2-style) ---
+// 1 = adaptive (gentle at low speed, snappy at speed -> smooth transitions & start). 0 = fixed IQ_SLEW_UP/DOWN.
+#define IQ_RAMP_ADAPTIVE   1
+#define IQ_SLEW_UP_SLOW    3    // i_q rise/tick at standstill/low cadence (soft engage)
+#define IQ_SLEW_UP_FAST    7    // i_q rise/tick at speed/high cadence (responsive)
+#define IQ_SLEW_DOWN_SLOW  6    // i_q fall/tick at low speed (soft power-down)
+#define IQ_SLEW_DOWN_FAST  12   // i_q fall/tick at speed (quick, clean cut)
+#define IQ_RAMP_SPEED_LO   400  // Speedx100 = 4.0 km/h (below -> SLOW)
+#define IQ_RAMP_SPEED_HI   2000 // 20.0 km/h (above -> FAST)
+#define IQ_RAMP_CAD_LO     20   // rpm
+#define IQ_RAMP_CAD_HI     70   // rpm
+
+// --- Smooth start (#2): attenuate assist 0->100% while pulling away from standstill (@4kHz tick) ---
+// 0 = OFF (default; adaptive ramp already softens start). 1 = ON if start still feels harsh.
+#define SMOOTH_START_ENABLE 0
+#define START_RAMP_TICKS   1200 // ~300 ms envelope
+
+// --- Torque->power upper span (#4): map(torque_on_crank, TQO_threshold, TQ_FULL_SCALE_MV, 0, current). ---
+// 3300 = current behaviour (hard pedal pressure barely reaches full assist). Lower (~1800-2200) = more
+// pressure-linear / "naciskowe" (Bosch-like): a firm press reaches full assist. Tune to taste.
+#define TQ_FULL_SCALE_MV 3300
+
 //---------------------------------------------------------------------
 //Torque sensor: fault detection (Bafang Error 25) + cyclic offset re-zero on coast (thermal drift)
 #define ERR_TORQUE          25    // Bafang error 25 = torque sensor signal failure

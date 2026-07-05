@@ -1483,14 +1483,23 @@ void reg_ADC_processing(void)
     }
 
     {
-    	//minimal engage/disengage slew on i_q to soften the mechanical "click" (gear lash); protects drivetrain.
+    	//engage/disengage slew on i_q. #1 adaptive: step scales with speed+cadence (soft at low speed, snappy at speed).
     	int32_t iq_target = update_setpoint();
+#if IQ_RAMP_ADAPTIVE
+    	int32_t up_s = map((int32_t)MS.Speedx100, IQ_RAMP_SPEED_LO, IQ_RAMP_SPEED_HI, IQ_SLEW_UP_SLOW, IQ_SLEW_UP_FAST);
+    	int32_t up_c = map((int32_t)MS.cadence,   IQ_RAMP_CAD_LO,   IQ_RAMP_CAD_HI,   IQ_SLEW_UP_SLOW, IQ_SLEW_UP_FAST);
+    	int32_t up_step = (up_c>up_s)?up_c:up_s; if(up_step<IQ_SLEW_UP_SLOW) up_step=IQ_SLEW_UP_SLOW;
+    	int32_t dn_step = map((int32_t)MS.Speedx100, IQ_RAMP_SPEED_LO, IQ_RAMP_SPEED_HI, IQ_SLEW_DOWN_SLOW, IQ_SLEW_DOWN_FAST);
+    	if(dn_step<IQ_SLEW_DOWN_SLOW) dn_step=IQ_SLEW_DOWN_SLOW;
+#else
+    	int32_t up_step = IQ_SLEW_UP, dn_step = IQ_SLEW_DOWN;
+#endif
     	if(MS.brake_active_flag || Backwards_counter>=4 || overtemp_stage>=2){
     		MS.i_q_setpoint = iq_target;                                       //safety cuts = immediate, no ramp
     	}else if(iq_target > MS.i_q_setpoint){
-    		int32_t d=iq_target-MS.i_q_setpoint; MS.i_q_setpoint += (d>IQ_SLEW_UP)?IQ_SLEW_UP:d;
+    		int32_t d=iq_target-MS.i_q_setpoint; MS.i_q_setpoint += (d>up_step)?up_step:d;
     	}else{
-    		int32_t d=MS.i_q_setpoint-iq_target; MS.i_q_setpoint -= (d>IQ_SLEW_DOWN)?IQ_SLEW_DOWN:d;
+    		int32_t d=MS.i_q_setpoint-iq_target; MS.i_q_setpoint -= (d>dn_step)?dn_step:d;
     	}
     }
     if (torque_counter>4000&&!Overrun_flag){ //reset after one second without torque on the pedal
@@ -2358,7 +2367,7 @@ uint16_t update_setpoint(void){
 	            //calculate setpoint, if brake is not activated
 	            else{
 					mapped_throttle= map(adc_value[1], MP.throttle_offset, MP.throttle_max, 0, phase_current_max_scaled);
-					mapped_torque= map(MS.torque_on_crank, MP.TQO_threshold[level_to_array_element[MS.assist_level]], 3300, 0, phase_current_max_scaled);
+					mapped_torque= map(MS.torque_on_crank, MP.TQO_threshold[level_to_array_element[MS.assist_level]], TQ_FULL_SCALE_MV, 0, phase_current_max_scaled); //#4 upper span configurable (3300=old; lower=more pressure-linear)
 
 					if(Backwards_counter<4){//normal ride mode, motor power only if pedals are not turned backwards
 						MS.i_q_setpoint_temp=(uint32_t)((float) (MP.TS_coeff*powf((float)MS.cadence,helper))*(MS.torque_filtered)*0.0005*interpolate_assistfactor());//factor 0.0005 from various constants
@@ -2377,6 +2386,14 @@ uint16_t update_setpoint(void){
 						}
 					}
 					else MS.i_q_setpoint_temp=0; //cut motor power on pedaling backwards
+#if SMOOTH_START_ENABLE
+					{	//#2 soft pull-away: scale pedal assist 0->100% over START_RAMP_TICKS after a standstill (throttle below is exempt)
+						static uint16_t start_ramp=0;
+						if(MS.Speedx100==0 && MS.cadence==0) start_ramp=0;
+						else if(start_ramp<START_RAMP_TICKS) start_ramp++;
+						if(start_ramp<START_RAMP_TICKS) MS.i_q_setpoint_temp=(uint32_t)((uint32_t)MS.i_q_setpoint_temp*start_ramp/START_RAMP_TICKS);
+					}
+#endif
 						//throttle override
 					if(mapped_throttle>MS.i_q_setpoint_temp)MS.i_q_setpoint_temp=mapped_throttle;
 
