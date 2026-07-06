@@ -68,10 +68,22 @@ Zmieniasz wartość → przebudowa (`build_firmware.ps1`) → wgranie. Domyślne
 | `SPEED_STOP_TICKS` | `10600` (2,65 s) | Po ilu bez impulsu koła prędkość = 0. Było 5 s (wskazanie wisiało po zatrzymaniu). Minimalna mierzalna prędkość ≈ **3 km/h** (wolniej = pokazuje 0). | Mniej = szybsze zero, ale wyższa minimalna prędkość; więcej = odwrotnie. |
 | `SPEED_DECAY_MARGIN_PCT` | `25` | Między impulsami wskazanie nie może być wyższe niż prędkość wynikająca z ciszy od ostatniego impulsu (+25% zapasu). Przy hamowaniu licznik **płynnie opada** zamiast wisieć; przy stałej jeździe nie odzywa się nigdy (impuls musiałby się spóźnić >25%). | Większy zapas = później zaczyna opadać. |
 | `WHEEL_CIRCUMFERENCE` | `2218` mm | Domyślny obwód koła: 27,5″ + opona 2,4″ (średnica 706 mm × π). HMI może nadpisać ramką 0x3203. | Zmierz realny obwód (kreda/taśma) dla największej dokładności. |
+| `ASSIST_TORQUE_MODE` | **0** | Charakter wspomagania: `0`=kadencyjny (jak dziś), `1`=naciskowy prosta, **`2`=naciskowy z krzywą expo per poziom** (nowość). | `2` żeby stroić charakter każdego poziomu osobno — patrz **MANUAL_KRZYWA_NACISKU.md**. |
+| `ASSIST_CURVE_EXPO_L1…L5` | `0,0,0,0,0` | Wygięcie krzywej nacisk→moc **osobno dla Eco/Tour/Sport/S+/Boost** (−100…+100). `+`=progresywnie (moc gdy dociskasz), `−`=degresywnie (moc od dotknięcia), `0`=prosta. Działa tylko w trybie 2. | Symulacja na żywo: https://claude.ai/code/artifact/2fd06015-0b0a-40d6-bf53-2dfb3e6df175 |
 
 ---
 
 ## 4. Co zmieniliśmy (changelog — od najnowszego)
+
+### (w kodzie, JESZCZE NIE ZBUDOWANE) — Krzywa nacisku expo, osobno dla każdego poziomu
+Pytanie wyjściowe: „jak TSDZ2 wygina krzywą nacisku?" → analiza źródeł + symulacja interaktywna
+(https://claude.ai/code/artifact/2fd06015-0b0a-40d6-bf53-2dfb3e6df175) → wybrany wariant **expo
+w stylu VESC** (`y = x^(1+e)`), ale ulepszony: **jedna gałka NA KAŻDY POZIOM** (TSDZ2/VESC mają globalną).
+- Nowy tryb `ASSIST_TORQUE_MODE=2`: naciskowy z krzywą; `ASSIST_CURVE_EXPO_L1..L5` (−100..+100, domyślnie 0).
+- Bramki startu (`START_MIN_STEPS`, `TQ_GATE_MIN`), zatrzask-podtrzymanie i rampa czasowa — **nietknięte**
+  (krzywa liczy się ZA decyzją „czy silnik działa", PRZED rampą). Tryb kadencyjny (domyślny) bez zmian.
+- Wykładnik liczony raz przy zmianie poziomu; w pętli 4 kHz jedno `powf` (jak człon kadencyjny).
+- Manual dla użytkowników: **`documentation/MANUAL_KRZYWA_NACISKU.md`** (zalążek przyszłego wiki).
 
 ### (w kodzie, JESZCZE NIE ZBUDOWANE) — Licznik prędkości: szybsze zero + płynne opadanie + obwód koła
 Objaw: po zatrzymaniu HMI trzymał ostatnią prędkość jeszcze ~5 s. Porównanie z TSDZ2 (timeout ~2,1 s):

@@ -227,7 +227,21 @@
 // 1 = ON: Bosch-like PRESSURE mode - assist proportional to pedal pressure (mapped_torque), only while pedalling
 //     forward with real load; cadence NOT used. Fixes twitchy/irregular engage + "wiggle without pressure".
 //     IMPORTANT: in this mode LOWER TQ_FULL_SCALE_MV (~1800-2200), otherwise assist is weak.
+// 2 = PRESSURE mode with PER-LEVEL EXPO CURVE (VESC-style): y = x^(1+e) on the normalized pressure span.
+//     Same gates/latch/ramps as mode 1; only the pressure->power SHAPE changes, separately per assist level.
+//     Simulation of the curve: https://claude.ai/code/artifact/2fd06015-0b0a-40d6-bf53-2dfb3e6df175
 #define ASSIST_TORQUE_MODE 0
+
+// Per-level curve bend for ASSIST_TORQUE_MODE=2, in percent -100..+100 (0 = straight line = mode 1):
+//   +% = progressive: soft on light pedalling, power comes when you PUSH (sporty; +50 ~ TSDZ2 eMTB feel)
+//   -% = degressive: strong from the first touch, flattens on hard press (city/comfort)
+// Exponent mapping: E>=0 -> 1+E/33.3 (up to 4.0); E<0 -> 1/(1-E/33.3) (down to 0.25). Endpoints 0/100% fixed,
+// output always rises with pressure (monotonic by construction). Applied once per level change, powf per tick.
+#define ASSIST_CURVE_EXPO_L1 0   // level array 1 (Eco)
+#define ASSIST_CURVE_EXPO_L2 0   // level array 2 (Tour)
+#define ASSIST_CURVE_EXPO_L3 0   // level array 3 (Sport)
+#define ASSIST_CURVE_EXPO_L4 0   // level array 4 (Sport+)
+#define ASSIST_CURVE_EXPO_L5 0   // level array 5 (Boost)
 
 //---------------------------------------------------------------------
 //Torque sensor: fault detection (Bafang Error 25) + cyclic offset re-zero on coast (thermal drift)

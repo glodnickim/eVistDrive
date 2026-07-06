@@ -262,6 +262,11 @@ int32_t soc_slot_index=-1;        //index of latest written slot (-1 = none)
 float cycle_start_soc=-1.0f;      //SOC at start of a discharge cycle (-1 = none)
 float cycle_discharge_mah=0;      //accumulated discharge during the cycle
 uint8_t shutdown_saved=0;         //guard: save state only once on shutdown
+#if ASSIST_TORQUE_MODE==2
+//per-level expo curve (mode 2): percent table indexed like assist_settings (element 0 = no assist level)
+static const int8_t assist_curve_expo_pct[6]={0,ASSIST_CURVE_EXPO_L1,ASSIST_CURVE_EXPO_L2,ASSIST_CURVE_EXPO_L3,ASSIST_CURVE_EXPO_L4,ASSIST_CURVE_EXPO_L5};
+static float assist_curve_exponent=1.0f;  //recomputed on assist level change; 1.0 = straight line
+#endif
 uint32_t idle_ticks_slow=0;       //auto-off: slow-loop (40 ms) ticks with no rider/comms activity
 volatile uint16_t comm_lost_ticks=0; //comms watchdog: slow-loop ticks since last HMI frame (reset in processCAN_Rx)
 volatile uint8_t comm_seen=0;     //comms watchdog: 1 after first HMI frame -> arms the watchdog (grace period at boot)
@@ -517,6 +522,13 @@ int main(void)
         	if(MS.TQfilter<1 || MS.TQfilter>7) MS.TQfilter=4;
         	MS.ext_boost_duration=MP.ext_boost_duration[level_to_array_element[MS.assist_level]];
         	MS.ext_boost_strength=MP.ext_boost_strength[level_to_array_element[MS.assist_level]];
+#if ASSIST_TORQUE_MODE==2
+        	{	//expo curve: derive this level's exponent ONCE here (percent -100..+100 -> 0.25..4.0)
+        		int8_t e_pct=assist_curve_expo_pct[level_to_array_element[MS.assist_level]];
+        		if(e_pct>=0) assist_curve_exponent=1.0f+(float)e_pct/33.3f;
+        		else         assist_curve_exponent=1.0f/(1.0f-(float)e_pct/33.3f);
+        	}
+#endif
         	if(offroadcounter<4000&&offroadcounter>1000){
         		offroadcode+=pow(10,MS.offroadtics)*MS.assist_level;
         		MS.offroadtics++;
@@ -2490,7 +2502,15 @@ uint16_t update_setpoint(void){
 						if(!engaged){
 							MS.i_q_setpoint_temp=0;
 						}else{
-#if ASSIST_TORQUE_MODE
+#if ASSIST_TORQUE_MODE==2
+							//PRESSURE mode with per-level expo curve: y = x^(1+e) on the normalized pressure span.
+							//Gates/latch above decide IF power flows; the curve only shapes HOW MUCH per pressure.
+							if(phase_current_max_scaled>0){
+								float xn=(float)mapped_torque/(float)phase_current_max_scaled; //0..1 (map() clamps)
+								MS.i_q_setpoint_temp=(uint32_t)((float)phase_current_max_scaled*powf(xn,assist_curve_exponent));
+							}
+							else MS.i_q_setpoint_temp=0;
+#elif ASSIST_TORQUE_MODE
 							//Bosch-like PRESSURE mode: assist ∝ pedal pressure (cadence not used)
 							MS.i_q_setpoint_temp = (uint32_t)mapped_torque;
 #else
