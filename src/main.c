@@ -593,7 +593,14 @@ int main(void)
             	}
             	//toggle speed pin
             	//gpio_bit_write(GPIOB, GPIO_PIN_0,(bit_status)(1-gpio_input_bit_get(GPIOB, GPIO_PIN_0)));
-            	if(Speed_counter>20000) MS.Speedx100=0;
+            	//Speed display: hard zero after SPEED_STOP_TICKS of silence (~2.65 s, min ~3 km/h);
+            	//between pulses cap the shown speed at the value implied by the silence so far (+25% grace),
+            	//so braking reads as a smooth fall instead of a value frozen until the timeout.
+            	if(Speed_counter>SPEED_STOP_TICKS) MS.Speedx100=0;
+            	else if(MS.Speedx100>0 && Speed_counter>400){ //>0.1 s since last pulse (guards div and leaves fresh pulses alone)
+            		uint32_t implied_x100 = (uint32_t)MP.wheel_cirumference*4*360/((uint32_t)MP.pulses_per_revolution*Speed_counter);
+            		if((uint32_t)MS.Speedx100*100 > implied_x100*(100+SPEED_DECAY_MARGIN_PCT)) MS.Speedx100=(uint16_t)implied_x100;
+            	}
 				slow_loop_counter = 0;
 
 				if(adc_value[5]<2800)shutoffcounter++; //raw value is 4095 without button pressed, about 3300 with "down" button pressed and about 2400 with on/off button pressed.

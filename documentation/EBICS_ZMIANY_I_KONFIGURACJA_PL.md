@@ -65,10 +65,24 @@ Zmieniasz wartość → przebudowa (`build_firmware.ps1`) → wgranie. Domyślne
 | `WA_NEAR_HOLD_PCT` | `25` | Ile % maksymalnej siły WA zostaje PRZY zadanej prędkości. Nie 0 — inaczej rower stawałby tuż pod celem i „pompował". | Wyżej, jeśli WA nie domaga pod górkę przy celu. |
 | `WA_OVERSPEED_MARGIN` | `50` (0,5 km/h) | Twarde zabezpieczenie: cel+0,5 km/h → prąd natychmiast 0 + wyzerowanie integratora (z górki silnik nie pcha). | — |
 | `WA_DEADBAND` | `20` (0,2 km/h) | Martwa strefa integratora wokół celu — bez ciągłego dokręcania/odkręcania prądu przy 6 km/h (mniej „pompowania"). | — |
+| `SPEED_STOP_TICKS` | `10600` (2,65 s) | Po ilu bez impulsu koła prędkość = 0. Było 5 s (wskazanie wisiało po zatrzymaniu). Minimalna mierzalna prędkość ≈ **3 km/h** (wolniej = pokazuje 0). | Mniej = szybsze zero, ale wyższa minimalna prędkość; więcej = odwrotnie. |
+| `SPEED_DECAY_MARGIN_PCT` | `25` | Między impulsami wskazanie nie może być wyższe niż prędkość wynikająca z ciszy od ostatniego impulsu (+25% zapasu). Przy hamowaniu licznik **płynnie opada** zamiast wisieć; przy stałej jeździe nie odzywa się nigdy (impuls musiałby się spóźnić >25%). | Większy zapas = później zaczyna opadać. |
+| `WHEEL_CIRCUMFERENCE` | `2218` mm | Domyślny obwód koła: 27,5″ + opona 2,4″ (średnica 706 mm × π). HMI może nadpisać ramką 0x3203. | Zmierz realny obwód (kreda/taśma) dla największej dokładności. |
 
 ---
 
 ## 4. Co zmieniliśmy (changelog — od najnowszego)
+
+### (w kodzie, JESZCZE NIE ZBUDOWANE) — Licznik prędkości: szybsze zero + płynne opadanie + obwód koła
+Objaw: po zatrzymaniu HMI trzymał ostatnią prędkość jeszcze ~5 s. Porównanie z TSDZ2 (timeout ~2,1 s):
+- **`SPEED_STOP_TICKS` 20000→10600**: zero po 2,65 s zamiast 5 s (2× szybciej). Minimalna mierzalna
+  prędkość rośnie z ~1,6 do **~3 km/h** (kompromis jak w TSDZ2; WA na 6 km/h bezpiecznie powyżej).
+  Szybciej reaguje też warunek „postój" w watchdogu CAN i auto-off.
+- **Malejący sufit (`SPEED_DECAY_MARGIN_PCT` 25)**: między impulsami wskazanie ograniczone do prędkości
+  wynikającej z ciszy od ostatniego impulsu — przy hamowaniu licznik płynnie opada zamiast wisieć.
+  Margines +25% gwarantuje, że przy stałej jeździe mechanizm się nie odzywa (brak migotania).
+- **`WHEEL_CIRCUMFERENCE` 2200→2218 mm**: domyślny obwód dla koła 27,5″ z oponą 2,4″
+  (584 + 2×61 = 706 mm średnicy × π). HMI i tak może nadpisać ramką 0x3203.
 
 ### 0.0131 — Walk Assist: dochodzenie do prędkości bez przelotu
 Objaw: WA rozpędzał rower i **przelatywał zadane 6 km/h**. Nasza pętla PI reguluje prąd (siłę) —

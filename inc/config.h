@@ -93,10 +93,13 @@
 
 //--------------------------------------------------------------------
 //Speed settings
-#define WHEEL_CIRCUMFERENCE 2200
+#define WHEEL_CIRCUMFERENCE 2218 //mm; 27.5" rim (584) + 2.4" tire (2x61) -> dia 706 * pi. HMI 0x3203 write overrides at runtime.
 #define GEAR_RATIO 80 //11 for BionX IGH3
 #define SPEEDLIMIT 2500
 #define PULSES_PER_REVOLUTION 1 //wheel revolution, Para1[20]
+// Speed display stop detection + decay (was: frozen last value for 5 s after stopping).
+#define SPEED_STOP_TICKS 10600      // ticks @4kHz = 2.65 s without a wheel pulse -> speed = 0. Min detectable speed = circ*1440/ticks ~= 3.0 km/h @2218mm (TSDZ2 uses ~2.1 s / ~3.7 km/h).
+#define SPEED_DECAY_MARGIN_PCT 25   // between pulses show at most the speed implied by the silence so far, but only once a pulse is >25% overdue -> steady riding never touched, braking display falls smoothly instead of freezing
 #define SPEEDSOURCE EXTERNAL
 #define SPEEDFILTER 1
 #define SPDSHFT 0
