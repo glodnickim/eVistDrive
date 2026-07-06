@@ -58,6 +58,8 @@ Zmieniasz wartość → przebudowa (`build_firmware.ps1`) → wgranie. Domyślne
 | `START_CADENCE_SEED_*` | `on`, `2`, **`18 rpm`** | Mały tymczasowy odczyt kadencji po pierwszych poprawnych krokach do przodu. Nie włącza silnika samodzielnie; tylko ratuje człon kadencyjny na starcie (bez tego `kadencja=0 → moc≈0`). Podniesiony 10→18 = mocniejszy start. | Wyżej = mocniejszy start; wyłączyć tylko gdy za szybko buduje moc na pierwszym ruchu korby. |
 | `ASSIST_TORQUE_MODE` | **0 (off)** | Charakter wspomagania: `0`=kadencyjny (jak dziś), **`1`=naciskowy Bosch** (moc ∝ nacisk, kadencja tylko jako „pedałujesz"). Naprawia B/C/D u źródła. | `1` do wypróbowania — **wtedy obniż `TQ_FULL_SCALE_MV`** (~1800–2200), inaczej wspomaganie za słabe. |
 | `IQ_SLEW_UP` / `IQ_SLEW_DOWN` | `5` / `10` | Stara rampa krokowa, używana tylko gdy `IQ_RAMP_TIME_MODE=0`. | — |
+| `SOFT_CUTOFF_ENABLE` | **1 (on)** | **Miękkie odcięcie stopnia mocy** — usuwa „klik" na samym końcu wspomagania. Zanik momentu (rampa `i_q`) był już płynny, ale finalne wyłączenie mostka (`DISABLE` ~1 s po zatrzymaniu wirnika) było skokowe: nagły zapis napięć faz + odcięcie mostka = słyszalny trzask. Teraz przez chwilę napięcia faz zjeżdżają płynnie do wektora neutralnego, dopiero potem mostek jest odcinany. Hamulec/wstecz/przegrzanie nadal tną natychmiast. | `0` = powrót do starego, natychmiastowego odcięcia (klik wraca). |
+| `SOFT_CUTOFF_TICKS` | `40` (≈10 ms) | Długość okna miękkiego zjazdu do wektora neutralnego (w tykach pętli 4 kHz). | Więcej = dłuższe, jeszcze łagodniejsze zwolnienie; za dużo i słychać „mruknięcie" — wtedy zmniejsz. |
 | `AUTO_OFF_MINUTES` | **`10`** | Samo-wyłączenie po bezczynności: rower stoi, nikt nie pedałuje, nie hamuje i nie dotyka przycisków przez N minut → sterownik gasi zasilanie (jak fabryka). Jeśli HMI wyśle własny czas ramką `0x6303`, ta wartość jest nadpisywana w locie. `0` = wyłączone. | Krócej = oszczędniej; `0` gdy nie chcesz auto-wyłączania. |
 | `COMM_CUT_TICKS` | `75` (3 s) | **Watchdog CAN**: brak jakiejkolwiek ramki z HMI przez 3 s (urwany kabel, uszkodzone HMI) → wspomaganie natychmiast na 0. Silnik nie może „ciągnąć" bez kontroli z manetki. Wspomaganie NIE wraca samo — poziom musi znów przyjść z HMI. | Krócej = szybsza reakcja, ale wrażliwsze na chwilowe zakłócenia. |
 | `COMM_OFF_TICKS` | `250` (10 s) | Ciąg dalszy watchdoga: 10 s bez HMI **i rower stoi** → sterownik gasi zasilanie. W trakcie jazdy NIGDY się nie wyłącza (najpierw tnie wspomaganie, dojeżdżasz siłą mięśni, gaśnie dopiero na postoju). | — |
@@ -74,6 +76,22 @@ Zmieniasz wartość → przebudowa (`build_firmware.ps1`) → wgranie. Domyślne
 ---
 
 ## 4. Co zmieniliśmy (changelog — od najnowszego)
+
+### 0.0132 — Miękkie odcięcie stopnia mocy (koniec „kliku" na końcu wspomagania)
+Objaw: na samym końcu zaniku wspomagania słychać „klik". Analiza kodu: **zanik momentu jest płynny**
+(rampa `i_q` w dół, `IQ_RAMP_DOWN_*`), ale **finalne wyłączenie mostka było twarde**. Gdy wirnik stoi
+(~1 s po zatrzymaniu, licznik `uint16_half_rotation_counter>4000`), kod naraz zapisywał `_T/2` na trzy
+kanały PWM i od razu wołał `timer_primary_output_config(TIMER0, DISABLE)` — skokowe zwolnienie mostka
+z aktywnego trzymania do stanu wysokiej impedancji = słyszalny trzask.
+- **Nowy `SOFT_CUTOFF_ENABLE=1`**: zamiast skoku, przez `SOFT_CUTOFF_TICKS` (domyślnie 40 ≈ 10 ms)
+  napięcia faz są liniowo sprowadzane do wektora neutralnego (`_T/2`), pozwalając prądom/polu zaniknąć,
+  i dopiero wtedy mostek jest odcinany. Efekt: brak skoku napięcia → brak kliku.
+- Taktowanie okna jest w `reg_ADC_processing` (~4 kHz, obok licznika obrotu), nie w szybkiej pętli głównej,
+  więc czas zwolnienia jest przewidywalny niezależnie od obciążenia CPU.
+- **Start bez zmian** — był już płynny (rampa `IQ_RAMP_UP_*` + załączenie PWM przy minimalnym `i_q`).
+- **Bezpieczeństwo**: ścieżki awaryjne (hamulec, kręcenie wstecz, przegrzanie) tną moment natychmiast
+  przez rampę i nie przechodzą przez to okno — odcięcie stopnia mocy dotyczy tylko naturalnego postoju.
+  Ruszenie pedałami w trakcie okna od razu przerywa zwolnienie i wraca do FOC.
 
 ### (w kodzie, JESZCZE NIE ZBUDOWANE) — Krzywa nacisku expo, osobno dla każdego poziomu
 Pytanie wyjściowe: „jak TSDZ2 wygina krzywą nacisku?" → analiza źródeł + symulacja interaktywna

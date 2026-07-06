@@ -190,6 +190,13 @@
 #define SMOOTH_START_ENABLE 0
 #define START_RAMP_TICKS   1200 // ~300 ms envelope
 
+// --- Soft cut-off stopnia mocy (usuwa klik przy koncowym DISABLE po zatrzymaniu) ---
+// 1 = przed wylaczeniem mostka zjedz napiecia faz do wektora neutralnego (_T/2)
+// 0 = stara sciezka: natychmiastowy zapis _T/2 + DISABLE (klik)
+#define SOFT_CUTOFF_ENABLE  1
+// liczba cykli petli sterowania (~4 kHz) na wygaszenie do neutral; 40 ~= 10 ms
+#define SOFT_CUTOFF_TICKS   40
+
 // --- Torque->power upper span (#4): map(torque_on_crank, TQO_threshold, TQ_FULL_SCALE_MV, 0, current). ---
 // 3300 = old (hard pressure barely reaches full assist). 2000 = pressure-linear / "naciskowe" (Bosch-like):
 // firm press reaches full assist. Also = IMMEDIATE start power (mapped_torque is a cadence-free pressure FLOOR,

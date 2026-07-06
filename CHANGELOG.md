@@ -10,6 +10,7 @@
 - `TQFILTER` domyślnie zmieniony z 4 na 6 — zachowuje tę samą stałą czasową filtra (~667 ms @ 60 RPM) przy nowej częstości aktualizacji.
 - Slew limiters na prądzie `i_q` (IQ_SLEW_UP=5, IQ_SLEW_DOWN=10 mA/tyk): łagodne zaangażowanie/wyłączenie silnika, ochrona napędu przed szarpnięciem.
 - Rampa `i_q` podobna do TSDZ2: nowy `IQ_RAMP_TIME_MODE=1` używa ułamkowego akumulatora, więc czasy są przewidywalne przy pętli 4 kHz: narastanie ok. 2,3 s / 0,3 s, opadanie ok. 1,0 s / 0,14 s zależnie od prędkości i kadencji. Hamulec, kręcenie wstecz i odcięcie termiczne nadal działają natychmiast.
+- Miękkie odcięcie stopnia mocy (`SOFT_CUTOFF_ENABLE=1`): usuwa „klik" na samym końcu wspomagania. Zamiast skokowego `timer_primary_output_config(DISABLE)` po zatrzymaniu wirnika, napięcia faz zjeżdżają liniowo do wektora neutralnego (`_T/2`) przez `SOFT_CUTOFF_TICKS`=40 (≈10 ms), dopiero potem mostek jest odcinany. Taktowanie w `reg_ADC_processing` (4 kHz). Ścieżki awaryjne (hamulec/wstecz/przegrzanie) nadal tną natychmiast; start bez zmian.
 - Start kadencji podobny do TSDZ2: `START_CADENCE_SEED_ENABLE=1` publikuje tymczasowo 10 rpm po 2 poprawnych krokach do przodu i realnym nacisku. Nie uruchamia silnika samodzielnie; `START_MIN_STEPS=4` i `TQ_GATE_MIN=25` nadal pilnują, żeby nie było wzbudzenia od ruchu przód-tył bez nacisku.
 
 **Walk Assist — zamkniętopętlowy regulator PI prędkości**

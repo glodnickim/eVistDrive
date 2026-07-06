@@ -221,6 +221,9 @@ uint16_t offroadcode=0;
 uint16_t offroadcounter=0;
 uint16_t pulse_counter=0;
 uint8_t ui_8_PWM_ON_Flag=0;
+uint8_t  pwm_cutoff_active=0;    // trwa miekkie zwolnienie stopnia mocy przed DISABLE
+uint16_t pwm_cutoff_tick=0;      // licznik cykli okna zwolnienia
+uint16_t pwm_cutoff_st[3]={0,0,0}; // snapshot switchtime na starcie okna
 int32_t q31_angle_per_tic=0;
 //Rotor angle scaled from degree to q31 for arm_math. -180Ã‚Â°-->-2^31, 0Ã‚Â°-->0, +180Ã‚Â°-->+2^31
 const int32_t deg_30 = 357913941;
@@ -651,12 +654,42 @@ int main(void)
 
             if(MS.i_q_setpoint){
             	if(!ui_8_PWM_ON_Flag){
+            		pwm_cutoff_active=0;        //przerwij ewentualne miekkie zwolnienie - wracamy do FOC
             		get_standstill_position();
 					timer_primary_output_config(TIMER0,ENABLE);
 					uint16_half_rotation_counter=0;
 					ui_8_PWM_ON_Flag=1;
             	}
             }
+#if SOFT_CUTOFF_ENABLE
+            //miekkie zwolnienie: zjedz napiecia faz do neutral (_T/2) przez SOFT_CUTOFF_TICKS cykli, dopiero potem DISABLE
+            if(uint16_half_rotation_counter>4000 && ui_8_PWM_ON_Flag && !pwm_cutoff_active){
+            	ui_8_PWM_ON_Flag=0;            //stop nadpisywania switchtime przez FOC; mostek zostaje ENABLE
+            	pwm_cutoff_st[0]=(uint16_t)switchtime[0];
+            	pwm_cutoff_st[1]=(uint16_t)switchtime[1];
+            	pwm_cutoff_st[2]=(uint16_t)switchtime[2];
+            	pwm_cutoff_tick=0;
+            	pwm_cutoff_active=1;
+            }
+            if(pwm_cutoff_active){
+            	//pwm_cutoff_tick jest inkrementowany w reg_ADC_processing (~4 kHz), nie tutaj (petla glowna jest szybsza)
+            	if(pwm_cutoff_tick>=SOFT_CUTOFF_TICKS){
+            		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,_T>>1);
+            		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,_T>>1);
+            		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,_T>>1);
+            		timer_primary_output_config(TIMER0,DISABLE); //dopiero teraz odetnij mostek
+            		i8_recent_rotor_direction=0;
+            		PI_iq.integral_part=0;
+            		PI_id.integral_part=0;
+            		pwm_cutoff_active=0;
+            	}else{
+            		int32_t neutral=_T>>1;
+            		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,(uint16_t)(pwm_cutoff_st[0]+(neutral-(int32_t)pwm_cutoff_st[0])*pwm_cutoff_tick/SOFT_CUTOFF_TICKS));
+            		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,(uint16_t)(pwm_cutoff_st[1]+(neutral-(int32_t)pwm_cutoff_st[1])*pwm_cutoff_tick/SOFT_CUTOFF_TICKS));
+            		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,(uint16_t)(pwm_cutoff_st[2]+(neutral-(int32_t)pwm_cutoff_st[2])*pwm_cutoff_tick/SOFT_CUTOFF_TICKS));
+            	}
+            }//end soft cut-off
+#else
             if(uint16_half_rotation_counter>4000) {
             	if(ui_8_PWM_ON_Flag){
 					timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,_T>>1);
@@ -670,6 +703,7 @@ int main(void)
 
             	}
             }//end half rotation counter
+#endif
 
 
     }
@@ -1500,6 +1534,7 @@ void reg_ADC_processing(void)
     if(PAS_counter<64000)PAS_counter++;
     if(Speed_counter<64000)Speed_counter++;
     if(uint16_half_rotation_counter<64000)uint16_half_rotation_counter++;
+    if(pwm_cutoff_active && pwm_cutoff_tick<SOFT_CUTOFF_TICKS)pwm_cutoff_tick++; //taktowanie okna miekkiego zwolnienia @4kHz
     if(offroadcounter<64000)offroadcounter++;
     if(ui16_erps_counter<64000)ui16_erps_counter++;
     if(Overrun_counter<64000)Overrun_counter++;
