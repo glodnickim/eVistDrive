@@ -60,6 +60,9 @@ uint16_t k=0;
 uint8_t level_code;
 uint8_t level_code_old;
 uint8_t level_counter;
+extern volatile uint16_t comm_lost_ticks; //comms watchdog counter (defined in main.c) - reset on each HMI frame
+extern volatile uint8_t comm_seen;        //comms watchdog arm flag (defined in main.c) - set on first HMI frame
+extern uint8_t auto_off_minutes;          //runtime auto-off timeout [min] (defined in main.c) - set from HMI 0x6303
 uint8_t walk_can_code_old;
 uint8_t walk_can_counter;
 
@@ -74,6 +77,8 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 	Ext_ID_Rx.source = (receive_message.rx_efid>>24)&0x1F;
 
 	if(Ext_ID_Rx.target==2){ //controller answers on target=2 only (factory ignores tgt=4 info queries; answering duplicates pollutes target=3)
+		comm_lost_ticks=0; //comms watchdog: HMI is alive, reset loss counter
+		comm_seen=1;       //arm the watchdog after the first HMI frame (boot grace period ends here)
 		switch (Ext_ID_Rx.operation){
 			case WRITE_CMD:
 
@@ -223,6 +228,10 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 			if (receive_message.rx_data[2]&0b100000)MS->button_down_flag=SET;
 			else MS->button_down_flag=RESET;
 
+		}
+
+		if(Ext_ID_Rx.command==0x6303 && receive_message.rx_dlen>=1){ //auto-off timeout [min] set on the HMI
+			auto_off_minutes=receive_message.rx_data[0]; //overwrites the AUTO_OFF_MINUTES default
 		}
 
 		if(Ext_ID_Rx.command==0x3203&&Ext_ID_Rx.operation==WRITE_CMD){ //speed limit and wheel size

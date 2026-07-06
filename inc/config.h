@@ -244,6 +244,13 @@
 #define PAS_STOP_TICKS 2000   // ticks @4kHz = 500 ms with no quadrature transition -> pedalling stopped (cadence=0)
 
 //---------------------------------------------------------------------
+// Auto-off (self power-off after inactivity) + comms watchdog (CAN loss from HMI).
+// Slow loop runs every 40 ms, so all *_TICKS below are counted in 40 ms units.
+#define AUTO_OFF_MINUTES 10   // default inactivity timeout [min] before self power-off (0 = disabled). Overwritten at runtime by HMI 0x6303 if HMI sends its own auto-off time.
+#define COMM_CUT_TICKS 75     // 75*40ms = 3.0 s with no HMI frame -> assist forced to 0 (fail-safe: broken cable / dead HMI, motor stops pulling)
+#define COMM_OFF_TICKS 250    // 250*40ms = 10 s with no HMI frame AND standstill -> self power-off (never powers off while still moving)
+
+//---------------------------------------------------------------------
 //Thermal protection (controller NTC) + Error 10 (overtemperature) signalling
 #define TEMP_WARN 75       // degC: start of power derating + stage 1 (pulsed Error 10)
 #define TEMP_CUTOFF 90     // degC: power -> 0 + stage 2 (solid Error 10)

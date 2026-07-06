@@ -118,6 +118,7 @@ void soc_init(void);
 void soc_update(void);            //called at ~1 Hz
 uint8_t soc_state_load(void);
 void soc_state_save(void);
+void power_off_controller(void);  //self power-off: save SOC, stop PWM, drop DC/DC + display (button/auto-off/comms watchdog)
 uint32_t soc_crc32(const uint8_t* data, uint32_t len);
 float compute_limp_factor(float soc);
 float default_wh_km_for_level(uint8_t lvl);
@@ -261,6 +262,10 @@ int32_t soc_slot_index=-1;        //index of latest written slot (-1 = none)
 float cycle_start_soc=-1.0f;      //SOC at start of a discharge cycle (-1 = none)
 float cycle_discharge_mah=0;      //accumulated discharge during the cycle
 uint8_t shutdown_saved=0;         //guard: save state only once on shutdown
+uint32_t idle_ticks_slow=0;       //auto-off: slow-loop (40 ms) ticks with no rider/comms activity
+volatile uint16_t comm_lost_ticks=0; //comms watchdog: slow-loop ticks since last HMI frame (reset in processCAN_Rx)
+volatile uint8_t comm_seen=0;     //comms watchdog: 1 after first HMI frame -> arms the watchdog (grace period at boot)
+uint8_t auto_off_minutes=AUTO_OFF_MINUTES; //runtime auto-off timeout [min]; overwritten by HMI 0x6303
 uint32_t Speedx100_cumulated=0;
 uint32_t torque_cumulated=0;
 uint8_t array_temp[88];
@@ -594,11 +599,33 @@ int main(void)
 				if(adc_value[5]<2800)shutoffcounter++; //raw value is 4095 without button pressed, about 3300 with "down" button pressed and about 2400 with on/off button pressed.
 				else shutoffcounter=0;
 				if(shutoffcounter>62){ //62x40ms=2480ms, poprzednio 50x50ms=2500ms
-					if(!shutdown_saved){ soc_state_save(); shutdown_saved=1; } //persist SOC before power down
-					timer_primary_output_config(TIMER0,DISABLE); //stop PWM output
-					GPIO_BC(GPIOB) = GPIO_PIN_4; //DC/DC enable off
-				    GPIO_BC(GPIOB) = GPIO_PIN_5; // Display off
-				    //GPIO_BC(GPIOB) = GPIO_PIN_6; // DC/DC off
+					power_off_controller(); //on/off button held -> self power-off
+				}
+
+				//--- Auto-off after inactivity: reset counter on any rider/comms activity, else count up.
+				if(MS.Speedx100>0 || MS.cadence>0 || MS.i_q_setpoint>0 || MS.brake_active_flag || adc_value[5]<3300){
+					idle_ticks_slow=0;
+				}
+				else if(idle_ticks_slow < 0xFFFFFFFF){
+					idle_ticks_slow++;
+				}
+				// threshold = minutes * 60 s * (1000/40) ticks per s = minutes * 1500 ticks
+				if(auto_off_minutes>0 && idle_ticks_slow >= (uint32_t)auto_off_minutes*1500){
+					power_off_controller(); //no activity for auto_off_minutes -> self power-off
+				}
+
+				//--- Comms watchdog: armed only after the first HMI frame (comm_seen) so it never
+				//    fires during the boot grace period before the display starts talking.
+				//    comm_lost_ticks is reset in processCAN_Rx on each HMI frame.
+				if(comm_seen){
+					if(comm_lost_ticks < 60000) comm_lost_ticks++;
+					if(comm_lost_ticks >= COMM_CUT_TICKS){ //3 s no HMI frame -> kill assist (fail-safe: broken cable / dead HMI)
+						MS.assist_level=0;
+						MS.i_q_setpoint=0;
+					}
+					if(comm_lost_ticks >= COMM_OFF_TICKS && MS.Speedx100==0){ //10 s no HMI frame -> power off, but only at standstill
+						power_off_controller();
+					}
 				}
 
             }//end slow loop
@@ -2083,6 +2110,15 @@ uint8_t soc_state_load(void){
 	if(slot->capacity_est_mah && slot->capacity_est_mah!=0xFFFF) MP.battery_capacity_estimated_mah=slot->capacity_est_mah;
 	soc_seq=best_seq; soc_slot_index=best;
 	return 1;
+}
+
+// Self power-off: persist SOC once, stop PWM, release DC/DC enable + display latch.
+// Shared by the on/off button, auto-off (inactivity) and the comms watchdog.
+void power_off_controller(void){
+	if(!shutdown_saved){ soc_state_save(); shutdown_saved=1; } //persist SOC before power down
+	timer_primary_output_config(TIMER0,DISABLE); //stop PWM output
+	GPIO_BC(GPIOB) = GPIO_PIN_4; //DC/DC enable off (self power-off)
+	GPIO_BC(GPIOB) = GPIO_PIN_5; //Display off
 }
 
 void soc_state_save(void){
