@@ -5,6 +5,21 @@ branch. The branch is based on the accepted PR #1 (`mdi-9` → `M820`, walk-assi
 Arkadiusz Goleń) and adds a single safety change on top: **Walk Assist only runs while a
 physical button is held**.
 
+## Update on `experiment/tsdz-experiment`
+
+Walk Assist no longer uses wheel speed as a hard `pushassist_flag` gate. The
+previous speed gate made the motor accelerate to the target, cut off, slow down,
+and re-engage. On this branch, Walk Assist remains active while the CAN request
+and physical button are held; `update_setpoint()` regulates motor current toward
+`MP.walk_assist_speed`.
+
+The current PI loop uses:
+
+- `WA_RAMP_TICKS` for a softer start current ceiling,
+- `WA_KI_PERIOD_TICKS` so the integrator updates at 100 Hz instead of 4 kHz,
+- `WA_OVERSPEED_MARGIN` to force zero current and clear the integrator above the
+  target speed plus margin.
+
 The motor control stays **open-loop** (the standard EBiCS walk assist). The experimental FOC
 walk-assist work lives on `feat/walk-assist-foc` and is intentionally **not** part of this branch.
 

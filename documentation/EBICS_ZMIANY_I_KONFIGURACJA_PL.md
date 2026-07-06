@@ -48,16 +48,89 @@ Zmieniasz wartość → przebudowa (`build_firmware.ps1`) → wgranie. Domyślne
 |---|---|---|---|
 | `EXTENDED_BOOST_ENABLE` | **0 (off)** | „Przeciąganie": trzymanie mocy PO puszczeniu pedału. Off = moc schodzi płynnie za pedałem (jak Bosch). | `1` jeśli chcesz starego „dociągania". |
 | `SEND_DEV_TELEMETRY` | **0 (off)** | Wysyłanie 2 deweloperskich ramek (`0x81F83100` moment/kadencja co 10 ms, `0x80010203` debug FOC). Fabryka ich nie wysyła. | `1` tylko gdy deweloper stroi silnik i chce te dane. |
-| `IQ_RAMP_ADAPTIVE` | **1 (on)** | Tempo narastania/opadania prądu **zależne od prędkości i kadencji** (miękko na wolno, żwawo przy prędkości). Gdy `0` — stałe `IQ_SLEW_UP/DOWN`. | `0` by wrócić do stałego tempa. Progi: `IQ_SLEW_UP/DOWN_SLOW/FAST`. |
+| `IQ_RAMP_ADAPTIVE` | **1 (on)** | Tempo narastania/opadania prądu **zależne od prędkości i kadencji** (miękko na wolno, żwawo przy prędkości). Gdy `0` — stały czas rampy. | `0` tylko do testu stałego tempa; domyślnie zostawić `1`. |
+| `IQ_RAMP_TIME_MODE` | **1 (on)** | Nowa rampa czasowa podobna do TSDZ2. Zamiast dużych całkowitych kroków używa wewnętrznego ułamkowego licznika, więc może robić długie, powtarzalne czasy przy pętli 4 kHz. | `0` tylko awaryjnie, żeby wrócić do starej rampy krokowej `IQ_SLEW_*`. |
+| `IQ_RAMP_UP_*_TICKS` | `9200` / `1200` | Czas narastania prądu: wolno przy starcie ok. **2,3 s**, szybko w jeździe ok. **0,3 s**. | Mniej = szybciej i bardziej agresywnie; więcej = miękko, ale może być ospale. |
+| `IQ_RAMP_DOWN_*_TICKS` | `4000` / `560` | Czas zaniku prądu: wolno przy małej prędkości ok. **1,0 s**, szybko w jeździe ok. **0,14 s**. Hamulec, wstecz i przegrzanie nadal tną natychmiast. | Mniej = szybsze puszczenie; więcej = dłuższe, bardziej miękkie wygaszanie. |
 | `SMOOTH_START_ENABLE` | **0 (off)** | Miękkie ruszanie: tłumi wspomaganie 0→100% przez `START_RAMP_TICKS` po postoju. | `1` jeśli ruszanie nadal zbyt „kopie" (rampa adaptacyjna już to łagodzi). |
-| `TQ_FULL_SCALE_MV` | `3300` | Górna granica mapy „nacisk → moc". 3300 = jak dziś (nacisk słabo się przekłada). **Niżej (~1800–2200) = bardziej naciskowe/przewidywalne (Bosch)**. | Obniż by mocniej czuć nacisk pedału. |
-| `TQ_GATE_MIN` | `15` | Próg momentu, poniżej którego brak wspomagania kadencyjnego. Blokuje „wzbudzanie przód-tył" bez nacisku i porządkuje załączanie. | Wyżej = trzeba mocniej nacisnąć by ruszyć (spokojniej); za wysoko = lekkie pedałowanie nie wspomaga. |
+| `TQ_FULL_SCALE_MV` | **`2000`** | Górna granica mapy „nacisk → moc" (`mapped_torque`). To **podłoga naciskowa BEZ kadencji** — daje moc od pierwszej ms nacisku (fix startu: zanim policzy się kadencja). W jeździe człon kadencyjny zwykle wygrywa, więc charakter zostaje. `3300`=stare (nacisk ledwo się przekładał). | `~1800` = mocniej naciskowo; `3300` = z powrotem „kadencyjne". |
+| `TQ_GATE_MIN` | `25` | Próg momentu, poniżej którego brak wspomagania kadencyjnego. Blokuje „wzbudzanie przód-tył" bez nacisku i porządkuje załączanie. | Wyżej = trzeba mocniej nacisnąć by ruszyć (spokojniej); za wysoko = lekkie pedałowanie nie wspomaga. |
+| `START_CADENCE_SEED_*` | `on`, `2`, **`18 rpm`** | Mały tymczasowy odczyt kadencji po pierwszych poprawnych krokach do przodu. Nie włącza silnika samodzielnie; tylko ratuje człon kadencyjny na starcie (bez tego `kadencja=0 → moc≈0`). Podniesiony 10→18 = mocniejszy start. | Wyżej = mocniejszy start; wyłączyć tylko gdy za szybko buduje moc na pierwszym ruchu korby. |
 | `ASSIST_TORQUE_MODE` | **0 (off)** | Charakter wspomagania: `0`=kadencyjny (jak dziś), **`1`=naciskowy Bosch** (moc ∝ nacisk, kadencja tylko jako „pedałujesz"). Naprawia B/C/D u źródła. | `1` do wypróbowania — **wtedy obniż `TQ_FULL_SCALE_MV`** (~1800–2200), inaczej wspomaganie za słabe. |
-| `IQ_SLEW_UP` / `IQ_SLEW_DOWN` | `5` / `10` | Stałe tempo (używane gdy `IQ_RAMP_ADAPTIVE=0`). | — |
+| `IQ_SLEW_UP` / `IQ_SLEW_DOWN` | `5` / `10` | Stara rampa krokowa, używana tylko gdy `IQ_RAMP_TIME_MODE=0`. | — |
+| `AUTO_OFF_MINUTES` | **`10`** | Samo-wyłączenie po bezczynności: rower stoi, nikt nie pedałuje, nie hamuje i nie dotyka przycisków przez N minut → sterownik gasi zasilanie (jak fabryka). Jeśli HMI wyśle własny czas ramką `0x6303`, ta wartość jest nadpisywana w locie. `0` = wyłączone. | Krócej = oszczędniej; `0` gdy nie chcesz auto-wyłączania. |
+| `COMM_CUT_TICKS` | `75` (3 s) | **Watchdog CAN**: brak jakiejkolwiek ramki z HMI przez 3 s (urwany kabel, uszkodzone HMI) → wspomaganie natychmiast na 0. Silnik nie może „ciągnąć" bez kontroli z manetki. Wspomaganie NIE wraca samo — poziom musi znów przyjść z HMI. | Krócej = szybsza reakcja, ale wrażliwsze na chwilowe zakłócenia. |
+| `COMM_OFF_TICKS` | `250` (10 s) | Ciąg dalszy watchdoga: 10 s bez HMI **i rower stoi** → sterownik gasi zasilanie. W trakcie jazdy NIGDY się nie wyłącza (najpierw tnie wspomaganie, dojeżdżasz siłą mięśni, gaśnie dopiero na postoju). | — |
+| `WA_FADE_BAND` | `150` (1,5 km/h) | **Walk Assist — dochodzenie bez przelotu** (styl TSDZ2): sufit mocy maleje liniowo w ostatnich 1,5 km/h przed zadaną prędkością — siła słabnie ZANIM dojdziesz do celu, więc rozpęd nie przenosi ponad 6 km/h. | Szerzej = łagodniejsze, dłuższe dochodzenie; węziej = bardziej dynamiczne. |
+| `WA_NEAR_HOLD_PCT` | `25` | Ile % maksymalnej siły WA zostaje PRZY zadanej prędkości. Nie 0 — inaczej rower stawałby tuż pod celem i „pompował". | Wyżej, jeśli WA nie domaga pod górkę przy celu. |
+| `WA_OVERSPEED_MARGIN` | `50` (0,5 km/h) | Twarde zabezpieczenie: cel+0,5 km/h → prąd natychmiast 0 + wyzerowanie integratora (z górki silnik nie pcha). | — |
+| `WA_DEADBAND` | `20` (0,2 km/h) | Martwa strefa integratora wokół celu — bez ciągłego dokręcania/odkręcania prądu przy 6 km/h (mniej „pompowania"). | — |
 
 ---
 
 ## 4. Co zmieniliśmy (changelog — od najnowszego)
+
+### 0.0128 — Walk Assist: dochodzenie do prędkości bez przelotu
+Objaw: WA rozpędzał rower i **przelatywał zadane 6 km/h**. Nasza pętla PI reguluje prąd (siłę) —
+przy stałym prądzie rower przyspiesza dalej i nic nie gasiło mocy PRZED celem. Wzorzec z TSDZ2
+(`apply_walk_assist`): im bliżej celu, tym wolniej dokłada mocy; nad celem tym szybciej zabiera.
+- **Fade** (`WA_FADE_BAND`/`WA_NEAR_HOLD_PCT`): sufit mocy maleje liniowo 100%→25% w ostatnich
+  1,5 km/h przed celem — siła słabnie wcześniej, rozpęd nie przenosi ponad cel.
+- **Twarde zero** (`WA_OVERSPEED_MARGIN`): cel+0,5 km/h → prąd 0 + zerowanie integratora.
+- **Martwa strefa** (`WA_DEADBAND`): ±0,2 km/h wokół celu integrator zamrożony (bez „pompowania").
+- Sprzątanie: usunięte martwe `PUSHASSIST_CURRENT` (nigdzie nieużywane).
+- Bez zmian: kick startowy 180 ms, limity `walk_assist_speed/current` z Canable, cięcie hamulcem.
+- Pliki: `src/main.c` (blok WA w `update_setpoint`), `inc/config.h` (4 flagi — tabela w §3).
+
+### 0.0128 — Auto-off po bezczynności + watchdog CAN
+Dwa zabezpieczenia „jak fabryka":
+- **Auto-off:** licznik bezczynności w pętli 40 ms; zeruje go KAŻDA aktywność (jazda `Speedx100>0`,
+  pedałowanie `cadence>0`, praca silnika, hamulec, dowolny przycisk). 10 min ciągłego spokoju
+  (`AUTO_OFF_MINUTES`, domyślnie 10) → samo-wyłączenie. HMI wysyła swój ustawiony czas ramką
+  `0x6303` (bajt 0 = minuty) — teraz ją czytamy i nadpisuje ona domyślne 10 (wcześniej ramka była
+  ignorowana — komunikacja z HMI nie była w pełni odwzorowana).
+- **Watchdog CAN (fail-safe):** każda ramka HMI→sterownik (`target=2`) zeruje licznik utraty łączności.
+  Brak ramek przez **3 s** (`COMM_CUT_TICKS`) → wspomaganie na 0 (urwany kabel/uszkodzone HMI nie może
+  zostawić „ciągnącego" silnika). Brak przez **10 s + postój** (`COMM_OFF_TICKS`) → wyłączenie zasilania.
+  Watchdog uzbraja się dopiero po PIERWSZEJ ramce z HMI (grace period na boot — nie zgasi sterownika,
+  zanim wyświetlacz wstanie). W jeździe nigdy nie gasi — tylko tnie wspomaganie.
+- **Refaktor:** sekwencja gaszenia (zapis SOC → stop PWM → `PIN_4` DC/DC off → `PIN_5` display off)
+  wydzielona do `power_off_controller()`; przycisk on/off działa jak dotąd (te same kroki, jedna funkcja
+  zamiast trzech kopii).
+- Zgodność z fabryką (log fake taxi): HMI śle cyklicznie rodzinę `0x831063xx` (target=2) — na tym
+  opiera się watchdog; sterownik śle heartbeaty `0x82FF1200`/`0x82F83000`/`0x82F8320F` (to już mamy),
+  dzięki czemu HMI ze swojej strony pokaże błąd 30 (komunikacja), gdy padnie sterownik.
+- Pliki: `src/main.c` (licznik bezczynności, watchdog, helper), `src/CAN_Display.c` (reset watchdoga,
+  odczyt `0x6303`), `inc/config.h` (3 nowe flagi — patrz tabela w §3).
+
+### 0.0128 — Moc na starcie
+Feedback: start trwa za długo / „muszę pokręcić korbą", zanim pojawi się moc.
+- **Przyczyna (potwierdzona):** moc = `kadencja^helper × torque_filtered`. Przy starcie `kadencja=0` →
+  cały człon ≈ 0 → nacisk dawał grosze; moc rosła dopiero po kilku obrotach.
+- **`START_CADENCE_SEED_RPM` 10 → 18:** seed „udaje" kadencję od pierwszego ruchu → człon kadencyjny
+  działa od startu. Mocniejszy niż 10.
+- **`TQ_FULL_SCALE_MV` 3300 → 2000:** `mapped_torque` to liniowa mapa NACISKU **bez kadencji**, użyta
+  jako podłoga (`if(mapped_torque>i_q) i_q=mapped_torque`). Silniejsza podłoga = **moc od razu z nacisku
+  na starcie, bez czekania na kadencję** (i bez lagu EMA). W jeździe (wysoka kadencja) człon kadencyjny
+  zwykle wygrywa → **charakter „mocniej kręcisz = mocniej" zostaje**. To hybryda, nie zmiana trybu.
+- **Guard bez zmian:** `START_MIN_STEPS=4` + `TQ_GATE_MIN=25` → przypadkowy nacisk bez pedałowania nie rusza.
+
+#### Kontekst: tryby wspomagania vs TSDZ2 (moment vs moc)
+TSDZ2 ma oddzielne tryby: **Power** = `kadencja×moment` (= nasz tryb kadencyjny; ma problem `kadencja=0`),
+**Torque** = `moment×factor` liniowo (bez kadencji; = nasz `ASSIST_TORQUE_MODE=1`), **eMTB** = `moment²`
+(progresywny, bez kadencji; nie mamy). Problem startu istnieje **tylko** w trybie Power/kadencyjnym.
+Obniżenie `TQ_FULL_SCALE` = dołożenie liniowej podłogi „Torque" do trybu kadencyjnego → fix startu bez
+zmiany charakteru. eMTB (moment²) = rezerwa na później dla progresywnego czucia MTB.
+
+### 0.0126 — Rampa czasowa jak TSDZ2 + szybszy pierwszy odczyt kadencji
+Cel: wspomaganie ma pojawiać się przewidywalnie, bez losowego opóźnienia po starcie, ale bez samowzbudzenia silnika od kręcenia korbą bez nacisku.
+
+- **Rampa i_q przeszła z kroków na czas** (`IQ_RAMP_TIME_MODE=1`). Stary kod dodawał/odejmował kilka jednostek prądu w każdym tyku 4 kHz, więc realne czasy były bardzo krótkie i nie dało się uzyskać długich ramp TSDZ2. Nowy kod trzyma wewnętrzny licznik ułamkowy (`iq_setpoint_q`) i liczy krok z żądanego czasu.
+- **Czasy są podobne do TSDZ2:** narastanie ok. **2,3 s** przy starcie / ok. **0,3 s** przy szybkiej jeździe; opadanie ok. **1,0 s** przy wolnej jeździe / ok. **0,14 s** przy szybkiej jeździe.
+- **Adaptacja zostaje:** o tym, czy użyć wolnej czy szybkiej rampy, decyduje prędkość koła (`4–20 km/h`) i kadencja (`20–70 rpm`). Jeśli choć jeden sygnał mówi „jedziemy”, rampa robi się szybsza.
+- **Zabezpieczenia startu zostają bez zmian:** `START_MIN_STEPS=4` i `TQ_GATE_MIN=25` nadal decydują, czy wolno włączyć moc. Sama rampa nie generuje celu prądu.
+- **Hamulce i bezpieczeństwo są natychmiastowe:** hamulec, `Backwards_counter>=4` i przegrzanie stage 2 omijają rampę i od razu ustawiają cel. Kręcenie wstecz nie czeka na miękkie wygaszanie.
+- **Cadence seed:** po `START_CADENCE_SEED_STEPS=2` krokach do przodu i realnym nacisku firmware publikuje tymczasowo `10 rpm`, zanim normalny pomiar kadencji zdąży się ustabilizować. To poprawia pierwsze pojawienie się wspomagania, ale nie omija bramki momentu i kroków do przodu.
 
 ### 0.0125 — Fix S+/Boost + spójne załączanie (odporne na jiggle)
 Feedback z 0.0124: tryby S+ i B nie działały; załączanie nieregularne (raz od razu, raz po 0,5–1 obrotu, czasem fałszywie na dołku/zjeździe).
@@ -70,7 +143,7 @@ Feedback z 0.0124: tryby S+ i B nie działały; załączanie nieregularne (raz o
 Feedback: narastanie za wolne, moc odcina zamiast opadać, wzbudzanie „przód-tył" bez nacisku, nieregularne załączanie.
 - **A** narastanie za wolne → `IQ_SLEW_UP_SLOW 3→6`, `FAST 7→12`.
 - **B** odcięcie zamiast opadania → `IQ_SLEW_DOWN_SLOW 6→4`, `FAST 12→8` (łagodniej).
-- **D** wzbudzanie bez nacisku → **`TQ_GATE_MIN=15`** (człon kadencyjny tylko przy realnym momencie).
+- **D** wzbudzanie bez nacisku → wtedy **`TQ_GATE_MIN=15`**, aktualnie **`25`** (człon kadencyjny tylko przy realnym momencie).
 - **C** nieregularne załączanie → bramka momentu daje spójny próg.
 - **KROK 2 opcja:** `ASSIST_TORQUE_MODE` (flaga, off) — tryb czysto naciskowy Bosch. **Commit `7e74c10`.**
 - **Test:** jak niżej — sprawdź narastanie (szybsze), opadanie (łagodne, nie cięte), i czy „przód-tył" już NIE wzbudza silnika.
@@ -134,15 +207,33 @@ Pamięć projektu (dla Claude, między sesjami): `~/.claude/projects/.../memory/
 
 ---
 
-## 7. Stan tematów (skrót)
+## 7. Stan tematów (skrót) + mapa na przyszłość
+
+### Zrobione / w kodzie
 | Temat | Status |
 |---|---|
 | Silnik + Walk Assist rusza | ✅ działa (baza be40f75) |
 | Przeciąganie mocy po puszczeniu pedału | ✅ naprawione (0.0122) |
 | Dev-telemetria zalewająca CAN | ✅ wyłączona (0.0120) |
-| Płynne schodzenie mocy / przejścia w jeździe | 🔧 w toku (adaptacyjna rampa i_q) |
-| Walk Assist — trzymanie prędkości | ✅ pętla PI aktywna (do ew. dostrojenia) |
+| Płynność jazdy: rampa czasowa, zatrzask, S+/B | ✅ zrobione (0.0126–0.0127), potwierdzone w jeździe |
+| Walk Assist — trzymanie prędkości | ✅ pętla PI aktywna; 🔨 fade+anty-przelot+deadband w buildzie 0.0128 — **do testu** |
+| Moc na starcie (seed 18 + TQ_FULL_SCALE 2000) | 🔨 build 0.0128 — **do testu w jeździe** |
+| Auto-off po bezczynności (10 min, HMI 0x6303) | 🔨 build 0.0128 — **do testu** |
+| Watchdog CAN (3 s → moc 0; 10 s + postój → off) | 🔨 build 0.0128 — **do testu** |
 | HMI: firmware / prędkość max w menu | ⏸️ zaparkowane (blokada w HMI, nie w CAN) |
+
+### Do zrobienia (folder `todo/` — co pozostało i od czego zacząć)
+| # | Temat | Plik w `todo/` | Co trzeba zrobić |
+|---|---|---|---|
+| 1 | **SOC nie nadąża za rozładowaniem** | `COMPARISON_SOC_range.md` | Zdjąć/poluzować limiter `SOC_DISP_MAX_STEP` (1 %/min — przy 15 A z 15 Ah realny spadek bywa szybszy); wyświetlacz ma podążać za `soc_real`. |
+| 2 | **Zasięg — niespójna podstawa napięcia** | `COMPARISON_SOC_range.md` | Ujednolicić: energia do wyliczenia zasięgu liczona z JEDNEJ podstawy (Wh z coulomb+OCV), nie mieszanka chwilowego napięcia i średnich. |
+| 3 | **„Uczenie pojemności" tautologiczne** | `REVIEW_SOC_and_configurable_ocv.md` | Uczyć pojemność tylko z pełnych cykli (100 %→próg), nie z własnych estymat; do tego czasu zaufać `battery_capacity_mah` z Canable. |
+| 4 | **Krzywa OCV konfigurowalna po CAN** | `REVIEW_SOC_and_configurable_ocv.md` | Dziś na sztywno LG M58T (NMC). Dodać zapis punktów krzywej ramką CAN (jak inne Para), fallback = obecna krzywa. |
+| 5 | **Tryb eMTB (moment², progresywny)** | `PLAN_POWER_PATH_smooth_ride.md` (sekcja tryby) | Nowy tryb obok kadencyjnego i naciskowego: `i_q ∝ moment²` — delikatnie przy lekkim nacisku, mocno przy silnym. Prosty kod + flaga wyboru. |
+| 6 | **CAN fake taxi — pełne odwzorowanie TX** | `PLAN_CAN_fake_taxi.md` | Częściowo zrobione (heartbeaty, 0x6303 RX). Zostało: odometr/trip `0x83106302` TX, licznik sesji `0x82F83000` (inkrement b0), ew. pełny wariant A. Wróci razem z tematem HMI Info. |
+
+**Sugerowana kolejność:** najpierw build+test tego co w kodzie (start, auto-off, watchdog) → potem
+#1/#2 (SOC/zasięg — bo mylą w codziennej jeździe) → #5 eMTB (czucie jazdy) → #3/#4 (bateria zaawansowane) → #6 przy okazji HMI.
 
 ---
 

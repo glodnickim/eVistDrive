@@ -9,6 +9,8 @@
 - Cadence-gate: `torque_counter` resetuje się przy każdym kroku kwadraturowym do przodu, jeśli `torque_filtered > 0`. Silnik nie wchodzi w decay podczas martwego punktu korby dopóki korba się kręci i był jakikolwiek moment.
 - `TQFILTER` domyślnie zmieniony z 4 na 6 — zachowuje tę samą stałą czasową filtra (~667 ms @ 60 RPM) przy nowej częstości aktualizacji.
 - Slew limiters na prądzie `i_q` (IQ_SLEW_UP=5, IQ_SLEW_DOWN=10 mA/tyk): łagodne zaangażowanie/wyłączenie silnika, ochrona napędu przed szarpnięciem.
+- Rampa `i_q` podobna do TSDZ2: nowy `IQ_RAMP_TIME_MODE=1` używa ułamkowego akumulatora, więc czasy są przewidywalne przy pętli 4 kHz: narastanie ok. 2,3 s / 0,3 s, opadanie ok. 1,0 s / 0,14 s zależnie od prędkości i kadencji. Hamulec, kręcenie wstecz i odcięcie termiczne nadal działają natychmiast.
+- Start kadencji podobny do TSDZ2: `START_CADENCE_SEED_ENABLE=1` publikuje tymczasowo 10 rpm po 2 poprawnych krokach do przodu i realnym nacisku. Nie uruchamia silnika samodzielnie; `START_MIN_STEPS=4` i `TQ_GATE_MIN=25` nadal pilnują, żeby nie było wzbudzenia od ruchu przód-tył bez nacisku.
 
 **Walk Assist — zamkniętopętlowy regulator PI prędkości**
 - Zastąpiono prosty mapowanie prędkości → prąd regulatorem PI utrzymującym `walk_assist_speed`.
@@ -31,6 +33,7 @@
 
 **SOC / zasięg**
 - Nauka zużycia Wh/km osobno dla każdego poziomu wspomagania (`wh_km_level[10]`). Zmiana poziomu nie zeruje nauki.
+- Poprawka: po doładowaniu "top-up" (np. z 96% do 100%) SOC nie wracał do 100% — warunek `soc_ocv - soc_real > RECHARGE_MARGIN_PCT (5%)` nie był spełniony, licznik Coulombów startował od zapisanego ~96%, a korekcja OCV (gain=0,02/s) dobijała do ~99% dopiero po kilku minutach. Dodano osobny przypadek: jeśli napięcie ogniwa przekracza górną granicę tabeli OCV (4,07 V/ogniwo = niezbite 100%) i zapisany SOC ≥ 80%, licznik Coulombów jest natychmiast resetowany do 100% / pełnej pojemności.
 
 **Inne**
 - Wersja buildu: `EBICS_BUILD_VERSION` wstrzykiwana przez `build_firmware.ps1` do `inc/build_version.h` (gitignored) i wysyłana w polu info HMI.
