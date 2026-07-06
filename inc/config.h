@@ -107,7 +107,6 @@
 #define PH_CURRENT_MAX (BATTERYCURRENT_MAX / CAL_I)  //ties phase ceiling to battery limit; Para1[9]
 #define BATTERYCURRENT_MAX 12000
 #define REVERSE -1 //1 for normal direction, -1 for reverse //use field Motor Type (Para1[18]) 1 = 1, 0 = -1
-#define PUSHASSIST_CURRENT 300
 #define VOLTAGE_MIN 1320 //33V
 #define SYSTEM_VOLTAGE 52// in V
 #define MAX_VOLTAGE 59// in V
@@ -139,6 +138,11 @@
 #define WA_KP_SHIFT  4      //   3/16 ~= 0.19 i_q per 0.01km/h error: full error (~600) saturates ceiling => kick from standstill
 #define WA_KI_SHIFT  11     // I gain: integral term = wa_integral >> WA_KI_SHIFT (larger = slower trim @4kHz). TUNE.
 #define WA_KICK_SPEED 50    // Speedx100 < 0.5 km/h at engage = standstill -> apply kick; above -> resume without kick
+// TSDZ2-style approach control: power is limited EARLIER, before the target speed is reached (no overshoot).
+#define WA_FADE_BAND 150    // 0.01 km/h: power ceiling fades linearly over the last 1.5 km/h before walk_assist_speed
+#define WA_NEAR_HOLD_PCT 25 // % of wa_max still allowed AT the target (keeps the bike walking; 0 would stall+pump below target)
+#define WA_OVERSPEED_MARGIN 50 // 0.01 km/h: at target+0.5 km/h output -> 0 and integrator flushed (hard anti-overshoot)
+#define WA_DEADBAND 20      // 0.01 km/h: within +-0.2 km/h of target the integrator is frozen (no current pumping at the target)
 
 //---------------------------------------------------------------------
 //Minimal engage/disengage slew on commanded current (i_q) to soften the mechanical "click" (gear lash). @4kHz tick.

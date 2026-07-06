@@ -2443,12 +2443,20 @@ uint16_t update_setpoint(void){
 	            	int32_t wa_max = MP.phase_current_max*MP.walk_assist_current/100;     //WA current ceiling
 	            	int32_t err    = (int32_t)MP.walk_assist_speed - (int32_t)MS.Speedx100; //speed error (0.01 km/h)
 	            	int32_t out = ((err*WA_KP_NUM)>>WA_KP_SHIFT) + (wa_integral>>WA_KI_SHIFT); //P + I
-	            	//anti-windup: integrate only when not pushing further into saturation (kills >6km/h overshoot)
-	            	if(!((out>=wa_max && err>0) || (out<=0 && err<0)) && wa_ramp_ticks>=WA_RAMP_TICKS) wa_integral += err;
+	            	//anti-windup: integrate only when not pushing further into saturation (kills >6km/h overshoot);
+	            	//deadband: freeze the integrator within +-WA_DEADBAND of target (no current pumping at the target)
+	            	if(!((out>=wa_max && err>0) || (out<=0 && err<0)) && wa_ramp_ticks>=WA_RAMP_TICKS
+	            	   && (err>WA_DEADBAND || err<-WA_DEADBAND)) wa_integral += err;
 	            	int32_t imax = wa_max << WA_KI_SHIFT;
 	            	if(wa_integral>imax) wa_integral=imax; else if(wa_integral<0) wa_integral=0;
 	            	out = ((err*WA_KP_NUM)>>WA_KP_SHIFT) + (wa_integral>>WA_KI_SHIFT);    //recompute after I update
 	            	if(out>wa_max) out=wa_max; else if(out<0) out=0;                      //clamp (0 = coast, no braking)
+	            	//TSDZ2-style approach: power ceiling fades linearly over the last WA_FADE_BAND before the target,
+	            	//so force is limited EARLIER and inertia cannot carry the bike past walk_assist_speed
+	            	int32_t fade_cap = map((int32_t)MS.Speedx100, (int32_t)MP.walk_assist_speed-WA_FADE_BAND,
+	            	                       (int32_t)MP.walk_assist_speed, wa_max, wa_max*WA_NEAR_HOLD_PCT/100);
+	            	if(out>fade_cap) out=fade_cap;
+	            	if((int32_t)MS.Speedx100 >= (int32_t)MP.walk_assist_speed+WA_OVERSPEED_MARGIN){ out=0; wa_integral=0; } //hard anti-overshoot: target+0.5 km/h -> coast
 	            	if(wa_ramp_ticks<WA_RAMP_TICKS) wa_ramp_ticks++;                      //kickstart slew ~180 ms (firm, no jerk)
 	            	int32_t cap = wa_max*(int32_t)wa_ramp_ticks/WA_RAMP_TICKS;
 	            	if(out>cap) out=cap;
