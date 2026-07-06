@@ -151,12 +151,28 @@
 #define EXTENDED_BOOST_ENABLE 0
 
 // --- Adaptive i_q ramp (#1): how fast motor current rises/falls, scaled by wheel speed + cadence (TSDZ2-style) ---
-// 1 = adaptive (gentle at low speed, snappy at speed -> smooth transitions & start). 0 = fixed IQ_SLEW_UP/DOWN.
+// 1 = adaptive (gentle at low speed, snappy at speed -> smooth transitions & start).
+// 0 = fixed ramp (slow tick constants in time mode, IQ_SLEW_* in legacy mode).
 #define IQ_RAMP_ADAPTIVE   1
+
+// 1 = time-based ramp using fractional internal steps. This can reproduce TSDZ2-like multi-second
+// ramps at 4kHz. 0 = legacy integer step ramp below (IQ_SLEW_*).
+#define IQ_RAMP_TIME_MODE  1
+#define IQ_RAMP_Q_SHIFT    8    // fractional bits for internal ramp accumulator; keep >=1
+
+// Time-based ramp targets in 4kHz control ticks. Slow is used near standstill/low cadence, fast at speed/cadence.
+// TSDZ2 reference: ramp-up about 2.3s slow / 0.3s fast, ramp-down about 1.0s slow / 0.14s fast.
+#define IQ_RAMP_UP_SLOW_TICKS    9200
+#define IQ_RAMP_UP_FAST_TICKS    1200
+#define IQ_RAMP_DOWN_SLOW_TICKS  4000
+#define IQ_RAMP_DOWN_FAST_TICKS  560
+
+// Legacy integer step ramp. Used only when IQ_RAMP_TIME_MODE=0.
 #define IQ_SLEW_UP_SLOW    6    // i_q rise/tick at standstill/low cadence (was 3 - too slow to build up)
 #define IQ_SLEW_UP_FAST    12   // i_q rise/tick at speed/high cadence (was 7 - snappier response)
-#define IQ_SLEW_DOWN_SLOW  4    // i_q fall/tick at low speed (softer -> power FADES, not cuts, when easing off)
-#define IQ_SLEW_DOWN_FAST  8    // i_q fall/tick at speed
+#define IQ_SLEW_DOWN_SLOW  2    // i_q fall/tick at low speed (lower = SLOWER power fade when easing off / stopping)
+#define IQ_SLEW_DOWN_FAST  5    // i_q fall/tick at speed
+
 #define IQ_RAMP_SPEED_LO   400  // Speedx100 = 4.0 km/h (below -> SLOW)
 #define IQ_RAMP_SPEED_HI   2000 // 20.0 km/h (above -> FAST)
 #define IQ_RAMP_CAD_LO     20   // rpm
@@ -168,9 +184,10 @@
 #define START_RAMP_TICKS   1200 // ~300 ms envelope
 
 // --- Torque->power upper span (#4): map(torque_on_crank, TQO_threshold, TQ_FULL_SCALE_MV, 0, current). ---
-// 3300 = current behaviour (hard pedal pressure barely reaches full assist). Lower (~1800-2200) = more
-// pressure-linear / "naciskowe" (Bosch-like): a firm press reaches full assist. Tune to taste.
-#define TQ_FULL_SCALE_MV 3300
+// 3300 = old (hard pressure barely reaches full assist). 2000 = pressure-linear / "naciskowe" (Bosch-like):
+// firm press reaches full assist. Also = IMMEDIATE start power (mapped_torque is a cadence-free pressure FLOOR,
+// the only assist before cadence builds -> no "must crank first"). Rolling: cadence term usually wins, feel kept.
+#define TQ_FULL_SCALE_MV 2000
 
 // --- Torque gate (#D): min pedal pressure [mV above the ~750 mV rest] before cadence-based assist fires. ---
 // Gates on RAW torque_on_crank (level-independent) so it works the same on every assist level (S+/Boost too).
@@ -184,6 +201,13 @@
 // steps. Any reverse step resets the counter -> back/forth wiggle on descents/dead-spots can't engage.
 // ~96 steps/rev, so 4 steps ≈ 15° of crank -> fast & repeatable. Higher = firmer/longer push to start.
 #define START_MIN_STEPS 4
+
+// --- TSDZ2-style cadence seed: after a fresh valid forward start, publish a small temporary cadence ---
+// This does not engage assist by itself. It only avoids a dead first cadence calculation while the normal
+// START_MIN_STEPS + TQ_GATE_MIN latch still decides whether motor power may start.
+#define START_CADENCE_SEED_ENABLE 1
+#define START_CADENCE_SEED_STEPS 2
+#define START_CADENCE_SEED_RPM 18   // was 10 - higher seed = more power right at start (cadence^helper term bigger from the first move); still gated by START_MIN_STEPS + pressure
 
 // --- Engagement HYSTERESIS (#hold): once engaged, stay engaged until pressure drops to TQ_GATE_RELEASE mV
 // above rest (must be < TQ_GATE_MIN). Without it the assist unloads the pedal -> pressure falls below the

@@ -228,6 +228,7 @@ uint16_t ui16_erps=0;
 uint16_t ui16_erps_counter=0;
 uint16_t mapped_throttle=0;
 uint16_t mapped_torque=0;
+static int32_t iq_setpoint_q=0;
 char char_dyn_adc_state_old=1;
 int16_t i16_ph1_current=0;
 int16_t i16_ph2_current=0;
@@ -1377,6 +1378,13 @@ void reg_ADC_processing(void)
 				if(MS.torque_on_crank>750) torque_cumulated+=(MS.torque_on_crank-750);
 				MS.torque_filtered=(torque_cumulated>>MS.TQfilter);
 				if(MS.torque_filtered>0) torque_counter=0; // cadence-gate: hold motor engaged while pedalling with any torque
+#if START_CADENCE_SEED_ENABLE
+				if(MS.cadence==0 && fwd_run>=START_CADENCE_SEED_STEPS && MS.torque_on_crank>(750+TQ_GATE_MIN)){
+					MS.cadence=START_CADENCE_SEED_RPM;
+					uint16_cadence_filtered=(uint16_t)START_CADENCE_SEED_RPM<<3;
+					MS.p_human=(uint16_t)((float)(MS.cadence*MS.torque_filtered)*0.00342);
+				}
+#endif
 				if(++pas_fwd_steps>=PAS_STEPS_PER_PULSE){ //one cadence pulse every PAS_STEPS_PER_PULSE forward transitions (see config.h)
 					pas_fwd_steps=0;
 					if(pas_cycle_ticks>70){
@@ -1489,14 +1497,53 @@ void reg_ADC_processing(void)
     }
 
     {
-    	//engage/disengage slew on i_q. #1 adaptive: step scales with speed+cadence (soft at low speed, snappy at speed).
-    	int32_t iq_target = update_setpoint();
+        // Engage/disengage ramp on i_q. Time mode keeps TSDZ2-like feel even when integer steps would be too coarse.
+        int32_t iq_target = update_setpoint();
+#if IQ_RAMP_TIME_MODE
+        if(MS.brake_active_flag || Backwards_counter>=4 || overtemp_stage>=2){
+            MS.i_q_setpoint = iq_target;                                       // safety cuts = immediate, no ramp
+            iq_setpoint_q = iq_target << IQ_RAMP_Q_SHIFT;
+        }else{
 #if IQ_RAMP_ADAPTIVE
-    	int32_t up_s = map((int32_t)MS.Speedx100, IQ_RAMP_SPEED_LO, IQ_RAMP_SPEED_HI, IQ_SLEW_UP_SLOW, IQ_SLEW_UP_FAST);
-    	int32_t up_c = map((int32_t)MS.cadence,   IQ_RAMP_CAD_LO,   IQ_RAMP_CAD_HI,   IQ_SLEW_UP_SLOW, IQ_SLEW_UP_FAST);
-    	int32_t up_step = (up_c>up_s)?up_c:up_s; if(up_step<IQ_SLEW_UP_SLOW) up_step=IQ_SLEW_UP_SLOW;
-    	int32_t dn_step = map((int32_t)MS.Speedx100, IQ_RAMP_SPEED_LO, IQ_RAMP_SPEED_HI, IQ_SLEW_DOWN_SLOW, IQ_SLEW_DOWN_FAST);
-    	if(dn_step<IQ_SLEW_DOWN_SLOW) dn_step=IQ_SLEW_DOWN_SLOW;
+            int32_t up_s = map((int32_t)MS.Speedx100, IQ_RAMP_SPEED_LO, IQ_RAMP_SPEED_HI, IQ_RAMP_UP_SLOW_TICKS, IQ_RAMP_UP_FAST_TICKS);
+            int32_t up_c = map((int32_t)MS.cadence,   IQ_RAMP_CAD_LO,   IQ_RAMP_CAD_HI,   IQ_RAMP_UP_SLOW_TICKS, IQ_RAMP_UP_FAST_TICKS);
+            int32_t dn_s = map((int32_t)MS.Speedx100, IQ_RAMP_SPEED_LO, IQ_RAMP_SPEED_HI, IQ_RAMP_DOWN_SLOW_TICKS, IQ_RAMP_DOWN_FAST_TICKS);
+            int32_t dn_c = map((int32_t)MS.cadence,   IQ_RAMP_CAD_LO,   IQ_RAMP_CAD_HI,   IQ_RAMP_DOWN_SLOW_TICKS, IQ_RAMP_DOWN_FAST_TICKS);
+            int32_t up_ticks = (up_c<up_s)?up_c:up_s;                         // smaller tick count = faster ramp
+            int32_t dn_ticks = (dn_c<dn_s)?dn_c:dn_s;
+#else
+            int32_t up_ticks = IQ_RAMP_UP_SLOW_TICKS;
+            int32_t dn_ticks = IQ_RAMP_DOWN_SLOW_TICKS;
+#endif
+            int32_t iq_scale = phase_current_max_scaled;
+            if(iq_scale<1) iq_scale = MP.phase_current_max;
+            if(iq_scale<1) iq_scale = PH_CURRENT_MAX;
+            if(iq_scale<1) iq_scale = 1;
+
+            int32_t target_q = iq_target << IQ_RAMP_Q_SHIFT;
+            int32_t ticks = (target_q > iq_setpoint_q) ? up_ticks : dn_ticks;
+            if(ticks<1) ticks=1;
+            int32_t step_q = ((iq_scale << IQ_RAMP_Q_SHIFT) + ticks - 1) / ticks;
+            if(step_q<1) step_q=1;
+
+            if(target_q > iq_setpoint_q){
+                int32_t d = target_q - iq_setpoint_q;
+                iq_setpoint_q += (d>step_q)?step_q:d;
+            }else if(target_q < iq_setpoint_q){
+                int32_t d = iq_setpoint_q - target_q;
+                iq_setpoint_q -= (d>step_q)?step_q:d;
+            }
+
+            MS.i_q_setpoint = (iq_setpoint_q + (1 << (IQ_RAMP_Q_SHIFT - 1))) >> IQ_RAMP_Q_SHIFT;
+            if(iq_target==0 && MS.i_q_setpoint==0) iq_setpoint_q=0;
+        }
+#else
+#if IQ_RAMP_ADAPTIVE
+        int32_t up_s = map((int32_t)MS.Speedx100, IQ_RAMP_SPEED_LO, IQ_RAMP_SPEED_HI, IQ_SLEW_UP_SLOW, IQ_SLEW_UP_FAST);
+        int32_t up_c = map((int32_t)MS.cadence,   IQ_RAMP_CAD_LO,   IQ_RAMP_CAD_HI,   IQ_SLEW_UP_SLOW, IQ_SLEW_UP_FAST);
+        int32_t up_step = (up_c>up_s)?up_c:up_s; if(up_step<IQ_SLEW_UP_SLOW) up_step=IQ_SLEW_UP_SLOW;
+        int32_t dn_step = map((int32_t)MS.Speedx100, IQ_RAMP_SPEED_LO, IQ_RAMP_SPEED_HI, IQ_SLEW_DOWN_SLOW, IQ_SLEW_DOWN_FAST);
+        if(dn_step<IQ_SLEW_DOWN_SLOW) dn_step=IQ_SLEW_DOWN_SLOW;
 #else
     	int32_t up_step = IQ_SLEW_UP, dn_step = IQ_SLEW_DOWN;
 #endif
@@ -1504,9 +1551,10 @@ void reg_ADC_processing(void)
     		MS.i_q_setpoint = iq_target;                                       //safety cuts = immediate, no ramp
     	}else if(iq_target > MS.i_q_setpoint){
     		int32_t d=iq_target-MS.i_q_setpoint; MS.i_q_setpoint += (d>up_step)?up_step:d;
-    	}else{
-    		int32_t d=MS.i_q_setpoint-iq_target; MS.i_q_setpoint -= (d>dn_step)?dn_step:d;
-    	}
+        }else{
+            int32_t d=MS.i_q_setpoint-iq_target; MS.i_q_setpoint -= (d>dn_step)?dn_step:d;
+        }
+#endif
     }
     if (torque_counter>4000&&!Overrun_flag){ //reset after one second without torque on the pedal
     	if (PAS_counter>MP.PAS_timeout){
