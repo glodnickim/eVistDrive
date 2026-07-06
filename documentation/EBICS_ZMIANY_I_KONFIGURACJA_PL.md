@@ -70,7 +70,7 @@ Zmieniasz wartość → przebudowa (`build_firmware.ps1`) → wgranie. Domyślne
 
 ## 4. Co zmieniliśmy (changelog — od najnowszego)
 
-### 0.0128 — Walk Assist: dochodzenie do prędkości bez przelotu
+### 0.0131 — Walk Assist: dochodzenie do prędkości bez przelotu
 Objaw: WA rozpędzał rower i **przelatywał zadane 6 km/h**. Nasza pętla PI reguluje prąd (siłę) —
 przy stałym prądzie rower przyspiesza dalej i nic nie gasiło mocy PRZED celem. Wzorzec z TSDZ2
 (`apply_walk_assist`): im bliżej celu, tym wolniej dokłada mocy; nad celem tym szybciej zabiera.
@@ -82,7 +82,7 @@ przy stałym prądzie rower przyspiesza dalej i nic nie gasiło mocy PRZED celem
 - Bez zmian: kick startowy 180 ms, limity `walk_assist_speed/current` z Canable, cięcie hamulcem.
 - Pliki: `src/main.c` (blok WA w `update_setpoint`), `inc/config.h` (4 flagi — tabela w §3).
 
-### 0.0128 — Auto-off po bezczynności + watchdog CAN
+### 0.0131 — Auto-off po bezczynności + watchdog CAN
 Dwa zabezpieczenia „jak fabryka":
 - **Auto-off:** licznik bezczynności w pętli 40 ms; zeruje go KAŻDA aktywność (jazda `Speedx100>0`,
   pedałowanie `cadence>0`, praca silnika, hamulec, dowolny przycisk). 10 min ciągłego spokoju
@@ -103,7 +103,7 @@ Dwa zabezpieczenia „jak fabryka":
 - Pliki: `src/main.c` (licznik bezczynności, watchdog, helper), `src/CAN_Display.c` (reset watchdoga,
   odczyt `0x6303`), `inc/config.h` (3 nowe flagi — patrz tabela w §3).
 
-### 0.0128 — Moc na starcie
+### 0.0131 — Moc na starcie
 Feedback: start trwa za długo / „muszę pokręcić korbą", zanim pojawi się moc.
 - **Przyczyna (potwierdzona):** moc = `kadencja^helper × torque_filtered`. Przy starcie `kadencja=0` →
   cały człon ≈ 0 → nacisk dawał grosze; moc rosła dopiero po kilku obrotach.
@@ -216,10 +216,10 @@ Pamięć projektu (dla Claude, między sesjami): `~/.claude/projects/.../memory/
 | Przeciąganie mocy po puszczeniu pedału | ✅ naprawione (0.0122) |
 | Dev-telemetria zalewająca CAN | ✅ wyłączona (0.0120) |
 | Płynność jazdy: rampa czasowa, zatrzask, S+/B | ✅ zrobione (0.0126–0.0127), potwierdzone w jeździe |
-| Walk Assist — trzymanie prędkości | ✅ pętla PI aktywna; 🔨 fade+anty-przelot+deadband w buildzie 0.0128 — **do testu** |
-| Moc na starcie (seed 18 + TQ_FULL_SCALE 2000) | 🔨 build 0.0128 — **do testu w jeździe** |
-| Auto-off po bezczynności (10 min, HMI 0x6303) | 🔨 build 0.0128 — **do testu** |
-| Watchdog CAN (3 s → moc 0; 10 s + postój → off) | 🔨 build 0.0128 — **do testu** |
+| Walk Assist — trzymanie prędkości | ✅ pętla PI aktywna; 🔨 fade+anty-przelot+deadband w buildzie 0.0131 — **do testu** |
+| Moc na starcie (seed 18 + TQ_FULL_SCALE 2000) | 🔨 build 0.0131 — **do testu w jeździe** |
+| Auto-off po bezczynności (10 min, HMI 0x6303) | 🔨 build 0.0131 — **do testu** |
+| Watchdog CAN (3 s → moc 0; 10 s + postój → off) | 🔨 build 0.0131 — **do testu** |
 | HMI: firmware / prędkość max w menu | ⏸️ zaparkowane (blokada w HMI, nie w CAN) |
 
 ### Do zrobienia (folder `todo/` — co pozostało i od czego zacząć)
