@@ -38,6 +38,7 @@ OF SUCH DAMAGE.
 #include "legacy_assist.h"
 #include "motor_core.h"
 #include "rider_input.h"
+#include "ride_control.h"
 #include "CAN_Display.h"
 #include "parser.h"
 #include <math.h>
@@ -395,6 +396,7 @@ int main(void)
 	motor_core_init(&MS);
 	motor_core_legacy_set_iq_target(0);
 	motor_core_legacy_set_id_target(0);
+	ride_control_init();
 	MS.angle_est=SPEED_PLL;
 	MS.pushassist_flag=SET;
 	MS.light_flag=SET;
@@ -1606,7 +1608,7 @@ void reg_ADC_processing(void)
 
     {
         // Engage/disengage ramp on i_q. Time mode keeps TSDZ2-like feel even when integer steps would be too coarse.
-        int32_t iq_target = legacy_assist_calculate();
+        int32_t iq_target = ride_control_update_request();
 #if IQ_RAMP_TIME_MODE
         if(MS.brake_active_flag || Backwards_counter>=4 || overtemp_stage>=2){
 			motor_core_legacy_set_iq_target(iq_target);                         // safety cuts = immediate, no ramp
