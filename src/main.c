@@ -389,8 +389,9 @@ int main(void)
 	MS.hall_angle_detect_flag=1;
 	MS.Speedx100=0; //in km/h*100
 	MS.assist_level=2;
-	MS.i_q_setpoint = 0;
-	MS.i_d_setpoint = 0;
+	motor_core_init(&MS);
+	motor_core_legacy_set_iq_target(0);
+	motor_core_legacy_set_id_target(0);
 	MS.angle_est=SPEED_PLL;
 	MS.pushassist_flag=SET;
 	MS.light_flag=SET;
@@ -401,7 +402,6 @@ int main(void)
 	MS.pushassist_flag=RESET;
 	MS.walk_can_request=RESET;
 	MS.distance_since_startup=0;
-	motor_core_init(&MS);
 
 	MP.pulses_per_revolution = PULSES_PER_REVOLUTION;
 	MP.wheel_cirumference = WHEEL_CIRCUMFERENCE;
@@ -646,7 +646,7 @@ int main(void)
 					if(comm_lost_ticks < 60000) comm_lost_ticks++;
 					if(comm_lost_ticks >= COMM_CUT_TICKS){ //3 s no HMI frame -> kill assist (fail-safe: broken cable / dead HMI)
 						MS.assist_level=0;
-						MS.i_q_setpoint=0;
+						motor_core_legacy_set_iq_target(0);
 					}
 					if(comm_lost_ticks >= COMM_OFF_TICKS && MS.Speedx100==0){ //10 s no HMI frame -> power off, but only at standstill
 						power_off_controller();
@@ -1587,7 +1587,7 @@ void reg_ADC_processing(void)
         int32_t iq_target = update_setpoint();
 #if IQ_RAMP_TIME_MODE
         if(MS.brake_active_flag || Backwards_counter>=4 || overtemp_stage>=2){
-            MS.i_q_setpoint = iq_target;                                       // safety cuts = immediate, no ramp
+			motor_core_legacy_set_iq_target(iq_target);                         // safety cuts = immediate, no ramp
             iq_setpoint_q = iq_target << IQ_RAMP_Q_SHIFT;
         }else{
 #if IQ_RAMP_ADAPTIVE
@@ -1623,7 +1623,7 @@ void reg_ADC_processing(void)
                 iq_setpoint_q -= (d>step_q)?step_q:d;
             }
 
-            MS.i_q_setpoint = (iq_setpoint_q + (1 << (IQ_RAMP_Q_SHIFT - 1))) >> IQ_RAMP_Q_SHIFT;
+			motor_core_legacy_set_iq_target((iq_setpoint_q + (1 << (IQ_RAMP_Q_SHIFT - 1))) >> IQ_RAMP_Q_SHIFT);
             if(iq_target==0 && MS.i_q_setpoint==0) iq_setpoint_q=0;
         }
 #else
@@ -1637,11 +1637,11 @@ void reg_ADC_processing(void)
     	int32_t up_step = IQ_SLEW_UP, dn_step = IQ_SLEW_DOWN;
 #endif
     	if(MS.brake_active_flag || Backwards_counter>=4 || overtemp_stage>=2){
-    		MS.i_q_setpoint = iq_target;                                       //safety cuts = immediate, no ramp
-    	}else if(iq_target > MS.i_q_setpoint){
-    		int32_t d=iq_target-MS.i_q_setpoint; MS.i_q_setpoint += (d>up_step)?up_step:d;
-        }else{
-            int32_t d=MS.i_q_setpoint-iq_target; MS.i_q_setpoint -= (d>dn_step)?dn_step:d;
+			motor_core_legacy_set_iq_target(iq_target);                         //safety cuts = immediate, no ramp
+		}else if(iq_target > MS.i_q_setpoint){
+			int32_t d=iq_target-MS.i_q_setpoint; motor_core_legacy_set_iq_target(MS.i_q_setpoint + ((d>up_step)?up_step:d));
+		}else{
+			int32_t d=MS.i_q_setpoint-iq_target; motor_core_legacy_set_iq_target(MS.i_q_setpoint - ((d>dn_step)?dn_step:d));
         }
 #endif
     }
@@ -1741,8 +1741,8 @@ void autodetect(void) {
 	MS.hall_angle_detect_flag = 0; //set uq to contstant value in FOC.c for open loop control
 	q31_rotorposition_absolute = 1 << 31;
 	i32_hall_order = 1;//reset hall order
-	MS.i_d_setpoint= 200; //set MS.id to appr. 2000mA
-	MS.i_q_setpoint= 0;
+	motor_core_legacy_set_id_target(200); //set MS.id to appr. 2000mA
+	motor_core_legacy_set_iq_target(0);
 
 	for (int i = 0; i < 1080; i++) {
 		q31_rotorposition_absolute += one_deg; //drive motor in open loop with steps of 1 deg
@@ -1842,7 +1842,7 @@ void autodetect(void) {
     MS.i_q = 0;
     MS.u_d=0;
     MS.u_q=0;
-    MS.i_d_setpoint= 0;
+	motor_core_legacy_set_id_target(0);
     uint32_tics_filtered=1000000;
 
 

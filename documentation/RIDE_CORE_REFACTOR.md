@@ -49,9 +49,9 @@ To pole pozostaje częścią Legacy do czasu wydzielenia `legacy_assist` oraz
 
 ## Kolejność bezpiecznej migracji
 
-1. Dodać neutralny interfejs `motor_core` i podłączyć go do istniejącego stanu.
-2. Przenieść przez interfejs inicjalizację oraz finalny wynik rampy.
-3. Przenieść awaryjne wyzerowania, zachowując ich natychmiastowe działanie.
+1. Dodać neutralny interfejs `motor_core` i podłączyć go do istniejącego stanu. — wykonane
+2. Przenieść przez interfejs inicjalizację oraz finalny wynik rampy. — wykonane
+3. Przenieść awaryjne wyzerowania, zachowując ich natychmiastowe działanie. — wykonane
 4. Odseparować specjalną procedurę autodetekcji od ścieżki Ride Control.
 5. Potwierdzić wyszukiwaniem, że poza `motor_core.c` nie ma zapisu finalnego
    `MS.i_q_setpoint` ani `MS.i_d_setpoint`.
