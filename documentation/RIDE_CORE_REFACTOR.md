@@ -1,0 +1,61 @@
+# Ride Core refactor
+
+## Cel etapu 1
+
+Rozdzielić decyzję o charakterze wspomagania od wykonania zadanego prądu
+`Iq`, zachowując bit po bicie obecną kolejność obliczeń i zachowanie Legacy.
+Nowe tryby jazdy nie są częścią tego etapu.
+
+Punkt przywracania przed refaktoryzacją:
+
+```text
+commit: d6bc69c
+tag:    m820-before-ride-core-refactor
+build:  0.0136 M820/BL820 — OK
+```
+
+## Inwentaryzacja żądania Iq
+
+### Finalny `MS.i_q_setpoint`
+
+Obecnie jest zapisywany w `src/main.c` przez:
+
+1. inicjalizację stanu w `main()`,
+2. watchdog komunikacji HMI,
+3. natychmiastowe cięcia bezpieczeństwa w `reg_ADC_processing()`,
+4. czasową lub krokową rampę w `reg_ADC_processing()`,
+5. procedurę autodetekcji położenia Halla.
+
+FOC tylko odczytuje finalną wartość w `runPIcontrol()` i w wywołaniu
+`FOC_calculation()`.
+
+### Surowe żądanie `MS.i_q_setpoint_temp`
+
+`update_setpoint()` miesza obecnie w jednej funkcji:
+
+- hamulec,
+- Walk Assist,
+- throttle,
+- tryby wspomagania pedałowania,
+- startup boost i Extended Boost,
+- smooth start,
+- limit napięcia,
+- limit temperatury,
+- ograniczenie prędkości,
+- kalibrację kąta Halla.
+
+To pole pozostaje częścią Legacy do czasu wydzielenia `legacy_assist` oraz
+`assist_limits`. Refaktoryzacja nie zmienia jeszcze żadnego wzoru ani progu.
+
+## Kolejność bezpiecznej migracji
+
+1. Dodać neutralny interfejs `motor_core` i podłączyć go do istniejącego stanu.
+2. Przenieść przez interfejs inicjalizację oraz finalny wynik rampy.
+3. Przenieść awaryjne wyzerowania, zachowując ich natychmiastowe działanie.
+4. Odseparować specjalną procedurę autodetekcji od ścieżki Ride Control.
+5. Potwierdzić wyszukiwaniem, że poza `motor_core.c` nie ma zapisu finalnego
+   `MS.i_q_setpoint` ani `MS.i_d_setpoint`.
+6. Zbudować firmware i porównać rozmiar oraz ostrzeżenia z buildem bazowym.
+
+Każdy z powyższych kroków kończy się osobnym buildem. Test na rowerze jest
+wymagany przed rozpoczęciem portu Power TSDZ2.

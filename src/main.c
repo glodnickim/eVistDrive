@@ -34,6 +34,7 @@ OF SUCH DAMAGE.
 
 #include "main.h"
 #include "FOC.h"
+#include "motor_core.h"
 #include "CAN_Display.h"
 #include "parser.h"
 #include <math.h>
@@ -400,6 +401,7 @@ int main(void)
 	MS.pushassist_flag=RESET;
 	MS.walk_can_request=RESET;
 	MS.distance_since_startup=0;
+	motor_core_init(&MS);
 
 	MP.pulses_per_revolution = PULSES_PER_REVOLUTION;
 	MP.wheel_cirumference = WHEEL_CIRCUMFERENCE;
