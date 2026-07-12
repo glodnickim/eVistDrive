@@ -59,3 +59,11 @@ To pole pozostaje częścią Legacy do czasu wydzielenia `legacy_assist` oraz
 
 Każdy z powyższych kroków kończy się osobnym buildem. Test na rowerze jest
 wymagany przed rozpoczęciem portu Power TSDZ2.
+
+## Rider Input
+
+`rider_input` publikuje jeden spójny obraz wejść po istniejącym dekoderze PAS,
+filtrze momentu i diagnostyce czujnika. Używa dotychczasowych jednostek
+stałoprzecinkowych, aby nie wprowadzać kosztownych konwersji `float` do pętli
+4 kHz. Legacy nadal czyta `MS` i dotychczasowe liczniki; przepięcie odbiorców
+będzie osobnym krokiem po sprawdzeniu kompilacji.

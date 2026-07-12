@@ -35,6 +35,7 @@ OF SUCH DAMAGE.
 #include "main.h"
 #include "FOC.h"
 #include "motor_core.h"
+#include "rider_input.h"
 #include "CAN_Display.h"
 #include "parser.h"
 #include <math.h>
@@ -1440,7 +1441,8 @@ void reg_ADC_processing(void)
 
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
 	MS.calories=(uint16_t)(MS.int_Temperature); //temp sterownika na pole calories w HMI (offset +3 juz w int_Temperature)
-	MS.torque_on_crank=(((adc_value[2])*3300)>>12)+torque_offset_correction; //map ADC value to mV
+	uint16_t torque_raw_mv=((adc_value[2])*3300)>>12; //map ADC value to mV
+	MS.torque_on_crank=torque_raw_mv+torque_offset_correction;
 	if(MS.torque_on_crank>760&&PAS_counter<MP.PAS_timeout)torque_counter=0;//reset counter, if pressure on pedal and pedals rotating
 	//--- Quadrature PAS decoder (PC12=A, PD2=B) @4kHz -> feeds cadence/Backwards/torque/p_human/PAS_counter ---
 	{
@@ -1526,6 +1528,24 @@ void reg_ADC_processing(void)
 			}
 		}
 		tq_coast_active=0;
+	}
+	//Publish one coherent, read-only rider snapshot. Legacy calculations below still use the
+	//same MS/globals directly; switching consumers is a separate, testable refactor step.
+	{
+		rider_input_t input = {
+			.torque_raw_mv = torque_raw_mv,
+			.torque_corrected_mv = MS.torque_on_crank,
+			.torque_filtered = MS.torque_filtered,
+			.cadence_rpm = MS.cadence,
+			.wheel_speed_x100 = MS.Speedx100,
+			.motor_erps = ui16_erps,
+			.pas_forward = forward_pedaling != 0,
+			.pas_backward = Backwards_counter >= 4,
+			.pedaling_active = forward_pedaling != 0,
+			.torque_sensor_valid = torque_fault == 0,
+			.pas_sensor_valid = pas_qstate != 0xFF
+		};
+		rider_input_update(&input);
 	}
 	//--- coulomb counting (signed: discharge>0 reduces charge, regen<0 adds back) ---
 	soc_mAs_acc += (float)MS.Battery_Current / 4000.0f; //mA * (1/4000 s) per ~4kHz tick
