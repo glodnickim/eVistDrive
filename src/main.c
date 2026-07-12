@@ -158,6 +158,7 @@ uint16_t uint16_cadence_filtered=0;
 uint8_t pas_qstate=0xFF;     //last quadrature state (0..3), 0xFF=uninit
 int8_t pas_fwd_steps=0;      //net forward steps toward one magnet pulse (PAS_STEPS_PER_PULSE)
 uint16_t pas_cycle_ticks=0;  //ticks since last forward magnet pulse (for cadence)
+uint8_t cadence_seeded=0;    //1 while MS.cadence holds the START_CADENCE_SEED value (no real measurement yet) -> startup boost must treat cadence as 0
 uint16_t pas_idle_ticks=0;   //ticks since last quadrature transition (for stop detection)
 uint8_t forward_pedaling=0;  //1 = cranks turning forward (cadence>0, not reverse, not stopped)
 uint8_t fwd_run=0;           //consecutive forward quadrature steps (reset on any backward step or stop) -> jiggle-proof engage gate
@@ -1461,6 +1462,7 @@ void reg_ADC_processing(void)
 #if START_CADENCE_SEED_ENABLE
 				if(MS.cadence==0 && fwd_run>=START_CADENCE_SEED_STEPS && MS.torque_on_crank>(750+TQ_GATE_MIN)){
 					MS.cadence=START_CADENCE_SEED_RPM;
+					cadence_seeded=1;
 					uint16_cadence_filtered=(uint16_t)START_CADENCE_SEED_RPM<<3;
 					MS.p_human=(uint16_t)((float)(MS.cadence*MS.torque_filtered)*0.00342);
 				}
@@ -1469,6 +1471,7 @@ void reg_ADC_processing(void)
 					pas_fwd_steps=0;
 					if(pas_cycle_ticks>70){
 						MS.cadence=10000/pas_cycle_ticks;
+						cadence_seeded=0;               //first real measurement replaces the seed
 						uint16_cadence_filtered-=uint16_cadence_filtered>>3;
 						uint16_cadence_filtered+=MS.cadence;
 						MS.p_human=(uint16_t)((float)(MS.cadence*MS.torque_filtered)*0.00342);
@@ -1483,7 +1486,7 @@ void reg_ADC_processing(void)
 				if(Backwards_counter<10)Backwards_counter++;
 			}
 		}
-		if(pas_idle_ticks>PAS_STOP_TICKS){ MS.cadence=0; uint16_cadence_filtered=0; pas_fwd_steps=0; fwd_run=0; } //stop
+		if(pas_idle_ticks>PAS_STOP_TICKS){ MS.cadence=0; cadence_seeded=0; uint16_cadence_filtered=0; pas_fwd_steps=0; fwd_run=0; } //stop
 		forward_pedaling = (MS.cadence>0 && Backwards_counter<4 && pas_idle_ticks<=PAS_STOP_TICKS);
 	}
 	//--- torque sensor fault detection (debounced) -> Error 25 ---
@@ -1596,6 +1599,9 @@ void reg_ADC_processing(void)
             int32_t up_ticks = IQ_RAMP_UP_SLOW_TICKS;
             int32_t dn_ticks = IQ_RAMP_DOWN_SLOW_TICKS;
 #endif
+            //Walk Assist: WA has its own 180 ms kick slew, so the outer ramp must not add its
+            //standstill lag (~1 s to WA current) nor delay the anti-overshoot cut (~0.9 s down)
+            if(MS.pushassist_flag){ up_ticks = IQ_RAMP_UP_FAST_TICKS; dn_ticks = IQ_RAMP_DOWN_FAST_TICKS; }
             int32_t iq_scale = phase_current_max_scaled;
             if(iq_scale<1) iq_scale = MP.phase_current_max;
             if(iq_scale<1) iq_scale = PH_CURRENT_MAX;
@@ -2494,25 +2500,34 @@ uint16_t update_setpoint(void){
 	            if(MS.brake_active_flag)MS.i_q_setpoint_temp=0;
 	            // check push assist active: closed-loop speed PI holding MP.walk_assist_speed
 	            else if(MS.pushassist_flag){
-	            	int32_t wa_max = MP.phase_current_max*MP.walk_assist_current/100;     //WA current ceiling
+	            	//hold ceiling: stored walk_assist_current halved in firmware (ride test: full value ran away to the overspeed cut)
+	            	int32_t wa_hold = (int32_t)MP.phase_current_max*MP.walk_assist_current*WA_HOLD_PCT/10000;
+	            	//launch shove: ABSOLUTE % of phase current at standstill (independent of walk_assist_current),
+	            	//fading linearly down to the hold ceiling at WA_START_FULL_SPEED
+	            	int32_t wa_start = (int32_t)MP.phase_current_max*WA_START_PCT/100;
+	            	int32_t wa_cap = map((int32_t)MS.Speedx100, 0, WA_START_FULL_SPEED, wa_start, wa_hold);
+	            	if(wa_cap<wa_hold) wa_cap=wa_hold;
 	            	int32_t err    = (int32_t)MP.walk_assist_speed - (int32_t)MS.Speedx100; //speed error (0.01 km/h)
 	            	int32_t out = ((err*WA_KP_NUM)>>WA_KP_SHIFT) + (wa_integral>>WA_KI_SHIFT); //P + I
 	            	//anti-windup: integrate only when not pushing further into saturation (kills >6km/h overshoot);
 	            	//deadband: freeze the integrator within +-WA_DEADBAND of target (no current pumping at the target)
-	            	if(!((out>=wa_max && err>0) || (out<=0 && err<0)) && wa_ramp_ticks>=WA_RAMP_TICKS
+	            	if(!((out>=wa_hold && err>0) || (out<=0 && err<0)) && wa_ramp_ticks>=WA_RAMP_TICKS
 	            	   && (err>WA_DEADBAND || err<-WA_DEADBAND)) wa_integral += err;
-	            	int32_t imax = wa_max << WA_KI_SHIFT;
+	            	int32_t imax = wa_hold << WA_KI_SHIFT;                                //integrator ceiling stays wa_hold: launch shove must not wind up
 	            	if(wa_integral>imax) wa_integral=imax; else if(wa_integral<0) wa_integral=0;
 	            	out = ((err*WA_KP_NUM)>>WA_KP_SHIFT) + (wa_integral>>WA_KI_SHIFT);    //recompute after I update
-	            	if(out>wa_max) out=wa_max; else if(out<0) out=0;                      //clamp (0 = coast, no braking)
+	            	if(out>wa_cap) out=wa_cap; else if(out<0) out=0;                      //clamp (0 = coast, no braking)
+	            	//start floor: below WA_START_FULL_SPEED command the full boosted ceiling (guaranteed shove,
+	            	//independent of the momentary PI output); kick slew below still shapes the rise
+	            	if((int32_t)MS.Speedx100 < WA_START_FULL_SPEED && out < wa_cap) out = wa_cap;
 	            	//TSDZ2-style approach: power ceiling fades linearly over the last WA_FADE_BAND before the target,
 	            	//so force is limited EARLIER and inertia cannot carry the bike past walk_assist_speed
 	            	int32_t fade_cap = map((int32_t)MS.Speedx100, (int32_t)MP.walk_assist_speed-WA_FADE_BAND,
-	            	                       (int32_t)MP.walk_assist_speed, wa_max, wa_max*WA_NEAR_HOLD_PCT/100);
+	            	                       (int32_t)MP.walk_assist_speed, wa_cap, wa_hold*WA_NEAR_HOLD_PCT/100);
 	            	if(out>fade_cap) out=fade_cap;
 	            	if((int32_t)MS.Speedx100 >= (int32_t)MP.walk_assist_speed+WA_OVERSPEED_MARGIN){ out=0; wa_integral=0; } //hard anti-overshoot: target+0.5 km/h -> coast
 	            	if(wa_ramp_ticks<WA_RAMP_TICKS) wa_ramp_ticks++;                      //kickstart slew ~180 ms (firm, no jerk)
-	            	int32_t cap = wa_max*(int32_t)wa_ramp_ticks/WA_RAMP_TICKS;
+	            	int32_t cap = wa_cap*(int32_t)wa_ramp_ticks/WA_RAMP_TICKS;
 	            	if(out>cap) out=cap;
 	            	MS.i_q_setpoint_temp=(uint32_t)out;
 	            }
@@ -2520,6 +2535,29 @@ uint16_t update_setpoint(void){
 	            else{
 					mapped_throttle= map(adc_value[1], MP.throttle_offset, MP.throttle_max, 0, phase_current_max_scaled);
 					mapped_torque= map(MS.torque_on_crank, MP.TQO_threshold[level_to_array_element[MS.assist_level]], TQ_FULL_SCALE_MV, 0, phase_current_max_scaled); //#4 upper span configurable (3300=old; lower=more pressure-linear)
+#if STARTUP_BOOST_ENABLE
+					{	//TSDZ2-style startup boost: scale the pressure signal by a factor that is max at cadence 0 and
+						//decays geometrically with cadence -> pressure-proportional pull-away kick that fades on its own.
+						//factor(cad)% = STARTUP_BOOST_FACTOR * (1 - CADENCE_STEP/256)^cad  (matches OSF TSDZ2 boost table)
+						uint8_t sb_active=1;
+#if STARTUP_BOOST_MODE==1   //SPEED: arm only from standstill, drop once spinning >45 rpm
+						static uint8_t sb_flag=0;
+						if(MS.Speedx100==0) sb_flag=1; else if(MS.cadence>45) sb_flag=0;
+						sb_active=sb_flag;
+#elif STARTUP_BOOST_MODE==2 //AUTO: on, but off when little pressure while already moving
+						if(MS.torque_on_crank < (750+STARTUP_BOOST_AUTO_TQ) && MS.Speedx100>0) sb_active=0;
+#endif
+						if(sb_active && mapped_torque>0){
+							//seeded cadence is a placeholder, not a measurement -> factor must be evaluated at true 0
+							//or the boost is mostly cancelled right at the pull-away it exists for
+							uint8_t sb_cad = cadence_seeded ? 0 : MS.cadence;
+							float f = (float)STARTUP_BOOST_FACTOR * powf(1.0f-(float)STARTUP_BOOST_CADENCE_STEP/256.0f, (float)sb_cad);
+							uint32_t boosted = (uint32_t)mapped_torque + (uint32_t)((float)mapped_torque*f/100.0f);
+							if(boosted>(uint32_t)MP.phase_current_max) boosted=(uint32_t)MP.phase_current_max; //level-independent cap
+							mapped_torque=(uint16_t)boosted;
+						}
+					}
+#endif
 
 					if(Backwards_counter<4){//normal ride mode, motor power only if pedals are not turned backwards
 						//CONSISTENT ENGAGEMENT with HYSTERESIS: arm on firm press + >=START_MIN_STEPS forward steps;

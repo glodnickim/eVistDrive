@@ -4,6 +4,33 @@
 
 ### Nowe funkcje
 
+**Walk Assist — strojenie po teście 0.0135: start ×2, utrzymanie ÷2**
+- Objaw z jazdy: pierwsza chwila za słaba, potem po ~1 s rower „gna" aż do odcięcia anty-przelotowego.
+- **Start = bezwzględny % prądu fazowego** (`WA_START_PCT`=100): sufit przy 0 km/h to teraz pełny prąd fazowy (było min(200%·wa_max, 60% fazowego) = 60%; żądane ×2=120% obcięte fizycznie do 100%). Odwiązany od Walk Current z Canable/HMI — ta sama filozofia co niezależny od poziomów boost pedałowy. Wygasa liniowo do sufitu utrzymania przy 3 km/h (`WA_START_FULL_SPEED` bez zmian).
+- **Utrzymanie = połowa ustawionego Walk Current** (`WA_HOLD_PCT`=50): sufit PI, sufit integratora i wygaszanie przy celu liczone z `wa_hold = fazowy·walk_assist_current·50%/100` — przy zapisanych 30% realnie 15% fazowego. Skalowanie w firmware, więc działa niezależnie od tego, co HMI/Canable ma zapisane.
+- Usunięte `WA_START_BOOST_PCT` i `WA_BOOST_CEIL_PCT` (zastąpione przez `WA_START_PCT`); kick slew 180 ms i szybka rampa WA bez zmian.
+
+**Walk Assist — strojenie po jeździe testowej 0.0132 (4 poprawki)**
+- **Zwłoka załączania usunięta:** w trybie WA zewnętrzna rampa `i_q` przełącza się na szybkie tempo (0,3 s w górę / 0,14 s w dół zamiast 2,3 s / 1,0 s na postoju). WA ma własny kick 180 ms, więc podwójna rampa tylko opóźniała start; szybka rampa w dół dodatkowo przyspiesza cięcie anty-przelotowe z ~0,9 s do ~0,14 s.
+- **Start boost — ruszenie 2× mocniejsze:** sufit prądu przy ruszaniu podniesiony do `WA_START_BOOST_PCT`=200% `wa_max` przy 0 km/h, wygasa liniowo do 100% przy `WA_START_FULL_SPEED`=3 km/h; twardy limit `WA_BOOST_CEIL_PCT`=60% prądu fazowego. Poniżej 3 km/h wymuszona podłoga = pełny boost (gwarantowane dopchnięcie), narastająca przez kick 180 ms. Integrator PI dalej clampowany do `wa_max` — boost nie nawija się w całkę.
+- **Anty-przelot 6 km/h:** `WA_FADE_BAND` 150→250 (wygaszanie mocy od 2,5 km/h przed celem), `WA_NEAR_HOLD_PCT` 25→15 (przy celu 15% `wa_max`). Razem ze słabszym utrzymaniem i szybką rampą w dół eliminuje przelatywanie zadanej prędkości.
+- **`walk_assist_current` domyślnie 30%** (było 50%): boost 2× = dokładnie 60% fazowego; słabsze utrzymanie dodatkowo ogranicza przelot. Jeśli HMI ma zapisane 50, ustawić 30 w Canable (Para1[36]).
+
+**Pedał-assist — niższy próg startu**
+- `TQ_GATE_MIN` 25→18 mV: delikatnie lżejszy nacisk uruchamia wspomaganie (próg wspólny dla wszystkich poziomów). Odczuwalna różnica poziomu E wynika ze skalowania mocy (profil E w Canable), nie z progu — jeśli E dalej za słabe przy starcie, podnieść pierwszy segment profilu E w Canable.
+
+**CAN — przywrócony odczyt Para0 dla Canable (zakładka Full Assist)**
+- Naprawa pustego ekranu Info w HMI podmieniła odpowiedź READ 0x6010 na fabryczny 4-bajtowy mini-blok `01 00 02 06` dla WSZYSTKICH pytających — Canable przestał dostawać Para0 i zakładka Full Assist była nieaktywna (Assist Light działała, bo czyta Para1/0x6011).
+- Teraz odpowiedź zależy od nadawcy żądania: **source=5 (BESST/Canable) → pełny multiframe Para0**, source=3 (HMI) i inne → mini-blok jak fabryka. Handshake ekranu Info w HMI bez zmian; zapisy Para0 z Canable działały cały czas.
+
+**Pedał-assist — boost startowy w stylu TSDZ2 (`STARTUP_BOOST`); zastępuje `STARTUP_FLOOR`**
+- Port `apply_startup_boost()` z OSF TSDZ2: **mnożnik nacisku** malejący geometrycznie z kadencją — `factor(kadencja)% = STARTUP_BOOST_FACTOR × (1 − CADENCE_STEP/256)^kadencja`. Przy kadencji 0 nacisk wzmocniony o `STARTUP_BOOST_FACTOR`=200%, boost sam wygasa w miarę rozpędzania korby (`STARTUP_BOOST_CADENCE_STEP`=50 steruje tempem zaniku). Kick proporcjonalny do siły nacisku: mocno depczesz → mocny, ale kontrolowany start.
+- Trzy tryby aktywacji jak w TSDZ2 (`STARTUP_BOOST_MODE`): 0=CADENCE (zawsze, gaśnie z kadencją), 1=SPEED (tylko od postoju, wyłączany >45 rpm), 2=AUTO (wyłączany przy małym nacisku w ruchu, próg `STARTUP_BOOST_AUTO_TQ`).
+- Wzmocniony nacisk zamykany do pełnego `MP.phase_current_max` (kick niezależny od poziomu). Działa na `mapped_torque`, więc przechodzi przez te same bramki co reszta (latch: nacisk + 4 kroki do przodu) — bez wzbudzania na zjeździe.
+- **`STARTUP_FLOOR` usunięty w całości** (kod + parametry): jeden mechanizm boostu zamiast dwóch nakładających się — feedback z jazdy jednoznacznie wskazuje, co stroić.
+- **Fix interakcji z cadence seed:** seed publikuje sztuczne 10 rpm zanim istnieje pomiar kadencji, przez co boost liczył współczynnik przy kadencji 10 zamiast 0 i kasował sam siebie w chwili ruszenia (przy step=50 z 200% zostawało ~23%). Nowa flaga `cadence_seeded` (ustawiana przy seedzie, kasowana pierwszym realnym pomiarem lub stopem) — boost traktuje seedowaną kadencję jako 0. Dodatkowo `STARTUP_BOOST_CADENCE_STEP` 50→25 (typowe TSDZ): ~36% boostu przy 10 rpm, wygasa ~40 rpm.
+- **Rampa i_q na postoju skrócona pod boost:** `IQ_RAMP_UP_SLOW_TICKS` 9200→2400 (2,3 s → 0,6 s) — wolna rampa rozsmarowywała kopniak boostu na 2 sekundy; 0,6 s pozwala go poczuć, nadal chroniąc napęd. Jeśli start za ostry: wrócić do 9200.
+
 **Wspomaganie pedalowania — poprawa jakości jazdy**
 - Torque EMA przeniesiony na pełną rozdzielczość kwadraturową (co 3,75° / 96×/obrót zamiast co 15°). Algorytmy widzą teraz profil siły przez cały obrót, nie tylko co 15°. Eliminuje pulsowanie on/off przy małej sile i zbyt szybkie zanikanie mocy przy zmniejszaniu nacisku.
 - Cadence-gate: `torque_counter` resetuje się przy każdym kroku kwadraturowym do przodu, jeśli `torque_filtered > 0`. Silnik nie wchodzi w decay podczas martwego punktu korby dopóki korba się kręci i był jakikolwiek moment.
@@ -48,7 +75,7 @@
 |---|---|---|---|
 | TQfilter | Ride Mode (per poziom) | 6 | Obniżyć do 4–5 dla szybszej reakcji |
 | PAS timeout | Current Loading Time | 1 (=400 tyk) | Zwiększyć do 5 (=2000 tyk) przy pulsowaniu |
-| Walk Assist prąd | Walk Assist Current | 50% | |
+| Walk Assist prąd | Walk Assist Current | 30% | Boost startowy = 2× tej wartości (max 60% fazowego) |
 | Walk Assist prędkość | Walk Assist Speed | 6,0 km/h | |
 
 ---

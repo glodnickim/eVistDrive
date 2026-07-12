@@ -141,9 +141,17 @@
 #define WA_KP_SHIFT  4      //   3/16 ~= 0.19 i_q per 0.01km/h error: full error (~600) saturates ceiling => kick from standstill
 #define WA_KI_SHIFT  11     // I gain: integral term = wa_integral >> WA_KI_SHIFT (larger = slower trim @4kHz). TUNE.
 #define WA_KICK_SPEED 50    // Speedx100 < 0.5 km/h at engage = standstill -> apply kick; above -> resume without kick
+// Start boost: raised current ceiling at low speed so the initial shove actually moves the bike.
+// Ride test 0.0133: launch too weak at the very first moment, then runaway until the overspeed cut.
+// Requested: launch x2, hold power /2. Launch is now an ABSOLUTE % of phase current (independent of the
+// stored walk_assist_current, same philosophy as the level-independent pedal startup boost); hold is the
+// stored walk_assist_current scaled by WA_HOLD_PCT in firmware (survives whatever HMI/Canable has saved).
+#define WA_START_PCT        100 // % of phase_current_max commanded at 0 km/h (was min(200%*wa_max,60%)=60%; x2=120% clamps at 100 = full phase)
+#define WA_START_FULL_SPEED 300 // 0.01 km/h: launch shove fully faded down to the hold ceiling at 3 km/h
+#define WA_HOLD_PCT         50  // % of (phase_current_max*walk_assist_current) used as the PI hold ceiling: 50 = half the user setting
 // TSDZ2-style approach control: power is limited EARLIER, before the target speed is reached (no overshoot).
-#define WA_FADE_BAND 150    // 0.01 km/h: power ceiling fades linearly over the last 1.5 km/h before walk_assist_speed
-#define WA_NEAR_HOLD_PCT 25 // % of wa_max still allowed AT the target (keeps the bike walking; 0 would stall+pump below target)
+#define WA_FADE_BAND 250    // 0.01 km/h: power ceiling fades linearly over the last 2.5 km/h before walk_assist_speed
+#define WA_NEAR_HOLD_PCT 15 // % of wa_hold still allowed AT the target (keeps the bike walking; 0 would stall+pump below target)
 #define WA_OVERSPEED_MARGIN 50 // 0.01 km/h: at target+0.5 km/h output -> 0 and integrator flushed (hard anti-overshoot)
 #define WA_DEADBAND 20      // 0.01 km/h: within +-0.2 km/h of target the integrator is frozen (no current pumping at the target)
 
@@ -169,7 +177,9 @@
 
 // Time-based ramp targets in 4kHz control ticks. Slow is used near standstill/low cadence, fast at speed/cadence.
 // TSDZ2 reference: ramp-up about 2.3s slow / 0.3s fast, ramp-down about 1.0s slow / 0.14s fast.
-#define IQ_RAMP_UP_SLOW_TICKS    9200
+// UP_SLOW 9200 (2.3s) smeared the STARTUP_BOOST kick into a 2-second crawl -> 2400 (0.6s) lets the
+// pull-away kick actually be felt while still protecting the drivetrain; revert to 9200 if start feels harsh.
+#define IQ_RAMP_UP_SLOW_TICKS    2400
 #define IQ_RAMP_UP_FAST_TICKS    1200
 #define IQ_RAMP_DOWN_SLOW_TICKS  4000
 #define IQ_RAMP_DOWN_FAST_TICKS  560
@@ -190,6 +200,21 @@
 #define SMOOTH_START_ENABLE 0
 #define START_RAMP_TICKS   1200 // ~300 ms envelope
 
+// --- TSDZ2-style STARTUP BOOST: cadence-decaying MULTIPLIER on pedal pressure (ported from OSF TSDZ2
+// apply_startup_boost()). The ONLY pull-away boost mechanism (STARTUP_FLOOR was removed so effects can't
+// stack -> clean, attributable ride feedback). It SCALES the pressure signal (mapped_torque) by a factor
+// that is maximal at cadence 0 and decays geometrically as cadence builds:
+//   factor(cad)% = STARTUP_BOOST_FACTOR * (1 - CADENCE_STEP/256)^cad   (same law as TSDZ2, which precomputes
+// it into a 120-entry table; here powf() computes it directly). Boost is proportional to how hard you press
+// -> a strong press gives a strong-but-controlled kick that fades on its own with cadence.
+// Boosted pressure is capped to full MP.phase_current_max (level-independent kick).
+#define STARTUP_BOOST_ENABLE        1
+#define STARTUP_BOOST_FACTOR        200  // factor[0] in %: extra pressure at cadence 0 (TSDZ "start boost torque factor"). 200 = up to +200%
+#define STARTUP_BOOST_CADENCE_STEP  25   // geometric decay per RPM (step/256). Higher = boost fades faster with cadence (TSDZ "cadence step").
+                                         // 25 = TSDZ-typical: ~36% left at 10 rpm, ~13% at 20 rpm, gone ~40 rpm. 50 faded so fast the kick barely outlived the first crank degrees
+#define STARTUP_BOOST_MODE          0    // 0=CADENCE (always on, fades w/ cadence); 1=SPEED (only from standstill, drop >45 rpm); 2=AUTO (off when little press while rolling)
+#define STARTUP_BOOST_AUTO_TQ       20   // AUTO mode only: pressure [mV above ~750 rest] below which boost drops once already moving
+
 // --- Soft cut-off stopnia mocy (usuwa klik przy koncowym DISABLE po zatrzymaniu) ---
 // 1 = przed wylaczeniem mostka zjedz napiecia faz do wektora neutralnego (_T/2)
 // 0 = stara sciezka: natychmiastowy zapis _T/2 + DISABLE (klik)
@@ -208,7 +233,7 @@
 // Without it, wiggling the cranks back/forth with almost no pressure excites the motor. Pure-pressure path
 // (mapped_torque) is unaffected. Higher = firmer press to engage; too high = light pedalling won't assist.
 // (Was gating on torque_filtered which is TQfilter/EMA-dependent per level -> broke high levels; fixed.)
-#define TQ_GATE_MIN 25
+#define TQ_GATE_MIN 18
 
 // --- Consistent engagement (#engage): forward crank steps required to arm assist (jiggle-proof). ---
 // Assist engages only with REAL pressure (TQ_GATE_MIN) AND >=START_MIN_STEPS consecutive forward quadrature

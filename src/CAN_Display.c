@@ -560,23 +560,30 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 				send_multiframe(Ext_ID_Rx.command, &tx_data[0], tx_data_length);
 			}
 			break;
-		case 0x6010: //factory replies with a 4-byte mini config block (0x821B6003 Data:01 00 02 06), NOT Para0.
-			//Sending Para0 (64B multiframe) here breaks the HMI info handshake -> whole Info/Settings screen stays blank.
+		case 0x6010: //reply depends on WHO asks:
+			//- HMI display (source=3): factory 4-byte mini config block (0x821B6003 Data:01 00 02 06), NOT Para0.
+			//  Sending Para0 (64B multiframe) to the display breaks the HMI info handshake -> Info/Settings blank.
+			//- BESST/Canable tool (source=5): full Para0 multiframe - the Full Assist tab reads its data here;
+			//  without it the tab stays inactive (nothing downloads).
 			if(Ext_ID_Rx.operation==1){
-				Ext_ID_Tx.command  = 0x6003;              //factory tags this reply as 0x6003, op=3
-				Ext_ID_Tx.operation= 3;
-				Ext_ID_Tx.target   = Ext_ID_Rx.source;    //reply to requester (display=3)
-				Ext_ID_Tx.source   = 0x02;                //controller
-				transmit_message.tx_sfid = 0x00;
-				transmit_message.tx_efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
-				transmit_message.tx_ft = CAN_FT_DATA;
-				transmit_message.tx_ff = CAN_FF_EXTENDED;
-				transmit_message.tx_dlen = 4;
-				transmit_message.tx_data[0]=0x01; transmit_message.tx_data[1]=0x00;
-				transmit_message.tx_data[2]=0x02; transmit_message.tx_data[3]=0x06;
-				transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-				timeout = 0xFFFF;
-				while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)) timeout--;
+				if(Ext_ID_Rx.source==5){
+					send_multiframe(Ext_ID_Rx.command, &Para0[0],64 );
+				}else{
+					Ext_ID_Tx.command  = 0x6003;              //factory tags this reply as 0x6003, op=3
+					Ext_ID_Tx.operation= 3;
+					Ext_ID_Tx.target   = Ext_ID_Rx.source;    //reply to requester (display=3)
+					Ext_ID_Tx.source   = 0x02;                //controller
+					transmit_message.tx_sfid = 0x00;
+					transmit_message.tx_efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
+					transmit_message.tx_ft = CAN_FT_DATA;
+					transmit_message.tx_ff = CAN_FF_EXTENDED;
+					transmit_message.tx_dlen = 4;
+					transmit_message.tx_data[0]=0x01; transmit_message.tx_data[1]=0x00;
+					transmit_message.tx_data[2]=0x02; transmit_message.tx_data[3]=0x06;
+					transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
+					timeout = 0xFFFF;
+					while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)) timeout--;
+				}
 			}
 			break;
 		case 0x6011: //to do

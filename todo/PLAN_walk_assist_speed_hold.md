@@ -7,6 +7,15 @@
 > integratora (`WA_DEADBAND` 0,2 km/h), kasacja martwego `PUSHASSIST_CURRENT`. Wzorzec: TSDZ2
 > `apply_walk_assist` — tempo korekt proporcjonalne do odległości od celu.
 > **Zostało:** strojenie PI/fade po jeździe (KROK 3) + ew. parametry WA przez CAN (sekcja niżej).
+>
+> **STATUS (2026-07-06, po jeździe na 0.0132):** KROK 3 wykonany — 4 poprawki po feedbacku:
+> (1) zwłoka załączania: WA na szybkiej rampie zewnętrznej (`IQ_RAMP_*_FAST_TICKS` gdy
+> `pushassist_flag`); (2) start boost 2×: `WA_START_BOOST_PCT`=200, `WA_START_FULL_SPEED`=300,
+> twardy sufit `WA_BOOST_CEIL_PCT`=60% fazowego + podłoga startowa poniżej 3 km/h;
+> (3) anty-przelot: `WA_FADE_BAND` 150→250, `WA_NEAR_HOLD_PCT` 25→15, szybka rampa w dół;
+> (4) `walk_assist_current` domyślnie 50→30% (boost 2× = równo 60% fazowego).
+> Dodatkowo pedał-assist: `TQ_GATE_MIN` 25→18 (niższy odczuwalny próg startu).
+> **Zostało:** weryfikacja na rowerze; ew. strojenie PI (KP/KI) i parametry WA przez CAN.
 
 ## Objaw (zgłoszony)
 Start (pierwsza chwila) OK — jest siła. Ale potem rower **zbyt się rozpędza, przelatuje
