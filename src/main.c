@@ -34,6 +34,7 @@ OF SUCH DAMAGE.
 
 #include "main.h"
 #include "FOC.h"
+#include "legacy_assist.h"
 #include "motor_core.h"
 #include "rider_input.h"
 #include "CAN_Display.h"
@@ -126,7 +127,7 @@ float compute_limp_factor(float soc);
 float default_wh_km_for_level(uint8_t lvl);
 void Speed_processing(void);
 uint16_t map_rezi(int32_t actual_value, int32_t actual_time, int32_t timeout, int32_t decay_base);
-uint16_t update_setpoint(void);
+uint16_t legacy_assist_calculate_monolith(void);
 int16_t T_NTC(uint16_t ADC);
 float u32_to_deg=0.00000008381903171539;
 uint16_t slow_loop_counter=0;
@@ -1604,7 +1605,7 @@ void reg_ADC_processing(void)
 
     {
         // Engage/disengage ramp on i_q. Time mode keeps TSDZ2-like feel even when integer steps would be too coarse.
-        int32_t iq_target = update_setpoint();
+        int32_t iq_target = legacy_assist_calculate();
 #if IQ_RAMP_TIME_MODE
         if(MS.brake_active_flag || Backwards_counter>=4 || overtemp_stage>=2){
 			motor_core_legacy_set_iq_target(iq_target);                         // safety cuts = immediate, no ramp
@@ -2508,7 +2509,7 @@ uint16_t map_rezi(int32_t actual_value, int32_t actual_time, int32_t timeout, in
     else return 0;
 }
 
-uint16_t update_setpoint(void){
+uint16_t legacy_assist_calculate_monolith(void){
 
 				//Walk Assist engage edge: decide kick (from standstill) vs smooth resume (already rolling), clear integrator
 				if(MS.pushassist_flag && !wa_engaged){
