@@ -34,6 +34,7 @@ OF SUCH DAMAGE.
 
 #include "main.h"
 #include "FOC.h"
+#include "assist_limits.h"
 #include "legacy_assist.h"
 #include "motor_core.h"
 #include "rider_input.h"
@@ -2650,21 +2651,15 @@ uint16_t legacy_assist_calculate_monolith(void){
 	            }// else brake not active
 	        	//if(PAS_counter>MP.PAS_timeout)MS.i_q_setpoint_temp=0;
 
-	            //low battery ramp down with 3V above battery min voltage
-	            MS.i_q_setpoint_temp=map(voltage_raw_filtered, MP.voltage_min,(MP.voltage_min+176),0,MS.i_q_setpoint_temp);
+	            //Legacy limit chain: low voltage, controller temperature, then legal speed taper.
+	            MS.i_q_setpoint_temp=assist_limits_apply_legacy(
+	            	MS.i_q_setpoint_temp,
+	            	voltage_raw_filtered,
+	            	uint16_cadence_filtered,
+	            	speedlimitx100_scaled,
+	            	&MS,
+	            	&MP);
 
-	            //controller temperature ramp down between 75 and 90°C (M820: NTC mierzy temp sterownika)
-	            MS.i_q_setpoint_temp=map(MS.int_Temperature,75,90,MS.i_q_setpoint_temp,0);
-	            if(MP.legalflag&&!MS.offroadflag&&!MS.pushassist_flag){
-
-					if((uint16_cadence_filtered>>3)>15){
-						MS.i_q_setpoint_temp=map(MS.Speedx100, speedlimitx100_scaled,(speedlimitx100_scaled+200),MS.i_q_setpoint_temp,0);
-					}
-					else{ //limit to 6km/h if pedals are not turning
-						MS.i_q_setpoint_temp=map(MS.Speedx100, 500,700,MS.i_q_setpoint_temp,0);
-					}
-
-				}//end legalflag
 				if(MS.hall_angle_detect_flag>1){ // part 2 of positions calibration
 					MS.i_q_setpoint_temp=100;
 					temp6-=temp6>>4;
