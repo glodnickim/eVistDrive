@@ -105,3 +105,8 @@ Dotychczasowa rampa `Iq` została przeniesiona do
 
 Po rampie `main` buduje `motor_command_t` i przekazuje go przez
 `motor_core_set_command()`.
+
+Przejściowe funkcje `motor_core_legacy_set_*` zostały usunięte. Inicjalizacja,
+watchdog komunikacji, zwykła jazda i autodetekcja Halla korzystają z tego
+samego interfejsu komendy. Bezpośrednie zapisy finalnego `Iq/Id` występują
+wyłącznie w `motor_core.c`.

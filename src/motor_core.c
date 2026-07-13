@@ -22,17 +22,3 @@ void motor_core_set_command(const motor_command_t *command)
 	state->i_q_setpoint = command->iq_target;
 	state->i_d_setpoint = command->id_target;
 }
-
-void motor_core_legacy_set_iq_target(int32_t iq_target)
-{
-	if (state != 0) {
-		state->i_q_setpoint = iq_target;
-	}
-}
-
-void motor_core_legacy_set_id_target(int32_t id_target)
-{
-	if (state != 0) {
-		state->i_d_setpoint = id_target;
-	}
-}
