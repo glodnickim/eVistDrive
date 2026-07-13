@@ -92,3 +92,16 @@ Progi i kolejność obliczeń nie zostały zmienione.
 Na tym etapie aktywny jest wyłącznie `RIDE_ENGINE_LEGACY`; wariant TSDZ zwraca
 zero i nie ma publicznego przełącznika. Zostanie udostępniony dopiero po
 sprzętowym teście regresji Legacy.
+
+## Assist Dynamics
+
+Dotychczasowa rampa `Iq` została przeniesiona do
+`assist_dynamics_apply_legacy()`. Moduł zachowuje:
+
+- natychmiastowe cięcia hamulca, ruchu wstecz i przegrzania,
+- zależność tempa od prędkości i kadencji,
+- szybszą rampę używaną przez Walk Assist,
+- dotychczasową arytmetykę stałoprzecinkową.
+
+Po rampie `main` buduje `motor_command_t` i przekazuje go przez
+`motor_core_set_command()`.
