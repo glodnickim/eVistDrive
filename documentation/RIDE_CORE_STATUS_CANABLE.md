@@ -1,0 +1,286 @@
+# EBICS Ride Core — status wdrożenia i plan Canable
+
+Aktualizacja: 2026-07-13  
+Gałąź: `refactor/ride-core`  
+Punkt przywracania: `m820-before-ride-core-refactor` (`d6bc69c`)  
+Ostatni sprawdzony build: `0.0144` M820/BL820
+
+Ten dokument jest główną listą kontrolną Ride Core i konfiguratora. Rozróżnia:
+
+- **WDROŻONE** — aktywne w nowej architekturze,
+- **LEGACY** — działa, ale nadal należy do starego algorytmu,
+- **SZKIELET** — interfejs istnieje, funkcja docelowa jeszcze nie,
+- **NIE WDROŻONE** — brak kodu wykonawczego,
+- **TEST ROWERU** — kod i build są gotowe, ale zachowanie nie zostało jeszcze potwierdzone sprzętowo.
+
+## 1. Aktualna ścieżka sterowania
+
+```text
+czujniki i dekoder PAS
+        ↓
+rider_input (snapshot sygnałów)
+        ↓
+ride_control (obecnie wybiera tylko Legacy)
+        ↓
+legacy_assist
+        ↓
+assist_limits
+        ↓
+assist_dynamics
+        ↓
+motor_command_t
+        ↓
+motor_core
+        ↓
+FOC / PWM
+```
+
+Ważne: `rider_input` publikuje już spójny snapshot, ale obliczenia Legacy nadal
+czytają część pól bezpośrednio z `MS` i globalnych liczników. Nowe tryby mają
+korzystać wyłącznie z `rider_input_t`.
+
+## 2. Co zostało wdrożone
+
+| Element | Status | Stan rzeczywisty |
+|---|---|---|
+| Punkt bazowy i tag przywracania | WDROŻONE | Tag `m820-before-ride-core-refactor`; bazowy build `0.0136` |
+| `motor_command_t` | WDROŻONE | Wspólny interfejs `Iq`, `Id`, enable i emergency stop |
+| Jeden zapis finalnego `Iq/Id` | WDROŻONE | Bezpośrednio zapisuje je wyłącznie `src/motor_core.c` |
+| `rider_input` | WDROŻONE | Snapshot momentu, kadencji, kierunku PAS, prędkości koła i ERPS |
+| `legacy_assist` | WDROŻONE/SZKIELET | Jest osobny punkt wejścia; ciało starego algorytmu nadal pozostaje monolitem |
+| `assist_limits` | WDROŻONE | Kolejność Legacy: napięcie → temperatura → prawny taper prędkości |
+| `assist_dynamics` | WDROŻONE | Adaptacyjne rampy `Iq`, szybka ścieżka WA i natychmiastowe cięcia bezpieczeństwa |
+| `ride_control` | WDROŻONE/SZKIELET | Wybiera silnik jazdy; dostępny jest tylko `RIDE_ENGINE_LEGACY` |
+| Sprzętowy test regresji Legacy | TEST ROWERU | Do wykonania na buildzie `0.0144` przed aktywacją TSDZ |
+
+## 3. Co działa obecnie tylko w Legacy
+
+Poniższe funkcje są aktywne w firmware, ale nie są jeszcze docelowymi modułami
+Ride Core:
+
+- dotychczasowe obliczanie wspomagania pedałowania,
+- naciskowy startup boost w stylu TSDZ2,
+- latch startu: nacisk + kolejne kroki PAS do przodu,
+- istniejący Walk Assist oparty na prędkości koła `Speedx100`,
+- throttle override,
+- wyłączony kompilacyjnie Extended Boost,
+- kalibracja kąta Halla znajdująca się w ścieżce obliczania żądania,
+- zapisy i odczyty konfiguracji przez `Para0/Para1/Para2`.
+
+Te funkcje pozostają do porównań. Nie należy dopisywać do nich nowych trybów.
+
+## 4. Czego jeszcze nie wdrożono
+
+| Funkcja | Status | Warunek rozpoczęcia/ukończenia |
+|---|---|---|
+| Power Linear TSDZ2 | NIE WDROŻONE | Najpierw test regresji Legacy `0.0144` |
+| Lokalna `cadence_for_assist` | NIE WDROŻONE | Razem z nowym Power/Torque/eMTB |
+| Assist without pedal rotation | NIE WDROŻONE | Domyślnie OFF; wymaga świadomego testu bez czujnika hamulca |
+| Startup Boost jako ustawienie per-level | NIE WDROŻONE | Obecny boost jest globalnym Legacy `#define` |
+| Smooth Start per-level | NIE WDROŻONE | Obecny kod istnieje, ale `SMOOTH_START_ENABLE=0` |
+| Release niezależny od startu | NIE WDROŻONE | Po Power Linear i filtrowaniu spadku mocy |
+| Power Progressive | NIE WDROŻONE | Po stabilnym Power Linear |
+| eMTB TSDZ / Custom Curve | NIE WDROŻONE | Po progresywnym Power |
+| Osobny właściciel Walk Assist | NIE WDROŻONE | `CONTROL_OWNER_WALK` + sterowanie według ERPS |
+| Stany WA open-loop/Hall/blend/speed hold | NIE WDROŻONE | Po stabilnym pomiarze ERPS |
+| Pięć pełnych profili poziomów | NIE WDROŻONE | Potrzebny nowy schemat protokołu |
+| Kopiowanie ustawień poziomów | NIE WDROŻONE | Firmware schema + UI |
+| Wykresy charakterystyk | NIE WDROŻONE | Po ustaleniu wzorów i jednostek |
+| `Sync / Apply RAM / Save Flash / Revert` | NIE WDROŻONE | Nowy wersjonowany protokół konfiguracji |
+| Jedno źródło prawdy YAML | NIE WDROŻONE | Wymagane przed przydzielaniem nowych ID |
+
+## 5. Parametry już obsługiwane przez obecny Canable/protokół
+
+Nazwy w obecnym UI bywają mylące. Poniższa tabela opisuje faktyczne użycie w
+firmware.
+
+| Lokalizacja | Zmienna firmware | Stan |
+|---|---|---|
+| `Para0[2,4,6,8,9]` | `assist_settings[level][2]` | TQfilter / „Ride Mode” per poziom; aktywne w Legacy |
+| `Para0[12..27]` | `TQO_threshold[1..5]` | Próg mapowania nacisku per poziom, 16-bit LE |
+| `Para1[7..8]` | `battery_capacity_mah` | Aktywne |
+| `Para1[9]` | `phase_current_max` | Aktywny sprzętowy limit skali prądu |
+| `Para1[10]`, `[11]` | progi limp SOC | Aktywne; `0xFF` wyłącza |
+| `Para1[12]` | `Cadence_exponent` | Aktywne tylko w formule Legacy |
+| `Para1[14]` | `legalflag` | Aktywne |
+| `Para1[20]` | `pulses_per_revolution` | Aktywne |
+| `Para1[21]` | `decay_base` | Aktywne tylko w części Legacy |
+| `Para1[36]` | `walk_assist_current` | Aktywne; fallback/default = **30%** |
+| `Para1[37]` | `Override_Duration` | Parsowane; efekt Extended Boost jest wyłączony przez `EXTENDED_BOOST_ENABLE=0` |
+| `Para1[38]` | `PAS_timeout` | Aktywne w Legacy |
+| `Para1[39]` | `ramp_end` | Parsowane, obecnie nieużywane |
+| `Para1[41,43,45,47,48]` | limit prądu poziomów 1–5 | Aktywne |
+| `Para1[50,52,54,56,57]` | limit prędkości poziomów 1–5 | Aktywne |
+| `Para1[60..61]` | `walk_assist_speed` | Aktywne w Legacy; 0 oznacza fallback 6,0 km/h |
+| `Para2[0..29]` | `assist_profile[5][6]` | Aktywne profile Legacy |
+| `Para2[31..35]` | `ext_boost_duration[1..5]` | Parsowane, lecz Extended Boost globalnie OFF |
+| `Para2[37..41]` | `ext_boost_strength[1..5]` | Parsowane, lecz Extended Boost globalnie OFF |
+
+## 6. Obecne parametry zaszyte w firmware — kandydaci do Canable
+
+Te wartości działają, ale zmiana wymaga przebudowania firmware.
+
+| Klucz docelowy | Obecna stała | Wartość `0.0144` | Docelowa grupa UI |
+|---|---|---:|---|
+| `iq_rise_slow_ms` | `IQ_RAMP_UP_SLOW_TICKS` | 600 ms | Dynamika |
+| `iq_rise_fast_ms` | `IQ_RAMP_UP_FAST_TICKS` | 300 ms | Dynamika |
+| `iq_fall_slow_ms` | `IQ_RAMP_DOWN_SLOW_TICKS` | 1000 ms | Dynamika |
+| `iq_fall_fast_ms` | `IQ_RAMP_DOWN_FAST_TICKS` | 140 ms | Dynamika |
+| `ramp_speed_low_kph` | `IQ_RAMP_SPEED_LO` | 4,0 km/h | Dynamika / Zaawansowane |
+| `ramp_speed_high_kph` | `IQ_RAMP_SPEED_HI` | 20,0 km/h | Dynamika / Zaawansowane |
+| `ramp_cadence_low_rpm` | `IQ_RAMP_CAD_LO` | 20 RPM | Dynamika / Zaawansowane |
+| `ramp_cadence_high_rpm` | `IQ_RAMP_CAD_HI` | 70 RPM | Dynamika / Zaawansowane |
+| `startup_boost_enabled` | `STARTUP_BOOST_ENABLE` | ON | Start i Boost |
+| `startup_boost_strength_pct` | `STARTUP_BOOST_FACTOR` | 200% dodatkowego nacisku | Start i Boost |
+| `startup_boost_cadence_step` | `STARTUP_BOOST_CADENCE_STEP` | 25/256 na RPM | Start i Boost / Zaawansowane |
+| `startup_boost_mode` | `STARTUP_BOOST_MODE` | CADENCE | Start i Boost |
+| `startup_boost_auto_threshold_mv` | `STARTUP_BOOST_AUTO_TQ` | 20 mV nad zerem | Start i Boost |
+| `smooth_start_enabled` | `SMOOTH_START_ENABLE` | OFF | Start i Boost |
+| `smooth_start_ms` | `START_RAMP_TICKS` | 300 ms | Start i Boost |
+| `torque_full_scale_mv` | `TQ_FULL_SCALE_MV` | 2000 mV | Czujnik momentu / Zaawansowane |
+| `torque_gate_start_mv` | `TQ_GATE_MIN` | 18 mV nad zerem | Czujnik momentu |
+| `torque_gate_release_mv` | `TQ_GATE_RELEASE` | 5 mV nad zerem | Czujnik momentu |
+| `assist_start_steps` | `START_MIN_STEPS` | 4 kroki | Czujnik PAS / Zaawansowane |
+| `pas_stop_ms` | `PAS_STOP_TICKS` | 500 ms | Czujnik PAS |
+
+Parametry techniczne takie jak `IQ_RAMP_Q_SHIFT`, surowe ticki 4 kHz i
+wewnętrzne stany regulatorów nie powinny być pokazywane zwykłemu użytkownikowi.
+
+## 7. Zmienne do dodania w Canable — profile poziomów
+
+Każdy poziom `ECO`, `TOUR`, `SPORT`, `SPORT+`, `BOOST` ma mieć osobny rekord.
+Poniższe pola nie mają jeszcze przydzielonych ID protokołu.
+
+| Klucz | Etykieta UI | Typ / jednostka | Zalecany zakres | Status |
+|---|---|---|---|---|
+| `mode_type` | Tryb wspomagania | enum | Legacy, Power Linear, Power Progressive, eMTB TSDZ, eMTB Custom | FW + protokół + UI |
+| `support_ratio_pct` | Współczynnik wsparcia | % | 0–1000 | FW + protokół + UI |
+| `support_min_pct` | Minimalne wsparcie | % | 0–1000 | FW + protokół + UI |
+| `support_max_pct` | Maksymalne wsparcie | % | 0–1000 | FW + protokół + UI |
+| `reference_power_w` | Moc odniesienia | W | 50–500 | FW + protokół + UI |
+| `progression_pct` | Progresja krzywej | % | 0–100 | FW + protokół + UI |
+| `max_motor_power_w` | Maksymalna moc silnika | W | 0–1500 | FW + protokół + UI |
+| `max_iq_pct` | Maksymalny Iq poziomu | % limitu fazowego | 0–100 | FW + protokół + UI |
+| `assist_without_rotation` | Pomoc bez obrotu | bool | OFF/ON; domyślnie OFF | FW + protokół + UI |
+| `without_rotation_threshold_mv` | Próg startu bez obrotu | mV ponad zero | 0–300 | FW + protokół + UI |
+| `startup_boost_enabled` | Startup Boost | bool | OFF/ON | FW + protokół + UI |
+| `startup_boost_mode` | Tryb Boost | enum | Cadence, Speed, Auto | FW + protokół + UI |
+| `startup_boost_strength_pct` | Siła Boost | % dodatkowego nacisku | 0–300 | FW + protokół + UI |
+| `startup_boost_end_rpm` | Koniec Boost | RPM | 0–120 | FW + protokół + UI |
+| `smooth_start_enabled` | Smooth Start | bool | OFF/ON | FW + protokół + UI |
+| `smooth_start_ms` | Czas Smooth Start | ms | 0–5000 | FW + protokół + UI |
+| `iq_rise_ms` | Narastanie Iq | ms | 20–5000 | Wymaga decyzji: per-level czy globalne punkty rampy |
+| `iq_fall_ms` | Opadanie Iq | ms | 20–5000 | Wymaga decyzji: per-level czy globalne punkty rampy |
+| `release_ms` | Release po ustaniu PAS | ms | 0–3000 | FW + protokół + UI |
+| `power_rise_filter_ms` | Filtr wzrostu mocy | ms | 0–3000 | FW + protokół + UI |
+| `power_fall_filter_ms` | Filtr spadku mocy | ms | 0–3000 | FW + protokół + UI |
+| `taper_start_kph` | Początek taperu | km/h | 0–60 | FW + protokół + UI |
+| `taper_end_kph` | Koniec taperu | km/h | 0–60 | FW + protokół + UI |
+| `taper_shape` | Kształt taperu | enum | Linear, Smoothstep, Map | FW + protokół + UI |
+
+Nie ustalać jeszcze wartości domyślnych profili „na wyczucie”. Najpierw Power
+Linear powinien odtworzyć jeden świadomie przetestowany profil, a potem można
+kopiować go i różnicować poziomy.
+
+## 8. Zmienne do dodania w Canable — Walk Assist
+
+Obecne `walk_assist_current` i `walk_assist_speed` należy zachować dla
+kompatybilności Legacy, ale poprawić ich opisy. Nowy regulator ERPS będzie
+wymagał osobnego zestawu.
+
+| Klucz | Etykieta UI | Jednostka / zakres | Wartość Legacy `0.0144` | Status |
+|---|---|---|---:|---|
+| `walk_assist_current_pct` | Walk Current | 0–100% fazowego | 30% | JUŻ JEST: `Para1[36]` |
+| `walk_assist_speed_kph` | Walk Speed (Legacy) | 0,01 km/h | 6,0 km/h | JUŻ JEST: `Para1[60..61]` |
+| `walk_target_erps` | Docelowe obroty silnika | ERPS | — | Nowy Walk |
+| `walk_base_iq_pct` | Bazowy prąd pchania | % fazowego | — | Nowy Walk |
+| `walk_start_iq_pct` | Prąd startowy | % fazowego, 0–100 | 100% hardcoded | FW + protokół + UI |
+| `walk_start_end_speed` | Koniec strefy startowej | km/h | 3,0 | FW + protokół + UI |
+| `walk_hold_scale_pct` | Skala utrzymania | % z Walk Current | 50% | FW + protokół + UI |
+| `walk_kp` | Korekta P | wartość skalowana | 3/16 | FW + protokół + UI Advanced |
+| `walk_ki_shift` | Korekta I | shift 6–16 | 11 | Legacy Advanced; nowy Walk zaczyna bez I |
+| `walk_fade_band_kph` | Pasmo wygaszania | km/h | 2,5 | FW + protokół + UI |
+| `walk_near_hold_pct` | Prąd przy celu | % hold | 15% | FW + protokół + UI |
+| `walk_deadband_kph` | Martwa strefa | km/h | ±0,2 | FW + protokół + UI |
+| `walk_overspeed_margin_kph` | Margines odcięcia | km/h | 0,5 | FW + protokół + UI |
+| `walk_start_ramp_ms` | Rampa startowa | ms | 180 | FW + protokół + UI |
+| `walk_timeout_s` | Limit ciągłej pracy | s | 10 | FW + protokół + UI Advanced |
+
+## 9. Czego nie dodawać do zwykłego ekranu Canable
+
+Poniższe elementy są wewnętrzne albo deweloperskie:
+
+- `RIDE_ENGINE_LEGACY/TSDZ` jako normalny wybór użytkownika przed ukończeniem TSDZ,
+- `control_owner`, stany Halla i stany open-loop,
+- `IQ_RAMP_Q_SHIFT` i surowe wartości ticków 4 kHz,
+- parametry PI FOC, Clarke/Park, SVPWM,
+- bezpośredni zapis `Iq` lub `Id`,
+- progi awaryjnego odcięcia bez walidacji firmware,
+- `MagicNumber` i checksumy bloków.
+
+Tryb wyboru Legacy/TSDZ może istnieć wyłącznie w ukrytym panelu developerskim.
+
+## 10. Protokół — decyzja przed pracą w Canable
+
+Nie przydzielać nowych pól ręcznie do pozornie wolnych bajtów `Para0/1/2`.
+Pełny profil ma ponad 20 parametrów, część 16-bitowych; pięć profili oraz Walk
+Assist nie zmieszczą się bezpiecznie w obecnych wolnych slotach i kolidowałyby
+z kompatybilnością HMI.
+
+Docelowo utworzyć:
+
+```text
+protocol/
+├── ebics_config_schema.yaml
+├── ebics_config_schema.md
+└── generated/
+    ├── ebics_config_ids.h
+    └── ebics_config_schema.js
+```
+
+Schemat musi definiować dla każdego pola: ID, typ, skalę, jednostkę, minimum,
+maximum, wartość domyślną, `persistent`, `per_level`, wersję oraz obsługiwane
+operacje. Z tego samego pliku mają powstawać definicje firmware i Canable.
+
+Stare `Para0/1/2` pozostają warstwą zgodności dla Legacy. Nowe profile powinny
+używać wersjonowanego bloku konfiguracyjnego lub nowych komend multiframe.
+
+## 11. Układ Canable
+
+```text
+ECO | TOUR | SPORT | SPORT+ | BOOST
+[Kopiuj] [Wklej] [Porównaj]
+
+Charakterystyka
+Start i Boost
+Dynamika i Release
+Limity
+Prędkość
+Walk Assist (globalny, osobna zakładka)
+
+Sync | Apply RAM | Save Flash | Revert
+```
+
+Wykresy do dodania po wdrożeniu wzorów w firmware:
+
+1. moc człowieka → moc silnika,
+2. boost względem kadencji,
+3. start/rampa/release względem czasu,
+4. dostępne wsparcie względem prędkości.
+
+Linia przerywana oznacza konfigurację zapisaną w kontrolerze, a ciągła —
+wartości aktualnie edytowane.
+
+## 12. Kolejność wdrażania konfiguratora
+
+1. Potwierdzić zachowanie Legacy na buildzie `0.0144`.
+2. Utworzyć wersjonowany schema YAML i generator C/JavaScript.
+3. Dodać minimalny profil: `mode_type`, `support_ratio`, `max_motor_power_w`, `max_iq_pct`.
+4. Wdrożyć i przetestować Power Linear.
+5. Dodać start bez obrotu, Startup Boost, Smooth Start, rampy i Release.
+6. Dodać progresję i eMTB.
+7. Dodać osobny zestaw Walk Assist oparty na ERPS.
+8. Dopiero wtedy dodać kopiowanie profili i wykresy.
+
+Po każdym wdrożeniu aktualizować w tym dokumencie: status, commit, build,
+przydzielone ID protokołu i nazwę pola Canable.

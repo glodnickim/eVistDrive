@@ -18,7 +18,7 @@ build:  0.0136 M820/BL820 — OK
 
 ### Finalny `MS.i_q_setpoint`
 
-Obecnie jest zapisywany w `src/main.c` przez:
+Przed refaktoryzacją był zapisywany w `src/main.c` przez:
 
 1. inicjalizację stanu w `main()`,
 2. watchdog komunikacji HMI,
@@ -26,12 +26,14 @@ Obecnie jest zapisywany w `src/main.c` przez:
 4. czasową lub krokową rampę w `reg_ADC_processing()`,
 5. procedurę autodetekcji położenia Halla.
 
+Obecnie wszystkie te ścieżki używają `motor_command_t`, a finalne pola
+`MS.i_q_setpoint` i `MS.i_d_setpoint` zapisuje wyłącznie `src/motor_core.c`.
 FOC tylko odczytuje finalną wartość w `runPIcontrol()` i w wywołaniu
 `FOC_calculation()`.
 
 ### Surowe żądanie `MS.i_q_setpoint_temp`
 
-`update_setpoint()` miesza obecnie w jednej funkcji:
+`legacy_assist_calculate_monolith()` nadal miesza w jednej funkcji:
 
 - hamulec,
 - Walk Assist,

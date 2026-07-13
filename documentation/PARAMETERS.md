@@ -1,6 +1,12 @@
 # EBiCS Parameter Registry
 ## Dokument wspólny firmware ↔ Canable developer
 
+> **UWAGA:** ten plik jest historycznym rejestrem `Para0/Para1/Para2` i
+> zawiera starsze propozycje slotów oraz wartości. Aktualny status Ride Core,
+> rzeczywiste wartości builda i lista pól do dodania w Canable znajdują się w
+> `documentation/RIDE_CORE_STATUS_CANABLE.md`. Nie przydzielać nowych slotów
+> wyłącznie na podstawie sekcji „wolne” poniżej.
+
 Wersja: 2026-06-24  
 Branch: test/soc-temp
 
@@ -41,7 +47,7 @@ Branch: test/soc-temp
 | [24,25] | `MagicNumber` (2B LE) | — | — | 202 | Identyfikator konfiguracji; NIE zmieniać |
 | [34] | `throttle_offset` | (V×33)>>12+1 | — | — | Napięcie ADC manetki przy spoczynku [mV→ADC] |
 | [35] | `throttle_max` | (V×33)>>12+1 | — | — | Napięcie ADC manetki przy pełnym gazie |
-| [36] | `walk_assist_current` | 1 % / bit (% z phase_current_max) | 10–100 | 50 | Limit prądu w trybie Walk Assist jako % max |
+| [36] | `walk_assist_current` | 1 % / bit (% z phase_current_max) | 10–100 | 30 | Baza limitu Walk Assist; Legacy dodatkowo stosuje `WA_HOLD_PCT=50%` |
 | [37] | `Override_Duration` | ×40 tyki @4kHz | 0–255 | 100 (=4000 tyk=1s) | Czas trwania Extended Boost po ostatnim peak momentu |
 | [38] | `PAS_timeout` | ×400 tyki @4kHz (=×0,1s) | 1–10 | 1 (=400 tyk=0,1s) | Czas "hold" przed wejściem w decay gdy siła <760mV. **Zwiększyć do 5 (0,5s) aby zlikwidować pulsowanie w martwym punkcie korby** |
 | [39] | `ramp_end` | **MARTWY** — parsowany, nieużywany | — | 1200 | Kiedyś próg kadencji dla ramp-down. Aktualnie nieaktywny w kodzie |
@@ -81,13 +87,13 @@ Te wartosci sa juz uzywane przez firmware, ale **nie sa jeszcze polami Para/CAN*
 |----------|--------:|-----------|--------------------------|
 | `IQ_RAMP_TIME_MODE` | `1` | Wlacza nowa rampe czasowa `i_q` z wewnetrznym licznikiem ulamkowym. | Domyslnie zostawic `1`. `0` wraca do starej rampy krokowej `IQ_SLEW_*`. |
 | `IQ_RAMP_Q_SHIFT` | `8` | Liczba bitow ulamekowych dla `iq_setpoint_q`. | Dzieki temu rampa moze miec kroki mniejsze niz 1 jednostka pradu na tyk 4 kHz. |
-| `IQ_RAMP_UP_SLOW_TICKS` | `9200` | Wolne narastanie pradu: ok. 2,3 s od 0 do limitu. | Uzywane przy starcie / niskiej predkosci / niskiej kadencji. |
+| `IQ_RAMP_UP_SLOW_TICKS` | `2400` | Wolne narastanie prądu: ok. 0,6 s od 0 do limitu. | Używane przy starcie / niskiej prędkości / niskiej kadencji. |
 | `IQ_RAMP_UP_FAST_TICKS` | `1200` | Szybkie narastanie pradu: ok. 0,3 s. | Uzywane, gdy predkosc albo kadencja pokazuja, ze rower juz jedzie. |
 | `IQ_RAMP_DOWN_SLOW_TICKS` | `4000` | Wolny zanik pradu: ok. 1,0 s. | Miekko wygasza moc przy wolnej jezdzie; nie dotyczy hamulca, wstecz i overtemp. |
 | `IQ_RAMP_DOWN_FAST_TICKS` | `560` | Szybki zanik pradu: ok. 0,14 s. | Daje szybkie puszczenie mocy podczas normalnej jazdy. |
 | `START_CADENCE_SEED_ENABLE` | `1` | Wlacza tymczasowy maly odczyt kadencji na swiezym starcie. | Nie uruchamia silnika sam; tylko pomaga pierwszemu obliczeniu mocy po przejsciu bramek startu. |
 | `START_CADENCE_SEED_STEPS` | `2` | Liczba kolejnych krokow do przodu przed seedem kadencji. | Dalej obowiazuje osobno `START_MIN_STEPS=4` dla faktycznego uzbrojenia wspomagania. |
-| `START_CADENCE_SEED_RPM` | `10` | Tymczasowa kadencja publikowana na starcie. | Mala wartosc: ma usunac martwy pierwszy pomiar, a nie dac boost bez kontroli. |
+| `START_CADENCE_SEED_RPM` | `18` | Tymczasowa kadencja publikowana na starcie. | Ma usunąć martwy pierwszy pomiar; nadal obowiązuje bramka nacisku i `START_MIN_STEPS`. |
 
 Jesli te ustawienia beda przenoszone do CAN, lepiej wystawic czasy w milisekundach
 (`iq_ramp_up_slow_ms`, `iq_ramp_up_fast_ms`, `iq_ramp_down_slow_ms`, `iq_ramp_down_fast_ms`),
