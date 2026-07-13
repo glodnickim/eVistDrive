@@ -34,7 +34,6 @@ OF SUCH DAMAGE.
 
 #include "main.h"
 #include "FOC.h"
-#include "assist_dynamics.h"
 #include "assist_limits.h"
 #include "legacy_assist.h"
 #include "motor_core.h"
@@ -1613,26 +1612,17 @@ void reg_ADC_processing(void)
     }
 
     {
-        int32_t iq_target = ride_control_update_request();
-        assist_dynamics_input_t dynamics_input = {
+        ride_control_input_t ride_input = {
             .speed_x100 = MS.Speedx100,
             .cadence_rpm = MS.cadence,
             .iq_scale = phase_current_max_scaled,
             .phase_current_max = MP.phase_current_max,
+            .current_iq = MS.i_q_setpoint,
+            .current_id = MS.i_d_setpoint,
             .walk_active = MS.pushassist_flag != RESET,
             .safety_cut = MS.brake_active_flag || Backwards_counter >= 4 || overtemp_stage >= 2
         };
-        int32_t iq_reference = assist_dynamics_apply_legacy(
-            iq_target,
-            MS.i_q_setpoint,
-            &dynamics_input);
-        motor_command_t command = {
-            .iq_target = iq_reference,
-            .id_target = MS.i_d_setpoint,
-            .enable = true,
-            .emergency_stop = false
-        };
-        motor_core_set_command(&command);
+        ride_control_update(&ride_input);
     }
     if (torque_counter>4000&&!Overrun_flag){ //reset after one second without torque on the pedal
     	if (PAS_counter>MP.PAS_timeout){

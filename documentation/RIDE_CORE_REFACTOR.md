@@ -105,8 +105,9 @@ Dotychczasowa rampa `Iq` została przeniesiona do
 - szybszą rampę używaną przez Walk Assist,
 - dotychczasową arytmetykę stałoprzecinkową.
 
-Po rampie `main` buduje `motor_command_t` i przekazuje go przez
-`motor_core_set_command()`.
+Po rampie `ride_control` buduje `motor_command_t` i przekazuje go przez
+`motor_core_set_command()`. `main` dostarcza tylko `ride_control_input_t` z
+aktualną prędkością, kadencją, limitami i stanem cięcia bezpieczeństwa.
 
 Przejściowe funkcje `motor_core_legacy_set_*` zostały usunięte. Inicjalizacja,
 watchdog komunikacji, zwykła jazda i autodetekcja Halla korzystają z tego

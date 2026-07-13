@@ -1,6 +1,7 @@
 #ifndef RIDE_CONTROL_H_
 #define RIDE_CONTROL_H_
 
+#include <stdbool.h>
 #include <stdint.h>
 
 typedef enum {
@@ -8,8 +9,20 @@ typedef enum {
 	RIDE_ENGINE_TSDZ
 } ride_engine_t;
 
+typedef struct {
+	uint32_t speed_x100;
+	uint8_t cadence_rpm;
+	int32_t iq_scale;
+	int32_t phase_current_max;
+	int32_t current_iq;
+	int32_t current_id;
+	bool walk_active;
+	bool safety_cut;
+} ride_control_input_t;
+
 void ride_control_init(void);
 int32_t ride_control_update_request(void);
+void ride_control_update(const ride_control_input_t *input);
 ride_engine_t ride_control_get_engine(void);
 
 #endif /* RIDE_CONTROL_H_ */

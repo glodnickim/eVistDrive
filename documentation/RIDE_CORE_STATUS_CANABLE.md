@@ -3,7 +3,7 @@
 Aktualizacja: 2026-07-13  
 Gałąź: `refactor/ride-core`  
 Punkt przywracania: `m820-before-ride-core-refactor` (`d6bc69c`)  
-Ostatni sprawdzony build: `0.0144` M820/BL820
+Ostatni sprawdzony build: `0.0147` M820/BL820
 
 Ten dokument jest główną listą kontrolną Ride Core i konfiguratora. Rozróżnia:
 
@@ -50,8 +50,8 @@ korzystać wyłącznie z `rider_input_t`.
 | `legacy_assist` | WDROŻONE/SZKIELET | Jest osobny punkt wejścia; ciało starego algorytmu nadal pozostaje monolitem |
 | `assist_limits` | WDROŻONE | Kolejność Legacy: napięcie → temperatura → prawny taper prędkości |
 | `assist_dynamics` | WDROŻONE | Adaptacyjne rampy `Iq`, szybka ścieżka WA i natychmiastowe cięcia bezpieczeństwa |
-| `ride_control` | WDROŻONE/SZKIELET | Wybiera silnik jazdy; dostępny jest tylko `RIDE_ENGINE_LEGACY` |
-| Sprzętowy test regresji Legacy | TEST ROWERU | Do wykonania na buildzie `0.0144` przed aktywacją TSDZ |
+| `ride_control` | WDROŻONE/SZKIELET | Wybiera Legacy, stosuje dynamikę i wysyła `motor_command_t`; TSDZ nadal jest szkieletem |
+| Sprzętowy test regresji Legacy | TEST ROWERU | Do wykonania na buildzie `0.0147` przed aktywacją TSDZ |
 
 ## 3. Co działa obecnie tylko w Legacy
 
@@ -73,7 +73,7 @@ Te funkcje pozostają do porównań. Nie należy dopisywać do nich nowych tryb�
 
 | Funkcja | Status | Warunek rozpoczęcia/ukończenia |
 |---|---|---|
-| Power Linear TSDZ2 | NIE WDROŻONE | Najpierw test regresji Legacy `0.0144` |
+| Power Linear TSDZ2 | NIE WDROŻONE | Najpierw test regresji Legacy `0.0147` |
 | Lokalna `cadence_for_assist` | NIE WDROŻONE | Razem z nowym Power/Torque/eMTB |
 | Assist without pedal rotation | NIE WDROŻONE | Domyślnie OFF; wymaga świadomego testu bez czujnika hamulca |
 | Startup Boost jako ustawienie per-level | NIE WDROŻONE | Obecny boost jest globalnym Legacy `#define` |
@@ -120,7 +120,7 @@ firmware.
 
 Te wartości działają, ale zmiana wymaga przebudowania firmware.
 
-| Klucz docelowy | Obecna stała | Wartość `0.0144` | Docelowa grupa UI |
+| Klucz docelowy | Obecna stała | Wartość `0.0147` | Docelowa grupa UI |
 |---|---|---:|---|
 | `iq_rise_slow_ms` | `IQ_RAMP_UP_SLOW_TICKS` | 600 ms | Dynamika |
 | `iq_rise_fast_ms` | `IQ_RAMP_UP_FAST_TICKS` | 300 ms | Dynamika |
@@ -188,7 +188,7 @@ Obecne `walk_assist_current` i `walk_assist_speed` należy zachować dla
 kompatybilności Legacy, ale poprawić ich opisy. Nowy regulator ERPS będzie
 wymagał osobnego zestawu.
 
-| Klucz | Etykieta UI | Jednostka / zakres | Wartość Legacy `0.0144` | Status |
+| Klucz | Etykieta UI | Jednostka / zakres | Wartość Legacy `0.0147` | Status |
 |---|---|---|---:|---|
 | `walk_assist_current_pct` | Walk Current | 0–100% fazowego | 30% | JUŻ JEST: `Para1[36]` |
 | `walk_assist_speed_kph` | Walk Speed (Legacy) | 0,01 km/h | 6,0 km/h | JUŻ JEST: `Para1[60..61]` |
@@ -273,7 +273,7 @@ wartości aktualnie edytowane.
 
 ## 12. Kolejność wdrażania konfiguratora
 
-1. Potwierdzić zachowanie Legacy na buildzie `0.0144`.
+1. Potwierdzić zachowanie Legacy na buildzie `0.0147`.
 2. Utworzyć wersjonowany schema YAML i generator C/JavaScript.
 3. Dodać minimalny profil: `mode_type`, `support_ratio`, `max_motor_power_w`, `max_iq_pct`.
 4. Wdrożyć i przetestować Power Linear.
