@@ -1,0 +1,557 @@
+schema:
+  name: ebics_ride_config
+  version: 0
+  status: draft
+  target_version: 1
+  complete_for_codegen: false
+  reason_incomplete: >-
+    Numeric wire IDs and deliberately uncalibrated profile defaults must be
+    approved before generating firmware or Canable sources.
+
+wire_protocol:
+  transport: versioned_multiframe_block
+  legacy_compatibility: Para0_Para1_Para2_read_write
+  id_state: unassigned
+  numeric_values: engineering_units
+  wire_encoding: round_engineering_value_divided_by_scale
+  id_policy: >-
+    Do not reuse apparently free Para0/Para1/Para2 bytes. Audit the existing
+    HMI command space first, then allocate a separate versioned range.
+
+levels:
+  - {index: 1, key: eco, label: ECO}
+  - {index: 2, key: tour, label: TOUR}
+  - {index: 3, key: sport, label: SPORT}
+  - {index: 4, key: sport_plus, label: SPORT+}
+  - {index: 5, key: boost, label: BOOST}
+
+access_profiles:
+  persistent_rw:
+    persistent: true
+    operations: [read, apply_ram, save_flash, revert]
+  legacy_rw:
+    persistent: true
+    operations: [read, apply_ram, save_flash, revert]
+    compatibility_only: true
+
+enums:
+  mode_type:
+    legacy: 0
+    power_linear: 1
+    power_progressive: 2
+    emtb_tsdz: 3
+    emtb_custom: 4
+  startup_boost_mode:
+    cadence: 0
+    speed: 1
+    auto: 2
+  taper_shape:
+    linear: 0
+    smoothstep: 1
+    map: 2
+
+rules:
+  - id: speed_taper_order
+    expression: taper_start_kph <= taper_end_kph
+  - id: support_bounds_order
+    expression: support_min_pct <= support_max_pct
+  - id: ramp_speed_order
+    expression: ramp_speed_low_kph <= ramp_speed_high_kph
+  - id: ramp_cadence_order
+    expression: ramp_cadence_low_rpm <= ramp_cadence_high_rpm
+  - id: inactive_tsdz_modes
+    expression: mode_type == legacy
+    applies_until: hardware_legacy_regression_accepted
+  - id: no_rotation_safe_default
+    expression: assist_without_rotation == false
+
+# wire_id: null is intentional in draft version 0. It is not a free byte.
+profile_fields:
+  - key: mode_type
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: enum8, enum: mode_type, scale: 1, unit: none, min: 0, max: 4, default: legacy}
+    implementation: legacy_only
+    ui_group: characteristic
+
+  - key: support_ratio_pct
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u16, scale: 1, unit: percent, min: 0, max: 1000, default: null}
+    implementation: planned_power
+    ui_group: characteristic
+
+  - key: support_min_pct
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u16, scale: 1, unit: percent, min: 0, max: 1000, default: null}
+    implementation: planned_power
+    ui_group: characteristic
+
+  - key: support_max_pct
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u16, scale: 1, unit: percent, min: 0, max: 1000, default: null}
+    implementation: planned_power
+    ui_group: characteristic
+
+  - key: reference_power_w
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u16, scale: 1, unit: watt, min: 50, max: 500, default: null}
+    implementation: planned_power
+    ui_group: characteristic
+
+  - key: progression_pct
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u8, scale: 1, unit: percent, min: 0, max: 100, default: null}
+    implementation: planned_progressive
+    ui_group: characteristic
+
+  - key: max_motor_power_w
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u16, scale: 1, unit: watt, min: 0, max: 1500, default: null}
+    implementation: planned_power
+    ui_group: limits
+
+  - key: max_iq_pct
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u8, scale: 1, unit: percent_phase_limit, min: 0, max: 100, default: null}
+    implementation: planned_power
+    legacy_binding: Para1_level_current_slots
+    ui_group: limits
+
+  - key: assist_without_rotation
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: bool, scale: 1, unit: none, min: false, max: true, default: false}
+    implementation: planned_power
+    safety_relevant: true
+    ui_group: start_boost
+
+  - key: without_rotation_threshold_mv
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u16, scale: 1, unit: millivolt_above_zero, min: 0, max: 300, default: 18}
+    implementation: planned_power
+    ui_group: start_boost
+
+  - key: startup_boost_enabled
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: bool, scale: 1, unit: none, min: false, max: true, default: null}
+    implementation: planned_power
+    ui_group: start_boost
+
+  - key: startup_boost_mode
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: enum8, enum: startup_boost_mode, scale: 1, unit: none, min: 0, max: 2, default: null}
+    implementation: planned_power
+    ui_group: start_boost
+
+  - key: startup_boost_strength_pct
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u16, scale: 1, unit: percent_extra_torque, min: 0, max: 300, default: null}
+    implementation: planned_power
+    ui_group: start_boost
+
+  - key: startup_boost_end_rpm
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u8, scale: 1, unit: rpm, min: 0, max: 120, default: null}
+    implementation: planned_power
+    ui_group: start_boost
+
+  - key: smooth_start_enabled
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: bool, scale: 1, unit: none, min: false, max: true, default: null}
+    implementation: planned_power
+    ui_group: start_boost
+
+  - key: smooth_start_ms
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u16, scale: 1, unit: millisecond, min: 0, max: 5000, default: null}
+    implementation: planned_power
+    ui_group: start_boost
+
+  - key: iq_rise_ms
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u16, scale: 1, unit: millisecond, min: 20, max: 5000, default: null}
+    implementation: decision_required_per_level_or_global
+    ui_group: dynamics_release
+
+  - key: iq_fall_ms
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u16, scale: 1, unit: millisecond, min: 20, max: 5000, default: null}
+    implementation: decision_required_per_level_or_global
+    ui_group: dynamics_release
+
+  - key: release_ms
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u16, scale: 1, unit: millisecond, min: 0, max: 3000, default: null}
+    implementation: planned_power
+    ui_group: dynamics_release
+
+  - key: power_rise_filter_ms
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u16, scale: 1, unit: millisecond, min: 0, max: 3000, default: null}
+    implementation: planned_power
+    ui_group: dynamics_release
+
+  - key: power_fall_filter_ms
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u16, scale: 1, unit: millisecond, min: 0, max: 3000, default: null}
+    implementation: planned_power
+    ui_group: dynamics_release
+
+  - key: taper_start_kph
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u16, scale: 0.01, unit: kilometre_per_hour, min: 0, max: 60, default: null}
+    implementation: planned_power
+    ui_group: speed
+
+  - key: taper_end_kph
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u16, scale: 0.01, unit: kilometre_per_hour, min: 0, max: 60, default: null}
+    implementation: planned_power
+    ui_group: speed
+
+  - key: taper_shape
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: enum8, enum: taper_shape, scale: 1, unit: none, min: 0, max: 2, default: null}
+    implementation: planned_power
+    ui_group: speed
+
+legacy_global_fields:
+  - key: iq_rise_slow_ms
+    wire_id: null
+    since: 1
+    access: legacy_rw
+    per_level: false
+    value: {type: u16, scale: 1, unit: millisecond, min: 20, max: 5000, default: 600}
+    current_binding: IQ_RAMP_UP_SLOW_TICKS
+    ui_group: advanced_legacy_dynamics
+
+  - key: iq_rise_fast_ms
+    wire_id: null
+    since: 1
+    access: legacy_rw
+    per_level: false
+    value: {type: u16, scale: 1, unit: millisecond, min: 20, max: 5000, default: 300}
+    current_binding: IQ_RAMP_UP_FAST_TICKS
+    ui_group: advanced_legacy_dynamics
+
+  - key: iq_fall_slow_ms
+    wire_id: null
+    since: 1
+    access: legacy_rw
+    per_level: false
+    value: {type: u16, scale: 1, unit: millisecond, min: 20, max: 5000, default: 1000}
+    current_binding: IQ_RAMP_DOWN_SLOW_TICKS
+    ui_group: advanced_legacy_dynamics
+
+  - key: iq_fall_fast_ms
+    wire_id: null
+    since: 1
+    access: legacy_rw
+    per_level: false
+    value: {type: u16, scale: 1, unit: millisecond, min: 20, max: 5000, default: 140}
+    current_binding: IQ_RAMP_DOWN_FAST_TICKS
+    ui_group: advanced_legacy_dynamics
+
+  - key: ramp_speed_low_kph
+    wire_id: null
+    since: 1
+    access: legacy_rw
+    per_level: false
+    value: {type: u16, scale: 0.01, unit: kilometre_per_hour, min: 0, max: 60, default: 4}
+    current_binding: IQ_RAMP_SPEED_LO
+    ui_group: advanced_legacy_dynamics
+
+  - key: ramp_speed_high_kph
+    wire_id: null
+    since: 1
+    access: legacy_rw
+    per_level: false
+    value: {type: u16, scale: 0.01, unit: kilometre_per_hour, min: 0, max: 60, default: 20}
+    current_binding: IQ_RAMP_SPEED_HI
+    ui_group: advanced_legacy_dynamics
+
+  - key: ramp_cadence_low_rpm
+    wire_id: null
+    since: 1
+    access: legacy_rw
+    per_level: false
+    value: {type: u8, scale: 1, unit: rpm, min: 0, max: 150, default: 20}
+    current_binding: IQ_RAMP_CAD_LO
+    ui_group: advanced_legacy_dynamics
+
+  - key: ramp_cadence_high_rpm
+    wire_id: null
+    since: 1
+    access: legacy_rw
+    per_level: false
+    value: {type: u8, scale: 1, unit: rpm, min: 0, max: 150, default: 70}
+    current_binding: IQ_RAMP_CAD_HI
+    ui_group: advanced_legacy_dynamics
+
+  - key: torque_full_scale_mv
+    wire_id: null
+    since: 1
+    access: legacy_rw
+    per_level: false
+    value: {type: u16, scale: 1, unit: millivolt, min: 100, max: 5000, default: 2000}
+    current_binding: TQ_FULL_SCALE_MV
+    ui_group: advanced_torque_sensor
+
+  - key: torque_gate_start_mv
+    wire_id: null
+    since: 1
+    access: legacy_rw
+    per_level: false
+    value: {type: u16, scale: 1, unit: millivolt_above_zero, min: 0, max: 300, default: 18}
+    current_binding: TQ_GATE_MIN
+    ui_group: torque_sensor
+
+  - key: torque_gate_release_mv
+    wire_id: null
+    since: 1
+    access: legacy_rw
+    per_level: false
+    value: {type: u16, scale: 1, unit: millivolt_above_zero, min: 0, max: 300, default: 5}
+    current_binding: TQ_GATE_RELEASE
+    ui_group: torque_sensor
+
+  - key: assist_start_steps
+    wire_id: null
+    since: 1
+    access: legacy_rw
+    per_level: false
+    value: {type: u8, scale: 1, unit: pas_step, min: 0, max: 32, default: 4}
+    current_binding: START_MIN_STEPS
+    ui_group: advanced_pas
+
+  - key: pas_stop_ms
+    wire_id: null
+    since: 1
+    access: legacy_rw
+    per_level: false
+    value: {type: u16, scale: 1, unit: millisecond, min: 50, max: 3000, default: 500}
+    current_binding: PAS_STOP_TICKS
+    ui_group: pas
+
+walk_fields:
+  - key: walk_assist_current_pct
+    wire_id: null
+    since: 1
+    access: legacy_rw
+    per_level: false
+    value: {type: u8, scale: 1, unit: percent_phase_limit, min: 0, max: 100, default: 30}
+    legacy_binding: Para1[36]
+    implementation: active_legacy
+    ui_group: walk
+
+  - key: walk_assist_speed_kph
+    wire_id: null
+    since: 1
+    access: legacy_rw
+    per_level: false
+    value: {type: u16, scale: 0.01, unit: kilometre_per_hour, min: 0, max: 10, default: 6}
+    legacy_binding: Para1[60..61]
+    implementation: active_legacy
+    ui_group: walk
+
+  - key: walk_target_erps
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: false
+    value: {type: u16, scale: 1, unit: electrical_revolution_per_second, min: 0, max: 2000, default: null}
+    implementation: planned_walk_erps
+    ui_group: advanced_walk
+
+  - key: walk_base_iq_pct
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: false
+    value: {type: u8, scale: 1, unit: percent_phase_limit, min: 0, max: 100, default: null}
+    implementation: planned_walk_erps
+    ui_group: walk
+
+  - key: walk_start_iq_pct
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: false
+    value: {type: u8, scale: 1, unit: percent_phase_limit, min: 0, max: 100, default: 100}
+    current_binding: WA_START_PCT
+    implementation: active_legacy_hardcoded
+    ui_group: walk
+
+  - key: walk_start_end_speed_kph
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: false
+    value: {type: u16, scale: 0.01, unit: kilometre_per_hour, min: 0, max: 10, default: 3}
+    current_binding: WA_START_FULL_SPEED
+    implementation: active_legacy_hardcoded
+    ui_group: walk
+
+  - key: walk_hold_scale_pct
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: false
+    value: {type: u8, scale: 1, unit: percent_walk_current, min: 0, max: 100, default: 50}
+    current_binding: WA_HOLD_PCT
+    implementation: active_legacy_hardcoded
+    ui_group: walk
+
+  - key: walk_kp
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: false
+    value: {type: q8_8, scale: 0.00390625, unit: controller_gain, min: 0, max: 4, default: 0.1875}
+    current_binding: WA_KP_NUM_over_2_pow_WA_KP_SHIFT
+    implementation: active_legacy_hardcoded
+    ui_group: advanced_walk
+
+  - key: walk_ki_shift
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: false
+    value: {type: u8, scale: 1, unit: bit_shift, min: 6, max: 16, default: 11}
+    current_binding: WA_KI_SHIFT
+    implementation: active_legacy_hardcoded
+    ui_group: advanced_walk
+
+  - key: walk_fade_band_kph
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: false
+    value: {type: u16, scale: 0.01, unit: kilometre_per_hour, min: 0, max: 10, default: 2.5}
+    current_binding: WA_FADE_BAND
+    implementation: active_legacy_hardcoded
+    ui_group: walk
+
+  - key: walk_near_hold_pct
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: false
+    value: {type: u8, scale: 1, unit: percent_hold_current, min: 0, max: 100, default: 15}
+    current_binding: WA_NEAR_HOLD_PCT
+    implementation: active_legacy_hardcoded
+    ui_group: walk
+
+  - key: walk_deadband_kph
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: false
+    value: {type: u16, scale: 0.01, unit: kilometre_per_hour, min: 0, max: 2, default: 0.2}
+    implementation: active_legacy_hardcoded
+    ui_group: walk
+
+  - key: walk_overspeed_margin_kph
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: false
+    value: {type: u16, scale: 0.01, unit: kilometre_per_hour, min: 0, max: 3, default: 0.5}
+    implementation: active_legacy_hardcoded
+    ui_group: walk
+
+  - key: walk_start_ramp_ms
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: false
+    value: {type: u16, scale: 1, unit: millisecond, min: 20, max: 3000, default: 180}
+    current_binding: WA_RAMP_TICKS
+    implementation: active_legacy_hardcoded
+    ui_group: walk
+
+  - key: walk_timeout_s
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: false
+    value: {type: u16, scale: 1, unit: second, min: 1, max: 120, default: 10}
+    implementation: planned_walk_erps
+    ui_group: advanced_walk
+
+codegen_gates:
+  - all_fields_have_unique_wire_id
+  - all_null_profile_defaults_resolved
+  - legacy_hmi_command_space_audited
+  - schema_validation_passes
+  - hardware_legacy_regression_accepted

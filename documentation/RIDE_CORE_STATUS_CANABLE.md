@@ -51,6 +51,7 @@ korzystać wyłącznie z `rider_input_t`.
 | `assist_limits` | WDROŻONE | Kolejność Legacy: napięcie → temperatura → prawny taper prędkości |
 | `assist_dynamics` | WDROŻONE | Adaptacyjne rampy `Iq`, szybka ścieżka WA i natychmiastowe cięcia bezpieczeństwa |
 | `ride_control` | WDROŻONE/SZKIELET | Wybiera Legacy, stosuje dynamikę i wysyła `motor_command_t`; TSDZ nadal jest szkieletem |
+| `protocol/ebics_config_schema.yaml` | SZKIELET | Draft v0 opisuje pola, typy, skale, zakresy i operacje; numery `wire_id` celowo nieprzydzielone |
 | Sprzętowy test regresji Legacy | TEST ROWERU | Do wykonania na buildzie `0.0147` przed aktywacją TSDZ |
 
 ## 3. Co działa obecnie tylko w Legacy
@@ -87,7 +88,7 @@ Te funkcje pozostają do porównań. Nie należy dopisywać do nich nowych tryb�
 | Kopiowanie ustawień poziomów | NIE WDROŻONE | Firmware schema + UI |
 | Wykresy charakterystyk | NIE WDROŻONE | Po ustaleniu wzorów i jednostek |
 | `Sync / Apply RAM / Save Flash / Revert` | NIE WDROŻONE | Nowy wersjonowany protokół konfiguracji |
-| Jedno źródło prawdy YAML | NIE WDROŻONE | Wymagane przed przydzielaniem nowych ID |
+| Jedno źródło prawdy YAML | SZKIELET | Draft v0 utworzony; wymaga audytu ID, domyślnych profili i generatora |
 
 ## 5. Parametry już obsługiwane przez obecny Canable/protokół
 
@@ -227,16 +228,21 @@ Pełny profil ma ponad 20 parametrów, część 16-bitowych; pięć profili oraz
 Assist nie zmieszczą się bezpiecznie w obecnych wolnych slotach i kolidowałyby
 z kompatybilnością HMI.
 
-Docelowo utworzyć:
+Utworzono pierwszy, nieaktywny draft źródła prawdy:
 
 ```text
 protocol/
 ├── ebics_config_schema.yaml
-├── ebics_config_schema.md
 └── generated/
     ├── ebics_config_ids.h
     └── ebics_config_schema.js
 ```
+
+Plik YAML istnieje, natomiast katalog `generated` i oba pliki wynikowe powstaną
+dopiero po audycie przestrzeni komend. W wersji draft v0 każde nowe pole ma
+`wire_id: null`; oznacza to „nieprzydzielone”, a nie „ID zero”. Pola profili,
+których wartości trzeba dobrać na rowerze, mają świadomie `default: null` i
+blokują generator.
 
 Schemat musi definiować dla każdego pola: ID, typ, skalę, jednostkę, minimum,
 maximum, wartość domyślną, `persistent`, `per_level`, wersję oraz obsługiwane
@@ -274,7 +280,7 @@ wartości aktualnie edytowane.
 ## 12. Kolejność wdrażania konfiguratora
 
 1. Potwierdzić zachowanie Legacy na buildzie `0.0147`.
-2. Utworzyć wersjonowany schema YAML i generator C/JavaScript.
+2. Zatwierdzić draft YAML, wykonać audyt komend, przydzielić ID i dodać generator C/JavaScript.
 3. Dodać minimalny profil: `mode_type`, `support_ratio`, `max_motor_power_w`, `max_iq_pct`.
 4. Wdrożyć i przetestować Power Linear.
 5. Dodać start bez obrotu, Startup Boost, Smooth Start, rampy i Release.
