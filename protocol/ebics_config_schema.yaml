@@ -18,6 +18,33 @@ wire_protocol:
     Do not reuse apparently free Para0/Para1/Para2 bytes. Audit the existing
     HMI command space first, then allocate a separate versioned range.
 
+command_plan:
+  base_wire_command: null
+  allocation_status: waiting_for_canable_and_full_hmi_log_audit
+  commands:
+    capabilities_schema: {offset: 0, wire_id: null}
+    read_saved: {offset: 1, wire_id: null}
+    read_runtime: {offset: 2, wire_id: null}
+    apply_ram: {offset: 3, wire_id: null}
+    save_flash: {offset: 4, wire_id: null}
+    revert_ram: {offset: 5, wire_id: null}
+  excluded_commands:
+    - "0x0203"
+    - "0x0204"
+    - "0x1200"
+    - "0x3000"
+    - "0x3005"
+    - "0x3100"
+    - "0x3200-0x3205"
+    - "0x320F"
+    - "0x6000-0x6012"
+    - "0x6101"
+    - "0x6200"
+    - "0x62D9"
+    - "0x6300-0x6304"
+    - "0x6400-0x6401"
+    - "0xF203"
+
 levels:
   - {index: 1, key: eco, label: ECO}
   - {index: 2, key: tour, label: TOUR}
@@ -553,5 +580,7 @@ codegen_gates:
   - all_fields_have_unique_wire_id
   - all_null_profile_defaults_resolved
   - legacy_hmi_command_space_audited
+  - canable_command_space_audited
+  - full_hmi_and_besst_logs_audited
   - schema_validation_passes
   - hardware_legacy_regression_accepted

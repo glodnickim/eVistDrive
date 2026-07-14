@@ -74,9 +74,10 @@ Branch: test/soc-temp
 
 ---
 
-## Nowe parametry — PROPONOWANE (wolne sloty)
+## Historyczne propozycje nowych parametrów (NIE WDRAŻAĆ WG SLOTÓW)
 
-Parametry aktualnie hardcoded w `config.h`, do dodania w kolejnym kroku.
+Ta sekcja zachowuje wcześniejsze pomysły i nazwy, ale jej numery `Para1[x]`
+nie są zatwierdzonym przydziałem. Aktualne pola i zakresy są w schemacie YAML.
 
 ### Aktualne stale kompilacyjne - rampa TSDZ2-like i start
 
@@ -112,7 +113,11 @@ fallbackiem dla `IQ_RAMP_TIME_MODE=0`.
 
 ---
 
-## Mapa wolnych slotów Para1 (do dyspozycji)
+## Historyczna mapa slotów nieużywanych przez parser (NIE PRZYDZIELAĆ)
+
+Poniższa lista oznacza wyłącznie brak odczytu w aktualnym `parser.c`. Nie
+potwierdza, że bajty są wolne w kontrakcie HMI/BESST. Aktualny audyt znajduje się
+w `protocol/HMI_COMMAND_AUDIT.md`.
 
 ```
 Zajęte: 0,1,2,3,4,7,8,9,10,11,12,14,18,19,20,21,24,25,
@@ -196,11 +201,14 @@ Co sekundę w `soc_update()`: jeśli `|I_bat| < I_REST_MA (500 mA)` przez ≥ `R
 
 ---
 
-## Uwagi dla developera Canable
+## Uwagi dla developera Canable — korekta
 
-- Para1 to tablica 64×uint8_t przesyłana w ramce CAN 0x3205 (zapis) i 0x3200 (odczyt)
-- Para0 to osobna tablica 64×uint8_t (ramka 0x3201)
-- Para2 to tablica dla profili wspomagania (assist profile)
-- Wszystkie nowe parametry mieszczą się w Para1 — nie potrzeba nowej ramki CAN
-- Wartość 0 w wolnym slocie = "nie ustawiono" → firmware używa domyślnej z `config.h`
-- Zakres uint8_t ogranicza do 0–255; dla wartości >255 użyć 2 kolejnych slotów (LE: LSB, MSB)
+- `Para0`, `Para1` i `Para2` są blokami 64 B pod komendami multiframe
+  odpowiednio `0x6010`, `0x6011` i `0x6012`.
+- `0x3200`, `0x3201` i `0x3205` są ramkami telemetrii, nie transportem Para.
+- Bajt 63 każdego bloku Para jest checksumą.
+- Bajt nieodczytywany przez aktualny parser nie jest automatycznie wolny dla HMI.
+- Nowe profile Ride Core wymagają osobnego, wersjonowanego bloku; nie mieszczą
+  się bezpiecznie w `Para1`.
+- Aktualne źródła prawdy: `protocol/ebics_config_schema.yaml` oraz
+  `protocol/HMI_COMMAND_AUDIT.md`.

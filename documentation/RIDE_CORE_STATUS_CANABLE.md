@@ -52,6 +52,7 @@ korzystać wyłącznie z `rider_input_t`.
 | `assist_dynamics` | WDROŻONE | Adaptacyjne rampy `Iq`, szybka ścieżka WA i natychmiastowe cięcia bezpieczeństwa |
 | `ride_control` | WDROŻONE/SZKIELET | Wybiera Legacy, stosuje dynamikę i wysyła `motor_command_t`; TSDZ nadal jest szkieletem |
 | `protocol/ebics_config_schema.yaml` | SZKIELET | Draft v0 opisuje pola, typy, skale, zakresy i operacje; numery `wire_id` celowo nieprzydzielone |
+| Audyt komend HMI/CAN | CZĘŚCIOWO | Firmware i lokalny log sprawdzone; brakuje kodu Canable i pełnych logów HMI/BESST |
 | Sprzętowy test regresji Legacy | TEST ROWERU | Do wykonania na buildzie `0.0147` przed aktywacją TSDZ |
 
 ## 3. Co działa obecnie tylko w Legacy
@@ -243,6 +244,12 @@ dopiero po audycie przestrzeni komend. W wersji draft v0 każde nowe pole ma
 `wire_id: null`; oznacza to „nieprzydzielone”, a nie „ID zero”. Pola profili,
 których wartości trzeba dobrać na rowerze, mają świadomie `default: null` i
 blokują generator.
+
+Wyniki audytu firmware, bloków Para i jednego lokalnego logu znajdują się w
+`protocol/HMI_COMMAND_AUDIT.md`. Audyt potwierdził, że bloki konfiguracji to
+`0x6010/0x6011/0x6012`, a `0x3200/0x3201/0x3205` są ramkami telemetrii.
+Numer bazowy nowego bloku pozostaje pusty do sprawdzenia kodu Canable i pełnych
+logów HMI/BESST.
 
 Schemat musi definiować dla każdego pola: ID, typ, skalę, jednostkę, minimum,
 maximum, wartość domyślną, `persistent`, `per_level`, wersję oraz obsługiwane
