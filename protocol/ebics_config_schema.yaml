@@ -173,7 +173,7 @@ profile_fields:
     access: persistent_rw
     per_level: true
     value: {type: bool, scale: 1, unit: none, min: false, max: true, default: false}
-    implementation: planned_power
+    implementation: active_compile_time_default_protocol_planned
     safety_relevant: true
     ui_group: start_boost
 
@@ -183,7 +183,7 @@ profile_fields:
     access: persistent_rw
     per_level: true
     value: {type: u16, scale: 1, unit: millivolt_above_zero, min: 0, max: 300, default: 18}
-    implementation: planned_power
+    implementation: active_compile_time_default_protocol_planned
     ui_group: start_boost
 
   - key: startup_boost_enabled

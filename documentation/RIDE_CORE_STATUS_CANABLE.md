@@ -76,9 +76,9 @@ Te funkcje pozostają do porównań. Nie należy dopisywać do nich nowych tryb�
 
 | Funkcja | Status | Warunek rozpoczęcia/ukończenia |
 |---|---|---|
-| Power Linear TSDZ2 | WDROŻONE/DEV | Build `0.0148`; stałoprzecinkowe Power → prąd → Iq, domyślnie nadal Legacy |
-| Lokalna `cadence_for_assist` | NIE WDROŻONE | Razem z nowym Power/Torque/eMTB |
-| Assist without pedal rotation | NIE WDROŻONE | Domyślnie OFF; wymaga świadomego testu bez czujnika hamulca |
+| Power Linear TSDZ2 | WDROŻONE/DEV | Build `0.0149`; stałoprzecinkowe Power → prąd → Iq, domyślnie nadal Legacy |
+| Lokalna `cadence_for_assist` | WDROŻONE/DEV | Kadencja syntetyczna istnieje tylko wewnątrz `assist_modes` i nie zmienia snapshotu ani Legacy |
+| Assist without pedal rotation | WDROŻONE/DEV | Per-level, domyślnie OFF; próg 18 mV ponad zero, zakres ograniczony do 0–300 mV |
 | Startup Boost jako ustawienie per-level | NIE WDROŻONE | Obecny boost jest globalnym Legacy `#define` |
 | Smooth Start per-level | NIE WDROŻONE | Obecny kod istnieje, ale `SMOOTH_START_ENABLE=0` |
 | Release niezależny od startu | NIE WDROŻONE | Po Power Linear i filtrowaniu spadku mocy |
@@ -92,7 +92,7 @@ Te funkcje pozostają do porównań. Nie należy dopisywać do nich nowych tryb�
 | `Sync / Apply RAM / Save Flash / Revert` | NIE WDROŻONE | Nowy wersjonowany protokół konfiguracji |
 | Jedno źródło prawdy YAML | SZKIELET | Draft v0 utworzony; wymaga audytu ID, domyślnych profili i generatora |
 
-### Power Linear — stan builda 0.0148
+### Power Linear — stan builda 0.0149
 
 Nowy moduł `assist_modes`:
 
@@ -108,6 +108,12 @@ Referencyjne współczynniki pięciu poziomów to obecnie
 `100/200/320/420/520%`. Cztery skrajne wartości odpowiadają faktorom
 TSDZ2 `50/100/160/260`; SPORT+ jest punktem pośrednim. Są to wartości
 developerskie, jeszcze nie zapis profilu Canable.
+
+Obliczenia mocy zachowują teraz precyzję miliwatów aż do przeliczenia `P/U`.
+Opcjonalne `assist_without_rotation` podstawia lokalnie `cadence_for_assist=1`
+po przekroczeniu progu skorygowanego momentu ponad punkt zerowy 750 mV.
+Nie zapisuje tej wartości do `MS.cadence` ani `rider_input`. Funkcja pozostaje
+wyłączona w każdym profilu domyślnym, ponieważ rower nie ma czujnika hamulca.
 
 `RIDE_ENGINE_DEFAULT=0` utrzymuje Legacy. Wartość `1` włącza Power Linear
 do testu developerskiego. Walk Assist zachowuje wyłączny priorytet i do czasu
@@ -185,8 +191,8 @@ Poniższe pola nie mają jeszcze przydzielonych ID protokołu.
 | `progression_pct` | Progresja krzywej | % | 0–100 | FW + protokół + UI |
 | `max_motor_power_w` | Maksymalna moc silnika | W | 0–1500 | FW + protokół + UI |
 | `max_iq_pct` | Maksymalny Iq poziomu | % limitu fazowego | 0–100 | FW + protokół + UI |
-| `assist_without_rotation` | Pomoc bez obrotu | bool | OFF/ON; domyślnie OFF | FW + protokół + UI |
-| `without_rotation_threshold_mv` | Próg startu bez obrotu | mV ponad zero | 0–300 | FW + protokół + UI |
+| `assist_without_rotation` | Pomoc bez obrotu | bool | OFF/ON; domyślnie OFF | FW aktywne; protokół + UI do podłączenia |
+| `without_rotation_threshold_mv` | Próg startu bez obrotu | mV ponad zero | 0–300 | FW aktywne; protokół + UI do podłączenia |
 | `startup_boost_enabled` | Startup Boost | bool | OFF/ON | FW + protokół + UI |
 | `startup_boost_mode` | Tryb Boost | enum | Cadence, Speed, Auto | FW + protokół + UI |
 | `startup_boost_strength_pct` | Siła Boost | % dodatkowego nacisku | 0–300 | FW + protokół + UI |

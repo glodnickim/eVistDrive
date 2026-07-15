@@ -19,6 +19,8 @@ typedef struct {
 	uint16_t support_ratio_pct;
 	uint16_t max_motor_power_w;
 	uint8_t max_iq_pct;
+	bool assist_without_rotation;
+	uint16_t without_rotation_threshold_mv;
 } assist_level_config_t;
 
 typedef struct {
@@ -26,6 +28,8 @@ typedef struct {
 	uint16_t motor_power_w;
 	uint32_t requested_battery_current_ma;
 	int32_t iq_request;
+	uint8_t cadence_for_assist_rpm;
+	bool assist_without_rotation_active;
 } assist_mode_output_t;
 
 const assist_level_config_t *assist_modes_get_default_level(uint8_t level_index);

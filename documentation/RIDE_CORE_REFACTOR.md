@@ -91,9 +91,9 @@ Progi i kolejność obliczeń nie zostały zmienione.
 ## Ride Control
 
 `ride_control_update_request()` jest teraz jedynym wyborem silnika jazdy.
-Na tym etapie aktywny jest wyłącznie `RIDE_ENGINE_LEGACY`; wariant TSDZ zwraca
-zero i nie ma publicznego przełącznika. Zostanie udostępniony dopiero po
-sprzętowym teście regresji Legacy.
+`RIDE_ENGINE_LEGACY` pozostaje domyślny, a `RIDE_ENGINE_TSDZ` uruchamia nową
+ścieżkę Power Linear. Walk zachowuje priorytet i do czasu wydzielenia własnego
+modułu używa dotychczasowej ścieżki Legacy.
 
 ## Assist Dynamics
 
@@ -111,11 +111,18 @@ aktualną prędkością, kadencją, limitami i stanem cięcia bezpieczeństwa.
 
 ## Power Linear
 
-Build `0.0148` dodaje `assist_modes` z pierwszym nowym trybem. Power Linear
+Build `0.0149` rozwija `assist_modes` z pierwszym nowym trybem. Power Linear
 używa istniejącego przeliczenia mocy człowieka EBICS, współczynnika wsparcia
 poziomu oraz wzorca TSDZ2 `requested current = motor power / battery voltage`.
 Żądany prąd jest zamieniany na natywne jednostki `Iq` przez `CAL_I` i
 ograniczany przed przekazaniem do wspólnej dynamiki.
+
+Wewnętrzne obliczenie zachowuje miliwaty do momentu dzielenia przez napięcie.
+Każdy poziom ma pola `assist_without_rotation` i
+`without_rotation_threshold_mv`. Gdy opcja jest świadomie włączona, poprawny
+sygnał momentu ponad próg tworzy wyłącznie lokalne `cadence_for_assist=1`;
+globalne `MS.cadence`, snapshot wejść i zachowanie Legacy nie są modyfikowane.
+Wszystkie poziomy domyślne mają tę opcję wyłączoną.
 
 Tryb jest dostępny przez `RIDE_ENGINE_TSDZ`, ale
 `RIDE_ENGINE_DEFAULT=0` pozostawia Legacy jako bezpieczny domyślny silnik.

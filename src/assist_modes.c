@@ -4,8 +4,12 @@
 
 #define ASSIST_LEVEL_COUNT 5
 #define ASSIST_MOTOR_POWER_HARD_MAX_W 1500U
+#define ASSIST_SUPPORT_RATIO_MAX_PCT 1000U
+#define ASSIST_WITHOUT_ROTATION_THRESHOLD_MAX_MV 300U
+#define ASSIST_TORQUE_ZERO_MV 750
+#define ASSIST_TORQUE_DELTA_MAX_MV 2550U
 #define HUMAN_POWER_NUMERATOR_SCALE 342U
-#define HUMAN_POWER_DENOMINATOR 100000U
+#define HUMAN_POWER_MW_DENOMINATOR 100U
 
 /*
  * Power ratios are based on the TSDZ2 reference factors 50/100/160/260,
@@ -14,12 +18,12 @@
  * the boot default until the versioned configuration is enabled.
  */
 static const assist_level_config_t default_levels[ASSIST_LEVEL_COUNT + 1] = {
-	{ASSIST_MODE_POWER_LINEAR, 0, 0, 0},
-	{ASSIST_MODE_POWER_LINEAR, 100, 0, 100},
-	{ASSIST_MODE_POWER_LINEAR, 200, 0, 100},
-	{ASSIST_MODE_POWER_LINEAR, 320, 0, 100},
-	{ASSIST_MODE_POWER_LINEAR, 420, 0, 100},
-	{ASSIST_MODE_POWER_LINEAR, 520, 0, 100}
+	{ASSIST_MODE_POWER_LINEAR, 0, 0, 0, false, 18},
+	{ASSIST_MODE_POWER_LINEAR, 100, 0, 100, false, 18},
+	{ASSIST_MODE_POWER_LINEAR, 200, 0, 100, false, 18},
+	{ASSIST_MODE_POWER_LINEAR, 320, 0, 100, false, 18},
+	{ASSIST_MODE_POWER_LINEAR, 420, 0, 100, false, 18},
+	{ASSIST_MODE_POWER_LINEAR, 520, 0, 100, false, 18}
 };
 
 static assist_mode_output_t last_output;
@@ -30,6 +34,16 @@ static void clear_output(assist_mode_output_t *output)
 	output->motor_power_w = 0;
 	output->requested_battery_current_ma = 0;
 	output->iq_request = 0;
+	output->cadence_for_assist_rpm = 0;
+	output->assist_without_rotation_active = false;
+}
+
+static uint16_t torque_delta_from_corrected(const rider_input_t *input)
+{
+	if (input->torque_corrected_mv <= ASSIST_TORQUE_ZERO_MV) {
+		return 0;
+	}
+	return (uint16_t)(input->torque_corrected_mv - ASSIST_TORQUE_ZERO_MV);
 }
 
 static bool calculate_power_linear(
@@ -39,11 +53,41 @@ static bool calculate_power_linear(
 	int32_t iq_limit,
 	assist_mode_output_t *output)
 {
+	uint8_t cadence_for_assist = input->cadence_rpm;
+	uint16_t torque_for_assist = input->torque_filtered;
+	bool without_rotation_active = false;
+
+	if (config->assist_without_rotation &&
+		cadence_for_assist == 0 &&
+		input->torque_sensor_valid &&
+		input->pas_sensor_valid) {
+		uint16_t threshold_mv = config->without_rotation_threshold_mv;
+		if (threshold_mv > ASSIST_WITHOUT_ROTATION_THRESHOLD_MAX_MV) {
+			threshold_mv = ASSIST_WITHOUT_ROTATION_THRESHOLD_MAX_MV;
+		}
+		uint16_t corrected_delta_mv = torque_delta_from_corrected(input);
+		if (corrected_delta_mv > threshold_mv) {
+			/*
+			 * Keep the synthetic cadence local to the selected assist mode.
+			 * The shared rider snapshot and Legacy cadence stay unchanged.
+			 */
+			cadence_for_assist = 1;
+			torque_for_assist = corrected_delta_mv;
+			without_rotation_active = true;
+		}
+	}
+	if (torque_for_assist > ASSIST_TORQUE_DELTA_MAX_MV) {
+		torque_for_assist = ASSIST_TORQUE_DELTA_MAX_MV;
+	}
+
+	output->cadence_for_assist_rpm = cadence_for_assist;
+	output->assist_without_rotation_active = without_rotation_active;
+
 	if (!input->torque_sensor_valid ||
 		!input->pas_sensor_valid ||
-		!input->pedaling_active ||
-		input->cadence_rpm == 0 ||
-		input->torque_filtered == 0 ||
+		(!input->pedaling_active && !without_rotation_active) ||
+		cadence_for_assist == 0 ||
+		torque_for_assist == 0 ||
 		battery_voltage_mv == 0 ||
 		iq_limit <= 0 ||
 		config->support_ratio_pct == 0 ||
@@ -52,20 +96,25 @@ static bool calculate_power_linear(
 	}
 
 	uint32_t human_power_numerator =
-		(uint32_t)input->torque_filtered *
-		(uint32_t)input->cadence_rpm *
+		(uint32_t)torque_for_assist *
+		(uint32_t)cadence_for_assist *
 		HUMAN_POWER_NUMERATOR_SCALE;
-	uint32_t human_power_w =
-		human_power_numerator / HUMAN_POWER_DENOMINATOR;
+	uint32_t human_power_mw =
+		human_power_numerator / HUMAN_POWER_MW_DENOMINATOR;
 
-	uint32_t motor_power_w =
-		(human_power_w * (uint32_t)config->support_ratio_pct) / 100U;
+	uint32_t support_ratio_pct = config->support_ratio_pct;
+	if (support_ratio_pct > ASSIST_SUPPORT_RATIO_MAX_PCT) {
+		support_ratio_pct = ASSIST_SUPPORT_RATIO_MAX_PCT;
+	}
+	uint32_t motor_power_mw =
+		(human_power_mw * support_ratio_pct) / 100U;
 	uint32_t power_limit_w = config->max_motor_power_w;
 	if (power_limit_w == 0 || power_limit_w > ASSIST_MOTOR_POWER_HARD_MAX_W) {
 		power_limit_w = ASSIST_MOTOR_POWER_HARD_MAX_W;
 	}
-	if (motor_power_w > power_limit_w) {
-		motor_power_w = power_limit_w;
+	uint32_t power_limit_mw = power_limit_w * 1000U;
+	if (motor_power_mw > power_limit_mw) {
+		motor_power_mw = power_limit_mw;
 	}
 
 	/*
@@ -76,7 +125,7 @@ static bool calculate_power_linear(
 	 * the rider mode.
 	 */
 	uint32_t requested_current_ma =
-		(motor_power_w * 1000000U) / battery_voltage_mv;
+		(motor_power_mw * 1000U) / battery_voltage_mv;
 	int32_t iq_request = (int32_t)(requested_current_ma / CAL_I);
 	int32_t profile_iq_limit =
 		(iq_limit * (int32_t)config->max_iq_pct) / 100;
@@ -87,6 +136,8 @@ static bool calculate_power_linear(
 		iq_request = profile_iq_limit;
 	}
 
+	uint32_t human_power_w = human_power_mw / 1000U;
+	uint32_t motor_power_w = motor_power_mw / 1000U;
 	output->human_power_w = (human_power_w > UINT16_MAX) ?
 		UINT16_MAX : (uint16_t)human_power_w;
 	output->motor_power_w = (uint16_t)motor_power_w;
