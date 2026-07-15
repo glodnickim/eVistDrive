@@ -109,6 +109,18 @@ Po rampie `ride_control` buduje `motor_command_t` i przekazuje go przez
 `motor_core_set_command()`. `main` dostarcza tylko `ride_control_input_t` z
 aktualną prędkością, kadencją, limitami i stanem cięcia bezpieczeństwa.
 
+## Power Linear
+
+Build `0.0148` dodaje `assist_modes` z pierwszym nowym trybem. Power Linear
+używa istniejącego przeliczenia mocy człowieka EBICS, współczynnika wsparcia
+poziomu oraz wzorca TSDZ2 `requested current = motor power / battery voltage`.
+Żądany prąd jest zamieniany na natywne jednostki `Iq` przez `CAL_I` i
+ograniczany przed przekazaniem do wspólnej dynamiki.
+
+Tryb jest dostępny przez `RIDE_ENGINE_TSDZ`, ale
+`RIDE_ENGINE_DEFAULT=0` pozostawia Legacy jako bezpieczny domyślny silnik.
+Power nie steruje FOC, PWM ani rampami bezpośrednio.
+
 Przejściowe funkcje `motor_core_legacy_set_*` zostały usunięte. Inicjalizacja,
 watchdog komunikacji, zwykła jazda i autodetekcja Halla korzystają z tego
 samego interfejsu komendy. Bezpośrednie zapisy finalnego `Iq/Id` występują

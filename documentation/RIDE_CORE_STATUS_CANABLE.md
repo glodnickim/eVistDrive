@@ -3,7 +3,7 @@
 Aktualizacja: 2026-07-13  
 Gałąź: `refactor/ride-core`  
 Punkt przywracania: `m820-before-ride-core-refactor` (`d6bc69c`)  
-Ostatni sprawdzony build: `0.0147` M820/BL820
+Ostatni sprawdzony build: `0.0148` M820/BL820
 
 Ten dokument jest główną listą kontrolną Ride Core i konfiguratora. Rozróżnia:
 
@@ -20,9 +20,9 @@ czujniki i dekoder PAS
         ↓
 rider_input (snapshot sygnałów)
         ↓
-ride_control (obecnie wybiera tylko Legacy)
+ride_control (Legacy domyślnie; Power Linear dostępny developersko)
         ↓
-legacy_assist
+legacy_assist albo assist_modes
         ↓
 assist_limits
         ↓
@@ -50,10 +50,11 @@ korzystać wyłącznie z `rider_input_t`.
 | `legacy_assist` | WDROŻONE/SZKIELET | Jest osobny punkt wejścia; ciało starego algorytmu nadal pozostaje monolitem |
 | `assist_limits` | WDROŻONE | Kolejność Legacy: napięcie → temperatura → prawny taper prędkości |
 | `assist_dynamics` | WDROŻONE | Adaptacyjne rampy `Iq`, szybka ścieżka WA i natychmiastowe cięcia bezpieczeństwa |
-| `ride_control` | WDROŻONE/SZKIELET | Wybiera Legacy, stosuje dynamikę i wysyła `motor_command_t`; TSDZ nadal jest szkieletem |
+| `assist_modes` | WDROŻONE/SZKIELET | Power Linear działa; Progressive i eMTB są jeszcze nieaktywne |
+| `ride_control` | WDROŻONE | Wybiera Legacy/TSDZ, zachowuje priorytet Walk, stosuje limity i dynamikę, wysyła `motor_command_t` |
 | `protocol/ebics_config_schema.yaml` | SZKIELET | Draft v0 opisuje pola, typy, skale, zakresy i operacje; numery `wire_id` celowo nieprzydzielone |
 | Audyt komend HMI/CAN | CZĘŚCIOWO | Firmware i lokalny log sprawdzone; brakuje kodu Canable i pełnych logów HMI/BESST |
-| Sprzętowy test regresji Legacy | TEST ROWERU | Do wykonania na buildzie `0.0147` przed aktywacją TSDZ |
+| Test sprzętowy | TEST ROWERU | Decyzją użytkownika przeniesiony na koniec całego wdrożenia |
 
 ## 3. Co działa obecnie tylko w Legacy
 
@@ -75,7 +76,7 @@ Te funkcje pozostają do porównań. Nie należy dopisywać do nich nowych tryb�
 
 | Funkcja | Status | Warunek rozpoczęcia/ukończenia |
 |---|---|---|
-| Power Linear TSDZ2 | NIE WDROŻONE | Najpierw test regresji Legacy `0.0147` |
+| Power Linear TSDZ2 | WDROŻONE/DEV | Build `0.0148`; stałoprzecinkowe Power → prąd → Iq, domyślnie nadal Legacy |
 | Lokalna `cadence_for_assist` | NIE WDROŻONE | Razem z nowym Power/Torque/eMTB |
 | Assist without pedal rotation | NIE WDROŻONE | Domyślnie OFF; wymaga świadomego testu bez czujnika hamulca |
 | Startup Boost jako ustawienie per-level | NIE WDROŻONE | Obecny boost jest globalnym Legacy `#define` |
@@ -90,6 +91,27 @@ Te funkcje pozostają do porównań. Nie należy dopisywać do nich nowych tryb�
 | Wykresy charakterystyk | NIE WDROŻONE | Po ustaleniu wzorów i jednostek |
 | `Sync / Apply RAM / Save Flash / Revert` | NIE WDROŻONE | Nowy wersjonowany protokół konfiguracji |
 | Jedno źródło prawdy YAML | SZKIELET | Draft v0 utworzony; wymaga audytu ID, domyślnych profili i generatora |
+
+### Power Linear — stan builda 0.0148
+
+Nowy moduł `assist_modes`:
+
+1. liczy moc człowieka z filtrowanego sygnału momentu i kadencji,
+2. mnoży ją przez współczynnik wsparcia poziomu,
+3. ogranicza żądaną moc do 1500 W,
+4. przelicza moc na prąd przez aktualne napięcie baterii,
+5. przelicza prąd na natywne jednostki `Iq` przez `CAL_I`,
+6. nakłada limit poziomu, napięcia, temperatury i legalnej prędkości,
+7. przekazuje wynik przez wspólną dynamikę i `motor_core`.
+
+Referencyjne współczynniki pięciu poziomów to obecnie
+`100/200/320/420/520%`. Cztery skrajne wartości odpowiadają faktorom
+TSDZ2 `50/100/160/260`; SPORT+ jest punktem pośrednim. Są to wartości
+developerskie, jeszcze nie zapis profilu Canable.
+
+`RIDE_ENGINE_DEFAULT=0` utrzymuje Legacy. Wartość `1` włącza Power Linear
+do testu developerskiego. Walk Assist zachowuje wyłączny priorytet i do czasu
+wydzielenia nowego modułu korzysta ze sprawdzonej ścieżki Legacy.
 
 ## 5. Parametry już obsługiwane przez obecny Canable/protokół
 
@@ -122,7 +144,7 @@ firmware.
 
 Te wartości działają, ale zmiana wymaga przebudowania firmware.
 
-| Klucz docelowy | Obecna stała | Wartość `0.0147` | Docelowa grupa UI |
+| Klucz docelowy | Obecna stała | Wartość `0.0148` | Docelowa grupa UI |
 |---|---|---:|---|
 | `iq_rise_slow_ms` | `IQ_RAMP_UP_SLOW_TICKS` | 600 ms | Dynamika |
 | `iq_rise_fast_ms` | `IQ_RAMP_UP_FAST_TICKS` | 300 ms | Dynamika |
@@ -190,7 +212,7 @@ Obecne `walk_assist_current` i `walk_assist_speed` należy zachować dla
 kompatybilności Legacy, ale poprawić ich opisy. Nowy regulator ERPS będzie
 wymagał osobnego zestawu.
 
-| Klucz | Etykieta UI | Jednostka / zakres | Wartość Legacy `0.0147` | Status |
+| Klucz | Etykieta UI | Jednostka / zakres | Wartość Legacy `0.0148` | Status |
 |---|---|---|---:|---|
 | `walk_assist_current_pct` | Walk Current | 0–100% fazowego | 30% | JUŻ JEST: `Para1[36]` |
 | `walk_assist_speed_kph` | Walk Speed (Legacy) | 0,01 km/h | 6,0 km/h | JUŻ JEST: `Para1[60..61]` |
@@ -286,10 +308,10 @@ wartości aktualnie edytowane.
 
 ## 12. Kolejność wdrażania konfiguratora
 
-1. Potwierdzić zachowanie Legacy na buildzie `0.0147`.
+1. Po ukończeniu funkcji wykonać łączny test sprzętowy Legacy i nowych trybów.
 2. Zatwierdzić draft YAML, wykonać audyt komend, przydzielić ID i dodać generator C/JavaScript.
 3. Dodać minimalny profil: `mode_type`, `support_ratio`, `max_motor_power_w`, `max_iq_pct`.
-4. Wdrożyć i przetestować Power Linear.
+4. Podłączyć Power Linear do profili protokołu; test jazdy wykonać w końcowej sesji sprzętowej.
 5. Dodać start bez obrotu, Startup Boost, Smooth Start, rampy i Release.
 6. Dodać progresję i eMTB.
 7. Dodać osobny zestaw Walk Assist oparty na ERPS.

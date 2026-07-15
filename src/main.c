@@ -1615,10 +1615,19 @@ void reg_ADC_processing(void)
         ride_control_input_t ride_input = {
             .speed_x100 = MS.Speedx100,
             .cadence_rpm = MS.cadence,
+			.assist_level_index = level_to_array_element[MS.assist_level],
+			.battery_voltage_mv = MS.Voltage,
             .iq_scale = phase_current_max_scaled,
             .phase_current_max = MP.phase_current_max,
             .current_iq = MS.i_q_setpoint,
             .current_id = MS.i_d_setpoint,
+			.voltage_raw = voltage_raw_filtered,
+			.voltage_min_raw = MP.voltage_min,
+			.controller_temperature_c = MS.int_Temperature,
+			.cadence_filtered_x8 = uint16_cadence_filtered,
+			.speed_limit_x100 = speedlimitx100_scaled,
+			.legal_enabled = MP.legalflag != 0,
+			.offroad = MS.offroadflag != RESET,
             .walk_active = MS.pushassist_flag != RESET,
             .safety_cut = MS.brake_active_flag || Backwards_counter >= 4 || overtemp_stage >= 2
         };

@@ -1,0 +1,42 @@
+#ifndef ASSIST_MODES_H_
+#define ASSIST_MODES_H_
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "rider_input.h"
+
+typedef enum {
+	ASSIST_MODE_LEGACY = 0,
+	ASSIST_MODE_POWER_LINEAR = 1,
+	ASSIST_MODE_POWER_PROGRESSIVE = 2,
+	ASSIST_MODE_EMTB_TSDZ = 3,
+	ASSIST_MODE_EMTB_CUSTOM = 4
+} assist_mode_type_t;
+
+typedef struct {
+	assist_mode_type_t mode_type;
+	uint16_t support_ratio_pct;
+	uint16_t max_motor_power_w;
+	uint8_t max_iq_pct;
+} assist_level_config_t;
+
+typedef struct {
+	uint16_t human_power_w;
+	uint16_t motor_power_w;
+	uint32_t requested_battery_current_ma;
+	int32_t iq_request;
+} assist_mode_output_t;
+
+const assist_level_config_t *assist_modes_get_default_level(uint8_t level_index);
+
+bool assist_modes_calculate(
+	const rider_input_t *input,
+	const assist_level_config_t *config,
+	uint32_t battery_voltage_mv,
+	int32_t iq_limit,
+	assist_mode_output_t *output);
+
+const assist_mode_output_t *assist_modes_get_last_output(void);
+
+#endif /* ASSIST_MODES_H_ */

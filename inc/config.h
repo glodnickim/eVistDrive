@@ -114,6 +114,10 @@
 #define SYSTEM_VOLTAGE 52// in V
 #define MAX_VOLTAGE 59// in V
 
+// Ride Core developer selector. Keep 0 for normal/Legacy firmware.
+// 0 = frozen Legacy path, 1 = new TSDZ Power Linear path.
+#define RIDE_ENGINE_DEFAULT 0
+
 //---------------------------------------------------------------------
 //Battery SOC & Range settings (coulomb counting + voltage correction)
 #define BATTERY_CAPACITY_MAH 14000   // default expected capacity (mAh), overwritten by Canable "Expected Battery Capacity" (Para1[7..8])

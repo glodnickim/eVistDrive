@@ -100,7 +100,7 @@ profile_fields:
     access: persistent_rw
     per_level: true
     value: {type: enum8, enum: mode_type, scale: 1, unit: none, min: 0, max: 4, default: legacy}
-    implementation: legacy_only
+    implementation: power_linear_available_default_legacy
     ui_group: characteristic
 
   - key: support_ratio_pct
@@ -109,7 +109,7 @@ profile_fields:
     access: persistent_rw
     per_level: true
     value: {type: u16, scale: 1, unit: percent, min: 0, max: 1000, default: null}
-    implementation: planned_power
+    implementation: active_compile_time_defaults_protocol_planned
     ui_group: characteristic
 
   - key: support_min_pct
@@ -154,7 +154,7 @@ profile_fields:
     access: persistent_rw
     per_level: true
     value: {type: u16, scale: 1, unit: watt, min: 0, max: 1500, default: null}
-    implementation: planned_power
+    implementation: active_hard_limit_and_profile_field_protocol_planned
     ui_group: limits
 
   - key: max_iq_pct
@@ -163,7 +163,7 @@ profile_fields:
     access: persistent_rw
     per_level: true
     value: {type: u8, scale: 1, unit: percent_phase_limit, min: 0, max: 100, default: null}
-    implementation: planned_power
+    implementation: active_compile_time_default_protocol_planned
     legacy_binding: Para1_level_current_slots
     ui_group: limits
 
