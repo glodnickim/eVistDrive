@@ -25,11 +25,14 @@ typedef struct {
 	assist_startup_boost_config_t startup_boost;
 	assist_smooth_start_config_t smooth_start;
 	uint16_t release_ms;
+	uint16_t power_rise_filter_ms;
+	uint16_t power_fall_filter_ms;
 } assist_level_config_t;
 
 typedef struct {
 	uint16_t human_power_w;
 	uint16_t assist_basis_power_w;
+	uint16_t raw_motor_power_w;
 	uint16_t motor_power_w;
 	uint32_t requested_battery_current_ma;
 	int32_t iq_request;

@@ -10,6 +10,9 @@
 #define ASSIST_TORQUE_DELTA_MAX_MV 2550U
 #define HUMAN_POWER_NUMERATOR_SCALE 342U
 #define HUMAN_POWER_MW_DENOMINATOR 100U
+#define CONTROL_TICKS_PER_MS 4U
+#define POWER_FILTER_MAX_MS 3000U
+#define POWER_FILTER_Q_SHIFT 8U
 
 /*
  * Power ratios are based on the TSDZ2 reference factors 50/100/160/260,
@@ -19,25 +22,35 @@
  */
 static const assist_level_config_t default_levels[ASSIST_LEVEL_COUNT + 1] = {
 	{ASSIST_MODE_POWER_LINEAR, 0, 0, 0, false, 18,
-		{false, ASSIST_STARTUP_BOOST_CADENCE, 0, 45}, {false, 300}, 0},
+		{false, ASSIST_STARTUP_BOOST_CADENCE, 0, 45}, {false, 300}, 0, 0, 0},
 	{ASSIST_MODE_POWER_LINEAR, 100, 0, 100, false, 18,
-		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}, 0},
+		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}, 0, 0, 0},
 	{ASSIST_MODE_POWER_LINEAR, 200, 0, 100, false, 18,
-		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}, 0},
+		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}, 0, 0, 0},
 	{ASSIST_MODE_POWER_LINEAR, 320, 0, 100, false, 18,
-		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}, 0},
+		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}, 0, 0, 0},
 	{ASSIST_MODE_POWER_LINEAR, 420, 0, 100, false, 18,
-		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}, 0},
+		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}, 0, 0, 0},
 	{ASSIST_MODE_POWER_LINEAR, 520, 0, 100, false, 18,
-		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}, 0}
+		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}, 0, 0, 0}
 };
 
 static assist_mode_output_t last_output;
+
+typedef struct {
+	const assist_level_config_t *config_address;
+	uint16_t rise_ms;
+	uint16_t fall_ms;
+	uint32_t filtered_power_q;
+} power_filter_state_t;
+
+static power_filter_state_t power_filter_state;
 
 static void clear_output(assist_mode_output_t *output)
 {
 	output->human_power_w = 0;
 	output->assist_basis_power_w = 0;
+	output->raw_motor_power_w = 0;
 	output->motor_power_w = 0;
 	output->requested_battery_current_ma = 0;
 	output->iq_request = 0;
@@ -46,6 +59,64 @@ static void clear_output(assist_mode_output_t *output)
 	output->torque_for_assist_mv = 0;
 	output->startup_boost_extra_pct = 0;
 	output->startup_boost_active = false;
+}
+
+static uint16_t clamp_power_filter_ms(uint16_t filter_ms)
+{
+	return (filter_ms > POWER_FILTER_MAX_MS) ?
+		POWER_FILTER_MAX_MS : filter_ms;
+}
+
+static void stop_power_filter(const assist_level_config_t *config)
+{
+	power_filter_state.config_address = config;
+	power_filter_state.rise_ms = clamp_power_filter_ms(
+		config->power_rise_filter_ms);
+	power_filter_state.fall_ms = clamp_power_filter_ms(
+		config->power_fall_filter_ms);
+	power_filter_state.filtered_power_q = 0;
+}
+
+static uint32_t filter_motor_power(
+	uint32_t raw_motor_power_mw,
+	const assist_level_config_t *config)
+{
+	uint16_t rise_ms = clamp_power_filter_ms(config->power_rise_filter_ms);
+	uint16_t fall_ms = clamp_power_filter_ms(config->power_fall_filter_ms);
+	uint32_t raw_power_q = raw_motor_power_mw << POWER_FILTER_Q_SHIFT;
+
+	if (power_filter_state.config_address != config ||
+		power_filter_state.rise_ms != rise_ms ||
+		power_filter_state.fall_ms != fall_ms) {
+		power_filter_state.config_address = config;
+		power_filter_state.rise_ms = rise_ms;
+		power_filter_state.fall_ms = fall_ms;
+		power_filter_state.filtered_power_q = raw_power_q;
+		return raw_motor_power_mw;
+	}
+
+	uint16_t filter_ms = (raw_power_q > power_filter_state.filtered_power_q) ?
+		rise_ms : fall_ms;
+	if (filter_ms == 0 || raw_power_q == power_filter_state.filtered_power_q) {
+		power_filter_state.filtered_power_q = raw_power_q;
+		return raw_motor_power_mw;
+	}
+
+	uint32_t filter_ticks = (uint32_t)filter_ms * CONTROL_TICKS_PER_MS;
+	if (raw_power_q > power_filter_state.filtered_power_q) {
+		uint32_t delta = raw_power_q - power_filter_state.filtered_power_q;
+		uint32_t step = delta / filter_ticks;
+		if (step == 0) step = 1;
+		power_filter_state.filtered_power_q += step;
+	} else {
+		uint32_t delta = power_filter_state.filtered_power_q - raw_power_q;
+		uint32_t step = delta / filter_ticks;
+		if (step == 0) step = 1;
+		power_filter_state.filtered_power_q -= step;
+	}
+
+	return (power_filter_state.filtered_power_q +
+		(1U << (POWER_FILTER_Q_SHIFT - 1U))) >> POWER_FILTER_Q_SHIFT;
 }
 
 static uint16_t torque_delta_from_corrected(const rider_input_t *input)
@@ -97,11 +168,11 @@ static bool calculate_power_linear(
 		!input->pas_sensor_valid ||
 		(!input->pedaling_active && !without_rotation_active) ||
 		cadence_for_assist == 0 ||
-		torque_for_assist == 0 ||
 		battery_voltage_mv == 0 ||
 		iq_limit <= 0 ||
 		config->support_ratio_pct == 0 ||
 		config->max_iq_pct == 0) {
+		stop_power_filter(config);
 		return true;
 	}
 
@@ -149,6 +220,8 @@ static bool calculate_power_linear(
 	if (motor_power_mw > power_limit_mw) {
 		motor_power_mw = power_limit_mw;
 	}
+	uint32_t raw_motor_power_mw = motor_power_mw;
+	motor_power_mw = filter_motor_power(raw_motor_power_mw, config);
 
 	/*
 	 * The TSDZ2 Power mode converts requested motor power to battery current
@@ -171,11 +244,13 @@ static bool calculate_power_linear(
 
 	uint32_t human_power_w = human_power_mw / 1000U;
 	uint32_t assist_basis_power_w = assist_basis_power_mw / 1000U;
+	uint32_t raw_motor_power_w = raw_motor_power_mw / 1000U;
 	uint32_t motor_power_w = motor_power_mw / 1000U;
 	output->human_power_w = (human_power_w > UINT16_MAX) ?
 		UINT16_MAX : (uint16_t)human_power_w;
 	output->assist_basis_power_w = (assist_basis_power_w > UINT16_MAX) ?
 		UINT16_MAX : (uint16_t)assist_basis_power_w;
+	output->raw_motor_power_w = (uint16_t)raw_motor_power_w;
 	output->motor_power_w = (uint16_t)motor_power_w;
 	output->requested_battery_current_ma = requested_current_ma;
 	output->iq_request = iq_request;
@@ -193,6 +268,7 @@ const assist_level_config_t *assist_modes_get_default_level(uint8_t level_index)
 void assist_modes_reset(void)
 {
 	assist_start_reset();
+	power_filter_state = (power_filter_state_t){0};
 	clear_output(&last_output);
 }
 

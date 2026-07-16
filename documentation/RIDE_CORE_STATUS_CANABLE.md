@@ -77,12 +77,13 @@ Te funkcje pozostają do porównań. Nie należy dopisywać do nich nowych tryb�
 
 | Funkcja | Status | Warunek rozpoczęcia/ukończenia |
 |---|---|---|
-| Power Linear TSDZ2 | WDROŻONE/DEV | Build `0.0153`; stałoprzecinkowe Power → prąd → Iq, domyślnie nadal Legacy |
+| Power Linear TSDZ2 | WDROŻONE/DEV | Build `0.0154`; stałoprzecinkowe Power → prąd → Iq, domyślnie nadal Legacy |
 | Lokalna `cadence_for_assist` | WDROŻONE/DEV | Kadencja syntetyczna istnieje tylko wewnątrz `assist_modes` i nie zmienia snapshotu ani Legacy |
 | Assist without pedal rotation | WDROŻONE/DEV | Per-level, domyślnie OFF; próg 18 mV ponad zero, zakres ograniczony do 0–300 mV |
 | Startup Boost jako ustawienie per-level | WDROŻONE/DEV | Osobny `assist_start`, tryby Cadence/Speed/Auto, krzywa przed obliczeniem Power |
 | Smooth Start per-level | WDROŻONE/DEV | Obwiednia 0–100% po limitach i przed wspólną rampą; domyślnie OFF, 300 ms |
 | Release niezależny od startu | WDROŻONE/DEV | Czas zejścia pełnej skali Iq po zaniku pedałowania; 0 ms zachowuje adaptacyjną rampę |
+| Asymetryczny filtr mocy | WDROŻONE/DEV | Osobny czas narastania/opadania podczas aktywnego PAS; 0 ms = bypass |
 | Power Progressive | NIE WDROŻONE | Po stabilnym Power Linear |
 | eMTB TSDZ / Custom Curve | NIE WDROŻONE | Po progresywnym Power |
 | Osobny właściciel Walk Assist | NIE WDROŻONE | `CONTROL_OWNER_WALK` + sterowanie według ERPS |
@@ -93,7 +94,7 @@ Te funkcje pozostają do porównań. Nie należy dopisywać do nich nowych tryb�
 | `Sync / Apply RAM / Save Flash / Revert` | NIE WDROŻONE | Nowy wersjonowany protokół konfiguracji |
 | Jedno źródło prawdy YAML | SZKIELET | Draft v0 utworzony; wymaga audytu ID, domyślnych profili i generatora |
 
-### Power Linear — stan builda 0.0149
+### Power Linear — stan builda 0.0154
 
 Nowy moduł `assist_modes`:
 
@@ -120,7 +121,7 @@ wyłączona w każdym profilu domyślnym, ponieważ rower nie ma czujnika hamulc
 do testu developerskiego. Walk Assist zachowuje wyłączny priorytet i do czasu
 wydzielenia nowego modułu korzysta ze sprawdzonej ścieżki Legacy.
 
-### Startup Boost TSDZ — stan builda 0.0151
+### Startup Boost TSDZ — stan builda 0.0154
 
 `assist_start` modyfikuje lokalny sygnał momentu przed obliczeniem mocy. Krzywa
 ma 120 wpisów i używa stałoprzecinkowej rekurencji z referencji TSDZ2:
@@ -165,6 +166,18 @@ jest aktywny, ani dla lokalnego startu bez obrotu. W tych przypadkach działa
 zwykła adaptacyjna dynamika. `safety_cut` nadal zeruje `Iq` natychmiast.
 Wartość domyślna `0` oznacza „użyj istniejącej rampy adaptacyjnej”, dzięki
 czemu samo dodanie pola nie zmienia charakteru jazdy.
+
+### Filtr wzrostu i spadku mocy — stan builda 0.0154
+
+Power ma osobny filtr pierwszego rzędu dla żądanej mocy silnika. Czas wzrostu
+wybiera `power_rise_filter_ms`, a czas spadku `power_fall_filter_ms`. Dzięki
+temu ponowny nacisk może zostać obsłużony szybciej niż chwilowy spadek momentu
+między nogami.
+
+Filtr działa tylko, gdy PAS lub lokalny start bez obrotu pozostaje aktywny.
+Po rzeczywistym zaniku pedałowania jego stan jest zerowany, target trybu wynosi
+zero i dalsze zejście wykonuje Release/wspólna rampa. Nie ma podtrzymania
+ostatniej mocy. Oba domyślne czasy wynoszą `0`, czyli filtr jest pomijany.
 
 ## 5. Parametry już obsługiwane przez obecny Canable/protokół
 
@@ -249,8 +262,8 @@ Poniższe pola nie mają jeszcze przydzielonych ID protokołu.
 | `iq_rise_ms` | Narastanie Iq | ms | 20–5000 | Wymaga decyzji: per-level czy globalne punkty rampy |
 | `iq_fall_ms` | Opadanie Iq | ms | 20–5000 | Wymaga decyzji: per-level czy globalne punkty rampy |
 | `release_ms` | Release po ustaniu PAS | ms | 0 = adaptacyjny; 1–3000 | FW aktywne; protokół + UI do podłączenia |
-| `power_rise_filter_ms` | Filtr wzrostu mocy | ms | 0–3000 | FW + protokół + UI |
-| `power_fall_filter_ms` | Filtr spadku mocy | ms | 0–3000 | FW + protokół + UI |
+| `power_rise_filter_ms` | Filtr wzrostu mocy | ms | 0 = bypass; 1–3000 | FW aktywne; protokół + UI do podłączenia |
+| `power_fall_filter_ms` | Filtr spadku mocy | ms | 0 = bypass; 1–3000 | FW aktywne; protokół + UI do podłączenia |
 | `taper_start_kph` | Początek taperu | km/h | 0–60 | FW + protokół + UI |
 | `taper_end_kph` | Koniec taperu | km/h | 0–60 | FW + protokół + UI |
 | `taper_shape` | Kształt taperu | enum | Linear, Smoothstep, Map | FW + protokół + UI |

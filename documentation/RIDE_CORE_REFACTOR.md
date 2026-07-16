@@ -111,7 +111,7 @@ aktualną prędkością, kadencją, limitami i stanem cięcia bezpieczeństwa.
 
 ## Power Linear
 
-Build `0.0153` rozwija `assist_modes` z pierwszym nowym trybem. Power Linear
+Build `0.0154` rozwija `assist_modes` z pierwszym nowym trybem. Power Linear
 używa istniejącego przeliczenia mocy człowieka EBICS, współczynnika wsparcia
 poziomu oraz wzorca TSDZ2 `requested current = motor power / battery voltage`.
 Żądany prąd jest zamieniany na natywne jednostki `Iq` przez `CAL_I` i
@@ -160,6 +160,18 @@ Nie ma fazy podtrzymywania poprzedniego prądu.
 nadpisują jedynie tempo opadania po zaniku pedałowania. Spadek momentu przy
 nadal aktywnym PAS oraz lokalny start bez obrotu nie uruchamiają Release.
 Natychmiastowe cięcia bezpieczeństwa zachowują pierwszeństwo.
+
+## Asymetryczny filtr mocy
+
+Podczas aktywnego pedałowania `power_rise_filter_ms` i
+`power_fall_filter_ms` stosują niezależne stałe czasowe do surowej żądanej
+mocy silnika. Stan jest utrzymywany przy spadku momentu między nogami, więc
+ponowny wzrost może być szybszy od wygaszania.
+
+Po zaniku PAS filtr jest zerowany natychmiast; nie realizuje overrun. Dalsze
+zejście aktualnego `iq_reference` do zera należy do Release lub dotychczasowej
+rampy adaptacyjnej. Wartość 0 ms omija dany kierunek filtra, a wszystkie
+profile domyślne mają oba kierunki ustawione na 0 ms.
 
 Tryb jest dostępny przez `RIDE_ENGINE_TSDZ`, ale
 `RIDE_ENGINE_DEFAULT=0` pozostawia Legacy jako bezpieczny domyślny silnik.
