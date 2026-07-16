@@ -11,6 +11,7 @@ static ride_engine_t active_engine;
 
 void ride_control_init(void)
 {
+	assist_modes_reset();
 	if (RIDE_ENGINE_DEFAULT == RIDE_ENGINE_TSDZ) {
 		active_engine = RIDE_ENGINE_TSDZ;
 	} else {
@@ -104,6 +105,9 @@ bool ride_control_set_engine(ride_engine_t engine)
 {
 	if (engine != RIDE_ENGINE_LEGACY && engine != RIDE_ENGINE_TSDZ) {
 		return false;
+	}
+	if (engine != active_engine) {
+		assist_modes_reset();
 	}
 	active_engine = engine;
 	return true;

@@ -111,7 +111,7 @@ aktualną prędkością, kadencją, limitami i stanem cięcia bezpieczeństwa.
 
 ## Power Linear
 
-Build `0.0149` rozwija `assist_modes` z pierwszym nowym trybem. Power Linear
+Build `0.0150` rozwija `assist_modes` z pierwszym nowym trybem. Power Linear
 używa istniejącego przeliczenia mocy człowieka EBICS, współczynnika wsparcia
 poziomu oraz wzorca TSDZ2 `requested current = motor power / battery voltage`.
 Żądany prąd jest zamieniany na natywne jednostki `Iq` przez `CAL_I` i
@@ -123,6 +123,18 @@ Każdy poziom ma pola `assist_without_rotation` i
 sygnał momentu ponad próg tworzy wyłącznie lokalne `cadence_for_assist=1`;
 globalne `MS.cadence`, snapshot wejść i zachowanie Legacy nie są modyfikowane.
 Wszystkie poziomy domyślne mają tę opcję wyłączoną.
+
+## Startup Boost TSDZ
+
+`assist_start` portuje boost jako transformację momentu wykonywaną przed
+obliczeniem Power. Krzywa 120 wartości jest budowana rekurencją
+`next = (previous * (256 - 20)) >> 8`, tak jak w referencji TSDZ2. Dostępne są
+tryby Cadence, Speed i Auto, siła jest ograniczona do 300%, a lokalny moment
+do zakresu czujnika 2550 mV ponad zero.
+
+Profile developerskie używają `+200%`, Cadence i końca 45 RPM. To odpowiada
+dotychczasowym ustawieniom boostu EBICS, ale jest niezależną implementacją dla
+nowej ścieżki. Przełączenie silnika jazdy resetuje stan uzbrojenia trybu Speed.
 
 Tryb jest dostępny przez `RIDE_ENGINE_TSDZ`, ale
 `RIDE_ENGINE_DEFAULT=0` pozostawia Legacy jako bezpieczny domyślny silnik.

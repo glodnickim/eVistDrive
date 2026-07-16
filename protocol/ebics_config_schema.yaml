@@ -191,8 +191,8 @@ profile_fields:
     since: 1
     access: persistent_rw
     per_level: true
-    value: {type: bool, scale: 1, unit: none, min: false, max: true, default: null}
-    implementation: planned_power
+    value: {type: bool, scale: 1, unit: none, min: false, max: true, default: true}
+    implementation: active_compile_time_default_protocol_planned
     ui_group: start_boost
 
   - key: startup_boost_mode
@@ -200,8 +200,8 @@ profile_fields:
     since: 1
     access: persistent_rw
     per_level: true
-    value: {type: enum8, enum: startup_boost_mode, scale: 1, unit: none, min: 0, max: 2, default: null}
-    implementation: planned_power
+    value: {type: enum8, enum: startup_boost_mode, scale: 1, unit: none, min: 0, max: 2, default: cadence}
+    implementation: active_compile_time_default_protocol_planned
     ui_group: start_boost
 
   - key: startup_boost_strength_pct
@@ -209,8 +209,8 @@ profile_fields:
     since: 1
     access: persistent_rw
     per_level: true
-    value: {type: u16, scale: 1, unit: percent_extra_torque, min: 0, max: 300, default: null}
-    implementation: planned_power
+    value: {type: u16, scale: 1, unit: percent_extra_torque, min: 0, max: 300, default: 200}
+    implementation: active_compile_time_default_protocol_planned
     ui_group: start_boost
 
   - key: startup_boost_end_rpm
@@ -218,8 +218,8 @@ profile_fields:
     since: 1
     access: persistent_rw
     per_level: true
-    value: {type: u8, scale: 1, unit: rpm, min: 0, max: 120, default: null}
-    implementation: planned_power
+    value: {type: u8, scale: 1, unit: rpm, min: 0, max: 120, default: 45}
+    implementation: active_compile_time_default_protocol_planned
     ui_group: start_boost
 
   - key: smooth_start_enabled

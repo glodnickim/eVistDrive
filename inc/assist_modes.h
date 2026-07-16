@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "assist_start.h"
 #include "rider_input.h"
 
 typedef enum {
@@ -21,18 +22,25 @@ typedef struct {
 	uint8_t max_iq_pct;
 	bool assist_without_rotation;
 	uint16_t without_rotation_threshold_mv;
+	assist_startup_boost_config_t startup_boost;
 } assist_level_config_t;
 
 typedef struct {
 	uint16_t human_power_w;
+	uint16_t assist_basis_power_w;
 	uint16_t motor_power_w;
 	uint32_t requested_battery_current_ma;
 	int32_t iq_request;
 	uint8_t cadence_for_assist_rpm;
 	bool assist_without_rotation_active;
+	uint16_t torque_for_assist_mv;
+	uint16_t startup_boost_extra_pct;
+	bool startup_boost_active;
 } assist_mode_output_t;
 
 const assist_level_config_t *assist_modes_get_default_level(uint8_t level_index);
+
+void assist_modes_reset(void);
 
 bool assist_modes_calculate(
 	const rider_input_t *input,

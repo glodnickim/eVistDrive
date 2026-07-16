@@ -18,12 +18,18 @@
  * the boot default until the versioned configuration is enabled.
  */
 static const assist_level_config_t default_levels[ASSIST_LEVEL_COUNT + 1] = {
-	{ASSIST_MODE_POWER_LINEAR, 0, 0, 0, false, 18},
-	{ASSIST_MODE_POWER_LINEAR, 100, 0, 100, false, 18},
-	{ASSIST_MODE_POWER_LINEAR, 200, 0, 100, false, 18},
-	{ASSIST_MODE_POWER_LINEAR, 320, 0, 100, false, 18},
-	{ASSIST_MODE_POWER_LINEAR, 420, 0, 100, false, 18},
-	{ASSIST_MODE_POWER_LINEAR, 520, 0, 100, false, 18}
+	{ASSIST_MODE_POWER_LINEAR, 0, 0, 0, false, 18,
+		{false, ASSIST_STARTUP_BOOST_CADENCE, 0, 45}},
+	{ASSIST_MODE_POWER_LINEAR, 100, 0, 100, false, 18,
+		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}},
+	{ASSIST_MODE_POWER_LINEAR, 200, 0, 100, false, 18,
+		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}},
+	{ASSIST_MODE_POWER_LINEAR, 320, 0, 100, false, 18,
+		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}},
+	{ASSIST_MODE_POWER_LINEAR, 420, 0, 100, false, 18,
+		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}},
+	{ASSIST_MODE_POWER_LINEAR, 520, 0, 100, false, 18,
+		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}}
 };
 
 static assist_mode_output_t last_output;
@@ -31,11 +37,15 @@ static assist_mode_output_t last_output;
 static void clear_output(assist_mode_output_t *output)
 {
 	output->human_power_w = 0;
+	output->assist_basis_power_w = 0;
 	output->motor_power_w = 0;
 	output->requested_battery_current_ma = 0;
 	output->iq_request = 0;
 	output->cadence_for_assist_rpm = 0;
 	output->assist_without_rotation_active = false;
+	output->torque_for_assist_mv = 0;
+	output->startup_boost_extra_pct = 0;
+	output->startup_boost_active = false;
 }
 
 static uint16_t torque_delta_from_corrected(const rider_input_t *input)
@@ -95,19 +105,42 @@ static bool calculate_power_linear(
 		return true;
 	}
 
+	uint16_t human_torque_mv = torque_for_assist;
+	assist_startup_boost_input_t boost_input = {
+		.torque_input_mv = torque_for_assist,
+		.cadence_for_assist_rpm = cadence_for_assist,
+		.wheel_speed_x100 = input->wheel_speed_x100,
+		.torque_sensor_valid = input->torque_sensor_valid
+	};
+	assist_startup_boost_output_t boost_output;
+	assist_start_apply_boost(
+		&boost_input,
+		&config->startup_boost,
+		&boost_output);
+	torque_for_assist = boost_output.torque_output_mv;
+	output->torque_for_assist_mv = torque_for_assist;
+	output->startup_boost_extra_pct = boost_output.extra_pct;
+	output->startup_boost_active = boost_output.active;
+
 	uint32_t human_power_numerator =
-		(uint32_t)torque_for_assist *
+		(uint32_t)human_torque_mv *
 		(uint32_t)cadence_for_assist *
 		HUMAN_POWER_NUMERATOR_SCALE;
 	uint32_t human_power_mw =
 		human_power_numerator / HUMAN_POWER_MW_DENOMINATOR;
+	uint32_t assist_basis_power_numerator =
+		(uint32_t)torque_for_assist *
+		(uint32_t)cadence_for_assist *
+		HUMAN_POWER_NUMERATOR_SCALE;
+	uint32_t assist_basis_power_mw =
+		assist_basis_power_numerator / HUMAN_POWER_MW_DENOMINATOR;
 
 	uint32_t support_ratio_pct = config->support_ratio_pct;
 	if (support_ratio_pct > ASSIST_SUPPORT_RATIO_MAX_PCT) {
 		support_ratio_pct = ASSIST_SUPPORT_RATIO_MAX_PCT;
 	}
 	uint32_t motor_power_mw =
-		(human_power_mw * support_ratio_pct) / 100U;
+		(assist_basis_power_mw * support_ratio_pct) / 100U;
 	uint32_t power_limit_w = config->max_motor_power_w;
 	if (power_limit_w == 0 || power_limit_w > ASSIST_MOTOR_POWER_HARD_MAX_W) {
 		power_limit_w = ASSIST_MOTOR_POWER_HARD_MAX_W;
@@ -137,9 +170,12 @@ static bool calculate_power_linear(
 	}
 
 	uint32_t human_power_w = human_power_mw / 1000U;
+	uint32_t assist_basis_power_w = assist_basis_power_mw / 1000U;
 	uint32_t motor_power_w = motor_power_mw / 1000U;
 	output->human_power_w = (human_power_w > UINT16_MAX) ?
 		UINT16_MAX : (uint16_t)human_power_w;
+	output->assist_basis_power_w = (assist_basis_power_w > UINT16_MAX) ?
+		UINT16_MAX : (uint16_t)assist_basis_power_w;
 	output->motor_power_w = (uint16_t)motor_power_w;
 	output->requested_battery_current_ma = requested_current_ma;
 	output->iq_request = iq_request;
@@ -152,6 +188,12 @@ const assist_level_config_t *assist_modes_get_default_level(uint8_t level_index)
 		level_index = 0;
 	}
 	return &default_levels[level_index];
+}
+
+void assist_modes_reset(void)
+{
+	assist_start_reset();
+	clear_output(&last_output);
 }
 
 bool assist_modes_calculate(
