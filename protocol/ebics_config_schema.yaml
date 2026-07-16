@@ -12,7 +12,9 @@ wire_protocol:
   transport: versioned_multiframe_block
   legacy_compatibility: Para0_Para1_Para2_read_write
   id_state: unassigned
-  numeric_values: engineering_units
+  numeric_values: user_facing_engineering_units
+  torque_user_unit: kilogram_force
+  torque_native_values: hidden_service_and_firmware_only
   wire_encoding: round_engineering_value_divided_by_scale
   id_policy: >-
     Do not reuse apparently free Para0/Para1/Para2 bytes. Audit the existing
@@ -60,6 +62,16 @@ access_profiles:
     persistent: true
     operations: [read, apply_ram, save_flash, revert]
     compatibility_only: true
+  read_only:
+    persistent: false
+    operations: [read]
+  calibration_operation:
+    persistent: false
+    operations: [calibrate]
+  internal_persistent:
+    persistent: true
+    operations: [read, apply_ram, save_flash, revert]
+    user_visible: false
 
 enums:
   mode_type:
@@ -91,6 +103,12 @@ rules:
     applies_until: hardware_legacy_regression_accepted
   - id: no_rotation_safe_default
     expression: assist_without_rotation == false
+  - id: torque_public_scale
+    expression: torque_full_scale_kg == 60.00
+  - id: torque_zero_automatic_only
+    expression: torque_zero_native is not writable
+  - id: torque_calibration_order
+    expression: torque_full_scale_native > torque_zero_native
 
 # wire_id: null is intentional in draft version 0. It is not a free byte.
 profile_fields:
@@ -177,14 +195,25 @@ profile_fields:
     safety_relevant: true
     ui_group: start_boost
 
-  - key: without_rotation_threshold_mv
+  - key: without_rotation_threshold_kg
     wire_id: null
     since: 1
     access: persistent_rw
     per_level: true
-    value: {type: u16, scale: 1, unit: millivolt_above_zero, min: 0, max: 300, default: 18}
-    implementation: active_compile_time_default_protocol_planned
+    value: {type: u16, scale: 0.01, unit: kilogram_force, min: 0.00, max: 60.00, default: 0.86}
+    implementation: active_native_threshold_kg_boundary_planned
+    legacy_native_default: 18_millivolt_above_zero_at_2000_millivolt_full_scale
     ui_group: start_boost
+
+  - key: torque_lower_threshold_kg
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u16, scale: 0.01, unit: kilogram_force, min: 0.00, max: 60.00, default: null}
+    implementation: planned_kg_boundary_for_existing_legacy_threshold
+    legacy_binding: Para0_TQO_threshold_level_slots
+    ui_group: torque_sensor
 
   - key: startup_boost_enabled
     wire_id: null
@@ -220,6 +249,16 @@ profile_fields:
     per_level: true
     value: {type: u8, scale: 1, unit: rpm, min: 0, max: 120, default: 45}
     implementation: active_compile_time_default_protocol_planned
+    ui_group: start_boost
+
+  - key: startup_boost_auto_threshold_kg
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u16, scale: 0.01, unit: kilogram_force, min: 0.00, max: 60.00, default: 0.96}
+    implementation: active_native_constant_kg_boundary_planned
+    legacy_native_default: 20_millivolt_above_zero_at_2000_millivolt_full_scale
     ui_group: start_boost
 
   - key: smooth_start_enabled
@@ -315,6 +354,66 @@ profile_fields:
     implementation: planned_power
     ui_group: speed
 
+torque_fields:
+  - key: torque_full_scale_kg
+    wire_id: null
+    since: 1
+    access: read_only
+    per_level: false
+    value: {type: u16, scale: 0.01, unit: kilogram_force, min: 60.00, max: 60.00, default: 60.00}
+    implementation: fixed_public_scale
+    ui_group: torque_sensor
+
+  - key: torque_zero_native
+    wire_id: null
+    since: 1
+    access: read_only
+    per_level: false
+    value: {type: u16, scale: 1, unit: native_torque_sensor, min: 0, max: 65535, default: null}
+    implementation: existing_automatic_zero_diagnostic_only
+    user_visible: false
+    ui_group: hidden_service
+
+  - key: torque_calibration_reference_kg
+    wire_id: null
+    since: 1
+    access: calibration_operation
+    per_level: false
+    value: {type: u16, scale: 0.01, unit: kilogram_force, min: 0.01, max: 60.00, default: null}
+    implementation: planned_capture_and_extrapolate_to_60kg
+    ui_group: torque_sensor_calibration
+
+  - key: torque_full_scale_native
+    wire_id: null
+    since: 1
+    access: internal_persistent
+    per_level: false
+    value: {type: u16, scale: 1, unit: native_torque_sensor, min: 1, max: 65535, default: null}
+    implementation: planned_replacement_for_compile_time_TQ_FULL_SCALE_MV
+    current_binding: TQ_FULL_SCALE_MV
+    user_visible: false
+    ui_group: hidden_service
+
+  - key: torque_gate_start_kg
+    wire_id: null
+    since: 1
+    access: legacy_rw
+    per_level: false
+    value: {type: u16, scale: 0.01, unit: kilogram_force, min: 0.00, max: 60.00, default: 0.86}
+    current_binding: TQ_GATE_MIN
+    legacy_native_default: 18_millivolt_above_zero_at_2000_millivolt_full_scale
+    ui_group: torque_sensor
+
+  - key: torque_gate_release_kg
+    wire_id: null
+    since: 1
+    access: legacy_rw
+    per_level: false
+    value: {type: u16, scale: 0.01, unit: kilogram_force, min: 0.00, max: 60.00, default: 0.24}
+    current_binding: TQ_GATE_RELEASE
+    legacy_native_default: 5_millivolt_above_zero_at_2000_millivolt_full_scale
+    ui_group: torque_sensor
+
 legacy_global_fields:
   - key: iq_rise_slow_ms
     wire_id: null
@@ -387,33 +486,6 @@ legacy_global_fields:
     value: {type: u8, scale: 1, unit: rpm, min: 0, max: 150, default: 70}
     current_binding: IQ_RAMP_CAD_HI
     ui_group: advanced_legacy_dynamics
-
-  - key: torque_full_scale_mv
-    wire_id: null
-    since: 1
-    access: legacy_rw
-    per_level: false
-    value: {type: u16, scale: 1, unit: millivolt, min: 100, max: 5000, default: 2000}
-    current_binding: TQ_FULL_SCALE_MV
-    ui_group: advanced_torque_sensor
-
-  - key: torque_gate_start_mv
-    wire_id: null
-    since: 1
-    access: legacy_rw
-    per_level: false
-    value: {type: u16, scale: 1, unit: millivolt_above_zero, min: 0, max: 300, default: 18}
-    current_binding: TQ_GATE_MIN
-    ui_group: torque_sensor
-
-  - key: torque_gate_release_mv
-    wire_id: null
-    since: 1
-    access: legacy_rw
-    per_level: false
-    value: {type: u16, scale: 1, unit: millivolt_above_zero, min: 0, max: 300, default: 5}
-    current_binding: TQ_GATE_RELEASE
-    ui_group: torque_sensor
 
   - key: assist_start_steps
     wire_id: null
@@ -586,4 +658,6 @@ codegen_gates:
   - canable_command_space_audited
   - full_hmi_and_besst_logs_audited
   - schema_validation_passes
+  - torque_zero_has_no_write_operation
+  - all_user_visible_torque_fields_use_kilogram_force
   - hardware_legacy_regression_accepted

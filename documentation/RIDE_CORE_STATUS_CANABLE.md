@@ -1,11 +1,19 @@
 # EBICS Ride Core — status wdrożenia i plan Canable
 
-Aktualizacja: 2026-07-13  
-Gałąź: `refactor/ride-core`  
-Punkt przywracania: `m820-before-ride-core-refactor` (`d6bc69c`)  
-Ostatni sprawdzony build: `0.0148` M820/BL820
+Aktualizacja: 2026-07-16
 
-Ten dokument jest główną listą kontrolną Ride Core i konfiguratora. Rozróżnia:
+Gałąź: `refactor/ride-core`
+
+Punkt przywracania: `m820-before-ride-core-refactor` (`d6bc69c`)
+
+Ostatni sprawdzony build: `0.0155` M820/BL820
+
+Nadrzędna, aktualna lista całego zadania znajduje się w
+`documentation/RIDE_CORE_MASTER_CHECKLIST_PL.md`. Wiążąca decyzja dla torque:
+autozero EBICS pozostaje automatyczne, pełna skala użytkownika wynosi 60 kg,
+a zwykły interfejs Canable nie pokazuje ani nie przyjmuje mV.
+
+Ten dokument rozwija techniczny status Ride Core i konfiguratora. Rozróżnia:
 
 - **WDROŻONE** — aktywne w nowej architekturze,
 - **LEGACY** — działa, ale nadal należy do starego algorytmu,
@@ -51,10 +59,10 @@ korzystać wyłącznie z `rider_input_t`.
 | `assist_limits` | WDROŻONE | Kolejność Legacy: napięcie → temperatura → prawny taper prędkości |
 | `assist_dynamics` | WDROŻONE | Adaptacyjne rampy `Iq`, profilowy Release, szybka ścieżka WA i natychmiastowe cięcia bezpieczeństwa |
 | `assist_modes` | WDROŻONE/SZKIELET | Power Linear i Progressive działają; eMTB jest następnym trybem |
-| `assist_start` | WDROŻONE/SZKIELET | Startup Boost i niezależna obwiednia Smooth Start działają; Release jest następnym krokiem |
+| `assist_start` | WDROŻONE | Startup Boost, niezależna obwiednia Smooth Start i Release działają |
 | `ride_control` | WDROŻONE | Wybiera Legacy/TSDZ, zachowuje priorytet Walk, stosuje limity i dynamikę, wysyła `motor_command_t` |
 | `protocol/ebics_config_schema.yaml` | SZKIELET | Draft v0 opisuje pola, typy, skale, zakresy i operacje; numery `wire_id` celowo nieprzydzielone |
-| Audyt komend HMI/CAN | CZĘŚCIOWO | Firmware i lokalny log sprawdzone; brakuje kodu Canable i pełnych logów HMI/BESST |
+| Audyt komend HMI/CAN | CZĘŚCIOWO | Firmware, lokalny log i źródła Canable master wstępnie sprawdzone; brakuje pełnych logów HMI/BESST |
 | Test sprzętowy | TEST ROWERU | Decyzją użytkownika przeniesiony na koniec całego wdrożenia |
 
 ## 3. Co działa obecnie tylko w Legacy
@@ -79,7 +87,7 @@ Te funkcje pozostają do porównań. Nie należy dopisywać do nich nowych tryb�
 |---|---|---|
 | Power Linear TSDZ2 | WDROŻONE/DEV | Build `0.0155`; stałoprzecinkowe Power → prąd → Iq, domyślnie nadal Legacy |
 | Lokalna `cadence_for_assist` | WDROŻONE/DEV | Kadencja syntetyczna istnieje tylko wewnątrz `assist_modes` i nie zmienia snapshotu ani Legacy |
-| Assist without pedal rotation | WDROŻONE/DEV | Per-level, domyślnie OFF; próg 18 mV ponad zero, zakres ograniczony do 0–300 mV |
+| Assist without pedal rotation | WDROŻONE/DEV | Per-level, domyślnie OFF; obecny próg natywny zostanie wystawiony użytkownikowi w kg |
 | Startup Boost jako ustawienie per-level | WDROŻONE/DEV | Osobny `assist_start`, tryby Cadence/Speed/Auto, krzywa przed obliczeniem Power |
 | Smooth Start per-level | WDROŻONE/DEV | Obwiednia 0–100% po limitach i przed wspólną rampą; domyślnie OFF, 300 ms |
 | Release niezależny od startu | WDROŻONE/DEV | Czas zejścia pełnej skali Iq po zaniku pedałowania; 0 ms zachowuje adaptacyjną rampę |
@@ -207,7 +215,7 @@ firmware.
 | Lokalizacja | Zmienna firmware | Stan |
 |---|---|---|
 | `Para0[2,4,6,8,9]` | `assist_settings[level][2]` | TQfilter / „Ride Mode” per poziom; aktywne w Legacy |
-| `Para0[12..27]` | `TQO_threshold[1..5]` | Próg mapowania nacisku per poziom, 16-bit LE |
+| `Para0[12..27]` | `TQO_threshold[1..5]` | Wewnętrzny próg mapowania nacisku per poziom, 16-bit LE; UI docelowo przelicza go na kg |
 | `Para1[7..8]` | `battery_capacity_mah` | Aktywne |
 | `Para1[9]` | `phase_current_max` | Aktywny sprzętowy limit skali prądu |
 | `Para1[10]`, `[11]` | progi limp SOC | Aktywne; `0xFF` wyłącza |
@@ -244,12 +252,12 @@ Te wartości działają, ale zmiana wymaga przebudowania firmware.
 | `startup_boost_strength_pct` | `STARTUP_BOOST_FACTOR` | 200% dodatkowego nacisku | Start i Boost |
 | `startup_boost_cadence_step` | `STARTUP_BOOST_CADENCE_STEP` | 25/256 na RPM | Start i Boost / Zaawansowane |
 | `startup_boost_mode` | `STARTUP_BOOST_MODE` | CADENCE | Start i Boost |
-| `startup_boost_auto_threshold_mv` | `STARTUP_BOOST_AUTO_TQ` | 20 mV nad zerem | Start i Boost |
+| `startup_boost_auto_threshold_kg` | `STARTUP_BOOST_AUTO_TQ` | obecnie wewnętrzne 20 mV; docelowo kg | Start i Boost |
 | `smooth_start_enabled` | `SMOOTH_START_ENABLE` | OFF | Start i Boost |
 | `smooth_start_ms` | `START_RAMP_TICKS` | 300 ms | Start i Boost |
-| `torque_full_scale_mv` | `TQ_FULL_SCALE_MV` | 2000 mV | Czujnik momentu / Zaawansowane |
-| `torque_gate_start_mv` | `TQ_GATE_MIN` | 18 mV nad zerem | Czujnik momentu |
-| `torque_gate_release_mv` | `TQ_GATE_RELEASE` | 5 mV nad zerem | Czujnik momentu |
+| `torque_full_scale_kg` | `TQ_FULL_SCALE_MV` + kalibracja | stałe 60 kg w UI; endpoint natywny ukryty | Czujnik momentu |
+| `torque_gate_start_kg` | `TQ_GATE_MIN` | obecnie wewnętrzne 18 mV; docelowo kg | Czujnik momentu |
+| `torque_gate_release_kg` | `TQ_GATE_RELEASE` | obecnie wewnętrzne 5 mV; docelowo kg | Czujnik momentu |
 | `assist_start_steps` | `START_MIN_STEPS` | 4 kroki | Czujnik PAS / Zaawansowane |
 | `pas_stop_ms` | `PAS_STOP_TICKS` | 500 ms | Czujnik PAS |
 
@@ -272,7 +280,7 @@ Poniższe pola nie mają jeszcze przydzielonych ID protokołu.
 | `max_motor_power_w` | Maksymalna moc silnika | W | 0–1500 | FW + protokół + UI |
 | `max_iq_pct` | Maksymalny Iq poziomu | % limitu fazowego | 0–100 | FW + protokół + UI |
 | `assist_without_rotation` | Pomoc bez obrotu | bool | OFF/ON; domyślnie OFF | FW aktywne; protokół + UI do podłączenia |
-| `without_rotation_threshold_mv` | Próg startu bez obrotu | mV ponad zero | 0–300 | FW aktywne; protokół + UI do podłączenia |
+| `without_rotation_threshold_kg` | Próg startu bez obrotu | kg | 0,00–60,00 | FW używa jeszcze wartości natywnej; konwersja + protokół + UI do podłączenia |
 | `startup_boost_enabled` | Startup Boost | bool | OFF/ON | FW aktywne; protokół + UI do podłączenia |
 | `startup_boost_mode` | Tryb Boost | enum | Cadence, Speed, Auto | FW aktywne; protokół + UI do podłączenia |
 | `startup_boost_strength_pct` | Siła Boost | % dodatkowego nacisku | 0–300 | FW aktywne; protokół + UI do podłączenia |
@@ -326,7 +334,9 @@ Poniższe elementy są wewnętrzne albo deweloperskie:
 - parametry PI FOC, Clarke/Park, SVPWM,
 - bezpośredni zapis `Iq` lub `Id`,
 - progi awaryjnego odcięcia bez walidacji firmware,
-- `MagicNumber` i checksumy bloków.
+- `MagicNumber` i checksumy bloków,
+- surowe ADC/mV torque poza ukrytą diagnostyką developerską,
+- ręczne ustawianie punktu zerowego torque.
 
 Tryb wyboru Legacy/TSDZ może istnieć wyłącznie w ukrytym panelu developerskim.
 
