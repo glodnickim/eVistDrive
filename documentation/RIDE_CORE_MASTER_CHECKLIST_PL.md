@@ -4,9 +4,9 @@ Aktualizacja: 2026-07-16
 
 Gałąź firmware: `refactor/ride-core`
 
-Ostatni zatwierdzony commit: `df7bc8c` (`assist: implement eMTB TSDZ mode`)
+Ostatni zatwierdzony commit: `8e1d134` (`assist: add profile banks with handlebar gesture`)
 
-Ostatni sprawdzony build: `0.0160_M820_BL820.bin`
+Ostatni sprawdzony build: `0.0161_M820_BL820.bin`
 
 Silnik uruchamiany domyślnie: **Legacy** (`RIDE_ENGINE_DEFAULT=0`)
 
@@ -171,13 +171,18 @@ audytu wzoru i osobnego commita.
 
 ### 7.2a. Banki profili (nowy wymóg właściciela, 2026-07-16 — FW-005)
 
-- [ ] Struktura banków (2–3 × 6 poziomów): bank 1 = Power, bank 2 = eMTB,
-  bank 3 = rezerwa; aktywny bank w stanie `assist_modes`.
-- [ ] Gest przełączania z kierownicy (propozycja: wielokrotne kliknięcie
-  w trybie B) — mini-karta po analizie CAN, co HMI wysyła przy „+" na
-  maks. poziomie / krótkim Walk.
-- [ ] Sygnalizacja aktywnego banku na HMI — decyzja właściciela.
-- [ ] Zapamiętanie banku (bajt w MotorParams, zapis strategią jak SOC).
+- [x] Struktura banków (2 × 6 poziomów, arch. rozszerzalna): bank 1 = Power
+  Linear, bank 2 = eMTB TSDZ (te same poziomy mocy) — `8e1d134`, build `0.0161`.
+- [x] Gest przełączania (wariant A zaakceptowany): na BOOST szybkie
+  wahnięcie BOOST↔SPORT+ dwa razy w ~2,5 s; wykrywany na zmianach kodu
+  poziomu z ramki 0x6300 — `8e1d134`.
+- [x] Sygnalizacja (decyzja właściciela): pole prędkości HMI przez ~3 s
+  pokazuje 10 km/h (Power) lub 20 km/h (eMTB) — `8e1d134`.
+- [x] Zapamiętanie banku: dawny slot `torque_offset` w EEPROM
+  (`active_profile_bank`); zapis wyłącznie na pełnym postoju — `8e1d134`.
+- [ ] TEST ROWERU/KOŁA: gest przełącza (splash 10/20), przypadkowe zmiany
+  poziomów nie przełączają, bank przeżywa restart, brak zacięć przy zapisie.
+- [ ] Bank 3 + edycja zawartości banków — z protokołem/CANable.
 
 ### 7.3. Walk Assist
 

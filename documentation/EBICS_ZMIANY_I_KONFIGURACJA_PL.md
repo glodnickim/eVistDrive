@@ -77,6 +77,21 @@ Zmieniasz wartość → przebudowa (`build_firmware.ps1`) → wgranie. Domyślne
 
 ## 4. Co zmieniliśmy (changelog — od najnowszego)
 
+### 0.0161 — Dwa banki profili przełączane z kierownicy (FW-005)
+Co to jest: obok 5 poziomów masz teraz dwa „charaktery" roweru — **bank 1 =
+Power** (wsparcie proporcjonalne do Twojej mocy) i **bank 2 = eMTB**
+(adaptacyjny: im mocniej depczesz, tym nieproporcjonalnie więcej pomocy).
+Przełączanie bez komputera: na najwyższym poziomie (BOOST) szybko zejdź i
+wróć DWA razy (− + − +, w ~2,5 s). Potwierdzenie: pole prędkości na
+wyświetlaczu przez ~3 s pokaże **10 km/h = Power** albo **20 km/h = eMTB**.
+Wybór jest zapamiętywany (zapis dopiero na postoju — celowo, żeby zapis do
+pamięci nigdy nie zaciął jadącego silnika). Zwykłe zmiany poziomów nie
+przełączają banku (potrzebne jest pełne podwójne wahnięcie w krótkim czasie).
+UWAGA: banki działają w nowym silniku jazdy (developerskim); na domyślnym
+Legacy gest niczego nie zmienia w charakterze jazdy — przygotowanie pod
+przełączenie silnika po testach. Commit `8e1d134`.
+WYMAGANY TEST NA ROWERZE/KOLE: gest, splash 10/20, restart, brak zacięć.
+
 ### 0.0160 — Tryb eMTB TSDZ w nowym silniku jazdy (FW-004; domyślnie nieaktywny)
 Co to jest: adaptacyjny tryb w stylu „eMTB" — im mocniej naciskasz, tym
 NIEPROPORCJONALNIE więcej pomocy (delikatne kręcenie = mało, zdecydowane
