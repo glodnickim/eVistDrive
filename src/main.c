@@ -181,6 +181,7 @@ uint16_t voltage_raw_filtered=0;
 uint8_t  torque_fault=0;        // Error 25 active (out-of-range signal debounced, or implausible rest)
 uint16_t tq_fault_ticks=0;      // debounce for out-of-range signal
 uint32_t tq_fault_hold=0;       // min hold after the cause clears (~5 s) - no flicker/assist chatter
+volatile uint8_t bank_save_request=0; //FW-006: 0x6022 received -> persist banks at next standstill
 uint32_t ui32_erps_cumulated=0;
 int32_t q31_rotorposition_hall=0;
 q31_t q31_rotorposition_absolute=0;
@@ -443,6 +444,11 @@ int main(void)
     read_virtual_eeprom();
     parse_MOparams(&MP);
     torque_input_init(MP.torque_full_scale_native);
+    assist_modes_init();
+    if(MP.bank_store_magic==0xB16B){ //FW-006: restore user bank configs (bad blobs are rejected -> defaults stay)
+        assist_modes_apply_bank_blob(&MP.bank_store[0][0], ASSIST_BANK_BLOB_LEN);
+        assist_modes_apply_bank_blob(&MP.bank_store[1][0], ASSIST_BANK_BLOB_LEN);
+    }
     assist_modes_set_active_bank((uint8_t)MP.active_profile_bank);
 
     for (int i = 0; i < 2000; i++) {//let the ADC stabilize
@@ -1608,10 +1614,16 @@ void reg_ADC_processing(void)
         }
         if(bank_splash_ticks && --bank_splash_ticks==0) MS.bank_splash_kmh=0;
         //persist only at full standstill: flash write stalls the CPU, so never while driving
-        if(bank_save_pending && MS.i_q_setpoint==0 && MS.cadence==0 && MS.Speedx100==0){
+        if((bank_save_pending || bank_save_request) && MS.i_q_setpoint==0 && MS.cadence==0 && MS.Speedx100==0){
             MP.active_profile_bank = assist_modes_get_active_bank();
+            if(bank_save_request){ //FW-006: 0x6022 -> persist full bank contents
+                assist_modes_serialize_bank(0, &MP.bank_store[0][0]);
+                assist_modes_serialize_bank(1, &MP.bank_store[1][0]);
+                MP.bank_store_magic=0xB16B;
+            }
             write_virtual_eeprom();
             bank_save_pending=0;
+            bank_save_request=0;
         }
     }
     {

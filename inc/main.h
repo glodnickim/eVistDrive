@@ -169,6 +169,10 @@ typedef struct
 	uint8_t       	limp_soc_limit;                 // Canable Para1[10], 0xFF = disabled
 	uint8_t       	limp_soc_limit_stage2;          // Canable Para1[11], 0xFF = disabled
 
+	//--- FW-006: profile bank storage (appended at end to keep EEPROM offsets stable) ---
+	uint16_t       	bank_store_magic;               // 0xB16B = bank_store holds valid serialized banks
+	uint8_t       	bank_store[2][192];             // serialized bank blobs (wire format v1, 185 B used)
+
 }MotorParams_t;
 
 typedef struct

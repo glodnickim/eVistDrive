@@ -56,11 +56,16 @@ typedef struct {
 } assist_mode_output_t;
 
 #define ASSIST_BANK_COUNT 2U
+#define ASSIST_BANK_BLOB_LEN 185U
 
 const assist_level_config_t *assist_modes_get_default_level(uint8_t level_index);
 
+void assist_modes_init(void);
 void assist_modes_set_active_bank(uint8_t bank_index);
 uint8_t assist_modes_get_active_bank(void);
+
+uint16_t assist_modes_serialize_bank(uint8_t bank_index, uint8_t *buffer);
+bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length);
 
 void assist_modes_reset(void);
 

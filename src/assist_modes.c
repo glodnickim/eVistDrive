@@ -84,12 +84,48 @@ static const assist_level_config_t emtb_levels[ASSIST_LEVEL_COUNT + 1] = {
 #undef DEFAULT_POWER_LEVEL
 #undef DEFAULT_IDLE_LEVEL
 
-static const assist_level_config_t *const bank_levels[ASSIST_BANK_COUNT] = {
+static const assist_level_config_t *const bank_defaults[ASSIST_BANK_COUNT] = {
 	default_levels,
 	emtb_levels
 };
 
+static assist_level_config_t bank_config[ASSIST_BANK_COUNT][ASSIST_LEVEL_COUNT + 1];
 static uint8_t active_bank;
+
+#define BANK_BLOB_MAGIC0 0x45U
+#define BANK_BLOB_MAGIC1 0x42U
+#define BANK_BLOB_VERSION 1U
+#define BANK_BLOB_HEADER_LEN 8U
+#define BANK_RECORD_LEN 35U
+
+static uint16_t bank_blob_crc16(const uint8_t *buffer, uint16_t length)
+{
+	uint16_t crc = 0xFFFFU;
+	for (uint16_t i = 0; i < length; i++) {
+		crc ^= (uint16_t)buffer[i] << 8;
+		for (uint8_t bit = 0; bit < 8; bit++) {
+			crc = (crc & 0x8000U) ?
+				(uint16_t)((crc << 1) ^ 0x1021U) : (uint16_t)(crc << 1);
+		}
+	}
+	return crc;
+}
+
+static bool bank_mode_valid(uint8_t mode)
+{
+	return mode == ASSIST_MODE_POWER_LINEAR ||
+		mode == ASSIST_MODE_POWER_PROGRESSIVE ||
+		mode == ASSIST_MODE_EMTB_TSDZ ||
+		mode == ASSIST_MODE_TORQUE;
+}
+
+static uint16_t clamp_u16(uint16_t value, uint16_t min, uint16_t max)
+{
+	if (value < min) {
+		return min;
+	}
+	return (value > max) ? max : value;
+}
 
 static assist_mode_output_t last_output;
 
@@ -562,7 +598,16 @@ const assist_level_config_t *assist_modes_get_default_level(uint8_t level_index)
 	if (level_index > ASSIST_LEVEL_COUNT) {
 		level_index = 0;
 	}
-	return &bank_levels[active_bank][level_index];
+	return &bank_config[active_bank][level_index];
+}
+
+void assist_modes_init(void)
+{
+	for (uint8_t bank = 0; bank < ASSIST_BANK_COUNT; bank++) {
+		for (uint8_t level = 0; level <= ASSIST_LEVEL_COUNT; level++) {
+			bank_config[bank][level] = bank_defaults[bank][level];
+		}
+	}
 }
 
 void assist_modes_set_active_bank(uint8_t bank_index)
@@ -579,6 +624,137 @@ void assist_modes_set_active_bank(uint8_t bank_index)
 uint8_t assist_modes_get_active_bank(void)
 {
 	return active_bank;
+}
+
+static void put_u16(uint8_t *buffer, uint16_t value)
+{
+	buffer[0] = (uint8_t)(value & 0xFFU);
+	buffer[1] = (uint8_t)(value >> 8);
+}
+
+static uint16_t get_u16(const uint8_t *buffer)
+{
+	return (uint16_t)buffer[0] | ((uint16_t)buffer[1] << 8);
+}
+
+uint16_t assist_modes_serialize_bank(uint8_t bank_index, uint8_t *buffer)
+{
+	if (bank_index >= ASSIST_BANK_COUNT || buffer == 0) {
+		return 0;
+	}
+	buffer[0] = BANK_BLOB_MAGIC0;
+	buffer[1] = BANK_BLOB_MAGIC1;
+	buffer[2] = BANK_BLOB_VERSION;
+	buffer[3] = bank_index;
+	buffer[4] = ASSIST_LEVEL_COUNT;
+	buffer[5] = BANK_RECORD_LEN;
+	buffer[6] = active_bank;
+	buffer[7] = 0;
+	uint8_t *record = &buffer[BANK_BLOB_HEADER_LEN];
+	for (uint8_t level = 1; level <= ASSIST_LEVEL_COUNT; level++) {
+		const assist_level_config_t *cfg = &bank_config[bank_index][level];
+		record[0] = (uint8_t)cfg->mode_type;
+		put_u16(&record[1], cfg->support_ratio_pct);
+		put_u16(&record[3], cfg->support_min_pct);
+		put_u16(&record[5], cfg->support_max_pct);
+		put_u16(&record[7], cfg->reference_power_w);
+		record[9] = cfg->progression_pct;
+		record[10] = cfg->emtb_parameter;
+		record[11] = cfg->emtb_based_on_power ? 1U : 0U;
+		put_u16(&record[12], cfg->emtb_reference_voltage_mv);
+		record[14] = cfg->torque_assist_factor;
+		put_u16(&record[15], cfg->max_motor_power_w);
+		record[17] = cfg->max_iq_pct;
+		record[18] = cfg->assist_without_rotation ? 1U : 0U;
+		put_u16(&record[19], cfg->without_rotation_threshold_mv);
+		record[21] = cfg->startup_boost.enabled ? 1U : 0U;
+		record[22] = (uint8_t)cfg->startup_boost.mode;
+		put_u16(&record[23], cfg->startup_boost.strength_pct);
+		record[25] = cfg->startup_boost.end_rpm;
+		record[26] = cfg->smooth_start.enabled ? 1U : 0U;
+		put_u16(&record[27], cfg->smooth_start.duration_ms);
+		put_u16(&record[29], cfg->release_ms);
+		put_u16(&record[31], cfg->power_rise_filter_ms);
+		put_u16(&record[33], cfg->power_fall_filter_ms);
+		record += BANK_RECORD_LEN;
+	}
+	uint16_t crc_at = BANK_BLOB_HEADER_LEN +
+		(uint16_t)ASSIST_LEVEL_COUNT * BANK_RECORD_LEN;
+	put_u16(&buffer[crc_at], bank_blob_crc16(buffer, crc_at));
+	return ASSIST_BANK_BLOB_LEN;
+}
+
+bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length)
+{
+	if (buffer == 0 ||
+		length < ASSIST_BANK_BLOB_LEN ||
+		buffer[0] != BANK_BLOB_MAGIC0 ||
+		buffer[1] != BANK_BLOB_MAGIC1 ||
+		buffer[2] != BANK_BLOB_VERSION ||
+		buffer[3] >= ASSIST_BANK_COUNT ||
+		buffer[4] != ASSIST_LEVEL_COUNT ||
+		buffer[5] != BANK_RECORD_LEN) {
+		return false;
+	}
+	uint16_t crc_at = BANK_BLOB_HEADER_LEN +
+		(uint16_t)ASSIST_LEVEL_COUNT * BANK_RECORD_LEN;
+	if (get_u16(&buffer[crc_at]) != bank_blob_crc16(buffer, crc_at)) {
+		return false;
+	}
+	const uint8_t *record = &buffer[BANK_BLOB_HEADER_LEN];
+	for (uint8_t level = 1; level <= ASSIST_LEVEL_COUNT; level++) {
+		if (!bank_mode_valid(record[0])) {
+			return false;
+		}
+		record += BANK_RECORD_LEN;
+	}
+	uint8_t bank_index = buffer[3];
+	record = &buffer[BANK_BLOB_HEADER_LEN];
+	for (uint8_t level = 1; level <= ASSIST_LEVEL_COUNT; level++) {
+		assist_level_config_t *cfg = &bank_config[bank_index][level];
+		cfg->mode_type = (assist_mode_type_t)record[0];
+		cfg->support_ratio_pct =
+			clamp_u16(get_u16(&record[1]), 0, ASSIST_SUPPORT_RATIO_MAX_PCT);
+		cfg->support_min_pct =
+			clamp_u16(get_u16(&record[3]), 0, ASSIST_SUPPORT_RATIO_MAX_PCT);
+		cfg->support_max_pct =
+			clamp_u16(get_u16(&record[5]), 0, ASSIST_SUPPORT_RATIO_MAX_PCT);
+		cfg->reference_power_w = clamp_u16(get_u16(&record[7]),
+			PROGRESSIVE_REFERENCE_POWER_MIN_W,
+			PROGRESSIVE_REFERENCE_POWER_MAX_W);
+		cfg->progression_pct = (record[9] > PROGRESSION_MAX_PCT) ?
+			PROGRESSION_MAX_PCT : record[9];
+		cfg->emtb_parameter = (record[10] > EMTB_TSDZ_PARAMETER_MAX) ?
+			EMTB_TSDZ_PARAMETER_MAX : record[10];
+		cfg->emtb_based_on_power = record[11] != 0;
+		cfg->emtb_reference_voltage_mv = clamp_u16(get_u16(&record[12]),
+			EMTB_REFERENCE_VOLTAGE_MIN_MV, EMTB_REFERENCE_VOLTAGE_MAX_MV);
+		cfg->torque_assist_factor = record[14];
+		cfg->max_motor_power_w = clamp_u16(get_u16(&record[15]),
+			0, ASSIST_MOTOR_POWER_HARD_MAX_W);
+		cfg->max_iq_pct = (record[17] > 100U) ? 100U : record[17];
+		cfg->assist_without_rotation = record[18] != 0;
+		cfg->without_rotation_threshold_mv = clamp_u16(get_u16(&record[19]),
+			0, ASSIST_WITHOUT_ROTATION_THRESHOLD_MAX_MV);
+		cfg->startup_boost.enabled = record[21] != 0;
+		cfg->startup_boost.mode = (record[22] > ASSIST_STARTUP_BOOST_AUTO) ?
+			ASSIST_STARTUP_BOOST_CADENCE :
+			(assist_startup_boost_mode_t)record[22];
+		cfg->startup_boost.strength_pct =
+			clamp_u16(get_u16(&record[23]), 0, 300U);
+		cfg->startup_boost.end_rpm = (record[25] > 120U) ? 120U : record[25];
+		cfg->smooth_start.enabled = record[26] != 0;
+		cfg->smooth_start.duration_ms =
+			clamp_u16(get_u16(&record[27]), 0, 5000U);
+		cfg->release_ms = clamp_u16(get_u16(&record[29]), 0, 3000U);
+		cfg->power_rise_filter_ms =
+			clamp_u16(get_u16(&record[31]), 0, 3000U);
+		cfg->power_fall_filter_ms =
+			clamp_u16(get_u16(&record[33]), 0, 3000U);
+		record += BANK_RECORD_LEN;
+	}
+	assist_modes_reset();
+	return true;
 }
 
 void assist_modes_reset(void)
