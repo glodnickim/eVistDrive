@@ -77,6 +77,19 @@ Zmieniasz wartość → przebudowa (`build_firmware.ps1`) → wgranie. Domyślne
 
 ## 4. Co zmieniliśmy (changelog — od najnowszego)
 
+### 0.0160 — Tryb eMTB TSDZ w nowym silniku jazdy (FW-004; domyślnie nieaktywny)
+Co to jest: adaptacyjny tryb w stylu „eMTB" — im mocniej naciskasz, tym
+NIEPROPORCJONALNIE więcej pomocy (delikatne kręcenie = mało, zdecydowane
+deptanie = szybko dochodzi do pełnej mocy). Wierny port wzoru z TSDZ2
+(emmebrusa, `apply_emtb_assist`): progresja `nacisk²/mianownik`, mianownik
+maleje z parametrem poziomu (60/100/140/160/180) i — w wariancie „power" —
+z kadencją; moc odniesiona do 36 V, więc charakter nie zmienia się ze
+zużyciem baterii. Przykład (SPORT): lekki nacisk ≈ 11 W, średni ≈ 230 W,
+pełny ≈ 900 W (przed limitami poziomu).
+WAŻNE: tryb jest w firmware, ale ŻADEN profil go jeszcze nie wybiera —
+zachowanie roweru bez zmian do czasu protokołu konfiguracji / banków (FW-005).
+Commit `df7bc8c`.
+
 ### 0.0159 — Error 25: silnik nie może wspomagać na uszkodzonym czujniku (FW-003)
 Co czujesz: gdy czujnik nacisku się psuje, na wyświetlaczu pojawia się Error 25,
 a wspomaganie **łagodnie gaśnie do zera** (pedałowanie i manetka; Walk był blokowany

@@ -4,9 +4,9 @@ Aktualizacja: 2026-07-16
 
 Gałąź firmware: `refactor/ride-core`
 
-Ostatni zatwierdzony commit: `f69b8e5` (`torque: hold fault 5 s and cut all assist on Error 25`)
+Ostatni zatwierdzony commit: `df7bc8c` (`assist: implement eMTB TSDZ mode`)
 
-Ostatni sprawdzony build: `0.0159_M820_BL820.bin`
+Ostatni sprawdzony build: `0.0160_M820_BL820.bin`
 
 Silnik uruchamiany domyślnie: **Legacy** (`RIDE_ENGINE_DEFAULT=0`)
 
@@ -152,13 +152,32 @@ audytu wzoru i osobnego commita.
 
 ### 7.2. eMTB
 
-- [ ] Dokończyć wierny tryb eMTB TSDZ na przygotowanym sygnale EBICS.
-- [ ] Zachować dynamiczny mianownik i opcjonalną zależność od kadencji/mocy
-  zgodnie z referencją TSDZ.
+- [x] Dokończyć wierny tryb eMTB TSDZ na przygotowanym sygnale EBICS —
+  `df7bc8c`, build `0.0160`; wzór zacytowany ze źródła emmebrusa
+  (`apply_emtb_assist`, ebike_app.c:950): `delta²/(510−2·param[−kadencja
+  przy based_on_power]+10)`, 1 jednostka = 0,16 A, normalizacja do napięcia
+  odniesienia profilu.
+- [x] Zachować dynamiczny mianownik i opcjonalną zależność od kadencji/mocy
+  zgodnie z referencją TSDZ — `df7bc8c`.
 - [ ] Dodać eMTB Custom z regulowaną krzywą.
-- [ ] Nałożyć wspólne: Boost, filtry, limity, Smooth Start, Release i dynamikę.
-- [ ] Dodać walidację przepełnień i dzielenia przez zero.
-- [ ] Zbudować firmware i zatwierdzić osobnym commitem.
+- [x] Nałożyć wspólne: Boost, filtry, limity, Smooth Start, Release i dynamikę
+  — eMTB używa `prepare_assist_input` (boost) + wspólnego
+  `finish_power_request` (limity/filtr/P-U) + wspólnego ogona ride_control.
+- [x] Dodać walidację przepełnień i dzielenia przez zero — clamp param ≤250
+  (mianownik ≥10), tory uint32 policzone, ref. napięcie clamp 24–60 V.
+- [x] Zbudować firmware i zatwierdzić osobnym commitem — `0.0160`.
+- [ ] Wybór trybu w runtime (mode_type per poziom/bank) — z protokołem/FW-005.
+- [ ] TEST ROWERU trybu eMTB — końcowa sesja sprzętowa.
+
+### 7.2a. Banki profili (nowy wymóg właściciela, 2026-07-16 — FW-005)
+
+- [ ] Struktura banków (2–3 × 6 poziomów): bank 1 = Power, bank 2 = eMTB,
+  bank 3 = rezerwa; aktywny bank w stanie `assist_modes`.
+- [ ] Gest przełączania z kierownicy (propozycja: wielokrotne kliknięcie
+  w trybie B) — mini-karta po analizie CAN, co HMI wysyła przy „+" na
+  maks. poziomie / krótkim Walk.
+- [ ] Sygnalizacja aktywnego banku na HMI — decyzja właściciela.
+- [ ] Zapamiętanie banku (bajt w MotorParams, zapis strategią jak SOC).
 
 ### 7.3. Walk Assist
 

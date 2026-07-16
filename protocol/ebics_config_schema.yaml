@@ -185,6 +185,34 @@ profile_fields:
     legacy_binding: Para1_level_current_slots
     ui_group: limits
 
+  - key: emtb_parameter
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u8, scale: 1, unit: none, min: 0, max: 250, default: null}
+    implementation: active_firmware_defaults_60_100_140_160_180
+    reference: emmebrusa_apply_emtb_assist_denominator_510_minus_2x
+    ui_group: characteristics
+
+  - key: emtb_based_on_power
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: bool, scale: 1, unit: none, min: false, max: true, default: true}
+    implementation: active_cadence_reduces_denominator_when_true
+    ui_group: characteristics
+
+  - key: emtb_reference_voltage_mv
+    wire_id: null
+    since: 1
+    access: persistent_rw
+    per_level: true
+    value: {type: u16, scale: 1, unit: millivolt, min: 24000, max: 60000, default: 36000}
+    implementation: active_power_normalization_reference
+    ui_group: characteristics
+
   - key: assist_without_rotation
     wire_id: null
     since: 1
