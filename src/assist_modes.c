@@ -22,6 +22,7 @@
 #define EMTB_TSDZ_DENOMINATOR_MIN 10U
 #define EMTB_REFERENCE_VOLTAGE_MIN_MV 24000U
 #define EMTB_REFERENCE_VOLTAGE_MAX_MV 60000U
+#define EMTB_UNIT_CURRENT_MA 160U
 
 /*
  * Power ratios are based on the TSDZ2 reference factors 50/100/160/260,
@@ -277,6 +278,63 @@ static bool prepare_assist_input(
 	return true;
 }
 
+static bool finish_power_request(
+	const assist_level_config_t *config,
+	uint32_t battery_voltage_mv,
+	int32_t iq_limit,
+	uint32_t human_power_mw,
+	uint32_t assist_basis_power_mw,
+	uint32_t support_ratio_pct,
+	uint32_t motor_power_mw,
+	assist_mode_output_t *output)
+{
+	uint32_t power_limit_w = config->max_motor_power_w;
+	if (power_limit_w == 0 || power_limit_w > ASSIST_MOTOR_POWER_HARD_MAX_W) {
+		power_limit_w = ASSIST_MOTOR_POWER_HARD_MAX_W;
+	}
+	uint32_t power_limit_mw = power_limit_w * 1000U;
+	if (motor_power_mw > power_limit_mw) {
+		motor_power_mw = power_limit_mw;
+	}
+	uint32_t raw_motor_power_mw = motor_power_mw;
+	motor_power_mw = filter_motor_power(raw_motor_power_mw, config);
+
+	/*
+	 * The TSDZ2 modes convert requested motor power to battery current
+	 * using P/U. EBICS controls phase Iq, so the current request is converted
+	 * to native Iq units with CAL_I and then clamped. At low PWM duty this is
+	 * deliberately conservative: no duty-cycle compensation is injected into
+	 * the rider mode.
+	 */
+	uint32_t requested_current_ma =
+		(motor_power_mw * 1000U) / battery_voltage_mv;
+	int32_t iq_request = (int32_t)(requested_current_ma / CAL_I);
+	int32_t profile_iq_limit =
+		(iq_limit * (int32_t)config->max_iq_pct) / 100;
+	if (profile_iq_limit < 0) {
+		profile_iq_limit = 0;
+	}
+	if (iq_request > profile_iq_limit) {
+		iq_request = profile_iq_limit;
+	}
+
+	uint32_t human_power_w = human_power_mw / 1000U;
+	uint32_t assist_basis_power_w = assist_basis_power_mw / 1000U;
+	uint32_t raw_motor_power_w = raw_motor_power_mw / 1000U;
+	uint32_t motor_power_w = motor_power_mw / 1000U;
+	output->human_power_w = (human_power_w > UINT16_MAX) ?
+		UINT16_MAX : (uint16_t)human_power_w;
+	output->assist_basis_power_w = (assist_basis_power_w > UINT16_MAX) ?
+		UINT16_MAX : (uint16_t)assist_basis_power_w;
+	output->raw_motor_power_w = (uint16_t)raw_motor_power_w;
+	output->motor_power_w = (uint16_t)motor_power_w;
+	output->applied_support_ratio_pct = (support_ratio_pct > UINT16_MAX) ?
+		UINT16_MAX : (uint16_t)support_ratio_pct;
+	output->requested_battery_current_ma = requested_current_ma;
+	output->iq_request = iq_request;
+	return true;
+}
+
 static bool calculate_power(
 	const rider_input_t *input,
 	const assist_level_config_t *config,
@@ -313,50 +371,99 @@ static bool calculate_power(
 		config);
 	uint32_t motor_power_mw =
 		(assist_basis_power_mw * support_ratio_pct) / 100U;
-	uint32_t power_limit_w = config->max_motor_power_w;
-	if (power_limit_w == 0 || power_limit_w > ASSIST_MOTOR_POWER_HARD_MAX_W) {
-		power_limit_w = ASSIST_MOTOR_POWER_HARD_MAX_W;
-	}
-	uint32_t power_limit_mw = power_limit_w * 1000U;
-	if (motor_power_mw > power_limit_mw) {
-		motor_power_mw = power_limit_mw;
-	}
-	uint32_t raw_motor_power_mw = motor_power_mw;
-	motor_power_mw = filter_motor_power(raw_motor_power_mw, config);
+	return finish_power_request(
+		config,
+		battery_voltage_mv,
+		iq_limit,
+		human_power_mw,
+		assist_basis_power_mw,
+		support_ratio_pct,
+		motor_power_mw,
+		output);
+}
 
-	/*
-	 * The TSDZ2 Power mode converts requested motor power to battery current
-	 * using P/U. EBICS controls phase Iq, so the current request is converted
-	 * to native Iq units with CAL_I and then clamped. At low PWM duty this is
-	 * deliberately conservative: no duty-cycle compensation is injected into
-	 * the rider mode.
-	 */
-	uint32_t requested_current_ma =
-		(motor_power_mw * 1000U) / battery_voltage_mv;
-	int32_t iq_request = (int32_t)(requested_current_ma / CAL_I);
-	int32_t profile_iq_limit =
-		(iq_limit * (int32_t)config->max_iq_pct) / 100;
-	if (profile_iq_limit < 0) {
-		profile_iq_limit = 0;
-	}
-	if (iq_request > profile_iq_limit) {
-		iq_request = profile_iq_limit;
+/*
+ * Faithful port of emmebrusa TSDZ2-Smart-EBike-1 apply_emtb_assist()
+ * (src/ebike_app.c:950): denominator = 510 - 2*parameter, reduced by the
+ * cadence when the mode is power based, floored at +10; progressive target
+ * = delta^2 / denominator in the TSDZ 0..160 torque range; one TSDZ current
+ * unit is 0.16 A and the request is normalized to the reference voltage so
+ * the ride character does not follow battery sag.
+ */
+static bool calculate_emtb(
+	const rider_input_t *input,
+	const assist_level_config_t *config,
+	uint32_t battery_voltage_mv,
+	int32_t iq_limit,
+	assist_mode_output_t *output)
+{
+	prepared_assist_input_t prepared;
+	if (!prepare_assist_input(input, config, &prepared, output) ||
+		battery_voltage_mv == 0 ||
+		iq_limit <= 0 ||
+		config->emtb_parameter == 0 ||
+		config->max_iq_pct == 0) {
+		stop_power_filter(config);
+		return true;
 	}
 
-	uint32_t human_power_w = human_power_mw / 1000U;
-	uint32_t assist_basis_power_w = assist_basis_power_mw / 1000U;
-	uint32_t raw_motor_power_w = raw_motor_power_mw / 1000U;
-	uint32_t motor_power_w = motor_power_mw / 1000U;
-	output->human_power_w = (human_power_w > UINT16_MAX) ?
-		UINT16_MAX : (uint16_t)human_power_w;
-	output->assist_basis_power_w = (assist_basis_power_w > UINT16_MAX) ?
-		UINT16_MAX : (uint16_t)assist_basis_power_w;
-	output->raw_motor_power_w = (uint16_t)raw_motor_power_w;
-	output->motor_power_w = (uint16_t)motor_power_w;
-	output->applied_support_ratio_pct = (uint16_t)support_ratio_pct;
-	output->requested_battery_current_ma = requested_current_ma;
-	output->iq_request = iq_request;
-	return true;
+	uint32_t parameter = config->emtb_parameter;
+	if (parameter > EMTB_TSDZ_PARAMETER_MAX) {
+		parameter = EMTB_TSDZ_PARAMETER_MAX;
+	}
+	uint32_t reference_voltage_mv = config->emtb_reference_voltage_mv;
+	if (reference_voltage_mv < EMTB_REFERENCE_VOLTAGE_MIN_MV) {
+		reference_voltage_mv = EMTB_REFERENCE_VOLTAGE_MIN_MV;
+	}
+	if (reference_voltage_mv > EMTB_REFERENCE_VOLTAGE_MAX_MV) {
+		reference_voltage_mv = EMTB_REFERENCE_VOLTAGE_MAX_MV;
+	}
+
+	uint32_t delta_x160 =
+		((uint32_t)prepared.torque_for_assist_mv * EMTB_TSDZ_TORQUE_RANGE +
+		ASSIST_TORQUE_DELTA_MAX_MV / 2U) / ASSIST_TORQUE_DELTA_MAX_MV;
+
+	uint32_t denominator = EMTB_TSDZ_DENOMINATOR_BASE - 2U * parameter;
+	if (config->emtb_based_on_power) {
+		uint32_t cadence = prepared.cadence_for_assist_rpm;
+		denominator = (denominator > cadence) ? denominator - cadence : 0U;
+	}
+	denominator += EMTB_TSDZ_DENOMINATOR_MIN;
+
+	uint32_t target_x160 = (delta_x160 * delta_x160) / denominator;
+
+	uint32_t human_power_numerator =
+		(uint32_t)prepared.human_torque_mv *
+		(uint32_t)prepared.cadence_for_assist_rpm *
+		HUMAN_POWER_NUMERATOR_SCALE;
+	uint32_t human_power_mw =
+		human_power_numerator / HUMAN_POWER_MW_DENOMINATOR;
+	uint32_t assist_basis_power_numerator =
+		(uint32_t)prepared.torque_for_assist_mv *
+		(uint32_t)prepared.cadence_for_assist_rpm *
+		HUMAN_POWER_NUMERATOR_SCALE;
+	uint32_t assist_basis_power_mw =
+		assist_basis_power_numerator / HUMAN_POWER_MW_DENOMINATOR;
+
+	uint32_t motor_power_mw =
+		((target_x160 * reference_voltage_mv) / 1000U) *
+		EMTB_UNIT_CURRENT_MA;
+	uint32_t support_ratio_pct = (assist_basis_power_mw > 0U) ?
+		(motor_power_mw * 100U) / assist_basis_power_mw : 0U;
+
+	output->emtb_denominator = (uint16_t)denominator;
+	output->emtb_target_x160 = (target_x160 > UINT16_MAX) ?
+		UINT16_MAX : (uint16_t)target_x160;
+
+	return finish_power_request(
+		config,
+		battery_voltage_mv,
+		iq_limit,
+		human_power_mw,
+		assist_basis_power_mw,
+		support_ratio_pct,
+		motor_power_mw,
+		output);
 }
 
 const assist_level_config_t *assist_modes_get_default_level(uint8_t level_index)
@@ -403,8 +510,15 @@ bool assist_modes_calculate(
 			iq_limit,
 			output);
 		break;
-	case ASSIST_MODE_LEGACY:
 	case ASSIST_MODE_EMTB_TSDZ:
+		supported = calculate_emtb(
+			input,
+			config,
+			battery_voltage_mv,
+			iq_limit,
+			output);
+		break;
+	case ASSIST_MODE_LEGACY:
 	case ASSIST_MODE_EMTB_CUSTOM:
 	default:
 		break;
