@@ -19,17 +19,17 @@
  */
 static const assist_level_config_t default_levels[ASSIST_LEVEL_COUNT + 1] = {
 	{ASSIST_MODE_POWER_LINEAR, 0, 0, 0, false, 18,
-		{false, ASSIST_STARTUP_BOOST_CADENCE, 0, 45}, {false, 300}},
+		{false, ASSIST_STARTUP_BOOST_CADENCE, 0, 45}, {false, 300}, 0},
 	{ASSIST_MODE_POWER_LINEAR, 100, 0, 100, false, 18,
-		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}},
+		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}, 0},
 	{ASSIST_MODE_POWER_LINEAR, 200, 0, 100, false, 18,
-		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}},
+		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}, 0},
 	{ASSIST_MODE_POWER_LINEAR, 320, 0, 100, false, 18,
-		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}},
+		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}, 0},
 	{ASSIST_MODE_POWER_LINEAR, 420, 0, 100, false, 18,
-		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}},
+		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}, 0},
 	{ASSIST_MODE_POWER_LINEAR, 520, 0, 100, false, 18,
-		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}}
+		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}, 0}
 };
 
 static assist_mode_output_t last_output;

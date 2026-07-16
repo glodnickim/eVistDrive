@@ -49,7 +49,7 @@ korzystać wyłącznie z `rider_input_t`.
 | `rider_input` | WDROŻONE | Snapshot momentu, kadencji, kierunku PAS, prędkości koła i ERPS |
 | `legacy_assist` | WDROŻONE/SZKIELET | Jest osobny punkt wejścia; ciało starego algorytmu nadal pozostaje monolitem |
 | `assist_limits` | WDROŻONE | Kolejność Legacy: napięcie → temperatura → prawny taper prędkości |
-| `assist_dynamics` | WDROŻONE | Adaptacyjne rampy `Iq`, szybka ścieżka WA i natychmiastowe cięcia bezpieczeństwa |
+| `assist_dynamics` | WDROŻONE | Adaptacyjne rampy `Iq`, profilowy Release, szybka ścieżka WA i natychmiastowe cięcia bezpieczeństwa |
 | `assist_modes` | WDROŻONE/SZKIELET | Power Linear działa; Progressive i eMTB są jeszcze nieaktywne |
 | `assist_start` | WDROŻONE/SZKIELET | Startup Boost i niezależna obwiednia Smooth Start działają; Release jest następnym krokiem |
 | `ride_control` | WDROŻONE | Wybiera Legacy/TSDZ, zachowuje priorytet Walk, stosuje limity i dynamikę, wysyła `motor_command_t` |
@@ -77,12 +77,12 @@ Te funkcje pozostają do porównań. Nie należy dopisywać do nich nowych tryb�
 
 | Funkcja | Status | Warunek rozpoczęcia/ukończenia |
 |---|---|---|
-| Power Linear TSDZ2 | WDROŻONE/DEV | Build `0.0151`; stałoprzecinkowe Power → prąd → Iq, domyślnie nadal Legacy |
+| Power Linear TSDZ2 | WDROŻONE/DEV | Build `0.0153`; stałoprzecinkowe Power → prąd → Iq, domyślnie nadal Legacy |
 | Lokalna `cadence_for_assist` | WDROŻONE/DEV | Kadencja syntetyczna istnieje tylko wewnątrz `assist_modes` i nie zmienia snapshotu ani Legacy |
 | Assist without pedal rotation | WDROŻONE/DEV | Per-level, domyślnie OFF; próg 18 mV ponad zero, zakres ograniczony do 0–300 mV |
 | Startup Boost jako ustawienie per-level | WDROŻONE/DEV | Osobny `assist_start`, tryby Cadence/Speed/Auto, krzywa przed obliczeniem Power |
 | Smooth Start per-level | WDROŻONE/DEV | Obwiednia 0–100% po limitach i przed wspólną rampą; domyślnie OFF, 300 ms |
-| Release niezależny od startu | NIE WDROŻONE | Po Power Linear i filtrowaniu spadku mocy |
+| Release niezależny od startu | WDROŻONE/DEV | Czas zejścia pełnej skali Iq po zaniku pedałowania; 0 ms zachowuje adaptacyjną rampę |
 | Power Progressive | NIE WDROŻONE | Po stabilnym Power Linear |
 | eMTB TSDZ / Custom Curve | NIE WDROŻONE | Po progresywnym Power |
 | Osobny właściciel Walk Assist | NIE WDROŻONE | `CONTROL_OWNER_WALK` + sterowanie według ERPS |
@@ -141,7 +141,7 @@ EBICS: `enabled=true`, `CADENCE`, `strength=200%`, `end=45 RPM`. Poziom OFF ma
 boost wyłączony. Stary boost Legacy pozostaje osobną ścieżką i mechanizmy nie
 mogą działać jednocześnie, ponieważ `ride_control` wybiera tylko jeden silnik.
 
-### Smooth Start — stan builda 0.0151
+### Smooth Start — stan builda 0.0153
 
 Smooth Start jest niezależny od siły Startup Boost. Gdy zmierzona kadencja i
 ERPS silnika są równe zero, moduł uzbraja pojedynczą obwiednię startową.
@@ -153,6 +153,18 @@ Cięcie bezpieczeństwa nadal zeruje wynik natychmiast. Implementacja nie zmieni
 kadencji, ERPS, FOC ani PWM i nie blokuje startu z lokalnym
 `cadence_for_assist=1`. Domyślne profile mają `enabled=false`, `300 ms`, więc
 zachowanie builda pozostaje takie jak przed dodaniem funkcji.
+
+### Release — stan builda 0.0153
+
+`release_ms` nie podtrzymuje ostatniego żądania. Po rzeczywistym zaniku
+pedałowania tryb ustawia target na zero, a wspólny `assist_dynamics` schodzi
+do zera stałym slew wyliczonym jako pełna skala `Iq / release_ms`.
+
+Release nie jest wybierany dla spadków momentu między nogami, gdy PAS nadal
+jest aktywny, ani dla lokalnego startu bez obrotu. W tych przypadkach działa
+zwykła adaptacyjna dynamika. `safety_cut` nadal zeruje `Iq` natychmiast.
+Wartość domyślna `0` oznacza „użyj istniejącej rampy adaptacyjnej”, dzięki
+czemu samo dodanie pola nie zmienia charakteru jazdy.
 
 ## 5. Parametry już obsługiwane przez obecny Canable/protokół
 
@@ -236,7 +248,7 @@ Poniższe pola nie mają jeszcze przydzielonych ID protokołu.
 | `smooth_start_ms` | Czas Smooth Start | ms | 0–5000 | FW aktywne; protokół + UI do podłączenia |
 | `iq_rise_ms` | Narastanie Iq | ms | 20–5000 | Wymaga decyzji: per-level czy globalne punkty rampy |
 | `iq_fall_ms` | Opadanie Iq | ms | 20–5000 | Wymaga decyzji: per-level czy globalne punkty rampy |
-| `release_ms` | Release po ustaniu PAS | ms | 0–3000 | FW + protokół + UI |
+| `release_ms` | Release po ustaniu PAS | ms | 0 = adaptacyjny; 1–3000 | FW aktywne; protokół + UI do podłączenia |
 | `power_rise_filter_ms` | Filtr wzrostu mocy | ms | 0–3000 | FW + protokół + UI |
 | `power_fall_filter_ms` | Filtr spadku mocy | ms | 0–3000 | FW + protokół + UI |
 | `taper_start_kph` | Początek taperu | km/h | 0–60 | FW + protokół + UI |

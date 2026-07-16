@@ -263,8 +263,9 @@ profile_fields:
     since: 1
     access: persistent_rw
     per_level: true
-    value: {type: u16, scale: 1, unit: millisecond, min: 0, max: 3000, default: null}
-    implementation: planned_power
+    value: {type: u16, scale: 1, unit: millisecond, min: 0, max: 3000, default: 0}
+    implementation: active_compile_time_default_protocol_planned
+    zero_semantics: use_adaptive_ramp
     ui_group: dynamics_release
 
   - key: power_rise_filter_ms

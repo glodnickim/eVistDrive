@@ -98,7 +98,7 @@ modułu używa dotychczasowej ścieżki Legacy.
 ## Assist Dynamics
 
 Dotychczasowa rampa `Iq` została przeniesiona do
-`assist_dynamics_apply_legacy()`. Moduł zachowuje:
+`assist_dynamics_apply()`. Moduł zachowuje:
 
 - natychmiastowe cięcia hamulca, ruchu wstecz i przegrzania,
 - zależność tempa od prędkości i kadencji,
@@ -111,7 +111,7 @@ aktualną prędkością, kadencją, limitami i stanem cięcia bezpieczeństwa.
 
 ## Power Linear
 
-Build `0.0151` rozwija `assist_modes` z pierwszym nowym trybem. Power Linear
+Build `0.0153` rozwija `assist_modes` z pierwszym nowym trybem. Power Linear
 używa istniejącego przeliczenia mocy człowieka EBICS, współczynnika wsparcia
 poziomu oraz wzorca TSDZ2 `requested current = motor power / battery voltage`.
 Żądany prąd jest zamieniany na natywne jednostki `Iq` przez `CAL_I` i
@@ -148,6 +148,18 @@ Czas jest przeliczany z milisekund na wywołania pętli 4 kHz, ograniczony do
 5000 ms i raportowany jako 0–1000 promili. Profile domyślne mają Smooth Start
 wyłączony i przygotowaną wartość 300 ms. Cięcia bezpieczeństwa omijają
 obwiednię i zwracają zero natychmiast.
+
+## Release
+
+Wspólna funkcja `assist_dynamics_apply()` obsługuje zarówno niezmienione rampy
+Legacy, jak i opcjonalny Release profilu TSDZ. Po zaniku pedałowania target
+wynosi zero; `release_ms` określa czas zejścia pełnej skali `Iq` do zera.
+Nie ma fazy podtrzymywania poprzedniego prądu.
+
+`release_ms=0` zachowuje dotychczasową rampę adaptacyjną. Wartości 1–3000 ms
+nadpisują jedynie tempo opadania po zaniku pedałowania. Spadek momentu przy
+nadal aktywnym PAS oraz lokalny start bez obrotu nie uruchamiają Release.
+Natychmiastowe cięcia bezpieczeństwa zachowują pierwszeństwo.
 
 Tryb jest dostępny przez `RIDE_ENGINE_TSDZ`, ale
 `RIDE_ENGINE_DEFAULT=0` pozostawia Legacy jako bezpieczny domyślny silnik.

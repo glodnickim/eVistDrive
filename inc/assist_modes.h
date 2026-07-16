@@ -24,6 +24,7 @@ typedef struct {
 	uint16_t without_rotation_threshold_mv;
 	assist_startup_boost_config_t startup_boost;
 	assist_smooth_start_config_t smooth_start;
+	uint16_t release_ms;
 } assist_level_config_t;
 
 typedef struct {

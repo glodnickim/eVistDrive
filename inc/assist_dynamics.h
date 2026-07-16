@@ -11,9 +11,11 @@ typedef struct {
 	int32_t phase_current_max;
 	bool walk_active;
 	bool safety_cut;
+	bool profile_pedaling_active;
+	uint16_t profile_release_ms;
 } assist_dynamics_input_t;
 
-int32_t assist_dynamics_apply_legacy(
+int32_t assist_dynamics_apply(
 	int32_t iq_target,
 	int32_t iq_reference,
 	const assist_dynamics_input_t *input);

@@ -45,6 +45,8 @@ void ride_control_update(const ride_control_input_t *input)
 	}
 
 	int32_t iq_target;
+	bool profile_pedaling_active = true;
+	uint16_t profile_release_ms = 0;
 	if (input->walk_active) {
 		/*
 		 * The existing Walk controller remains the exclusive source until the
@@ -64,6 +66,9 @@ void ride_control_update(const ride_control_input_t *input)
 			input->iq_scale,
 			&mode_output);
 		iq_target = supported ? mode_output.iq_request : 0;
+		profile_pedaling_active =
+			rider->pedaling_active || mode_output.assist_without_rotation_active;
+		profile_release_ms = level->release_ms;
 
 		assist_limits_input_t limits_input = {
 			.voltage_raw = input->voltage_raw,
@@ -97,9 +102,11 @@ void ride_control_update(const ride_control_input_t *input)
 		.iq_scale = input->iq_scale,
 		.phase_current_max = input->phase_current_max,
 		.walk_active = input->walk_active,
-		.safety_cut = input->safety_cut
+		.safety_cut = input->safety_cut,
+		.profile_pedaling_active = profile_pedaling_active,
+		.profile_release_ms = profile_release_ms
 	};
-	int32_t iq_reference = assist_dynamics_apply_legacy(
+	int32_t iq_reference = assist_dynamics_apply(
 		iq_target,
 		input->current_iq,
 		&dynamics_input);

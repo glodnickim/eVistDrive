@@ -2,13 +2,19 @@
 
 #include "config.h"
 
+#define CONTROL_TICKS_PER_MS 4
+#define PROFILE_RELEASE_MAX_MS 3000
+
 int32_t map(int32_t x, int32_t in_min, int32_t in_max, int32_t out_min, int32_t out_max);
 
 #if IQ_RAMP_TIME_MODE
 static int32_t iq_reference_q;
+static uint32_t profile_release_fraction;
+static int32_t profile_release_ticks_cached;
+static int32_t profile_release_scale_q_cached;
 #endif
 
-int32_t assist_dynamics_apply_legacy(
+int32_t assist_dynamics_apply(
 	int32_t iq_target,
 	int32_t iq_reference,
 	const assist_dynamics_input_t *input)
@@ -16,6 +22,9 @@ int32_t assist_dynamics_apply_legacy(
 #if IQ_RAMP_TIME_MODE
 	if (input->safety_cut) {
 		iq_reference_q = iq_target << IQ_RAMP_Q_SHIFT;
+		profile_release_fraction = 0;
+		profile_release_ticks_cached = 0;
+		profile_release_scale_q_cached = 0;
 		return iq_target;
 	}
 
@@ -43,6 +52,16 @@ int32_t assist_dynamics_apply_legacy(
 		up_ticks = IQ_RAMP_UP_FAST_TICKS;
 		dn_ticks = IQ_RAMP_DOWN_FAST_TICKS;
 	}
+	bool profile_release_active = iq_target == 0 &&
+		!input->profile_pedaling_active &&
+		input->profile_release_ms > 0;
+	if (profile_release_active) {
+		uint16_t release_ms = input->profile_release_ms;
+		if (release_ms > PROFILE_RELEASE_MAX_MS) {
+			release_ms = PROFILE_RELEASE_MAX_MS;
+		}
+		dn_ticks = (int32_t)release_ms * CONTROL_TICKS_PER_MS;
+	}
 
 	int32_t iq_scale = input->iq_scale;
 	if (iq_scale < 1) iq_scale = input->phase_current_max;
@@ -52,8 +71,28 @@ int32_t assist_dynamics_apply_legacy(
 	int32_t target_q = iq_target << IQ_RAMP_Q_SHIFT;
 	int32_t ticks = (target_q > iq_reference_q) ? up_ticks : dn_ticks;
 	if (ticks < 1) ticks = 1;
-	int32_t step_q = ((iq_scale << IQ_RAMP_Q_SHIFT) + ticks - 1) / ticks;
-	if (step_q < 1) step_q = 1;
+	int32_t iq_scale_q = iq_scale << IQ_RAMP_Q_SHIFT;
+	int32_t step_q;
+	if (profile_release_active && target_q < iq_reference_q) {
+		if (profile_release_ticks_cached != ticks ||
+			profile_release_scale_q_cached != iq_scale_q) {
+			profile_release_fraction = 0;
+			profile_release_ticks_cached = ticks;
+			profile_release_scale_q_cached = iq_scale_q;
+		}
+		step_q = iq_scale_q / ticks;
+		profile_release_fraction += (uint32_t)(iq_scale_q % ticks);
+		if (profile_release_fraction >= (uint32_t)ticks) {
+			step_q++;
+			profile_release_fraction -= (uint32_t)ticks;
+		}
+	} else {
+		profile_release_fraction = 0;
+		profile_release_ticks_cached = 0;
+		profile_release_scale_q_cached = 0;
+		step_q = (iq_scale_q + ticks - 1) / ticks;
+		if (step_q < 1) step_q = 1;
+	}
 
 	if (target_q > iq_reference_q) {
 		int32_t d = target_q - iq_reference_q;
@@ -64,7 +103,10 @@ int32_t assist_dynamics_apply_legacy(
 	}
 
 	iq_reference = (iq_reference_q + (1 << (IQ_RAMP_Q_SHIFT - 1))) >> IQ_RAMP_Q_SHIFT;
-	if (iq_target == 0 && iq_reference == 0) iq_reference_q = 0;
+	if (iq_target == 0 && iq_reference == 0) {
+		iq_reference_q = 0;
+		profile_release_fraction = 0;
+	}
 	return iq_reference;
 #else
 #if IQ_RAMP_ADAPTIVE
