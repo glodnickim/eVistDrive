@@ -176,16 +176,9 @@ uint8_t ui8_WA_blocked=0;
 uint32_t ui32_WA_timer=0;
 uint32_t voltage_raw_cumulated=0;
 uint16_t voltage_raw_filtered=0;
-int32_t torque_offset_correction=0;
-//--- torque sensor fault + cyclic offset re-zero state ---
+//--- torque sensor fault state (zero/drift ownership moved to torque_input) ---
 uint8_t  torque_fault=0;        // Error 25 active (out-of-range signal debounced, or implausible rest)
 uint16_t tq_fault_ticks=0;      // debounce for out-of-range signal
-uint8_t  tq_cal_fault=0;        // implausible rest at startup/coast (raw outside plausible window)
-int32_t  tq_rest_acc=0;         // EMA(<<6) of torque_on_crank accumulated during a coast
-uint8_t  tq_coast_active=0;     // currently in a qualifying coast (pedals idle)
-uint16_t tq_coast_ticks=0;      // ticks accumulated in current coast (settle)
-int32_t  tq_last_coast_rest=0;  // rest from previous out-of-band coast (consistency check)
-uint8_t  tq_reacq_count=0;      // consecutive consistent out-of-band coasts
 uint32_t ui32_erps_cumulated=0;
 int32_t q31_rotorposition_hall=0;
 q31_t q31_rotorposition_absolute=0;
@@ -453,21 +446,14 @@ int main(void)
     	reg_ADC_flag=0;
     }
 
-    for (int i = 0; i < 64; i++) {// get torquesensor offset
-    	torque_offset_correction+=adc_value[2];
-    	while(!reg_ADC_flag);
-    	reg_ADC_flag=0;
-
-    }
-    torque_offset_correction=(torque_offset_correction>>6);
-    torque_offset_correction=740-((torque_offset_correction*3300)>>12);
-    //sanity-check: raw unloaded baseline must be plausible; else pedal pressed/sensor bad at boot -> don't trust zero
-    {
-        int32_t raw_baseline = 740 - torque_offset_correction; // = (avg_adc*3300)>>12
-        if(raw_baseline<TQ_REST_RAW_MIN || raw_baseline>TQ_REST_RAW_MAX){
-            torque_offset_correction = 0;  // nominal (read sensor as-is) instead of a bad zero
-            tq_cal_fault = 1;              // raise Error 25 until a valid coast re-zero
+    {// torquesensor zero: average 64 samples; torque_input owns normalization + sanity check
+        int32_t acc=0;
+        for (int i = 0; i < 64; i++) {
+            acc+=adc_value[2];
+            while(!reg_ADC_flag);
+            reg_ADC_flag=0;
         }
+        torque_input_startup_zero(((acc>>6)*3300)>>12);
     }
   //  while((adc_value[1])>3000);//safety for bricked throttle
 
@@ -1453,7 +1439,7 @@ void reg_ADC_processing(void)
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
 	MS.calories=(uint16_t)(MS.int_Temperature); //temp sterownika na pole calories w HMI (offset +3 juz w int_Temperature)
 	uint16_t torque_raw_mv=((adc_value[2])*3300)>>12; //map ADC value to mV
-	MS.torque_on_crank=torque_raw_mv+torque_offset_correction;
+	MS.torque_on_crank=torque_input_correct(torque_raw_mv);
 	if(MS.torque_on_crank>760&&PAS_counter<MP.PAS_timeout)torque_counter=0;//reset counter, if pressure on pedal and pedals rotating
 	//--- Quadrature PAS decoder (PC12=A, PD2=B) @4kHz -> feeds cadence/Backwards/torque/p_human/PAS_counter ---
 	{
@@ -1508,38 +1494,9 @@ void reg_ADC_processing(void)
 	if(MS.torque_on_crank<TQ_FAULT_LOW_MV || MS.torque_on_crank>TQ_FAULT_HIGH_MV){
 		if(tq_fault_ticks<64000) tq_fault_ticks++;
 	}else tq_fault_ticks=0;
-	torque_fault = (tq_fault_ticks>TQ_FAULT_TICKS) || tq_cal_fault;
-	//--- cyclic offset re-zero on coast (pedals idle >= TQ_RECAL_IDLE_TICKS; catches in-ride coasting) ---
-	if(pas_idle_ticks>TQ_RECAL_IDLE_TICKS && tq_fault_ticks==0){
-		if(!tq_coast_active){ tq_coast_active=1; tq_coast_ticks=0; tq_rest_acc=(int32_t)MS.torque_on_crank<<6; } //coast start: seed EMA
-		else { tq_rest_acc-=tq_rest_acc>>6; tq_rest_acc+=MS.torque_on_crank; if(tq_coast_ticks<64000)tq_coast_ticks++; } //accumulate rest
-	}else{
-		if(tq_coast_active && tq_coast_ticks>TQ_RECAL_SETTLE_TICKS){ //a settled coast just ended -> evaluate re-zero
-			int32_t rest = tq_rest_acc>>6;
-			int32_t raw_rest = rest - torque_offset_correction;          //physical unloaded reading (pre-normalization)
-			if(raw_rest<TQ_REST_RAW_MIN || raw_rest>TQ_REST_RAW_MAX){
-				tq_cal_fault=1;                                          //implausible zero -> Error 25, no re-zero (anti-infinite-drift)
-			}else{
-				tq_cal_fault=0;
-				int32_t diff = 740-rest;                                 //>0: reading too low, raise it
-				int32_t adiff = diff<0?-diff:diff;
-				uint8_t do_rezero=0;
-				if(adiff<=TQ_RECAL_BAND_MV){ do_rezero=1; tq_reacq_count=0; }       //in band -> re-zero now
-				else{                                                              //out of band -> need consistency over coasts
-					int32_t d2 = rest-tq_last_coast_rest; if(d2<0)d2=-d2;
-					if(tq_reacq_count>0 && d2<=TQ_REACQUIRE_TOL_MV) tq_reacq_count++; else tq_reacq_count=1;
-					tq_last_coast_rest=rest;
-					if(tq_reacq_count>=TQ_REACQUIRE_COASTS){ do_rezero=1; tq_reacq_count=0; } //real drift confirmed
-				}
-				if(do_rezero){ //rate-limited step; absolute bound guaranteed by raw_rest window check above
-					int32_t step=diff;
-					if(step>TQ_RECAL_MAX_STEP)step=TQ_RECAL_MAX_STEP; else if(step<-TQ_RECAL_MAX_STEP)step=-TQ_RECAL_MAX_STEP;
-					torque_offset_correction += step;
-				}
-			}
-		}
-		tq_coast_active=0;
-	}
+	torque_fault = (tq_fault_ticks>TQ_FAULT_TICKS) || torque_input_cal_fault();
+	//--- cyclic offset re-zero on coast (pedals idle >= TQ_RECAL_IDLE_TICKS): owned by torque_input ---
+	torque_input_coast_update(MS.torque_on_crank, pas_idle_ticks>TQ_RECAL_IDLE_TICKS && tq_fault_ticks==0);
 	torque_input_update(MS.torque_on_crank);
 	//Publish one coherent, read-only rider snapshot. Legacy calculations below still use the
 	//same MS/globals directly; switching consumers is a separate, testable refactor step.

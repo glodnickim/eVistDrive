@@ -19,6 +19,10 @@
 #define TORQUE_INPUT_FULL_SCALE_CENTIKG        6000U
 
 void torque_input_init(uint16_t stored_full_scale_native);
+void torque_input_startup_zero(int32_t rest_raw_native);
+int16_t torque_input_correct(uint16_t raw_native);
+void torque_input_coast_update(int16_t torque_corrected_native, bool coast_eligible);
+bool torque_input_cal_fault(void);
 void torque_input_update(int16_t torque_corrected_native);
 
 uint16_t torque_input_load_centikg(void);
