@@ -179,6 +179,7 @@ uint16_t voltage_raw_filtered=0;
 //--- torque sensor fault state (zero/drift ownership moved to torque_input) ---
 uint8_t  torque_fault=0;        // Error 25 active (out-of-range signal debounced, or implausible rest)
 uint16_t tq_fault_ticks=0;      // debounce for out-of-range signal
+uint32_t tq_fault_hold=0;       // min hold after the cause clears (~5 s) - no flicker/assist chatter
 uint32_t ui32_erps_cumulated=0;
 int32_t q31_rotorposition_hall=0;
 q31_t q31_rotorposition_absolute=0;
@@ -1494,7 +1495,12 @@ void reg_ADC_processing(void)
 	if(MS.torque_on_crank<TQ_FAULT_LOW_MV || MS.torque_on_crank>TQ_FAULT_HIGH_MV){
 		if(tq_fault_ticks<64000) tq_fault_ticks++;
 	}else tq_fault_ticks=0;
-	torque_fault = (tq_fault_ticks>TQ_FAULT_TICKS) || torque_input_cal_fault();
+	{
+		uint8_t fault_now = (tq_fault_ticks>TQ_FAULT_TICKS) || torque_input_cal_fault();
+		if(fault_now){ torque_fault=1; tq_fault_hold=TQ_FAULT_HOLD_TICKS; }
+		else if(tq_fault_hold){ tq_fault_hold--; }
+		else torque_fault=0;
+	}
 	//--- cyclic offset re-zero on coast (pedals idle >= TQ_RECAL_IDLE_TICKS): owned by torque_input ---
 	torque_input_coast_update(MS.torque_on_crank, pas_idle_ticks>TQ_RECAL_IDLE_TICKS && tq_fault_ticks==0);
 	torque_input_update(MS.torque_on_crank);
@@ -2456,6 +2462,9 @@ uint16_t legacy_assist_calculate_monolith(void){
 				//calculate iq setpoint
 	            //check brake with first priority
 	            if(MS.brake_active_flag)MS.i_q_setpoint_temp=0;
+	            //Error 25: implausible torque signal -> no motor power at all (assist and throttle);
+	            //the shared adaptive ramp brings the running current down without a jerk
+	            else if(torque_fault)MS.i_q_setpoint_temp=0;
 	            // check push assist active: closed-loop speed PI holding MP.walk_assist_speed
 	            else if(MS.pushassist_flag){
 	            	//hold ceiling: stored walk_assist_current halved in firmware (ride test: full value ran away to the overspeed cut)
