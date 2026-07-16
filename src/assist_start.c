@@ -7,11 +7,26 @@
 #define STARTUP_BOOST_STRENGTH_MAX_PCT 300U
 #define STARTUP_BOOST_AUTO_TORQUE_MV 20U
 #define ASSIST_TORQUE_DELTA_MAX_MV 2550U
+#define CONTROL_TICKS_PER_MS 4U
+#define SMOOTH_START_DURATION_MAX_MS 5000U
+#define SMOOTH_START_ENVELOPE_MAX_PERMILLE 1000U
 
 static uint16_t startup_boost_curve[STARTUP_BOOST_CURVE_SIZE];
 static uint16_t cached_strength_pct = UINT16_MAX;
 static bool speed_boost_latched;
 static assist_startup_boost_mode_t previous_mode = ASSIST_STARTUP_BOOST_CADENCE;
+
+typedef struct {
+	const assist_smooth_start_config_t *config_address;
+	uint16_t duration_ms;
+	bool enabled;
+	bool stopped_seen;
+	bool armed;
+	uint32_t elapsed_ticks;
+} smooth_start_state_t;
+
+static smooth_start_state_t smooth_start_state;
+static assist_smooth_start_output_t last_smooth_output;
 
 static void rebuild_startup_boost_curve(uint16_t strength_pct)
 {
@@ -36,6 +51,8 @@ void assist_start_reset(void)
 {
 	speed_boost_latched = false;
 	previous_mode = ASSIST_STARTUP_BOOST_CADENCE;
+	smooth_start_state = (smooth_start_state_t){0};
+	last_smooth_output = (assist_smooth_start_output_t){0};
 }
 
 void assist_start_apply_boost(
@@ -118,4 +135,79 @@ void assist_start_apply_boost(
 	output->torque_output_mv = (uint16_t)boosted_torque;
 	output->extra_pct = extra_pct;
 	output->active = boosted_torque > torque_input_mv;
+}
+
+int32_t assist_start_apply_smooth(
+	const assist_smooth_start_input_t *input,
+	const assist_smooth_start_config_t *config,
+	assist_smooth_start_output_t *output)
+{
+	assist_smooth_start_output_t local_output = {0};
+	if (output == 0) {
+		output = &local_output;
+	}
+	*output = (assist_smooth_start_output_t){0};
+	if (input == 0 || config == 0) {
+		last_smooth_output = *output;
+		return 0;
+	}
+
+	uint16_t duration_ms = config->duration_ms;
+	if (duration_ms > SMOOTH_START_DURATION_MAX_MS) {
+		duration_ms = SMOOTH_START_DURATION_MAX_MS;
+	}
+	if (smooth_start_state.config_address != config ||
+		smooth_start_state.enabled != config->enabled ||
+		smooth_start_state.duration_ms != duration_ms) {
+		smooth_start_state = (smooth_start_state_t){
+			.config_address = config,
+			.duration_ms = duration_ms,
+			.enabled = config->enabled
+		};
+	}
+
+	bool stopped =
+		input->measured_cadence_rpm == 0 && input->motor_erps == 0;
+	if (stopped && !smooth_start_state.stopped_seen) {
+		smooth_start_state.armed = true;
+		smooth_start_state.elapsed_ticks = 0;
+	}
+	smooth_start_state.stopped_seen = stopped;
+
+	if (input->safety_cut || input->iq_target <= 0) {
+		last_smooth_output = *output;
+		return 0;
+	}
+
+	if (!config->enabled || duration_ms == 0 || !smooth_start_state.armed) {
+		output->iq_target = input->iq_target;
+		output->envelope_permille = SMOOTH_START_ENVELOPE_MAX_PERMILLE;
+		last_smooth_output = *output;
+		return output->iq_target;
+	}
+
+	uint32_t duration_ticks = (uint32_t)duration_ms * CONTROL_TICKS_PER_MS;
+	if (smooth_start_state.elapsed_ticks < duration_ticks) {
+		smooth_start_state.elapsed_ticks++;
+	}
+	uint32_t envelope_permille =
+		(smooth_start_state.elapsed_ticks * SMOOTH_START_ENVELOPE_MAX_PERMILLE) /
+		duration_ticks;
+	if (envelope_permille >= SMOOTH_START_ENVELOPE_MAX_PERMILLE) {
+		envelope_permille = SMOOTH_START_ENVELOPE_MAX_PERMILLE;
+		smooth_start_state.armed = false;
+	}
+
+	output->iq_target = (int32_t)(
+		((uint32_t)input->iq_target * envelope_permille) /
+		SMOOTH_START_ENVELOPE_MAX_PERMILLE);
+	output->envelope_permille = (uint16_t)envelope_permille;
+	output->active = smooth_start_state.armed;
+	last_smooth_output = *output;
+	return output->iq_target;
+}
+
+const assist_smooth_start_output_t *assist_start_get_last_smooth_output(void)
+{
+	return &last_smooth_output;
 }

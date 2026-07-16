@@ -227,8 +227,8 @@ profile_fields:
     since: 1
     access: persistent_rw
     per_level: true
-    value: {type: bool, scale: 1, unit: none, min: false, max: true, default: null}
-    implementation: planned_power
+    value: {type: bool, scale: 1, unit: none, min: false, max: true, default: false}
+    implementation: active_compile_time_default_protocol_planned
     ui_group: start_boost
 
   - key: smooth_start_ms
@@ -236,8 +236,8 @@ profile_fields:
     since: 1
     access: persistent_rw
     per_level: true
-    value: {type: u16, scale: 1, unit: millisecond, min: 0, max: 5000, default: null}
-    implementation: planned_power
+    value: {type: u16, scale: 1, unit: millisecond, min: 0, max: 5000, default: 300}
+    implementation: active_compile_time_default_protocol_planned
     ui_group: start_boost
 
   - key: iq_rise_ms

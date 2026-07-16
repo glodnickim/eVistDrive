@@ -111,7 +111,7 @@ aktualną prędkością, kadencją, limitami i stanem cięcia bezpieczeństwa.
 
 ## Power Linear
 
-Build `0.0150` rozwija `assist_modes` z pierwszym nowym trybem. Power Linear
+Build `0.0151` rozwija `assist_modes` z pierwszym nowym trybem. Power Linear
 używa istniejącego przeliczenia mocy człowieka EBICS, współczynnika wsparcia
 poziomu oraz wzorca TSDZ2 `requested current = motor power / battery voltage`.
 Żądany prąd jest zamieniany na natywne jednostki `Iq` przez `CAL_I` i
@@ -135,6 +135,19 @@ do zakresu czujnika 2550 mV ponad zero.
 Profile developerskie używają `+200%`, Cadence i końca 45 RPM. To odpowiada
 dotychczasowym ustawieniom boostu EBICS, ale jest niezależną implementacją dla
 nowej ścieżki. Przełączenie silnika jazdy resetuje stan uzbrojenia trybu Speed.
+
+## Smooth Start
+
+Nowa obwiednia `assist_start_apply_smooth()` jest nakładana na żądanie nowego
+trybu po limitach, ale przed wspólną rampą `Iq`. Postój oznacza jednocześnie
+zmierzoną kadencję 0 i ERPS 0. Taki stan uzbraja tylko jeden start; obwiednia
+nie uzbraja się ponownie w każdej iteracji, więc lokalne wspomaganie bez obrotu
+może rzeczywiście ruszyć silnik.
+
+Czas jest przeliczany z milisekund na wywołania pętli 4 kHz, ograniczony do
+5000 ms i raportowany jako 0–1000 promili. Profile domyślne mają Smooth Start
+wyłączony i przygotowaną wartość 300 ms. Cięcia bezpieczeństwa omijają
+obwiednię i zwracają zero natychmiast.
 
 Tryb jest dostępny przez `RIDE_ENGINE_TSDZ`, ale
 `RIDE_ENGINE_DEFAULT=0` pozostawia Legacy jako bezpieczny domyślny silnik.

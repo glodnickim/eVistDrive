@@ -51,7 +51,7 @@ korzystać wyłącznie z `rider_input_t`.
 | `assist_limits` | WDROŻONE | Kolejność Legacy: napięcie → temperatura → prawny taper prędkości |
 | `assist_dynamics` | WDROŻONE | Adaptacyjne rampy `Iq`, szybka ścieżka WA i natychmiastowe cięcia bezpieczeństwa |
 | `assist_modes` | WDROŻONE/SZKIELET | Power Linear działa; Progressive i eMTB są jeszcze nieaktywne |
-| `assist_start` | WDROŻONE/SZKIELET | Startup Boost TSDZ działa przed Power; Smooth Start i Release są następnym krokiem |
+| `assist_start` | WDROŻONE/SZKIELET | Startup Boost i niezależna obwiednia Smooth Start działają; Release jest następnym krokiem |
 | `ride_control` | WDROŻONE | Wybiera Legacy/TSDZ, zachowuje priorytet Walk, stosuje limity i dynamikę, wysyła `motor_command_t` |
 | `protocol/ebics_config_schema.yaml` | SZKIELET | Draft v0 opisuje pola, typy, skale, zakresy i operacje; numery `wire_id` celowo nieprzydzielone |
 | Audyt komend HMI/CAN | CZĘŚCIOWO | Firmware i lokalny log sprawdzone; brakuje kodu Canable i pełnych logów HMI/BESST |
@@ -77,11 +77,11 @@ Te funkcje pozostają do porównań. Nie należy dopisywać do nich nowych tryb�
 
 | Funkcja | Status | Warunek rozpoczęcia/ukończenia |
 |---|---|---|
-| Power Linear TSDZ2 | WDROŻONE/DEV | Build `0.0150`; stałoprzecinkowe Power → prąd → Iq, domyślnie nadal Legacy |
+| Power Linear TSDZ2 | WDROŻONE/DEV | Build `0.0151`; stałoprzecinkowe Power → prąd → Iq, domyślnie nadal Legacy |
 | Lokalna `cadence_for_assist` | WDROŻONE/DEV | Kadencja syntetyczna istnieje tylko wewnątrz `assist_modes` i nie zmienia snapshotu ani Legacy |
 | Assist without pedal rotation | WDROŻONE/DEV | Per-level, domyślnie OFF; próg 18 mV ponad zero, zakres ograniczony do 0–300 mV |
 | Startup Boost jako ustawienie per-level | WDROŻONE/DEV | Osobny `assist_start`, tryby Cadence/Speed/Auto, krzywa przed obliczeniem Power |
-| Smooth Start per-level | NIE WDROŻONE | Obecny kod istnieje, ale `SMOOTH_START_ENABLE=0` |
+| Smooth Start per-level | WDROŻONE/DEV | Obwiednia 0–100% po limitach i przed wspólną rampą; domyślnie OFF, 300 ms |
 | Release niezależny od startu | NIE WDROŻONE | Po Power Linear i filtrowaniu spadku mocy |
 | Power Progressive | NIE WDROŻONE | Po stabilnym Power Linear |
 | eMTB TSDZ / Custom Curve | NIE WDROŻONE | Po progresywnym Power |
@@ -120,7 +120,7 @@ wyłączona w każdym profilu domyślnym, ponieważ rower nie ma czujnika hamulc
 do testu developerskiego. Walk Assist zachowuje wyłączny priorytet i do czasu
 wydzielenia nowego modułu korzysta ze sprawdzonej ścieżki Legacy.
 
-### Startup Boost TSDZ — stan builda 0.0150
+### Startup Boost TSDZ — stan builda 0.0151
 
 `assist_start` modyfikuje lokalny sygnał momentu przed obliczeniem mocy. Krzywa
 ma 120 wpisów i używa stałoprzecinkowej rekurencji z referencji TSDZ2:
@@ -140,6 +140,19 @@ Developerskie profile Power używają ustawień odziedziczonych z działającego
 EBICS: `enabled=true`, `CADENCE`, `strength=200%`, `end=45 RPM`. Poziom OFF ma
 boost wyłączony. Stary boost Legacy pozostaje osobną ścieżką i mechanizmy nie
 mogą działać jednocześnie, ponieważ `ride_control` wybiera tylko jeden silnik.
+
+### Smooth Start — stan builda 0.0151
+
+Smooth Start jest niezależny od siły Startup Boost. Gdy zmierzona kadencja i
+ERPS silnika są równe zero, moduł uzbraja pojedynczą obwiednię startową.
+Po pojawieniu się żądania `Iq` obwiednia rośnie liniowo od 0 do 100% przez
+`smooth_start_ms`, a potem się rozbraja aż do następnego rzeczywistego postoju.
+
+Obwiednia działa po limitach Power i przed wspólną adaptacyjną rampą `Iq`.
+Cięcie bezpieczeństwa nadal zeruje wynik natychmiast. Implementacja nie zmienia
+kadencji, ERPS, FOC ani PWM i nie blokuje startu z lokalnym
+`cadence_for_assist=1`. Domyślne profile mają `enabled=false`, `300 ms`, więc
+zachowanie builda pozostaje takie jak przed dodaniem funkcji.
 
 ## 5. Parametry już obsługiwane przez obecny Canable/protokół
 
@@ -219,8 +232,8 @@ Poniższe pola nie mają jeszcze przydzielonych ID protokołu.
 | `startup_boost_mode` | Tryb Boost | enum | Cadence, Speed, Auto | FW aktywne; protokół + UI do podłączenia |
 | `startup_boost_strength_pct` | Siła Boost | % dodatkowego nacisku | 0–300 | FW aktywne; protokół + UI do podłączenia |
 | `startup_boost_end_rpm` | Koniec Boost | RPM | 0–120 | FW aktywne; protokół + UI do podłączenia |
-| `smooth_start_enabled` | Smooth Start | bool | OFF/ON | FW + protokół + UI |
-| `smooth_start_ms` | Czas Smooth Start | ms | 0–5000 | FW + protokół + UI |
+| `smooth_start_enabled` | Smooth Start | bool | OFF/ON | FW aktywne; protokół + UI do podłączenia |
+| `smooth_start_ms` | Czas Smooth Start | ms | 0–5000 | FW aktywne; protokół + UI do podłączenia |
 | `iq_rise_ms` | Narastanie Iq | ms | 20–5000 | Wymaga decyzji: per-level czy globalne punkty rampy |
 | `iq_fall_ms` | Opadanie Iq | ms | 20–5000 | Wymaga decyzji: per-level czy globalne punkty rampy |
 | `release_ms` | Release po ustaniu PAS | ms | 0–3000 | FW + protokół + UI |

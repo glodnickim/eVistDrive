@@ -77,6 +77,17 @@ void ride_control_update(const ride_control_input_t *input)
 			.walk_active = input->walk_active
 		};
 		iq_target = assist_limits_apply(iq_target, &limits_input);
+
+		assist_smooth_start_input_t smooth_input = {
+			.iq_target = iq_target,
+			.measured_cadence_rpm = rider->cadence_rpm,
+			.motor_erps = rider->motor_erps,
+			.safety_cut = input->safety_cut
+		};
+		iq_target = assist_start_apply_smooth(
+			&smooth_input,
+			&level->smooth_start,
+			0);
 	} else {
 		iq_target = ride_control_update_request();
 	}
