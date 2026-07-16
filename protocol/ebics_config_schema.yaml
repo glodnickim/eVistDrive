@@ -200,9 +200,9 @@ profile_fields:
     since: 1
     access: persistent_rw
     per_level: true
-    value: {type: u16, scale: 0.01, unit: kilogram_force, min: 0.00, max: 60.00, default: 0.86}
+    value: {type: u16, scale: 0.01, unit: kilogram_force, min: 0.00, max: 60.00, default: 0.45}
     implementation: active_native_threshold_kg_boundary_planned
-    legacy_native_default: 18_millivolt_above_zero_at_2000_millivolt_full_scale
+    legacy_native_default: 18_millivolt_above_zero_at_40_millivolt_per_kg
     ui_group: start_boost
 
   - key: torque_lower_threshold_kg
@@ -256,9 +256,9 @@ profile_fields:
     since: 1
     access: persistent_rw
     per_level: true
-    value: {type: u16, scale: 0.01, unit: kilogram_force, min: 0.00, max: 60.00, default: 0.96}
+    value: {type: u16, scale: 0.01, unit: kilogram_force, min: 0.00, max: 60.00, default: 0.50}
     implementation: active_native_constant_kg_boundary_planned
-    legacy_native_default: 20_millivolt_above_zero_at_2000_millivolt_full_scale
+    legacy_native_default: 20_millivolt_above_zero_at_40_millivolt_per_kg
     ui_group: start_boost
 
   - key: smooth_start_enabled
@@ -388,9 +388,11 @@ torque_fields:
     since: 1
     access: internal_persistent
     per_level: false
-    value: {type: u16, scale: 1, unit: native_torque_sensor, min: 1, max: 65535, default: null}
-    implementation: planned_replacement_for_compile_time_TQ_FULL_SCALE_MV
-    current_binding: TQ_FULL_SCALE_MV
+    value: {type: u16, scale: 1, unit: native_torque_sensor, min: 1000, max: 3300, default: 3150}
+    implementation: implemented_MP_torque_full_scale_native_zero_means_not_calibrated
+    current_binding: MP.torque_full_scale_native
+    sensor_characteristic: linear_40_millivolt_per_kg_base_750
+    note_do_not_confuse_with: TQ_FULL_SCALE_MV_is_assist_mapping_not_reading_scale
     user_visible: false
     ui_group: hidden_service
 
@@ -399,9 +401,9 @@ torque_fields:
     since: 1
     access: legacy_rw
     per_level: false
-    value: {type: u16, scale: 0.01, unit: kilogram_force, min: 0.00, max: 60.00, default: 0.86}
+    value: {type: u16, scale: 0.01, unit: kilogram_force, min: 0.00, max: 60.00, default: 0.45}
     current_binding: TQ_GATE_MIN
-    legacy_native_default: 18_millivolt_above_zero_at_2000_millivolt_full_scale
+    legacy_native_default: 18_millivolt_above_zero_at_40_millivolt_per_kg
     ui_group: torque_sensor
 
   - key: torque_gate_release_kg
@@ -409,9 +411,9 @@ torque_fields:
     since: 1
     access: legacy_rw
     per_level: false
-    value: {type: u16, scale: 0.01, unit: kilogram_force, min: 0.00, max: 60.00, default: 0.24}
+    value: {type: u16, scale: 0.01, unit: kilogram_force, min: 0.00, max: 60.00, default: 0.13}
     current_binding: TQ_GATE_RELEASE
-    legacy_native_default: 5_millivolt_above_zero_at_2000_millivolt_full_scale
+    legacy_native_default: 5_millivolt_above_zero_at_40_millivolt_per_kg
     ui_group: torque_sensor
 
 legacy_global_fields:

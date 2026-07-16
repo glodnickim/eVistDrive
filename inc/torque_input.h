@@ -10,10 +10,12 @@
  * The zero point is fixed by the autozero normalization and is never
  * writable. Full scale comes from MP.torque_full_scale_native, where 0
  * means "not calibrated" and selects the default. Integer math only.
+ * Factory sensor characteristic (reverse engineered): linear 40 mV per kg,
+ * so 60 kg = 750 + 2400 = 3150 native; readings above clamp to 60 kg.
  */
 
 #define TORQUE_INPUT_ZERO_NATIVE               750U
-#define TORQUE_INPUT_FULL_SCALE_DEFAULT_NATIVE 2000U
+#define TORQUE_INPUT_FULL_SCALE_DEFAULT_NATIVE 3150U
 #define TORQUE_INPUT_FULL_SCALE_MIN_NATIVE     1000U
 #define TORQUE_INPUT_FULL_SCALE_MAX_NATIVE     3300U
 #define TORQUE_INPUT_FULL_SCALE_CENTIKG        6000U
