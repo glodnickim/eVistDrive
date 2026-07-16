@@ -4,9 +4,9 @@ Aktualizacja: 2026-07-16
 
 Gałąź firmware: `refactor/ride-core`
 
-Ostatni zatwierdzony commit: `8e1d134` (`assist: add profile banks with handlebar gesture`)
+Ostatni zatwierdzony commit: `ebb90f3` (`config: add versioned bank block over CAN`)
 
-Ostatni sprawdzony build: `0.0161_M820_BL820.bin`
+Ostatni sprawdzony build: `0.0163_M820_BL820.bin`
 
 Silnik uruchamiany domyślnie: **Legacy** (`RIDE_ENGINE_DEFAULT=0`)
 
