@@ -13,6 +13,9 @@
 #define CONTROL_TICKS_PER_MS 4U
 #define POWER_FILTER_MAX_MS 3000U
 #define POWER_FILTER_Q_SHIFT 8U
+#define PROGRESSIVE_REFERENCE_POWER_MIN_W 50U
+#define PROGRESSIVE_REFERENCE_POWER_MAX_W 500U
+#define PROGRESSION_MAX_PCT 100U
 
 /*
  * Power ratios are based on the TSDZ2 reference factors 50/100/160/260,
@@ -20,20 +23,40 @@
  * SPORT and BOOST. These are provisional developer defaults; Legacy remains
  * the boot default until the versioned configuration is enabled.
  */
+#define DEFAULT_POWER_LEVEL(ratio) { \
+	.mode_type = ASSIST_MODE_POWER_LINEAR, \
+	.support_ratio_pct = (ratio), \
+	.support_min_pct = (ratio), \
+	.support_max_pct = (ratio), \
+	.reference_power_w = 200, \
+	.progression_pct = 0, \
+	.max_motor_power_w = 0, \
+	.max_iq_pct = 100, \
+	.assist_without_rotation = false, \
+	.without_rotation_threshold_mv = 18, \
+	.startup_boost = {true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, \
+	.smooth_start = {false, 300}, \
+	.release_ms = 0, \
+	.power_rise_filter_ms = 0, \
+	.power_fall_filter_ms = 0 \
+}
+
 static const assist_level_config_t default_levels[ASSIST_LEVEL_COUNT + 1] = {
-	{ASSIST_MODE_POWER_LINEAR, 0, 0, 0, false, 18,
-		{false, ASSIST_STARTUP_BOOST_CADENCE, 0, 45}, {false, 300}, 0, 0, 0},
-	{ASSIST_MODE_POWER_LINEAR, 100, 0, 100, false, 18,
-		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}, 0, 0, 0},
-	{ASSIST_MODE_POWER_LINEAR, 200, 0, 100, false, 18,
-		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}, 0, 0, 0},
-	{ASSIST_MODE_POWER_LINEAR, 320, 0, 100, false, 18,
-		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}, 0, 0, 0},
-	{ASSIST_MODE_POWER_LINEAR, 420, 0, 100, false, 18,
-		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}, 0, 0, 0},
-	{ASSIST_MODE_POWER_LINEAR, 520, 0, 100, false, 18,
-		{true, ASSIST_STARTUP_BOOST_CADENCE, 200, 45}, {false, 300}, 0, 0, 0}
+	{
+		.mode_type = ASSIST_MODE_POWER_LINEAR,
+		.reference_power_w = 200,
+		.without_rotation_threshold_mv = 18,
+		.startup_boost = {false, ASSIST_STARTUP_BOOST_CADENCE, 0, 45},
+		.smooth_start = {false, 300}
+	},
+	DEFAULT_POWER_LEVEL(100),
+	DEFAULT_POWER_LEVEL(200),
+	DEFAULT_POWER_LEVEL(320),
+	DEFAULT_POWER_LEVEL(420),
+	DEFAULT_POWER_LEVEL(520)
 };
+
+#undef DEFAULT_POWER_LEVEL
 
 static assist_mode_output_t last_output;
 
@@ -52,6 +75,7 @@ static void clear_output(assist_mode_output_t *output)
 	output->assist_basis_power_w = 0;
 	output->raw_motor_power_w = 0;
 	output->motor_power_w = 0;
+	output->applied_support_ratio_pct = 0;
 	output->requested_battery_current_ma = 0;
 	output->iq_request = 0;
 	output->cadence_for_assist_rpm = 0;
@@ -119,6 +143,51 @@ static uint32_t filter_motor_power(
 		(1U << (POWER_FILTER_Q_SHIFT - 1U))) >> POWER_FILTER_Q_SHIFT;
 }
 
+static uint16_t calculate_support_ratio_pct(
+	uint32_t assist_basis_power_mw,
+	const assist_level_config_t *config)
+{
+	if (config->mode_type == ASSIST_MODE_POWER_LINEAR) {
+		uint16_t ratio = config->support_ratio_pct;
+		return (ratio > ASSIST_SUPPORT_RATIO_MAX_PCT) ?
+			ASSIST_SUPPORT_RATIO_MAX_PCT : ratio;
+	}
+
+	uint16_t support_min_pct = config->support_min_pct;
+	uint16_t support_max_pct = config->support_max_pct;
+	if (support_min_pct > ASSIST_SUPPORT_RATIO_MAX_PCT) {
+		support_min_pct = ASSIST_SUPPORT_RATIO_MAX_PCT;
+	}
+	if (support_max_pct > ASSIST_SUPPORT_RATIO_MAX_PCT) {
+		support_max_pct = ASSIST_SUPPORT_RATIO_MAX_PCT;
+	}
+	if (support_max_pct < support_min_pct) {
+		support_max_pct = support_min_pct;
+	}
+
+	uint16_t reference_power_w = config->reference_power_w;
+	if (reference_power_w < PROGRESSIVE_REFERENCE_POWER_MIN_W) {
+		reference_power_w = PROGRESSIVE_REFERENCE_POWER_MIN_W;
+	} else if (reference_power_w > PROGRESSIVE_REFERENCE_POWER_MAX_W) {
+		reference_power_w = PROGRESSIVE_REFERENCE_POWER_MAX_W;
+	}
+	uint32_t input_permille = assist_basis_power_mw / reference_power_w;
+	if (input_permille > 1000U) input_permille = 1000U;
+
+	uint8_t progression_pct = config->progression_pct;
+	if (progression_pct > PROGRESSION_MAX_PCT) {
+		progression_pct = PROGRESSION_MAX_PCT;
+	}
+	uint32_t curve_permille =
+		((uint32_t)(100U - progression_pct) * input_permille +
+		 ((uint32_t)progression_pct * input_permille * input_permille) / 1000U) /
+		100U;
+
+	return (uint16_t)(support_min_pct +
+		((uint32_t)(support_max_pct - support_min_pct) * curve_permille) /
+		1000U);
+}
+
 static uint16_t torque_delta_from_corrected(const rider_input_t *input)
 {
 	if (input->torque_corrected_mv <= ASSIST_TORQUE_ZERO_MV) {
@@ -127,7 +196,7 @@ static uint16_t torque_delta_from_corrected(const rider_input_t *input)
 	return (uint16_t)(input->torque_corrected_mv - ASSIST_TORQUE_ZERO_MV);
 }
 
-static bool calculate_power_linear(
+static bool calculate_power(
 	const rider_input_t *input,
 	const assist_level_config_t *config,
 	uint32_t battery_voltage_mv,
@@ -170,7 +239,8 @@ static bool calculate_power_linear(
 		cadence_for_assist == 0 ||
 		battery_voltage_mv == 0 ||
 		iq_limit <= 0 ||
-		config->support_ratio_pct == 0 ||
+		(config->mode_type == ASSIST_MODE_POWER_LINEAR ?
+			config->support_ratio_pct == 0 : config->support_max_pct == 0) ||
 		config->max_iq_pct == 0) {
 		stop_power_filter(config);
 		return true;
@@ -206,10 +276,9 @@ static bool calculate_power_linear(
 	uint32_t assist_basis_power_mw =
 		assist_basis_power_numerator / HUMAN_POWER_MW_DENOMINATOR;
 
-	uint32_t support_ratio_pct = config->support_ratio_pct;
-	if (support_ratio_pct > ASSIST_SUPPORT_RATIO_MAX_PCT) {
-		support_ratio_pct = ASSIST_SUPPORT_RATIO_MAX_PCT;
-	}
+	uint32_t support_ratio_pct = calculate_support_ratio_pct(
+		assist_basis_power_mw,
+		config);
 	uint32_t motor_power_mw =
 		(assist_basis_power_mw * support_ratio_pct) / 100U;
 	uint32_t power_limit_w = config->max_motor_power_w;
@@ -252,6 +321,7 @@ static bool calculate_power_linear(
 		UINT16_MAX : (uint16_t)assist_basis_power_w;
 	output->raw_motor_power_w = (uint16_t)raw_motor_power_w;
 	output->motor_power_w = (uint16_t)motor_power_w;
+	output->applied_support_ratio_pct = (uint16_t)support_ratio_pct;
 	output->requested_battery_current_ma = requested_current_ma;
 	output->iq_request = iq_request;
 	return true;
@@ -293,7 +363,8 @@ bool assist_modes_calculate(
 	bool supported = false;
 	switch (config->mode_type) {
 	case ASSIST_MODE_POWER_LINEAR:
-		supported = calculate_power_linear(
+	case ASSIST_MODE_POWER_PROGRESSIVE:
+		supported = calculate_power(
 			input,
 			config,
 			battery_voltage_mv,
@@ -301,7 +372,6 @@ bool assist_modes_calculate(
 			output);
 		break;
 	case ASSIST_MODE_LEGACY:
-	case ASSIST_MODE_POWER_PROGRESSIVE:
 	case ASSIST_MODE_EMTB_TSDZ:
 	case ASSIST_MODE_EMTB_CUSTOM:
 	default:

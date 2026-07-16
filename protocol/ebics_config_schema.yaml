@@ -100,7 +100,7 @@ profile_fields:
     access: persistent_rw
     per_level: true
     value: {type: enum8, enum: mode_type, scale: 1, unit: none, min: 0, max: 4, default: legacy}
-    implementation: power_linear_available_default_legacy
+    implementation: power_linear_progressive_available_default_legacy
     ui_group: characteristic
 
   - key: support_ratio_pct
@@ -118,7 +118,7 @@ profile_fields:
     access: persistent_rw
     per_level: true
     value: {type: u16, scale: 1, unit: percent, min: 0, max: 1000, default: null}
-    implementation: planned_power
+    implementation: active_compile_time_default_protocol_planned
     ui_group: characteristic
 
   - key: support_max_pct
@@ -127,7 +127,7 @@ profile_fields:
     access: persistent_rw
     per_level: true
     value: {type: u16, scale: 1, unit: percent, min: 0, max: 1000, default: null}
-    implementation: planned_power
+    implementation: active_compile_time_default_protocol_planned
     ui_group: characteristic
 
   - key: reference_power_w
@@ -135,8 +135,8 @@ profile_fields:
     since: 1
     access: persistent_rw
     per_level: true
-    value: {type: u16, scale: 1, unit: watt, min: 50, max: 500, default: null}
-    implementation: planned_power
+    value: {type: u16, scale: 1, unit: watt, min: 50, max: 500, default: 200}
+    implementation: active_compile_time_default_protocol_planned
     ui_group: characteristic
 
   - key: progression_pct
@@ -144,8 +144,8 @@ profile_fields:
     since: 1
     access: persistent_rw
     per_level: true
-    value: {type: u8, scale: 1, unit: percent, min: 0, max: 100, default: null}
-    implementation: planned_progressive
+    value: {type: u8, scale: 1, unit: percent, min: 0, max: 100, default: 0}
+    implementation: active_compile_time_default_protocol_planned
     ui_group: characteristic
 
   - key: max_motor_power_w

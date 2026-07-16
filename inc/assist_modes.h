@@ -18,6 +18,10 @@ typedef enum {
 typedef struct {
 	assist_mode_type_t mode_type;
 	uint16_t support_ratio_pct;
+	uint16_t support_min_pct;
+	uint16_t support_max_pct;
+	uint16_t reference_power_w;
+	uint8_t progression_pct;
 	uint16_t max_motor_power_w;
 	uint8_t max_iq_pct;
 	bool assist_without_rotation;
@@ -34,6 +38,7 @@ typedef struct {
 	uint16_t assist_basis_power_w;
 	uint16_t raw_motor_power_w;
 	uint16_t motor_power_w;
+	uint16_t applied_support_ratio_pct;
 	uint32_t requested_battery_current_ma;
 	int32_t iq_request;
 	uint8_t cadence_for_assist_rpm;

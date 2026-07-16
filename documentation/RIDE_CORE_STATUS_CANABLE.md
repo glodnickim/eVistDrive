@@ -50,7 +50,7 @@ korzystać wyłącznie z `rider_input_t`.
 | `legacy_assist` | WDROŻONE/SZKIELET | Jest osobny punkt wejścia; ciało starego algorytmu nadal pozostaje monolitem |
 | `assist_limits` | WDROŻONE | Kolejność Legacy: napięcie → temperatura → prawny taper prędkości |
 | `assist_dynamics` | WDROŻONE | Adaptacyjne rampy `Iq`, profilowy Release, szybka ścieżka WA i natychmiastowe cięcia bezpieczeństwa |
-| `assist_modes` | WDROŻONE/SZKIELET | Power Linear działa; Progressive i eMTB są jeszcze nieaktywne |
+| `assist_modes` | WDROŻONE/SZKIELET | Power Linear i Progressive działają; eMTB jest następnym trybem |
 | `assist_start` | WDROŻONE/SZKIELET | Startup Boost i niezależna obwiednia Smooth Start działają; Release jest następnym krokiem |
 | `ride_control` | WDROŻONE | Wybiera Legacy/TSDZ, zachowuje priorytet Walk, stosuje limity i dynamikę, wysyła `motor_command_t` |
 | `protocol/ebics_config_schema.yaml` | SZKIELET | Draft v0 opisuje pola, typy, skale, zakresy i operacje; numery `wire_id` celowo nieprzydzielone |
@@ -77,14 +77,14 @@ Te funkcje pozostają do porównań. Nie należy dopisywać do nich nowych tryb�
 
 | Funkcja | Status | Warunek rozpoczęcia/ukończenia |
 |---|---|---|
-| Power Linear TSDZ2 | WDROŻONE/DEV | Build `0.0154`; stałoprzecinkowe Power → prąd → Iq, domyślnie nadal Legacy |
+| Power Linear TSDZ2 | WDROŻONE/DEV | Build `0.0155`; stałoprzecinkowe Power → prąd → Iq, domyślnie nadal Legacy |
 | Lokalna `cadence_for_assist` | WDROŻONE/DEV | Kadencja syntetyczna istnieje tylko wewnątrz `assist_modes` i nie zmienia snapshotu ani Legacy |
 | Assist without pedal rotation | WDROŻONE/DEV | Per-level, domyślnie OFF; próg 18 mV ponad zero, zakres ograniczony do 0–300 mV |
 | Startup Boost jako ustawienie per-level | WDROŻONE/DEV | Osobny `assist_start`, tryby Cadence/Speed/Auto, krzywa przed obliczeniem Power |
 | Smooth Start per-level | WDROŻONE/DEV | Obwiednia 0–100% po limitach i przed wspólną rampą; domyślnie OFF, 300 ms |
 | Release niezależny od startu | WDROŻONE/DEV | Czas zejścia pełnej skali Iq po zaniku pedałowania; 0 ms zachowuje adaptacyjną rampę |
 | Asymetryczny filtr mocy | WDROŻONE/DEV | Osobny czas narastania/opadania podczas aktywnego PAS; 0 ms = bypass |
-| Power Progressive | NIE WDROŻONE | Po stabilnym Power Linear |
+| Power Progressive | WDROŻONE/DEV | Min/max wsparcia, moc odniesienia i mieszanie liniowe–kwadratowe 0–100% |
 | eMTB TSDZ / Custom Curve | NIE WDROŻONE | Po progresywnym Power |
 | Osobny właściciel Walk Assist | NIE WDROŻONE | `CONTROL_OWNER_WALK` + sterowanie według ERPS |
 | Stany WA open-loop/Hall/blend/speed hold | NIE WDROŻONE | Po stabilnym pomiarze ERPS |
@@ -94,7 +94,7 @@ Te funkcje pozostają do porównań. Nie należy dopisywać do nich nowych tryb�
 | `Sync / Apply RAM / Save Flash / Revert` | NIE WDROŻONE | Nowy wersjonowany protokół konfiguracji |
 | Jedno źródło prawdy YAML | SZKIELET | Draft v0 utworzony; wymaga audytu ID, domyślnych profili i generatora |
 
-### Power Linear — stan builda 0.0154
+### Power Linear — stan builda 0.0155
 
 Nowy moduł `assist_modes`:
 
@@ -121,7 +121,7 @@ wyłączona w każdym profilu domyślnym, ponieważ rower nie ma czujnika hamulc
 do testu developerskiego. Walk Assist zachowuje wyłączny priorytet i do czasu
 wydzielenia nowego modułu korzysta ze sprawdzonej ścieżki Legacy.
 
-### Startup Boost TSDZ — stan builda 0.0154
+### Startup Boost TSDZ — stan builda 0.0155
 
 `assist_start` modyfikuje lokalny sygnał momentu przed obliczeniem mocy. Krzywa
 ma 120 wpisów i używa stałoprzecinkowej rekurencji z referencji TSDZ2:
@@ -178,6 +178,26 @@ Filtr działa tylko, gdy PAS lub lokalny start bez obrotu pozostaje aktywny.
 Po rzeczywistym zaniku pedałowania jego stan jest zerowany, target trybu wynosi
 zero i dalsze zejście wykonuje Release/wspólna rampa. Nie ma podtrzymania
 ostatniej mocy. Oba domyślne czasy wynoszą `0`, czyli filtr jest pomijany.
+
+### Power Progressive — stan builda 0.0155
+
+Tryb `POWER_PROGRESSIVE` stosuje stałoprzecinkowy odpowiednik wzoru:
+
+```text
+input = clamp(power / reference_power, 0, 1)
+curve = (1 - progression) * input + progression * input²
+support = support_min + (support_max - support_min) * curve
+motor_power = power * support
+```
+
+`progression=0%` daje interpolację liniową, a `100%` pełną krzywą
+kwadratową. Zakresy są ograniczone do: wsparcie 0–1000%, moc odniesienia
+50–500 W i progresja 0–100%. Boost modyfikuje bazę przed krzywą, następnie
+działają wspólne limity mocy, filtr, `P/U`, limity jazdy i dynamika.
+
+Domyślne poziomy nadal mają `mode_type=POWER_LINEAR`. Ich `support_min` i
+`support_max` są równe współczynnikowi liniowemu, więc samo przełączenie typu
+bez strojenia pozostałych pól nie powoduje skoku charakterystyki.
 
 ## 5. Parametry już obsługiwane przez obecny Canable/protokół
 
@@ -243,12 +263,12 @@ Poniższe pola nie mają jeszcze przydzielonych ID protokołu.
 
 | Klucz | Etykieta UI | Typ / jednostka | Zalecany zakres | Status |
 |---|---|---|---|---|
-| `mode_type` | Tryb wspomagania | enum | Legacy, Power Linear, Power Progressive, eMTB TSDZ, eMTB Custom | FW + protokół + UI |
+| `mode_type` | Tryb wspomagania | enum | Legacy, Power Linear, Power Progressive, eMTB TSDZ, eMTB Custom | FW Linear/Progressive; protokół + UI do podłączenia |
 | `support_ratio_pct` | Współczynnik wsparcia | % | 0–1000 | FW + protokół + UI |
-| `support_min_pct` | Minimalne wsparcie | % | 0–1000 | FW + protokół + UI |
-| `support_max_pct` | Maksymalne wsparcie | % | 0–1000 | FW + protokół + UI |
-| `reference_power_w` | Moc odniesienia | W | 50–500 | FW + protokół + UI |
-| `progression_pct` | Progresja krzywej | % | 0–100 | FW + protokół + UI |
+| `support_min_pct` | Minimalne wsparcie | % | 0–1000 | FW aktywne; protokół + UI do podłączenia |
+| `support_max_pct` | Maksymalne wsparcie | % | 0–1000 | FW aktywne; protokół + UI do podłączenia |
+| `reference_power_w` | Moc odniesienia | W | 50–500 | FW aktywne; protokół + UI do podłączenia |
+| `progression_pct` | Progresja krzywej | % | 0–100 | FW aktywne; protokół + UI do podłączenia |
 | `max_motor_power_w` | Maksymalna moc silnika | W | 0–1500 | FW + protokół + UI |
 | `max_iq_pct` | Maksymalny Iq poziomu | % limitu fazowego | 0–100 | FW + protokół + UI |
 | `assist_without_rotation` | Pomoc bez obrotu | bool | OFF/ON; domyślnie OFF | FW aktywne; protokół + UI do podłączenia |

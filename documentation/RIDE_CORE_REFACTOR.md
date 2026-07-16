@@ -111,7 +111,8 @@ aktualną prędkością, kadencją, limitami i stanem cięcia bezpieczeństwa.
 
 ## Power Linear
 
-Build `0.0154` rozwija `assist_modes` z pierwszym nowym trybem. Power Linear
+Build `0.0155` rozwija `assist_modes` z trybami Power Linear i Progressive.
+Power Linear
 używa istniejącego przeliczenia mocy człowieka EBICS, współczynnika wsparcia
 poziomu oraz wzorca TSDZ2 `requested current = motor power / battery voltage`.
 Żądany prąd jest zamieniany na natywne jednostki `Iq` przez `CAL_I` i
@@ -172,6 +173,18 @@ Po zaniku PAS filtr jest zerowany natychmiast; nie realizuje overrun. Dalsze
 zejście aktualnego `iq_reference` do zera należy do Release lub dotychczasowej
 rampy adaptacyjnej. Wartość 0 ms omija dany kierunek filtra, a wszystkie
 profile domyślne mają oba kierunki ustawione na 0 ms.
+
+## Power Progressive
+
+`ASSIST_MODE_POWER_PROGRESSIVE` normalizuje moc po Boost względem
+`reference_power_w`, miesza wejście liniowe i kwadratowe przez
+`progression_pct`, a wynik interpoluje pomiędzy `support_min_pct` i
+`support_max_pct`. Obliczenia używają promili i miliwatów bez `float`.
+
+Zakresy są ograniczone zgodnie ze schematem: wsparcie 0–1000%, odniesienie
+50–500 W i progresja 0–100%. Pozostała ścieżka Power jest wspólna z Linear.
+Domyślny `mode_type` nie zmienia się, a min/max każdego poziomu są początkowo
+równe jego liniowemu współczynnikowi, co daje neutralne przełączenie trybu.
 
 Tryb jest dostępny przez `RIDE_ENGINE_TSDZ`, ale
 `RIDE_ENGINE_DEFAULT=0` pozostawia Legacy jako bezpieczny domyślny silnik.
