@@ -1,5 +1,7 @@
 # TSDZ2-style assist experiment - analysis and roadmap
 
+> **ARCHIWALNY** (2026-07-16): pierwszy eksperyment TSDZ2. Aktualne zrodlo: RIDE_CORE_MASTER_CHECKLIST_PL.md + RIDE_CORE_STATUS_CANABLE.md. Mapa dokumentacji: documentation/README.md.
+
 This document collects the design notes, ride-test expectations, and possible
 next implementation stages for the EBICS TSDZ2-style pedal assist experiment.
 It is intended for analysis after the first test firmware ride.

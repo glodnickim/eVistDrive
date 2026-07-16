@@ -1,5 +1,7 @@
 # Walk Assist — physical button requirement
 
+> **ARCHIWALNY** (2026-07-16): notatka historyczna galezi M820-walk-button. Aktualny opis dzialania: WALK_ASSIST_DZIALANIE.md.
+
 This document describes the Walk Assist (push assist) behaviour on the `M820-walk-button`
 branch. The branch is based on the accepted PR #1 (`mdi-9` → `M820`, walk-assist params by
 Arkadiusz Goleń) and adds a single safety change on top: **Walk Assist only runs while a

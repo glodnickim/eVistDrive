@@ -1,5 +1,7 @@
 # Szkic kodu: adaptacyjna rampa i_q (płynne schodzenie mocy + przejścia w jeździe)
 
+> **ARCHIWALNY** (2026-07-16): szkic zrealizowany w module assist_dynamics (build 0.0148). Zobacz documentation/RIDE_CORE_REFACTOR.md.
+
 Cel: zastąpić skokowe zmiany `MS.i_q_setpoint` w trakcie jazdy (Błąd #5 z
 `PLAN_POWER_PATH_smooth_ride.md`) rampą stosowaną PRZY KAŻDEJ zmianie (góra i dół),
 z krokiem adaptacyjnym od prędkości i kadencji (wzorzec TSDZ2 `set_motor_ramp`).

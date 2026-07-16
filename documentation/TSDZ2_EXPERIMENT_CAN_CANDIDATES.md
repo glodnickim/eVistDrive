@@ -1,5 +1,7 @@
 # TSDZ2 experiment - CAN configuration candidates
 
+> **ARCHIWALNY** (2026-07-16): kandydaci parametrow przeniesieni do protocol/ebics_config_schema.yaml (zrodlo prawdy przyszlych pol CAN).
+
 This file tracks the temporary constants added for the TSDZ2-style assist
 experiment. Nothing here is exposed over CAN yet. If the ride tests confirm the
 behaviour, these are the candidates to move from compile-time defines to runtime

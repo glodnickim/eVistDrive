@@ -1,5 +1,7 @@
 # Plan: ścieżka mocy silnika — płynna, przewidywalna jazda (styl Bosch)
 
+> **ARCHIWALNY** (2026-07-16): plan pisany na zepsutej 0.0114; cele zrealizowane strojeniami 0.0133/0.0134 oraz w Ride Core (Smooth Start, Release, filtry mocy). Zobacz documentation/RIDE_CORE_MASTER_CHECKLIST_PL.md.
+
 ## Cel (czego chce użytkownik)
 1. **Płynne ruszanie** — silnik narasta miękko, proporcjonalnie do nacisku na pedał (jak Bosch), bez szarpnięcia i bez zwłoki.
 2. **Brak przeciągania po zaprzestaniu pedałowania** — gdy przestajesz pedałować, moc szybko i gładko schodzi do zera, silnik nie „ciągnie" dalej.
