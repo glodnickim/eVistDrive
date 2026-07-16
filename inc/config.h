@@ -293,6 +293,9 @@
 #define TQ_REACQUIRE_TOL_MV 30    // consecutive coasts must agree within this to count as "consistent" (not a random load)
 #define TQ_REST_RAW_MIN     300   // absolute plausible UNLOADED raw baseline window (mV, pre-normalization): re-zero only within...
 #define TQ_REST_RAW_MAX     1500  // ...this window (anti-infinite-drift); outside => pedal pressed/sensor fault -> Error 25, no re-zero
+#define TQ_STUCK_HIGH_MV    3000  // corrected signal above this (~56 kg @40mV/kg) counts toward stuck-high detection
+#define TQ_STUCK_TICKS      80000U// ~20 s @4kHz continuously above TQ_STUCK_HIGH_MV -> sensor fault (real pedaling always dips between legs)
+#define TQ_FAULT_HOLD_TICKS 20000U// ~5 s minimum hold of torque_fault after the cause clears (no Error 25 flicker / assist chatter)
 
 //---------------------------------------------------------------------
 //Quadrature PAS decoder (PC12=A, PD2=B), polled @4kHz. Confirmed by CAN log: forward = negative raw step.

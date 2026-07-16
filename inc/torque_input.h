@@ -12,6 +12,8 @@
  * means "not calibrated" and selects the default. Integer math only.
  * Factory sensor characteristic (reverse engineered): linear 40 mV per kg,
  * so 60 kg = 750 + 2400 = 3150 native; readings above clamp to 60 kg.
+ * torque_input_cal_fault() reports overall signal plausibility: implausible
+ * zero (startup/coast) or a stuck-high signal that never dips between legs.
  */
 
 #define TORQUE_INPUT_ZERO_NATIVE               750U

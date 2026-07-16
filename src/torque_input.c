@@ -15,6 +15,8 @@ static bool coast_active;
 static uint16_t coast_ticks;
 static int32_t last_coast_rest;
 static uint8_t reacquire_count;
+static uint32_t stuck_ticks;
+static bool stuck_fault;
 
 static bool full_scale_in_range(uint16_t value)
 {
@@ -123,7 +125,7 @@ void torque_input_coast_update(int16_t torque_corrected_native, bool coast_eligi
 
 bool torque_input_cal_fault(void)
 {
-	return cal_fault;
+	return cal_fault || stuck_fault;
 }
 
 void torque_input_init(uint16_t stored_full_scale_native)
@@ -139,6 +141,17 @@ void torque_input_update(int16_t torque_corrected_native)
 	int32_t delta = (int32_t)torque_corrected_native -
 		(int32_t)TORQUE_INPUT_ZERO_NATIVE;
 	uint16_t span = torque_input_span_native();
+
+	if (torque_corrected_native > TQ_STUCK_HIGH_MV) {
+		if (stuck_ticks < TQ_STUCK_TICKS) {
+			stuck_ticks++;
+		} else {
+			stuck_fault = true;
+		}
+	} else {
+		stuck_ticks = 0;
+		stuck_fault = false;
+	}
 
 	if (delta < 0) {
 		delta = 0;
