@@ -16,6 +16,12 @@
 #define PROGRESSIVE_REFERENCE_POWER_MIN_W 50U
 #define PROGRESSIVE_REFERENCE_POWER_MAX_W 500U
 #define PROGRESSION_MAX_PCT 100U
+#define EMTB_TSDZ_TORQUE_RANGE 160U
+#define EMTB_TSDZ_PARAMETER_MAX 250U
+#define EMTB_TSDZ_DENOMINATOR_BASE 510U
+#define EMTB_TSDZ_DENOMINATOR_MIN 10U
+#define EMTB_REFERENCE_VOLTAGE_MIN_MV 24000U
+#define EMTB_REFERENCE_VOLTAGE_MAX_MV 60000U
 
 /*
  * Power ratios are based on the TSDZ2 reference factors 50/100/160/260,
@@ -23,13 +29,16 @@
  * SPORT and BOOST. These are provisional developer defaults; Legacy remains
  * the boot default until the versioned configuration is enabled.
  */
-#define DEFAULT_POWER_LEVEL(ratio) { \
+#define DEFAULT_POWER_LEVEL(ratio, emtb_level) { \
 	.mode_type = ASSIST_MODE_POWER_LINEAR, \
 	.support_ratio_pct = (ratio), \
 	.support_min_pct = (ratio), \
 	.support_max_pct = (ratio), \
 	.reference_power_w = 200, \
 	.progression_pct = 0, \
+	.emtb_parameter = (emtb_level), \
+	.emtb_based_on_power = true, \
+	.emtb_reference_voltage_mv = 36000, \
 	.max_motor_power_w = 0, \
 	.max_iq_pct = 100, \
 	.assist_without_rotation = false, \
@@ -45,15 +54,17 @@ static const assist_level_config_t default_levels[ASSIST_LEVEL_COUNT + 1] = {
 	{
 		.mode_type = ASSIST_MODE_POWER_LINEAR,
 		.reference_power_w = 200,
+		.emtb_based_on_power = true,
+		.emtb_reference_voltage_mv = 36000,
 		.without_rotation_threshold_mv = 18,
 		.startup_boost = {false, ASSIST_STARTUP_BOOST_CADENCE, 0, 45},
 		.smooth_start = {false, 300}
 	},
-	DEFAULT_POWER_LEVEL(100),
-	DEFAULT_POWER_LEVEL(200),
-	DEFAULT_POWER_LEVEL(320),
-	DEFAULT_POWER_LEVEL(420),
-	DEFAULT_POWER_LEVEL(520)
+	DEFAULT_POWER_LEVEL(100, 60),
+	DEFAULT_POWER_LEVEL(200, 100),
+	DEFAULT_POWER_LEVEL(320, 140),
+	DEFAULT_POWER_LEVEL(420, 160),
+	DEFAULT_POWER_LEVEL(520, 180)
 };
 
 #undef DEFAULT_POWER_LEVEL
@@ -66,6 +77,13 @@ typedef struct {
 	uint16_t fall_ms;
 	uint32_t filtered_power_q;
 } power_filter_state_t;
+
+typedef struct {
+	uint8_t cadence_for_assist_rpm;
+	uint16_t human_torque_mv;
+	uint16_t torque_for_assist_mv;
+	bool without_rotation_active;
+} prepared_assist_input_t;
 
 static power_filter_state_t power_filter_state;
 
@@ -83,6 +101,8 @@ static void clear_output(assist_mode_output_t *output)
 	output->torque_for_assist_mv = 0;
 	output->startup_boost_extra_pct = 0;
 	output->startup_boost_active = false;
+	output->emtb_denominator = 0;
+	output->emtb_target_x160 = 0;
 }
 
 static uint16_t clamp_power_filter_ms(uint16_t filter_ms)
@@ -196,11 +216,10 @@ static uint16_t torque_delta_from_corrected(const rider_input_t *input)
 	return (uint16_t)(input->torque_corrected_mv - ASSIST_TORQUE_ZERO_MV);
 }
 
-static bool calculate_power(
+static bool prepare_assist_input(
 	const rider_input_t *input,
 	const assist_level_config_t *config,
-	uint32_t battery_voltage_mv,
-	int32_t iq_limit,
+	prepared_assist_input_t *prepared,
 	assist_mode_output_t *output)
 {
 	uint8_t cadence_for_assist = input->cadence_rpm;
@@ -217,10 +236,7 @@ static bool calculate_power(
 		}
 		uint16_t corrected_delta_mv = torque_delta_from_corrected(input);
 		if (corrected_delta_mv > threshold_mv) {
-			/*
-			 * Keep the synthetic cadence local to the selected assist mode.
-			 * The shared rider snapshot and Legacy cadence stay unchanged.
-			 */
+			/* Keep synthetic cadence local; never modify MS or rider_input. */
 			cadence_for_assist = 1;
 			torque_for_assist = corrected_delta_mv;
 			without_rotation_active = true;
@@ -232,21 +248,17 @@ static bool calculate_power(
 
 	output->cadence_for_assist_rpm = cadence_for_assist;
 	output->assist_without_rotation_active = without_rotation_active;
-
 	if (!input->torque_sensor_valid ||
 		!input->pas_sensor_valid ||
 		(!input->pedaling_active && !without_rotation_active) ||
-		cadence_for_assist == 0 ||
-		battery_voltage_mv == 0 ||
-		iq_limit <= 0 ||
-		(config->mode_type == ASSIST_MODE_POWER_LINEAR ?
-			config->support_ratio_pct == 0 : config->support_max_pct == 0) ||
-		config->max_iq_pct == 0) {
-		stop_power_filter(config);
-		return true;
+		cadence_for_assist == 0) {
+		return false;
 	}
 
-	uint16_t human_torque_mv = torque_for_assist;
+	prepared->cadence_for_assist_rpm = cadence_for_assist;
+	prepared->human_torque_mv = torque_for_assist;
+	prepared->without_rotation_active = without_rotation_active;
+
 	assist_startup_boost_input_t boost_input = {
 		.torque_input_mv = torque_for_assist,
 		.cadence_for_assist_rpm = cadence_for_assist,
@@ -258,20 +270,40 @@ static bool calculate_power(
 		&boost_input,
 		&config->startup_boost,
 		&boost_output);
-	torque_for_assist = boost_output.torque_output_mv;
-	output->torque_for_assist_mv = torque_for_assist;
+	prepared->torque_for_assist_mv = boost_output.torque_output_mv;
+	output->torque_for_assist_mv = boost_output.torque_output_mv;
 	output->startup_boost_extra_pct = boost_output.extra_pct;
 	output->startup_boost_active = boost_output.active;
+	return true;
+}
+
+static bool calculate_power(
+	const rider_input_t *input,
+	const assist_level_config_t *config,
+	uint32_t battery_voltage_mv,
+	int32_t iq_limit,
+	assist_mode_output_t *output)
+{
+	prepared_assist_input_t prepared;
+	if (!prepare_assist_input(input, config, &prepared, output) ||
+		battery_voltage_mv == 0 ||
+		iq_limit <= 0 ||
+		(config->mode_type == ASSIST_MODE_POWER_LINEAR ?
+			config->support_ratio_pct == 0 : config->support_max_pct == 0) ||
+		config->max_iq_pct == 0) {
+		stop_power_filter(config);
+		return true;
+	}
 
 	uint32_t human_power_numerator =
-		(uint32_t)human_torque_mv *
-		(uint32_t)cadence_for_assist *
+		(uint32_t)prepared.human_torque_mv *
+		(uint32_t)prepared.cadence_for_assist_rpm *
 		HUMAN_POWER_NUMERATOR_SCALE;
 	uint32_t human_power_mw =
 		human_power_numerator / HUMAN_POWER_MW_DENOMINATOR;
 	uint32_t assist_basis_power_numerator =
-		(uint32_t)torque_for_assist *
-		(uint32_t)cadence_for_assist *
+		(uint32_t)prepared.torque_for_assist_mv *
+		(uint32_t)prepared.cadence_for_assist_rpm *
 		HUMAN_POWER_NUMERATOR_SCALE;
 	uint32_t assist_basis_power_mw =
 		assist_basis_power_numerator / HUMAN_POWER_MW_DENOMINATOR;

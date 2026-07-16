@@ -22,6 +22,9 @@ typedef struct {
 	uint16_t support_max_pct;
 	uint16_t reference_power_w;
 	uint8_t progression_pct;
+	uint8_t emtb_parameter;
+	bool emtb_based_on_power;
+	uint16_t emtb_reference_voltage_mv;
 	uint16_t max_motor_power_w;
 	uint8_t max_iq_pct;
 	bool assist_without_rotation;
@@ -46,6 +49,8 @@ typedef struct {
 	uint16_t torque_for_assist_mv;
 	uint16_t startup_boost_extra_pct;
 	bool startup_boost_active;
+	uint16_t emtb_denominator;
+	uint16_t emtb_target_x160;
 } assist_mode_output_t;
 
 const assist_level_config_t *assist_modes_get_default_level(uint8_t level_index);
