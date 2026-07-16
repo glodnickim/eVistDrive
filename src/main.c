@@ -39,6 +39,7 @@ OF SUCH DAMAGE.
 #include "motor_core.h"
 #include "rider_input.h"
 #include "ride_control.h"
+#include "torque_input.h"
 #include "CAN_Display.h"
 #include "parser.h"
 #include <math.h>
@@ -445,6 +446,7 @@ int main(void)
     //read parameters from virtual EEPROM and overwrite the default values
     read_virtual_eeprom();
     parse_MOparams(&MP);
+    torque_input_init(MP.torque_full_scale_native);
 
     for (int i = 0; i < 2000; i++) {//let the ADC stabilize
     	while(!reg_ADC_flag);
@@ -1538,6 +1540,7 @@ void reg_ADC_processing(void)
 		}
 		tq_coast_active=0;
 	}
+	torque_input_update(MS.torque_on_crank);
 	//Publish one coherent, read-only rider snapshot. Legacy calculations below still use the
 	//same MS/globals directly; switching consumers is a separate, testable refactor step.
 	{
@@ -1545,6 +1548,7 @@ void reg_ADC_processing(void)
 			.torque_raw_mv = torque_raw_mv,
 			.torque_corrected_mv = MS.torque_on_crank,
 			.torque_filtered = MS.torque_filtered,
+			.torque_load_centikg = torque_input_load_centikg(),
 			.cadence_rpm = MS.cadence,
 			.wheel_speed_x100 = MS.Speedx100,
 			.motor_erps = ui16_erps,

@@ -12,6 +12,7 @@ typedef struct {
 	uint16_t torque_raw_mv;
 	int16_t torque_corrected_mv;
 	uint16_t torque_filtered;
+	uint16_t torque_load_centikg;
 
 	uint8_t cadence_rpm;
 	uint32_t wheel_speed_x100;

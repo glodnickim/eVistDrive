@@ -138,8 +138,8 @@ typedef struct
 	uint16_t       	ramp_end;
 	uint16_t       	throttle_offset;
 	uint16_t       	throttle_max;
-	uint16_t       	torque_offset;
-	uint16_t       	torque_max;
+	uint16_t       	torque_offset; //unused; kept for EEPROM layout stability
+	uint16_t       	torque_full_scale_native; //was torque_max (unused); 0 = not calibrated
 	uint16_t       	gear_ratio;
 	uint16_t       	phase_current_max;
 	uint16_t		battery_current_max;
