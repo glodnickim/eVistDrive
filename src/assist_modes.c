@@ -23,6 +23,7 @@
 #define EMTB_REFERENCE_VOLTAGE_MIN_MV 24000U
 #define EMTB_REFERENCE_VOLTAGE_MAX_MV 60000U
 #define EMTB_UNIT_CURRENT_MA 160U
+#define TORQUE_ASSIST_FACTOR_DENOMINATOR 120U
 
 /*
  * Power ratios are based on the TSDZ2 reference factors 50/100/160/260,
@@ -30,7 +31,7 @@
  * SPORT and BOOST. These are provisional developer defaults; Legacy remains
  * the boot default until the versioned configuration is enabled.
  */
-#define DEFAULT_POWER_LEVEL(mode, ratio, emtb_level) { \
+#define DEFAULT_POWER_LEVEL(mode, ratio, emtb_level, torque_factor) { \
 	.mode_type = (mode), \
 	.support_ratio_pct = (ratio), \
 	.support_min_pct = (ratio), \
@@ -40,6 +41,7 @@
 	.emtb_parameter = (emtb_level), \
 	.emtb_based_on_power = true, \
 	.emtb_reference_voltage_mv = 36000, \
+	.torque_assist_factor = (torque_factor), \
 	.max_motor_power_w = 0, \
 	.max_iq_pct = 100, \
 	.assist_without_rotation = false, \
@@ -63,20 +65,20 @@
 
 static const assist_level_config_t default_levels[ASSIST_LEVEL_COUNT + 1] = {
 	DEFAULT_IDLE_LEVEL,
-	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 100, 60),
-	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 200, 100),
-	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 320, 140),
-	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 420, 160),
-	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 520, 180)
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 100, 60, 50),
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 200, 100, 80),
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 320, 140, 120),
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 420, 160, 160),
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 520, 180, 200)
 };
 
 static const assist_level_config_t emtb_levels[ASSIST_LEVEL_COUNT + 1] = {
 	DEFAULT_IDLE_LEVEL,
-	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB_TSDZ, 100, 60),
-	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB_TSDZ, 200, 100),
-	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB_TSDZ, 320, 140),
-	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB_TSDZ, 420, 160),
-	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB_TSDZ, 520, 180)
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB_TSDZ, 100, 60, 50),
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB_TSDZ, 200, 100, 80),
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB_TSDZ, 320, 140, 120),
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB_TSDZ, 420, 160, 160),
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB_TSDZ, 520, 180, 200)
 };
 
 #undef DEFAULT_POWER_LEVEL
@@ -485,6 +487,76 @@ static bool calculate_emtb(
 		output);
 }
 
+/*
+ * Faithful port of emmebrusa TSDZ2-Smart-EBike-1 apply_torque_assist()
+ * (src/ebike_app.c:841): target current = torque delta * factor / 120 in
+ * the TSDZ 0..160 range, normalized to the profile reference voltage.
+ * Cadence gates the assist but does not scale it.
+ */
+static bool calculate_torque_assist(
+	const rider_input_t *input,
+	const assist_level_config_t *config,
+	uint32_t battery_voltage_mv,
+	int32_t iq_limit,
+	assist_mode_output_t *output)
+{
+	prepared_assist_input_t prepared;
+	if (!prepare_assist_input(input, config, &prepared, output) ||
+		battery_voltage_mv == 0 ||
+		iq_limit <= 0 ||
+		config->torque_assist_factor == 0 ||
+		config->max_iq_pct == 0) {
+		stop_power_filter(config);
+		return true;
+	}
+
+	uint32_t reference_voltage_mv = config->emtb_reference_voltage_mv;
+	if (reference_voltage_mv < EMTB_REFERENCE_VOLTAGE_MIN_MV) {
+		reference_voltage_mv = EMTB_REFERENCE_VOLTAGE_MIN_MV;
+	}
+	if (reference_voltage_mv > EMTB_REFERENCE_VOLTAGE_MAX_MV) {
+		reference_voltage_mv = EMTB_REFERENCE_VOLTAGE_MAX_MV;
+	}
+
+	uint32_t delta_x160 =
+		((uint32_t)prepared.torque_for_assist_mv * EMTB_TSDZ_TORQUE_RANGE +
+		ASSIST_TORQUE_DELTA_MAX_MV / 2U) / ASSIST_TORQUE_DELTA_MAX_MV;
+	uint32_t target_x160 = (delta_x160 * config->torque_assist_factor) /
+		TORQUE_ASSIST_FACTOR_DENOMINATOR;
+
+	uint32_t human_power_numerator =
+		(uint32_t)prepared.human_torque_mv *
+		(uint32_t)prepared.cadence_for_assist_rpm *
+		HUMAN_POWER_NUMERATOR_SCALE;
+	uint32_t human_power_mw =
+		human_power_numerator / HUMAN_POWER_MW_DENOMINATOR;
+	uint32_t assist_basis_power_numerator =
+		(uint32_t)prepared.torque_for_assist_mv *
+		(uint32_t)prepared.cadence_for_assist_rpm *
+		HUMAN_POWER_NUMERATOR_SCALE;
+	uint32_t assist_basis_power_mw =
+		assist_basis_power_numerator / HUMAN_POWER_MW_DENOMINATOR;
+
+	uint32_t motor_power_mw =
+		((target_x160 * reference_voltage_mv) / 1000U) *
+		EMTB_UNIT_CURRENT_MA;
+	uint32_t support_ratio_pct = (assist_basis_power_mw > 0U) ?
+		(motor_power_mw * 100U) / assist_basis_power_mw : 0U;
+
+	output->emtb_target_x160 = (target_x160 > UINT16_MAX) ?
+		UINT16_MAX : (uint16_t)target_x160;
+
+	return finish_power_request(
+		config,
+		battery_voltage_mv,
+		iq_limit,
+		human_power_mw,
+		assist_basis_power_mw,
+		support_ratio_pct,
+		motor_power_mw,
+		output);
+}
+
 const assist_level_config_t *assist_modes_get_default_level(uint8_t level_index)
 {
 	if (level_index > ASSIST_LEVEL_COUNT) {
@@ -547,6 +619,14 @@ bool assist_modes_calculate(
 		break;
 	case ASSIST_MODE_EMTB_TSDZ:
 		supported = calculate_emtb(
+			input,
+			config,
+			battery_voltage_mv,
+			iq_limit,
+			output);
+		break;
+	case ASSIST_MODE_TORQUE:
+		supported = calculate_torque_assist(
 			input,
 			config,
 			battery_voltage_mv,

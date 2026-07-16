@@ -12,7 +12,8 @@ typedef enum {
 	ASSIST_MODE_POWER_LINEAR = 1,
 	ASSIST_MODE_POWER_PROGRESSIVE = 2,
 	ASSIST_MODE_EMTB_TSDZ = 3,
-	ASSIST_MODE_EMTB_CUSTOM = 4
+	ASSIST_MODE_EMTB_CUSTOM = 4,
+	ASSIST_MODE_TORQUE = 5
 } assist_mode_type_t;
 
 typedef struct {
@@ -25,6 +26,7 @@ typedef struct {
 	uint8_t emtb_parameter;
 	bool emtb_based_on_power;
 	uint16_t emtb_reference_voltage_mv;
+	uint8_t torque_assist_factor;
 	uint16_t max_motor_power_w;
 	uint8_t max_iq_pct;
 	bool assist_without_rotation;
