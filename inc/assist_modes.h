@@ -53,7 +53,12 @@ typedef struct {
 	uint16_t emtb_target_x160;
 } assist_mode_output_t;
 
+#define ASSIST_BANK_COUNT 2U
+
 const assist_level_config_t *assist_modes_get_default_level(uint8_t level_index);
+
+void assist_modes_set_active_bank(uint8_t bank_index);
+uint8_t assist_modes_get_active_bank(void);
 
 void assist_modes_reset(void);
 

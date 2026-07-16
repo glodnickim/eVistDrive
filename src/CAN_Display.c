@@ -334,6 +334,10 @@ void sendCAN_Poll(MotorParams_t* MP, MotorState_t* MS, uint16_t command){
 				transmit_message.tx_data[0] = (MS->offroadtics*100)&0xFF;
 				transmit_message.tx_data[1] = ((MS->offroadtics*100)>>8)&0xFF;
 			}
+			else if(MS->bank_splash_kmh){ //FW-005: bank switch feedback (10 = Power, 20 = eMTB)
+				transmit_message.tx_data[0] = (MS->bank_splash_kmh*100)&0xFF;
+				transmit_message.tx_data[1] = ((MS->bank_splash_kmh*100)>>8)&0xFF;
+			}
 			else{
 				transmit_message.tx_data[0] = (MS->Speedx100)&0xFF;
 				transmit_message.tx_data[1] = ((MS->Speedx100)>>8)&0xFF;

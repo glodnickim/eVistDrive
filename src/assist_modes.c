@@ -30,8 +30,8 @@
  * SPORT and BOOST. These are provisional developer defaults; Legacy remains
  * the boot default until the versioned configuration is enabled.
  */
-#define DEFAULT_POWER_LEVEL(ratio, emtb_level) { \
-	.mode_type = ASSIST_MODE_POWER_LINEAR, \
+#define DEFAULT_POWER_LEVEL(mode, ratio, emtb_level) { \
+	.mode_type = (mode), \
 	.support_ratio_pct = (ratio), \
 	.support_min_pct = (ratio), \
 	.support_max_pct = (ratio), \
@@ -51,24 +51,43 @@
 	.power_fall_filter_ms = 0 \
 }
 
+#define DEFAULT_IDLE_LEVEL { \
+	.mode_type = ASSIST_MODE_POWER_LINEAR, \
+	.reference_power_w = 200, \
+	.emtb_based_on_power = true, \
+	.emtb_reference_voltage_mv = 36000, \
+	.without_rotation_threshold_mv = 18, \
+	.startup_boost = {false, ASSIST_STARTUP_BOOST_CADENCE, 0, 45}, \
+	.smooth_start = {false, 300} \
+}
+
 static const assist_level_config_t default_levels[ASSIST_LEVEL_COUNT + 1] = {
-	{
-		.mode_type = ASSIST_MODE_POWER_LINEAR,
-		.reference_power_w = 200,
-		.emtb_based_on_power = true,
-		.emtb_reference_voltage_mv = 36000,
-		.without_rotation_threshold_mv = 18,
-		.startup_boost = {false, ASSIST_STARTUP_BOOST_CADENCE, 0, 45},
-		.smooth_start = {false, 300}
-	},
-	DEFAULT_POWER_LEVEL(100, 60),
-	DEFAULT_POWER_LEVEL(200, 100),
-	DEFAULT_POWER_LEVEL(320, 140),
-	DEFAULT_POWER_LEVEL(420, 160),
-	DEFAULT_POWER_LEVEL(520, 180)
+	DEFAULT_IDLE_LEVEL,
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 100, 60),
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 200, 100),
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 320, 140),
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 420, 160),
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 520, 180)
+};
+
+static const assist_level_config_t emtb_levels[ASSIST_LEVEL_COUNT + 1] = {
+	DEFAULT_IDLE_LEVEL,
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB_TSDZ, 100, 60),
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB_TSDZ, 200, 100),
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB_TSDZ, 320, 140),
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB_TSDZ, 420, 160),
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB_TSDZ, 520, 180)
 };
 
 #undef DEFAULT_POWER_LEVEL
+#undef DEFAULT_IDLE_LEVEL
+
+static const assist_level_config_t *const bank_levels[ASSIST_BANK_COUNT] = {
+	default_levels,
+	emtb_levels
+};
+
+static uint8_t active_bank;
 
 static assist_mode_output_t last_output;
 
@@ -471,7 +490,23 @@ const assist_level_config_t *assist_modes_get_default_level(uint8_t level_index)
 	if (level_index > ASSIST_LEVEL_COUNT) {
 		level_index = 0;
 	}
-	return &default_levels[level_index];
+	return &bank_levels[active_bank][level_index];
+}
+
+void assist_modes_set_active_bank(uint8_t bank_index)
+{
+	if (bank_index >= ASSIST_BANK_COUNT) {
+		bank_index = 0;
+	}
+	if (bank_index != active_bank) {
+		active_bank = bank_index;
+		assist_modes_reset();
+	}
+}
+
+uint8_t assist_modes_get_active_bank(void)
+{
+	return active_bank;
 }
 
 void assist_modes_reset(void)

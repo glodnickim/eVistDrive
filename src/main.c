@@ -40,6 +40,7 @@ OF SUCH DAMAGE.
 #include "rider_input.h"
 #include "ride_control.h"
 #include "torque_input.h"
+#include "assist_modes.h"
 #include "CAN_Display.h"
 #include "parser.h"
 #include <math.h>
@@ -398,6 +399,7 @@ int main(void)
 	MS.button_down_flag=SET;
 	MS.offroadflag=RESET;
 	MS.offroadtics=0;
+	MS.bank_splash_kmh=0;
 	MS.pushassist_flag=RESET;
 	MS.walk_can_request=RESET;
 	MS.distance_since_startup=0;
@@ -441,6 +443,7 @@ int main(void)
     read_virtual_eeprom();
     parse_MOparams(&MP);
     torque_input_init(MP.torque_full_scale_native);
+    assist_modes_set_active_bank((uint8_t)MP.active_profile_bank);
 
     for (int i = 0; i < 2000; i++) {//let the ADC stabilize
     	while(!reg_ADC_flag);
@@ -1578,6 +1581,39 @@ void reg_ADC_processing(void)
         ui8_WA_blocked=0;
     }
 
+    //--- bank gesture (FW-005): at BOOST bounce BOOST<->SPORT+ twice within ~2.5 s -> toggle profile bank ---
+    {
+        static uint8_t bank_last_level=0xFF;
+        static uint8_t bank_bounce=0;
+        static uint16_t bank_gesture_window=0;
+        static uint16_t bank_splash_ticks=0;
+        static uint8_t bank_save_pending=0;
+        if(bank_gesture_window) bank_gesture_window--; else bank_bounce=0;
+        if(MS.assist_level != bank_last_level){
+            if(bank_last_level != 0xFF){
+                uint8_t expected = (bank_bounce & 1) ? 9 : 8; //-,+,-,+ pattern: 8,9,8,9
+                if(MS.assist_level==expected && (bank_bounce>0 || bank_last_level==9)){
+                    if(bank_bounce==0) bank_gesture_window=10000; //~2.5 s @4kHz
+                    if(++bank_bounce>=4){
+                        bank_bounce=0; bank_gesture_window=0;
+                        uint8_t next_bank = assist_modes_get_active_bank() ? 0 : 1;
+                        assist_modes_set_active_bank(next_bank);
+                        MS.bank_splash_kmh = next_bank ? 20 : 10;
+                        bank_splash_ticks=12000; //~3 s speed-field splash
+                        bank_save_pending=1;
+                    }
+                }else bank_bounce=0;
+            }
+            bank_last_level=MS.assist_level;
+        }
+        if(bank_splash_ticks && --bank_splash_ticks==0) MS.bank_splash_kmh=0;
+        //persist only at full standstill: flash write stalls the CPU, so never while driving
+        if(bank_save_pending && MS.i_q_setpoint==0 && MS.cadence==0 && MS.Speedx100==0){
+            MP.active_profile_bank = assist_modes_get_active_bank();
+            write_virtual_eeprom();
+            bank_save_pending=0;
+        }
+    }
     {
         ride_control_input_t ride_input = {
             .speed_x100 = MS.Speedx100,

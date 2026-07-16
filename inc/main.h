@@ -101,6 +101,7 @@ typedef struct
 	int8_t         	level_counter_global;
 	FlagStatus      offroadflag;
 	uint8_t         offroadtics;
+	uint8_t         bank_splash_kmh; //FW-005: brief speed-field override after bank switch (10/20 km/h), 0 = off
 	int8_t         	error_state;
 	int8_t 			angle_est;
 	uint8_t 		cadence;
@@ -138,7 +139,7 @@ typedef struct
 	uint16_t       	ramp_end;
 	uint16_t       	throttle_offset;
 	uint16_t       	throttle_max;
-	uint16_t       	torque_offset; //unused; kept for EEPROM layout stability
+	uint16_t       	active_profile_bank; //was torque_offset (unused); FW-005: 0 = Power bank, 1 = eMTB bank
 	uint16_t       	torque_full_scale_native; //was torque_max (unused); 0 = not calibrated
 	uint16_t       	gear_ratio;
 	uint16_t       	phase_current_max;

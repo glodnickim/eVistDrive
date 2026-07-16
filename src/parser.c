@@ -132,6 +132,7 @@ void InitEEPROM(MotorParams_t* MP){
 	MP->throttle_offset=THROTTLE_OFFSET; //map 3.3V to 12 bit ADC resolution
 	MP->throttle_max=THROTTLE_MAX; //map 3.3V to 12 bit ADC resolution
 	MP->torque_full_scale_native=0; //0 = not calibrated -> torque_input uses its default
+	MP->active_profile_bank=0; //FW-005: boot into Power bank
 	MP->reverse=REVERSE;
 	MP->Cadence_exponent=10;
 	MP->pulses_per_revolution=PULSES_PER_REVOLUTION;
