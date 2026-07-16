@@ -4,9 +4,9 @@ Aktualizacja: 2026-07-16
 
 Gałąź firmware: `refactor/ride-core`
 
-Ostatni zatwierdzony commit: `0f3d1c1` (`assist: add progressive power curve`)
+Ostatni zatwierdzony commit: `f69b8e5` (`torque: hold fault 5 s and cut all assist on Error 25`)
 
-Ostatni sprawdzony build: `0.0155_M820_BL820.bin`
+Ostatni sprawdzony build: `0.0159_M820_BL820.bin`
 
 Silnik uruchamiany domyślnie: **Legacy** (`RIDE_ENGINE_DEFAULT=0`)
 
@@ -109,6 +109,12 @@ oryginalnym sposobem obliczeń, a użytkownik pracuje wyłącznie w kg.
   `0f3d1c1`, build `0.0155`.
 - [x] Wszystkie powyższe funkcje pozostają nieaktywne w ustawieniu domyślnym;
   Legacy nadal uruchamia się po włączeniu sterownika.
+- [x] 7.1 (część): wspólny moduł `torque_input` — autozero, korekta dryftu,
+  pełna skala i konwersja kg (charakterystyka fabryczna 40 mV/kg, 60 kg =
+  3150 natywnie) — `c3a31e4`+`6c90cc8`+`df4f92d`, buildy `0.0156`–`0.0158`.
+- [x] FW-003: wykrycie sygnału zawieszonego wysoko (>~56 kg nieprzerwanie
+  ~20 s) + Error 25 zeruje CAŁĄ moc silnika (asysta i throttle) z trzymaniem
+  błędu ~5 s — `ffe28b9`+`f69b8e5`, build `0.0159`. TEST ROWERU wymagany.
 
 ## 5. Zrobione — dokumentacja i przygotowanie protokołu
 

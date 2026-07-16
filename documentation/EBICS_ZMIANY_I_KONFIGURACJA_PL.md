@@ -77,6 +77,21 @@ Zmieniasz wartość → przebudowa (`build_firmware.ps1`) → wgranie. Domyślne
 
 ## 4. Co zmieniliśmy (changelog — od najnowszego)
 
+### 0.0159 — Error 25: silnik nie może wspomagać na uszkodzonym czujniku (FW-003)
+Co czujesz: gdy czujnik nacisku się psuje, na wyświetlaczu pojawia się Error 25,
+a wspomaganie **łagodnie gaśnie do zera** (pedałowanie i manetka; Walk był blokowany
+już wcześniej). Wraca samo dopiero ~5 s po tym, jak sygnał jest stabilnie poprawny —
+bez migotania błędu i szarpania mocą. Nowość w wykrywaniu: sygnał „zawieszony wysoko"
+(awaria elektroniki czujnika udająca ogromny nacisk) jest teraz łapany także **w trakcie
+pedałowania** — prawdziwy nacisk zawsze faluje między nogami, więc sygnał trzymający się
+nieprzerwanie powyżej ~56 kg przez ~20 s oznacza usterkę. Wcześniej taka awaria dawała
+pełną moc, dopóki nie przerwałeś pedałowania na 2 s.
+Stałe: `TQ_STUCK_HIGH_MV` (3000 mV ≈ 56 kg), `TQ_STUCK_TICKS` (~20 s),
+`TQ_FAULT_HOLD_TICKS` (~5 s trzymania błędu). Commity `ffe28b9` + `f69b8e5`.
+**WYMAGANY TEST NA ROWERZE/KOLE:** odpięcie czujnika w pracy → moc do 0 + Error 25;
+powrót sygnału → wspomaganie wraca po ~5 s; długie mocne deptanie pod górę → brak
+fałszywego alarmu.
+
 ### 0.0132 — Miękkie odcięcie stopnia mocy (koniec „kliku" na końcu wspomagania)
 Objaw: na samym końcu zaniku wspomagania słychać „klik". Analiza kodu: **zanik momentu jest płynny**
 (rampa `i_q` w dół, `IQ_RAMP_DOWN_*`), ale **finalne wyłączenie mostka było twarde**. Gdy wirnik stoi
