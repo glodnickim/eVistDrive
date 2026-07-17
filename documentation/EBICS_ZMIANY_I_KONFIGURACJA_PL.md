@@ -77,6 +77,32 @@ Zmieniasz wartość → przebudowa (`build_firmware.ps1`) → wgranie. Domyślne
 
 ## 4. Co zmieniliśmy (changelog — od najnowszego)
 
+### 0.0164 — Rampy przyspieszenia/zwalniania i tempo boostu startowego w CANable (FW-010)
+Co to jest: dwie wartości strojenia charakteru, które wcześniej były zaszyte
+na sztywno w kodzie, są teraz w zakładce **Banks → Global Ride-Feel Tuning**:
+**przyspieszenie/zwalnianie silnika** (osobno dla wolnej i szybkiej jazdy —
+to samo dotyczy obu silników jazdy, Legacy i nowego) oraz **tempo wygasania
+kopa startowego z kadencją** (nowej ścieżki; stary Legacy boost ma własną,
+osobną wartość i pozostaje bez zmian). Odczyt/Zastosuj/Zapis działają tak
+samo jak w bankach — Zapis zapisuje jednym zapisem banki i strojenie razem,
+wyłącznie na postoju. Domyślne wartości = dotychczasowe stałe (600/300 ms
+narastanie, 1000/140 ms opadanie, krok kadencji 20) — zachowanie identyczne,
+dopóki czegoś nie zmienisz. Commit `34f497d`.
+
+### 0.0163 — Protokół konfiguracji banków w CANable (FW-006)
+Banki z 0.0161 stają się edytowalne z komputera: nowa zakładka **Banks**
+pozwala odczytać obie konfiguracje, wybrać tryb każdego banku i wartości
+5 poziomów, zastosować od razu (RAM) albo zapisać trwale (na postoju).
+Dane chronione sumą kontrolną — uszkodzony zapis jest odrzucany, poprzednia
+konfiguracja zostaje. Stare Para0/1/2 i komunikacja z wyświetlaczem bez zmian.
+Commit `ebb90f3`.
+
+### 0.0162 — Tryb Torque w nowym silniku jazdy (FW-007; domyślnie nieaktywny)
+Trzeci tryb obok Power i eMTB: pomoc wprost proporcjonalna do nacisku na
+pedał, bez udziału kadencji — „wzmacniacz nogi" w stylu TSDZ2. Wierny port
+`apply_torque_assist`. Wybieralny per bank z poziomu CANable (od 0.0163).
+Domyślnie żaden bank go nie używa — zachowanie bez zmian. Commit `3f80bda`.
+
 ### 0.0161 — Dwa banki profili przełączane z kierownicy (FW-005)
 Co to jest: obok 5 poziomów masz teraz dwa „charaktery" roweru — **bank 1 =
 Power** (wsparcie proporcjonalne do Twojej mocy) i **bank 2 = eMTB**
