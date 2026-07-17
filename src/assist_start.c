@@ -2,8 +2,9 @@
 
 #include <limits.h>
 
+#include "tuning_config.h"
+
 #define STARTUP_BOOST_CURVE_SIZE 120U
-#define STARTUP_BOOST_CADENCE_STEP 20U
 #define STARTUP_BOOST_STRENGTH_MAX_PCT 300U
 #define STARTUP_BOOST_AUTO_TORQUE_MV 20U
 #define ASSIST_TORQUE_DELTA_MAX_MV 2550U
@@ -13,6 +14,7 @@
 
 static uint16_t startup_boost_curve[STARTUP_BOOST_CURVE_SIZE];
 static uint16_t cached_strength_pct = UINT16_MAX;
+static uint16_t cached_cadence_step = UINT16_MAX;
 static bool speed_boost_latched;
 static assist_startup_boost_mode_t previous_mode = ASSIST_STARTUP_BOOST_CADENCE;
 
@@ -30,10 +32,13 @@ static assist_smooth_start_output_t last_smooth_output;
 
 static void rebuild_startup_boost_curve(uint16_t strength_pct)
 {
+	uint16_t cadence_step = tuning_config_cadence_step();
+
 	if (strength_pct > STARTUP_BOOST_STRENGTH_MAX_PCT) {
 		strength_pct = STARTUP_BOOST_STRENGTH_MAX_PCT;
 	}
-	if (strength_pct == cached_strength_pct) {
+	if (strength_pct == cached_strength_pct &&
+		cadence_step == cached_cadence_step) {
 		return;
 	}
 
@@ -41,10 +46,11 @@ static void rebuild_startup_boost_curve(uint16_t strength_pct)
 	for (uint8_t cadence = 1; cadence < STARTUP_BOOST_CURVE_SIZE; cadence++) {
 		uint32_t previous = startup_boost_curve[cadence - 1];
 		uint32_t next =
-			(previous << 8) - (previous * STARTUP_BOOST_CADENCE_STEP);
+			(previous << 8) - (previous * cadence_step);
 		startup_boost_curve[cadence] = (uint16_t)(next >> 8);
 	}
 	cached_strength_pct = strength_pct;
+	cached_cadence_step = cadence_step;
 }
 
 void assist_start_reset(void)

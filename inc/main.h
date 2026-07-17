@@ -173,6 +173,10 @@ typedef struct
 	uint16_t       	bank_store_magic;               // 0xB16B = bank_store holds valid serialized banks
 	uint8_t       	bank_store[2][192];             // serialized bank blobs (wire format v1, 185 B used)
 
+	//--- FW-010: global ride-feel tuning storage (appended at end) ---
+	uint16_t       	tuning_store_magic;             // 0x7501 = tuning_store holds valid values
+	uint8_t       	tuning_store[16];               // serialized tuning blob (wire format v1)
+
 }MotorParams_t;
 
 typedef struct

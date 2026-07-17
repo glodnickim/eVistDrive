@@ -41,6 +41,7 @@ OF SUCH DAMAGE.
 #include "ride_control.h"
 #include "torque_input.h"
 #include "assist_modes.h"
+#include "tuning_config.h"
 #include "CAN_Display.h"
 #include "parser.h"
 #include <math.h>
@@ -149,6 +150,8 @@ int32_t ButtonVoltageCumulated=620<<6;
 #define sign(x) (((x) >= 0)?(1):(-1))
 MotorState_t MS;
 MotorParams_t MP;
+_Static_assert(sizeof(MotorParams_t) <= (FMC_WRITE_END_ADDR - FMC_WRITE_START_ADDR - FMC_OFFSET_MP),
+	"MotorParams_t no longer fits the virtual EEPROM page");
 //structs for PI_control
 PI_control_t PI_iq;
 PI_control_t PI_id;
@@ -450,6 +453,9 @@ int main(void)
         assist_modes_apply_bank_blob(&MP.bank_store[1][0], ASSIST_BANK_BLOB_LEN);
     }
     assist_modes_set_active_bank((uint8_t)MP.active_profile_bank);
+    if(MP.tuning_store_magic==0x7501){ //FW-010: restore user ramp/boost tuning (bad blob rejected -> defaults stay)
+        tuning_config_apply_blob(&MP.tuning_store[0], TUNING_BLOB_LEN);
+    }
 
     for (int i = 0; i < 2000; i++) {//let the ADC stabilize
     	while(!reg_ADC_flag);
@@ -1616,10 +1622,12 @@ void reg_ADC_processing(void)
         //persist only at full standstill: flash write stalls the CPU, so never while driving
         if((bank_save_pending || bank_save_request) && MS.i_q_setpoint==0 && MS.cadence==0 && MS.Speedx100==0){
             MP.active_profile_bank = assist_modes_get_active_bank();
-            if(bank_save_request){ //FW-006: 0x6022 -> persist full bank contents
+            if(bank_save_request){ //FW-006/FW-010: 0x6022 -> persist banks and ride-feel tuning together
                 assist_modes_serialize_bank(0, &MP.bank_store[0][0]);
                 assist_modes_serialize_bank(1, &MP.bank_store[1][0]);
                 MP.bank_store_magic=0xB16B;
+                tuning_config_serialize(&MP.tuning_store[0]);
+                MP.tuning_store_magic=0x7501;
             }
             write_virtual_eeprom();
             bank_save_pending=0;

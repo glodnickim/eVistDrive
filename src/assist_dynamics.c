@@ -1,6 +1,7 @@
 #include "assist_dynamics.h"
 
 #include "config.h"
+#include "tuning_config.h"
 
 #define CONTROL_TICKS_PER_MS 4
 #define PROFILE_RELEASE_MAX_MS 3000
@@ -28,29 +29,34 @@ int32_t assist_dynamics_apply(
 		return iq_target;
 	}
 
+	int32_t ramp_up_slow = tuning_config_ramp_up_slow_ticks();
+	int32_t ramp_up_fast = tuning_config_ramp_up_fast_ticks();
+	int32_t ramp_down_slow = tuning_config_ramp_down_slow_ticks();
+	int32_t ramp_down_fast = tuning_config_ramp_down_fast_ticks();
+
 #if IQ_RAMP_ADAPTIVE
 	int32_t up_s = map((int32_t)input->speed_x100,
 		IQ_RAMP_SPEED_LO, IQ_RAMP_SPEED_HI,
-		IQ_RAMP_UP_SLOW_TICKS, IQ_RAMP_UP_FAST_TICKS);
+		ramp_up_slow, ramp_up_fast);
 	int32_t up_c = map((int32_t)input->cadence_rpm,
 		IQ_RAMP_CAD_LO, IQ_RAMP_CAD_HI,
-		IQ_RAMP_UP_SLOW_TICKS, IQ_RAMP_UP_FAST_TICKS);
+		ramp_up_slow, ramp_up_fast);
 	int32_t dn_s = map((int32_t)input->speed_x100,
 		IQ_RAMP_SPEED_LO, IQ_RAMP_SPEED_HI,
-		IQ_RAMP_DOWN_SLOW_TICKS, IQ_RAMP_DOWN_FAST_TICKS);
+		ramp_down_slow, ramp_down_fast);
 	int32_t dn_c = map((int32_t)input->cadence_rpm,
 		IQ_RAMP_CAD_LO, IQ_RAMP_CAD_HI,
-		IQ_RAMP_DOWN_SLOW_TICKS, IQ_RAMP_DOWN_FAST_TICKS);
+		ramp_down_slow, ramp_down_fast);
 	int32_t up_ticks = (up_c < up_s) ? up_c : up_s;
 	int32_t dn_ticks = (dn_c < dn_s) ? dn_c : dn_s;
 #else
-	int32_t up_ticks = IQ_RAMP_UP_SLOW_TICKS;
-	int32_t dn_ticks = IQ_RAMP_DOWN_SLOW_TICKS;
+	int32_t up_ticks = ramp_up_slow;
+	int32_t dn_ticks = ramp_down_slow;
 #endif
 
 	if (input->walk_active) {
-		up_ticks = IQ_RAMP_UP_FAST_TICKS;
-		dn_ticks = IQ_RAMP_DOWN_FAST_TICKS;
+		up_ticks = ramp_up_fast;
+		dn_ticks = ramp_down_fast;
 	}
 	bool profile_release_active = iq_target == 0 &&
 		!input->profile_pedaling_active &&
