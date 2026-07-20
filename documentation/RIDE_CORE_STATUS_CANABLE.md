@@ -215,7 +215,7 @@ firmware.
 | Lokalizacja | Zmienna firmware | Stan |
 |---|---|---|
 | `Para0[2,4,6,8,9]` | `assist_settings[level][2]` | TQfilter / „Ride Mode” per poziom; aktywne w Legacy |
-| `Para0[12..27]` | `TQO_threshold[1..5]` | Wewnętrzny próg mapowania nacisku per poziom, 16-bit LE; UI docelowo przelicza go na kg |
+| `Para0[12..27]` | `TQO_threshold[1..5]` | Wewnętrzny próg mapowania nacisku per poziom, 16-bit LE; UI przelicza go na kg i ogranicza do 31,2 kg dla obecnej mapy Legacy |
 | `Para1[7..8]` | `battery_capacity_mah` | Aktywne |
 | `Para1[9]` | `phase_current_max` | Aktywny sprzętowy limit skali prądu |
 | `Para1[10]`, `[11]` | progi limp SOC | Aktywne; `0xFF` wyłącza |
@@ -280,7 +280,7 @@ Poniższe pola nie mają jeszcze przydzielonych ID protokołu.
 | `max_motor_power_w` | Maksymalna moc silnika | W | 0–1500 | FW + protokół + UI |
 | `max_iq_pct` | Maksymalny Iq poziomu | % limitu fazowego | 0–100 | FW + protokół + UI |
 | `assist_without_rotation` | Pomoc bez obrotu | bool | OFF/ON; domyślnie OFF | FW aktywne; protokół + UI do podłączenia |
-| `without_rotation_threshold_kg` | Próg startu bez obrotu | kg | 0,00–60,00 | FW używa jeszcze wartości natywnej; konwersja + protokół + UI do podłączenia |
+| `without_rotation_threshold_kg` | Próg startu bez obrotu | kg | 0,00–7,50 | FW używa wartości natywnej 0–300 mV powyżej autozera; Canable pokazuje kg |
 | `startup_boost_enabled` | Startup Boost | bool | OFF/ON | FW aktywne; protokół + UI do podłączenia |
 | `startup_boost_mode` | Tryb Boost | enum | Cadence, Speed, Auto | FW aktywne; protokół + UI do podłączenia |
 | `startup_boost_strength_pct` | Siła Boost | % dodatkowego nacisku | 0–300 | FW aktywne; protokół + UI do podłączenia |

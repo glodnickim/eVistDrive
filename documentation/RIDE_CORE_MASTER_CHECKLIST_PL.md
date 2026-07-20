@@ -124,6 +124,8 @@ oryginalnym sposobem obliczeń, a użytkownik pracuje wyłącznie w kg.
 - [x] Zidentyfikowane obecne pola Walk, torque override i profili Legacy.
 - [x] Zidentyfikowane miejsca Canable pokazujące torque w mV oraz ręczną
   kalibrację, które trzeba zastąpić interfejsem kg/autozero.
+- [x] Pełny audyt rozdzielenia ekranów Bafang, EBICS Legacy i EBICS Ride Core —
+  `documentation/CANABLE_EBICS_UI_AUDIT_PL.md`.
 
 ## 6. W toku
 
@@ -131,8 +133,6 @@ oryginalnym sposobem obliczeń, a użytkownik pracuje wyłącznie w kg.
   dokumentacji.
 - [~] eMTB TSDZ: rozpoczęte przygotowanie wspólnego wejścia trybów i pól profilu;
   nie ma jeszcze kompletnego wzoru, wyboru w runtime ani zatwierdzonego builda.
-- [~] Audyt Canable master: repo i ekrany są rozpoznane, ale kod aplikacji nie
-  został jeszcze zmieniony.
 
 Rozpoczętego kodu eMTB nie oznaczać jako gotowy, dopóki nie przejdzie builda,
 audytu wzoru i osobnego commita.
@@ -232,7 +232,7 @@ Nazwy są kontraktem funkcjonalnym; dokładne `wire_id` przydzieli generator.
 | `torque_load_kg` | Aktualny nacisk | kg, 0,01 | tylko odczyt |
 | `torque_full_scale_kg` | Pełna skala | stałe 60,00 kg | tylko odczyt |
 | `torque_calibration_reference_kg` | Obciążenie wzorcowe kalibracji | kg, 0,01 | parametr operacji kalibracji |
-| `torque_lower_threshold_kg` | Dolna granica mapowania nacisku | kg, 0,01 | zapis; per poziom, zgodnie z dawnym `TQO_threshold` |
+| `torque_lower_threshold_kg` | Dolna granica mapowania nacisku | kg, 0,1; obecnie 0,0–31,2 | zapis; per poziom, zgodnie z dawnym `TQO_threshold` i `TQ_FULL_SCALE_MV=2000` |
 | `torque_gate_start_kg` | Próg załączenia nacisku | kg, 0,01 | zapis globalny |
 | `torque_gate_release_kg` | Próg zwolnienia nacisku | kg, 0,01 | zapis globalny |
 | `without_rotation_threshold_kg` | Próg pomocy bez obrotu | kg, 0,01 | zapis per poziom |
