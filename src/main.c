@@ -185,6 +185,12 @@ uint8_t  torque_fault=0;        // Error 25 active (out-of-range signal debounce
 uint16_t tq_fault_ticks=0;      // debounce for out-of-range signal
 uint32_t tq_fault_hold=0;       // min hold after the cause clears (~5 s) - no flicker/assist chatter
 volatile uint8_t bank_save_request=0; //FW-006: 0x6022 received -> persist banks at next standstill
+volatile uint8_t ride_engine_request=0xFF; //FW-014: 0x6027 sets 0/1 = pending engine; 0xFF = none
+//FW-015b: peak-hold diagnostics (reset on each 0x6029 read) - lets a brief bench press be captured
+volatile uint8_t diag_peak_reset=0;
+volatile uint8_t diag_peak_cadence=0;
+volatile uint16_t diag_peak_torque=0, diag_peak_human_w=0, diag_peak_support=0, diag_peak_motor_w=0;
+volatile int32_t diag_peak_iq_req=0, diag_peak_iq_set=0;
 uint32_t ui32_erps_cumulated=0;
 int32_t q31_rotorposition_hall=0;
 q31_t q31_rotorposition_absolute=0;
@@ -196,6 +202,7 @@ uint16_t uint16_full_rotation_counter=0;
 uint16_t uint16_half_rotation_counter=0;
 uint16_t speedlimitx100_scaled=0;
 int16_t phase_current_max_scaled=0;
+int16_t ride_core_iq_limit_scaled=0;
 int8_t assist_level_old=0;
 q31_t q31_u_d_temp=0;
 q31_t q31_u_q_temp=0;
@@ -446,7 +453,8 @@ int main(void)
     //read parameters from virtual EEPROM and overwrite the default values
     read_virtual_eeprom();
     parse_MOparams(&MP);
-    torque_input_init(MP.torque_full_scale_native);
+	ride_core_iq_limit_scaled = MP.phase_current_max;
+    torque_input_init(); //MP.torque_full_scale_native is deprecated (no magic/version); user span arrives with the calibration persist block
     assist_modes_init();
     if(MP.bank_store_magic==0xB16B){ //FW-006: restore user bank configs (bad blobs are rejected -> defaults stay)
         assist_modes_apply_bank_blob(&MP.bank_store[0][0], ASSIST_BANK_BLOB_LEN);
@@ -455,6 +463,13 @@ int main(void)
     assist_modes_set_active_bank((uint8_t)MP.active_profile_bank);
     if(MP.tuning_store_magic==0x7501){ //FW-010: restore user ramp/boost tuning (bad blob rejected -> defaults stay)
         tuning_config_apply_blob(&MP.tuning_store[0], TUNING_BLOB_LEN);
+    }
+    //FW-013/FW-016: bad/absent user record -> measured default 0/6/84 kg curve
+    torque_input_restore_persist(MP.torque_cal_magic, MP.torque_cal_version,
+        MP.torque_cal_span_native, MP.torque_cal_crc);
+    //FW-014: restore persisted ride engine (bad/absent -> compiled default)
+    if(MP.ride_engine_magic==0x5E01){
+        ride_control_set_engine(MP.ride_engine ? RIDE_ENGINE_TSDZ : RIDE_ENGINE_LEGACY);
     }
 
     for (int i = 0; i < 2000; i++) {//let the ADC stabilize
@@ -529,6 +544,7 @@ int main(void)
     		trip_distance_m_last=MS.distance_since_startup; MS.used_wh=0;
     		speedlimitx100_scaled=MP.speedLimitx100*MP.assist_settings[level_to_array_element[MS.assist_level]][1]/100;
     		phase_current_max_scaled=MP.phase_current_max*MP.assist_settings[level_to_array_element[MS.assist_level]][0]/100;
+			ride_core_iq_limit_scaled=(int16_t)((float)MP.phase_current_max*limp_factor);
         	MS.TQfilter=level_to_array_element[MS.assist_level];
         	MS.TQfilter=MP.assist_settings[MS.TQfilter][2];
         	//SAFETY: TQfilter is used as a bit-shift (torque_cumulated>>TQfilter). Ride-mode values >7 (or, via
@@ -599,7 +615,8 @@ int main(void)
             		limp_factor = compute_limp_factor(MS.soc_display);
             		{
             			uint16_t base_phase = MP.phase_current_max*MP.assist_settings[level_to_array_element[MS.assist_level]][0]/100;
-            			phase_current_max_scaled = (int16_t)((float)base_phase * limp_factor);
+					phase_current_max_scaled = (int16_t)((float)base_phase * limp_factor);
+					ride_core_iq_limit_scaled = (int16_t)((float)MP.phase_current_max * limp_factor);
             		}
             		//--- thermal protection state (hysteresis) + Error 10 signalling ---
             		if(overtemp_stage==0){
@@ -1517,23 +1534,31 @@ void reg_ADC_processing(void)
 		else torque_fault=0;
 	}
 	//--- cyclic offset re-zero on coast (pedals idle >= TQ_RECAL_IDLE_TICKS): owned by torque_input ---
-	torque_input_coast_update(MS.torque_on_crank, pas_idle_ticks>TQ_RECAL_IDLE_TICKS && tq_fault_ticks==0);
-	torque_input_update(MS.torque_on_crank);
+	torque_input_coast_update(MS.torque_on_crank, pas_idle_ticks>TQ_RECAL_IDLE_TICKS && tq_fault_ticks==0 && MS.i_q_setpoint==0);
+	torque_input_update(torque_raw_mv, MS.torque_on_crank, torque_fault==0);
 	//Publish one coherent, read-only rider snapshot. Legacy calculations below still use the
 	//same MS/globals directly; switching consumers is a separate, testable refactor step.
 	{
+		const torque_snapshot_t *torque_snapshot = torque_input_get_snapshot();
+		bool ride_core_pedaling = forward_pedaling != 0 &&
+			fwd_run >= START_MIN_STEPS;
 		rider_input_t input = {
 			.torque_raw_mv = torque_raw_mv,
 			.torque_corrected_mv = MS.torque_on_crank,
 			.torque_filtered = MS.torque_filtered,
+			.torque_assist_filtered = torque_snapshot->assist_delta_filtered_native,
 			.torque_load_centikg = torque_input_load_centikg(),
 			.cadence_rpm = MS.cadence,
 			.wheel_speed_x100 = MS.Speedx100,
 			.motor_erps = ui16_erps,
-			.pas_forward = forward_pedaling != 0,
+			.motor_voltage_utilization = (MS.u_abs > 2048) ? 2048U :
+				(MS.u_abs > 0 ? (uint16_t)MS.u_abs : 0U),
+			.pas_forward = ride_core_pedaling,
 			.pas_backward = Backwards_counter >= 4,
-			.pedaling_active = forward_pedaling != 0,
-			.torque_sensor_valid = torque_fault == 0,
+			.pedaling_active = ride_core_pedaling,
+			.cadence_seeded = cadence_seeded != 0,
+			.torque_sensor_valid = torque_fault == 0 &&
+				!torque_input_calibration_active(),
 			.pas_sensor_valid = pas_qstate != 0xFF
 		};
 		rider_input_update(&input);
@@ -1619,8 +1644,23 @@ void reg_ADC_processing(void)
             bank_last_level=MS.assist_level;
         }
         if(bank_splash_ticks && --bank_splash_ticks==0) MS.bank_splash_kmh=0;
+        //FW-013: torque load calibration state machine (stationary = no cadence, no motor current, not rolling)
+        {
+            uint8_t cal_stationary = (MS.cadence==0 && MS.i_q_setpoint==0 && MS.Speedx100==0);
+            torque_input_cal_tick(MS.torque_on_crank, cal_stationary);
+        }
+        //FW-014: apply a pending ride-engine switch only at standstill (clean, no jerk), then persist
+        uint8_t engine_persist = 0;
+        if(ride_engine_request!=0xFF && MS.i_q_setpoint==0 && MS.cadence==0 && MS.Speedx100==0){
+            ride_control_set_engine(ride_engine_request ? RIDE_ENGINE_TSDZ : RIDE_ENGINE_LEGACY);
+            MP.ride_engine = (uint8_t)ride_control_get_engine();
+            MP.ride_engine_magic = 0x5E01;
+            ride_engine_request = 0xFF;
+            engine_persist = 1;
+        }
         //persist only at full standstill: flash write stalls the CPU, so never while driving
-        if((bank_save_pending || bank_save_request) && MS.i_q_setpoint==0 && MS.cadence==0 && MS.Speedx100==0){
+        uint8_t torque_cal_persist = torque_input_cal_take_persist_request();
+        if((bank_save_pending || bank_save_request || torque_cal_persist || engine_persist) && MS.i_q_setpoint==0 && MS.cadence==0 && MS.Speedx100==0){
             MP.active_profile_bank = assist_modes_get_active_bank();
             if(bank_save_request){ //FW-006/FW-010: 0x6022 -> persist banks and ride-feel tuning together
                 assist_modes_serialize_bank(0, &MP.bank_store[0][0]);
@@ -1628,6 +1668,10 @@ void reg_ADC_processing(void)
                 MP.bank_store_magic=0xB16B;
                 tuning_config_serialize(&MP.tuning_store[0]);
                 MP.tuning_store_magic=0x7501;
+            }
+            if(torque_cal_persist){ //FW-013: persist user torque span (or clear on restore-default)
+                torque_input_build_persist(&MP.torque_cal_magic, &MP.torque_cal_version,
+                    &MP.torque_cal_span_native, &MP.torque_cal_crc);
             }
             write_virtual_eeprom();
             bank_save_pending=0;
@@ -1641,6 +1685,7 @@ void reg_ADC_processing(void)
 			.assist_level_index = level_to_array_element[MS.assist_level],
 			.battery_voltage_mv = MS.Voltage,
             .iq_scale = phase_current_max_scaled,
+			.ride_core_iq_limit = ride_core_iq_limit_scaled,
             .phase_current_max = MP.phase_current_max,
             .current_iq = MS.i_q_setpoint,
             .current_id = MS.i_d_setpoint,
@@ -1652,9 +1697,24 @@ void reg_ADC_processing(void)
 			.legal_enabled = MP.legalflag != 0,
 			.offroad = MS.offroadflag != RESET,
             .walk_active = MS.pushassist_flag != RESET,
-            .safety_cut = MS.brake_active_flag || Backwards_counter >= 4 || overtemp_stage >= 2
+			.position_calibration_active = MS.hall_angle_detect_flag > 1,
+            .safety_cut = MS.brake_active_flag || Backwards_counter >= 4 ||
+				overtemp_stage >= 2 || torque_fault ||
+				torque_input_calibration_active()
         };
         ride_control_update(&ride_input);
+        //FW-015b: peak-hold of TSDZ diagnostics so a brief press on the bench is catchable
+        {
+            const assist_mode_output_t* do_ = assist_modes_get_last_output();
+            if(diag_peak_reset){ diag_peak_cadence=0; diag_peak_torque=0; diag_peak_human_w=0; diag_peak_support=0; diag_peak_motor_w=0; diag_peak_iq_req=0; diag_peak_iq_set=0; diag_peak_reset=0; }
+            if(do_->cadence_for_assist_rpm>diag_peak_cadence) diag_peak_cadence=do_->cadence_for_assist_rpm;
+            if(do_->torque_for_assist_mv>diag_peak_torque) diag_peak_torque=do_->torque_for_assist_mv;
+            if(do_->human_power_w>diag_peak_human_w) diag_peak_human_w=do_->human_power_w;
+            if(do_->applied_support_ratio_pct>diag_peak_support) diag_peak_support=do_->applied_support_ratio_pct;
+            if(do_->motor_power_w>diag_peak_motor_w) diag_peak_motor_w=do_->motor_power_w;
+            if(do_->iq_request>diag_peak_iq_req) diag_peak_iq_req=do_->iq_request;
+            if(MS.i_q_setpoint>diag_peak_iq_set) diag_peak_iq_set=MS.i_q_setpoint;
+        }
     }
     if (torque_counter>4000&&!Overrun_flag){ //reset after one second without torque on the pedal
     	if (PAS_counter>MP.PAS_timeout){
@@ -2521,6 +2581,8 @@ uint16_t legacy_assist_calculate_monolith(void){
 	            //Error 25: implausible torque signal -> no motor power at all (assist and throttle);
 	            //the shared adaptive ramp brings the running current down without a jerk
 	            else if(torque_fault)MS.i_q_setpoint_temp=0;
+	            //FW-013: no assist while a load calibration is running (no Error 25, just zero output)
+	            else if(torque_input_calibration_active())MS.i_q_setpoint_temp=0;
 	            // check push assist active: closed-loop speed PI holding MP.walk_assist_speed
 	            else if(MS.pushassist_flag){
 	            	//hold ceiling: stored walk_assist_current halved in firmware (ride test: full value ran away to the overspeed cut)
