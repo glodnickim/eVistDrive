@@ -12,15 +12,18 @@ typedef struct {
 	uint16_t torque_raw_mv;
 	int16_t torque_corrected_mv;
 	uint16_t torque_filtered;
+	uint16_t torque_assist_filtered;
 	uint16_t torque_load_centikg;
 
 	uint8_t cadence_rpm;
 	uint32_t wheel_speed_x100;
 	uint16_t motor_erps;
+	uint16_t motor_voltage_utilization;
 
 	bool pas_forward;
 	bool pas_backward;
 	bool pedaling_active;
+	bool cadence_seeded;
 	bool torque_sensor_valid;
 	bool pas_sensor_valid;
 } rider_input_t;

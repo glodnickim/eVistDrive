@@ -44,7 +44,28 @@ void ride_control_update(const ride_control_input_t *input)
 		return;
 	}
 
+	/*
+	 * Position-sensor calibration is a controller service mode, not an assist
+	 * mode. Its second phase currently lives in the frozen Legacy monolith and
+	 * must own Iq regardless of the persisted Legacy/TSDZ selection. Bypass the
+	 * ride-feel ramp as well: on the completion tick the calibration code sets
+	 * Iq=0, disables PWM and stores the angle, and no stale ramp value may
+	 * re-enable the bridge.
+	 */
+	if (input->position_calibration_active) {
+		int32_t calibration_iq = legacy_assist_calculate();
+		motor_command_t calibration_command = {
+			.iq_target = calibration_iq,
+			.id_target = input->current_id,
+			.enable = true,
+			.emergency_stop = false
+		};
+		motor_core_set_command(&calibration_command);
+		return;
+	}
+
 	int32_t iq_target;
+	int32_t dynamics_iq_scale = input->iq_scale;
 	bool profile_pedaling_active = true;
 	uint16_t profile_release_ms = 0;
 	if (input->walk_active) {
@@ -63,8 +84,9 @@ void ride_control_update(const ride_control_input_t *input)
 			rider,
 			level,
 			input->battery_voltage_mv,
-			input->iq_scale,
+			input->ride_core_iq_limit,
 			&mode_output);
+		dynamics_iq_scale = input->ride_core_iq_limit;
 		iq_target = supported ? mode_output.iq_request : 0;
 		profile_pedaling_active =
 			rider->pedaling_active || mode_output.assist_without_rotation_active;
@@ -99,7 +121,7 @@ void ride_control_update(const ride_control_input_t *input)
 	assist_dynamics_input_t dynamics_input = {
 		.speed_x100 = input->speed_x100,
 		.cadence_rpm = input->cadence_rpm,
-		.iq_scale = input->iq_scale,
+		.iq_scale = dynamics_iq_scale,
 		.phase_current_max = input->phase_current_max,
 		.walk_active = input->walk_active,
 		.safety_cut = input->safety_cut,

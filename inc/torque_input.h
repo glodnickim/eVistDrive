@@ -5,36 +5,123 @@
 #include <stdint.h>
 
 /*
- * Single owner of the torque conversion chain: automatic zero -> corrected
- * native EBICS signal -> public kilogram-force scale in 0.01 kg units.
- * The zero point is fixed by the autozero normalization and is never
- * writable. Full scale comes from MP.torque_full_scale_native, where 0
- * means "not calibrated" and selects the default. Integer math only.
- * Factory sensor characteristic (reverse engineered): linear 40 mV per kg,
- * so 60 kg = 750 + 2400 = 3150 native; readings above clamp to 60 kg.
- * torque_input_cal_fault() reports overall signal plausibility: implausible
- * zero (startup/coast) or a stuck-high signal that never dips between legs.
+ * Single owner of the torque sensor chain: raw ADC millivolts -> automatic
+ * zero -> corrected signal -> delta above zero -> public kilogram-force
+ * scale in 0.01 kg units. Default characteristic measured with reference
+ * weights on this bike (165 mm crank): zero 740 mV, 6 kg at 886 mV and
+ * 84 kg at 2320 mV. The default conversion is piecewise-linear through
+ * those measured points, so the firmware is usable without load calibration.
+ * A user load calibration may replace it with a linear 60 kg span; the zero point
+ * is always automatic and never writable. The assist deadband is a separate
+ * relative offset so the kg scale starts at the true zero. Integer math
+ * only. torque_input_cal_fault() reports overall signal plausibility:
+ * implausible zero (startup/coast) or a stuck-high load that never dips.
  */
 
-#define TORQUE_INPUT_ZERO_NATIVE               750U
-#define TORQUE_INPUT_FULL_SCALE_DEFAULT_NATIVE 3150U
-#define TORQUE_INPUT_FULL_SCALE_MIN_NATIVE     1000U
-#define TORQUE_INPUT_FULL_SCALE_MAX_NATIVE     3300U
-#define TORQUE_INPUT_FULL_SCALE_CENTIKG        6000U
+#define TORQUE_ZERO_TARGET_NATIVE        740U
+#define TORQUE_DEFAULT_LOW_NATIVE        146U
+#define TORQUE_DEFAULT_LOW_CENTIKG       600U
+#define TORQUE_DEFAULT_HIGH_NATIVE       1580U
+#define TORQUE_DEFAULT_HIGH_CENTIKG      8400U
+/* Interpolated native delta corresponding to 60.00 kg on the default curve. */
+#define TORQUE_DEFAULT_SPAN_NATIVE       1139U
+#define TORQUE_SPAN_MIN_NATIVE           800U
+#define TORQUE_SPAN_MAX_NATIVE           2600U
+#define TORQUE_PUBLIC_FULL_SCALE_CENTIKG 6000U
+#define TORQUE_INPUT_MAX_CENTIKG         12000U
+#define TORQUE_ASSIST_DEADBAND_NATIVE    10U
+#define TORQUE_ASSIST_FILTER_MS          35U
+#define TORQUE_INPUT_TICKS_PER_MS        4U
+#define TORQUE_ASSIST_FILTER_Q_SHIFT     8U
 
-void torque_input_init(uint16_t stored_full_scale_native);
+typedef enum {
+	TORQUE_CAL_SOURCE_DEFAULT = 0,
+	TORQUE_CAL_SOURCE_USER = 1
+} torque_cal_source_t;
+
+typedef enum {
+	TORQUE_CAL_STATE_IDLE = 0,
+	TORQUE_CAL_STATE_CAPTURE_ZERO = 1,
+	TORQUE_CAL_STATE_WAIT_REFERENCE = 2,
+	TORQUE_CAL_STATE_CAPTURE_LOAD = 3,
+	TORQUE_CAL_STATE_PREVIEW = 4,
+	TORQUE_CAL_STATE_SUCCESS = 5,
+	TORQUE_CAL_STATE_FAILED = 6,
+	TORQUE_CAL_STATE_CANCELLED = 7
+} torque_cal_state_t;
+
+typedef enum {
+	TORQUE_CAL_ERR_NONE = 0,
+	TORQUE_CAL_ERR_NOT_STATIONARY = 1,
+	TORQUE_CAL_ERR_UNSTABLE = 2,
+	TORQUE_CAL_ERR_REFERENCE_RANGE = 3,
+	TORQUE_CAL_ERR_DELTA_TOO_SMALL = 4,
+	TORQUE_CAL_ERR_SATURATED = 5,
+	TORQUE_CAL_ERR_SPAN_RANGE = 6,
+	TORQUE_CAL_ERR_SENSOR_FAULT = 7,
+	TORQUE_CAL_ERR_TIMEOUT = 8
+} torque_cal_error_t;
+
+#define TORQUE_CAL_REFERENCE_MIN_CENTIKG 500U
+#define TORQUE_CAL_REFERENCE_MAX_CENTIKG 3000U
+
+typedef struct {
+	uint16_t raw_native;
+	uint16_t zero_effective_native;
+	int16_t corrected_native;
+	uint16_t delta_native;
+	uint16_t assist_delta_native;
+	uint16_t assist_delta_filtered_native;
+	uint16_t load_centikg;
+	uint16_t span_native;
+	uint8_t calibration_source;
+	bool sensor_valid;
+} torque_snapshot_t;
+
+void torque_input_init(void);
 void torque_input_startup_zero(int32_t rest_raw_native);
 int16_t torque_input_correct(uint16_t raw_native);
 void torque_input_coast_update(int16_t torque_corrected_native, bool coast_eligible);
 bool torque_input_cal_fault(void);
-void torque_input_update(int16_t torque_corrected_native);
+void torque_input_update(uint16_t raw_native, int16_t torque_corrected_native,
+	bool sensor_valid);
 
+const torque_snapshot_t *torque_input_get_snapshot(void);
 uint16_t torque_input_load_centikg(void);
 uint16_t torque_input_zero_native(void);
-uint16_t torque_input_full_scale_native(void);
 uint16_t torque_input_span_native(void);
-bool torque_input_full_scale_stored_valid(void);
-bool torque_input_set_full_scale_native(uint16_t full_scale_native);
+uint16_t torque_input_full_scale_native(void);
+uint8_t torque_input_calibration_source(void);
+
+bool torque_input_set_user_span(uint16_t span_native);
+void torque_input_restore_default_span(void);
+
+bool torque_input_calibration_active(void);
+uint8_t torque_input_cal_state(void);
+uint8_t torque_input_cal_error(void);
+uint16_t torque_input_cal_reference_centikg(void);
+uint16_t torque_input_cal_preview_span(void);
+void torque_input_cal_start(void);
+void torque_input_cal_capture_load(uint16_t reference_centikg);
+bool torque_input_cal_commit(void);
+void torque_input_cal_cancel(void);
+void torque_input_cal_restore_default(void);
+bool torque_input_cal_take_persist_request(void);
+void torque_input_cal_tick(int16_t torque_corrected_native, bool stationary);
+
+/* Persist span with magic/version/CRC. restore returns true when a valid user
+ * calibration was loaded; a bad or absent record keeps the default span. */
+bool torque_input_restore_persist(uint16_t magic, uint8_t version,
+	uint16_t span_native, uint16_t crc);
+void torque_input_build_persist(uint16_t *magic, uint8_t *version,
+	uint16_t *span_native, uint16_t *crc);
+
+/* Versioned CAN telemetry blob (0x6025): capabilities + load + calibration
+ * status + CRC16. Returns byte length written. */
+#define TORQUE_TELEMETRY_BLOB_LEN 24U
+#define TORQUE_CAP_LOAD_TELEMETRY_V1 0x01U
+#define TORQUE_CAP_CALIBRATION_V1    0x02U
+uint16_t torque_input_serialize_telemetry(uint8_t *buffer);
 
 uint16_t torque_input_centikg_to_native_delta(uint16_t centikg);
 uint16_t torque_input_native_delta_to_centikg(uint16_t delta_native);

@@ -287,14 +287,15 @@
 #define TQ_FAULT_TICKS      400   // ~100 ms @4kHz out-of-range before raising fault (debounce)
 #define TQ_RECAL_IDLE_TICKS 6000  // ~1.5 s @4kHz of no pedalling -> coast/idle -> eligible for re-zero (catches in-ride coasting)
 #define TQ_RECAL_SETTLE_TICKS 2000// coast must last this long (~0.5 s) before its averaged rest is trusted
-#define TQ_RECAL_BAND_MV    100   // re-zero immediately if rest within 740±this (~3 Nm @32mV/Nm) - guard vs static pedal load
+#define TQ_RECAL_BAND_MV    30    // re-zero immediately if rest within 740±this (~1.1 kg @27mV/kg) - static pedal load must stay outside
 #define TQ_RECAL_MAX_STEP   20    // max offset correction per coast (mV) - rate limit so one coast can't jump the zero
 #define TQ_REACQUIRE_COASTS 3     // out-of-band rest must REPEAT consistently over this many coasts -> real drift -> re-acquire (anti-stuck)
 #define TQ_REACQUIRE_TOL_MV 30    // consecutive coasts must agree within this to count as "consistent" (not a random load)
+#define TQ_REACQUIRE_MAX_MV 40    // reacquire accepts only rest within this of the zero: drift (~1.5 kg) yes, a static 2+ kg load never
 #define TQ_REST_RAW_MIN     300   // absolute plausible UNLOADED raw baseline window (mV, pre-normalization): re-zero only within...
 #define TQ_REST_RAW_MAX     1500  // ...this window (anti-infinite-drift); outside => pedal pressed/sensor fault -> Error 25, no re-zero
-#define TQ_STUCK_HIGH_MV    3000  // corrected signal above this (~56 kg @40mV/kg) counts toward stuck-high detection
-#define TQ_STUCK_TICKS      80000U// ~20 s @4kHz continuously above TQ_STUCK_HIGH_MV -> sensor fault (real pedaling always dips between legs)
+#define TQ_STUCK_CENTIKG    5600  // load held at/above ~56 kg counts toward stuck-high detection (domain: 0.01 kg, scale-independent)
+#define TQ_STUCK_TICKS      80000U// ~20 s @4kHz continuously above TQ_STUCK_CENTIKG -> sensor fault (real pedaling always dips between legs)
 #define TQ_FAULT_HOLD_TICKS 20000U// ~5 s minimum hold of torque_fault after the cause clears (no Error 25 flicker / assist chatter)
 
 //---------------------------------------------------------------------

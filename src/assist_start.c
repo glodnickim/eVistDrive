@@ -2,12 +2,12 @@
 
 #include <limits.h>
 
+#include "torque_input.h"
 #include "tuning_config.h"
 
 #define STARTUP_BOOST_CURVE_SIZE 120U
 #define STARTUP_BOOST_STRENGTH_MAX_PCT 300U
 #define STARTUP_BOOST_AUTO_TORQUE_MV 20U
-#define ASSIST_TORQUE_DELTA_MAX_MV 2550U
 #define CONTROL_TICKS_PER_MS 4U
 #define SMOOTH_START_DURATION_MAX_MS 5000U
 #define SMOOTH_START_ENVELOPE_MAX_PERMILLE 1000U
@@ -76,9 +76,10 @@ void assist_start_apply_boost(
 		return;
 	}
 
+	uint16_t torque_range = torque_input_span_native();
 	uint16_t torque_input_mv = input->torque_input_mv;
-	if (torque_input_mv > ASSIST_TORQUE_DELTA_MAX_MV) {
-		torque_input_mv = ASSIST_TORQUE_DELTA_MAX_MV;
+	if (torque_input_mv > torque_range) {
+		torque_input_mv = torque_range;
 	}
 	output->torque_output_mv = torque_input_mv;
 
@@ -134,8 +135,8 @@ void assist_start_apply_boost(
 
 	uint32_t boosted_torque = torque_input_mv +
 		((uint32_t)torque_input_mv * extra_pct) / 100U;
-	if (boosted_torque > ASSIST_TORQUE_DELTA_MAX_MV) {
-		boosted_torque = ASSIST_TORQUE_DELTA_MAX_MV;
+	if (boosted_torque > torque_range) {
+		boosted_torque = torque_range;
 	}
 
 	output->torque_output_mv = (uint16_t)boosted_torque;

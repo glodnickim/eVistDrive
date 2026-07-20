@@ -177,6 +177,18 @@ typedef struct
 	uint16_t       	tuning_store_magic;             // 0x7501 = tuning_store holds valid values
 	uint8_t       	tuning_store[16];               // serialized tuning blob (wire format v1)
 
+	//--- FW-013: user torque calibration (span only; zero is always automatic) ---
+	uint16_t       	torque_cal_magic;               // 0x7C41 = fields below hold a valid user calibration
+	uint8_t        	torque_cal_version;             // 1
+	uint8_t        	torque_cal_pad;
+	uint16_t       	torque_cal_span_native;         // native span for 60.00 kg
+	uint16_t       	torque_cal_crc;                 // CRC16-CCITT over version+span
+
+	//--- FW-014: persisted ride engine choice ---
+	uint16_t       	ride_engine_magic;              // 0x5E01 = ride_engine byte is valid
+	uint8_t        	ride_engine;                    // 0 = Legacy, 1 = TSDZ (new ride-core)
+	uint8_t        	ride_engine_pad;
+
 }MotorParams_t;
 
 typedef struct

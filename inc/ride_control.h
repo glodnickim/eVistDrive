@@ -15,6 +15,7 @@ typedef struct {
 	uint8_t assist_level_index;
 	uint32_t battery_voltage_mv;
 	int32_t iq_scale;
+	int32_t ride_core_iq_limit;
 	int32_t phase_current_max;
 	int32_t current_iq;
 	int32_t current_id;
@@ -26,6 +27,7 @@ typedef struct {
 	bool legal_enabled;
 	bool offroad;
 	bool walk_active;
+	bool position_calibration_active;
 	bool safety_cut;
 } ride_control_input_t;
 

@@ -1,15 +1,17 @@
 #include "assist_modes.h"
 
 #include "config.h"
+#include "torque_input.h"
 
 #define ASSIST_LEVEL_COUNT 5
 #define ASSIST_MOTOR_POWER_HARD_MAX_W 1500U
 #define ASSIST_SUPPORT_RATIO_MAX_PCT 1000U
 #define ASSIST_WITHOUT_ROTATION_THRESHOLD_MAX_MV 300U
-#define ASSIST_TORQUE_ZERO_MV 750
-#define ASSIST_TORQUE_DELTA_MAX_MV 2550U
-#define HUMAN_POWER_NUMERATOR_SCALE 342U
-#define HUMAN_POWER_MW_DENOMINATOR 100U
+#define HUMAN_POWER_CENTIKG_RPM_NUMERATOR 1694U
+#define HUMAN_POWER_CENTIKG_RPM_DENOMINATOR 1000U
+#define RIDE_CORE_FULL_IQ_SUPPORT_PCT 500U
+#define RIDE_CORE_DEMAND_PERMILLE_MAX 1000U
+#define MOTOR_VOLTAGE_UTILIZATION_SCALE 2048U
 #define CONTROL_TICKS_PER_MS 4U
 #define POWER_FILTER_MAX_MS 3000U
 #define POWER_FILTER_Q_SHIFT 8U
@@ -24,6 +26,8 @@
 #define EMTB_REFERENCE_VOLTAGE_MAX_MV 60000U
 #define EMTB_UNIT_CURRENT_MA 160U
 #define TORQUE_ASSIST_FACTOR_DENOMINATOR 120U
+#define EMTB_FIXED_Q_SHIFT 8U
+#define EMTB_FIXED_Q_ONE (1U << EMTB_FIXED_Q_SHIFT)
 
 /*
  * Power ratios are based on the TSDZ2 reference factors 50/100/160/260,
@@ -138,9 +142,11 @@ typedef struct {
 
 typedef struct {
 	uint8_t cadence_for_assist_rpm;
-	uint16_t human_torque_mv;
+	uint16_t human_load_centikg;
+	uint16_t assist_load_centikg;
 	uint16_t torque_for_assist_mv;
 	bool without_rotation_active;
+	bool cadence_seeded;
 } prepared_assist_input_t;
 
 static power_filter_state_t power_filter_state;
@@ -266,12 +272,62 @@ static uint16_t calculate_support_ratio_pct(
 		1000U);
 }
 
-static uint16_t torque_delta_from_corrected(const rider_input_t *input)
+static uint32_t calculate_human_power_mw(uint16_t load_centikg, uint8_t cadence_rpm)
 {
-	if (input->torque_corrected_mv <= ASSIST_TORQUE_ZERO_MV) {
+	/*
+	 * P = m * g * crank_length * 2*pi*rpm/60. For a 165 mm crank
+	 * this is 1.694 mW per (0.01 kg * rpm). Split 1.694 into 1 + 0.694
+	 * so every intermediate stays in uint32_t at 120 kg and 255 rpm.
+	 */
+	uint32_t product = (uint32_t)load_centikg * cadence_rpm;
+	return product + (product *
+		(HUMAN_POWER_CENTIKG_RPM_NUMERATOR -
+		 HUMAN_POWER_CENTIKG_RPM_DENOMINATOR) +
+		HUMAN_POWER_CENTIKG_RPM_DENOMINATOR / 2U) /
+		HUMAN_POWER_CENTIKG_RPM_DENOMINATOR;
+}
+
+static int32_t calculate_load_iq_request(
+	uint16_t load_centikg,
+	uint16_t support_ratio_pct,
+	int32_t iq_limit)
+{
+	if (iq_limit <= 0 || load_centikg == 0 || support_ratio_pct == 0) {
 		return 0;
 	}
-	return (uint16_t)(input->torque_corrected_mv - ASSIST_TORQUE_ZERO_MV);
+	if (load_centikg > TORQUE_PUBLIC_FULL_SCALE_CENTIKG) {
+		load_centikg = TORQUE_PUBLIC_FULL_SCALE_CENTIKG;
+	}
+	if (support_ratio_pct > ASSIST_SUPPORT_RATIO_MAX_PCT) {
+		support_ratio_pct = ASSIST_SUPPORT_RATIO_MAX_PCT;
+	}
+	/* 60 kg at 500% support is the conservative full-Iq reference. */
+	uint32_t demand_permille =
+		((uint32_t)load_centikg * support_ratio_pct + 1500U) / 3000U;
+	if (demand_permille > RIDE_CORE_DEMAND_PERMILLE_MAX) {
+		demand_permille = RIDE_CORE_DEMAND_PERMILLE_MAX;
+	}
+	if (demand_permille == 0) {
+		return 0;
+	}
+	return (int32_t)(((uint32_t)iq_limit * demand_permille +
+		RIDE_CORE_DEMAND_PERMILLE_MAX - 1U) /
+		RIDE_CORE_DEMAND_PERMILLE_MAX);
+}
+
+static int32_t calculate_target_x160_iq_request(
+	uint32_t target_x160_q,
+	int32_t iq_limit)
+{
+	if (iq_limit <= 0 || target_x160_q == 0) {
+		return 0;
+	}
+	uint32_t full_scale_q = EMTB_TSDZ_TORQUE_RANGE * EMTB_FIXED_Q_ONE;
+	if (target_x160_q > full_scale_q) {
+		target_x160_q = full_scale_q;
+	}
+	return (int32_t)((target_x160_q * (uint32_t)iq_limit +
+		full_scale_q - 1U) / full_scale_q);
 }
 
 static bool prepare_assist_input(
@@ -281,7 +337,7 @@ static bool prepare_assist_input(
 	assist_mode_output_t *output)
 {
 	uint8_t cadence_for_assist = input->cadence_rpm;
-	uint16_t torque_for_assist = input->torque_filtered;
+	uint16_t torque_for_assist = input->torque_assist_filtered;
 	bool without_rotation_active = false;
 
 	if (config->assist_without_rotation &&
@@ -292,7 +348,7 @@ static bool prepare_assist_input(
 		if (threshold_mv > ASSIST_WITHOUT_ROTATION_THRESHOLD_MAX_MV) {
 			threshold_mv = ASSIST_WITHOUT_ROTATION_THRESHOLD_MAX_MV;
 		}
-		uint16_t corrected_delta_mv = torque_delta_from_corrected(input);
+		uint16_t corrected_delta_mv = input->torque_assist_filtered;
 		if (corrected_delta_mv > threshold_mv) {
 			/* Keep synthetic cadence local; never modify MS or rider_input. */
 			cadence_for_assist = 1;
@@ -300,8 +356,11 @@ static bool prepare_assist_input(
 			without_rotation_active = true;
 		}
 	}
-	if (torque_for_assist > ASSIST_TORQUE_DELTA_MAX_MV) {
-		torque_for_assist = ASSIST_TORQUE_DELTA_MAX_MV;
+	{
+		uint16_t torque_range = torque_input_span_native();
+		if (torque_for_assist > torque_range) {
+			torque_for_assist = torque_range;
+		}
 	}
 
 	output->cadence_for_assist_rpm = cadence_for_assist;
@@ -314,12 +373,14 @@ static bool prepare_assist_input(
 	}
 
 	prepared->cadence_for_assist_rpm = cadence_for_assist;
-	prepared->human_torque_mv = torque_for_assist;
+	prepared->human_load_centikg = input->torque_load_centikg;
 	prepared->without_rotation_active = without_rotation_active;
+	prepared->cadence_seeded = input->cadence_seeded;
 
 	assist_startup_boost_input_t boost_input = {
 		.torque_input_mv = torque_for_assist,
-		.cadence_for_assist_rpm = cadence_for_assist,
+		/* The temporary 18 rpm seed arms the mode but is not real cadence. */
+		.cadence_for_assist_rpm = input->cadence_seeded ? 0U : cadence_for_assist,
 		.wheel_speed_x100 = input->wheel_speed_x100,
 		.torque_sensor_valid = input->torque_sensor_valid
 	};
@@ -329,6 +390,8 @@ static bool prepare_assist_input(
 		&config->startup_boost,
 		&boost_output);
 	prepared->torque_for_assist_mv = boost_output.torque_output_mv;
+	prepared->assist_load_centikg = torque_input_native_delta_to_centikg(
+		boost_output.torque_output_mv);
 	output->torque_for_assist_mv = boost_output.torque_output_mv;
 	output->startup_boost_extra_pct = boost_output.extra_pct;
 	output->startup_boost_active = boost_output.active;
@@ -336,6 +399,7 @@ static bool prepare_assist_input(
 }
 
 static bool finish_power_request(
+	const rider_input_t *input,
 	const assist_level_config_t *config,
 	uint32_t battery_voltage_mv,
 	int32_t iq_limit,
@@ -343,6 +407,7 @@ static bool finish_power_request(
 	uint32_t assist_basis_power_mw,
 	uint32_t support_ratio_pct,
 	uint32_t motor_power_mw,
+	int32_t phase_iq_request,
 	assist_mode_output_t *output)
 {
 	uint32_t power_limit_w = config->max_motor_power_w;
@@ -356,23 +421,31 @@ static bool finish_power_request(
 	uint32_t raw_motor_power_mw = motor_power_mw;
 	motor_power_mw = filter_motor_power(raw_motor_power_mw, config);
 
-	/*
-	 * The TSDZ2 modes convert requested motor power to battery current
-	 * using P/U. EBICS controls phase Iq, so the current request is converted
-	 * to native Iq units with CAL_I and then clamped. At low PWM duty this is
-	 * deliberately conservative: no duty-cycle compensation is injected into
-	 * the rider mode.
-	 */
+	/* P/U is battery current. Convert it to a phase-current ceiling using
+	 * EBICS' measured voltage utilization (duty, scale 0..2048). At launch
+	 * duty is near zero, so the torque-derived Iq request remains authoritative;
+	 * as the motor accelerates the power ceiling becomes effective. */
 	uint32_t requested_current_ma =
 		(motor_power_mw * 1000U) / battery_voltage_mv;
-	int32_t iq_request = (int32_t)(requested_current_ma / CAL_I);
 	int32_t profile_iq_limit =
 		(iq_limit * (int32_t)config->max_iq_pct) / 100;
 	if (profile_iq_limit < 0) {
 		profile_iq_limit = 0;
 	}
-	if (iq_request > profile_iq_limit) {
-		iq_request = profile_iq_limit;
+	if (phase_iq_request < 0) {
+		phase_iq_request = 0;
+	}
+	if (phase_iq_request > profile_iq_limit) {
+		phase_iq_request = profile_iq_limit;
+	}
+	if (!input->cadence_seeded && requested_current_ma > 0U &&
+		input->motor_voltage_utilization > 0U) {
+		uint32_t power_iq_limit =
+			(requested_current_ma * MOTOR_VOLTAGE_UTILIZATION_SCALE) /
+			((uint32_t)input->motor_voltage_utilization * CAL_I);
+		if ((uint32_t)phase_iq_request > power_iq_limit) {
+			phase_iq_request = (int32_t)power_iq_limit;
+		}
 	}
 
 	uint32_t human_power_w = human_power_mw / 1000U;
@@ -388,7 +461,7 @@ static bool finish_power_request(
 	output->applied_support_ratio_pct = (support_ratio_pct > UINT16_MAX) ?
 		UINT16_MAX : (uint16_t)support_ratio_pct;
 	output->requested_battery_current_ma = requested_current_ma;
-	output->iq_request = iq_request;
+	output->iq_request = phase_iq_request;
 	return true;
 }
 
@@ -410,25 +483,24 @@ static bool calculate_power(
 		return true;
 	}
 
-	uint32_t human_power_numerator =
-		(uint32_t)prepared.human_torque_mv *
-		(uint32_t)prepared.cadence_for_assist_rpm *
-		HUMAN_POWER_NUMERATOR_SCALE;
-	uint32_t human_power_mw =
-		human_power_numerator / HUMAN_POWER_MW_DENOMINATOR;
-	uint32_t assist_basis_power_numerator =
-		(uint32_t)prepared.torque_for_assist_mv *
-		(uint32_t)prepared.cadence_for_assist_rpm *
-		HUMAN_POWER_NUMERATOR_SCALE;
-	uint32_t assist_basis_power_mw =
-		assist_basis_power_numerator / HUMAN_POWER_MW_DENOMINATOR;
+	uint8_t power_cadence = prepared.cadence_seeded ?
+		0U : prepared.cadence_for_assist_rpm;
+	uint32_t human_power_mw = calculate_human_power_mw(
+		prepared.human_load_centikg, power_cadence);
+	uint32_t assist_basis_power_mw = calculate_human_power_mw(
+		prepared.assist_load_centikg, power_cadence);
 
 	uint32_t support_ratio_pct = calculate_support_ratio_pct(
 		assist_basis_power_mw,
 		config);
 	uint32_t motor_power_mw =
 		(assist_basis_power_mw * support_ratio_pct) / 100U;
+	int32_t phase_iq_request = calculate_load_iq_request(
+		prepared.assist_load_centikg,
+		(uint16_t)support_ratio_pct,
+		iq_limit);
 	return finish_power_request(
+		input,
 		config,
 		battery_voltage_mv,
 		iq_limit,
@@ -436,6 +508,7 @@ static bool calculate_power(
 		assist_basis_power_mw,
 		support_ratio_pct,
 		motor_power_mw,
+		phase_iq_request,
 		output);
 }
 
@@ -443,9 +516,9 @@ static bool calculate_power(
  * Faithful port of emmebrusa TSDZ2-Smart-EBike-1 apply_emtb_assist()
  * (src/ebike_app.c:950): denominator = 510 - 2*parameter, reduced by the
  * cadence when the mode is power based, floored at +10; progressive target
- * = delta^2 / denominator in the TSDZ 0..160 torque range; one TSDZ current
- * unit is 0.16 A and the request is normalized to the reference voltage so
- * the ride character does not follow battery sag.
+ * = delta^2 / denominator in the TSDZ 0..160 torque range. The curve stays
+ * in Q8 until it is converted directly to EBICS phase Iq, avoiding the old
+ * integer dead zone and the invalid battery-current-to-Iq assignment.
  */
 static bool calculate_emtb(
 	const rider_input_t *input,
@@ -476,43 +549,56 @@ static bool calculate_emtb(
 		reference_voltage_mv = EMTB_REFERENCE_VOLTAGE_MAX_MV;
 	}
 
-	uint32_t delta_x160 =
-		((uint32_t)prepared.torque_for_assist_mv * EMTB_TSDZ_TORQUE_RANGE +
-		ASSIST_TORQUE_DELTA_MAX_MV / 2U) / ASSIST_TORQUE_DELTA_MAX_MV;
+	uint32_t torque_range = torque_input_span_native();
+	uint32_t delta_x160_q =
+		((uint32_t)prepared.torque_for_assist_mv * EMTB_TSDZ_TORQUE_RANGE *
+		EMTB_FIXED_Q_ONE +
+		torque_range / 2U) / torque_range;
 
 	uint32_t denominator = EMTB_TSDZ_DENOMINATOR_BASE - 2U * parameter;
 	if (config->emtb_based_on_power) {
-		uint32_t cadence = prepared.cadence_for_assist_rpm;
+		uint32_t cadence = prepared.cadence_seeded ?
+			0U : prepared.cadence_for_assist_rpm;
 		denominator = (denominator > cadence) ? denominator - cadence : 0U;
 	}
 	denominator += EMTB_TSDZ_DENOMINATOR_MIN;
 
-	uint32_t target_x160 = (delta_x160 * delta_x160) / denominator;
+	uint32_t target_x160_q =
+		(delta_x160_q * delta_x160_q) /
+		(denominator * EMTB_FIXED_Q_ONE);
 
-	uint32_t human_power_numerator =
-		(uint32_t)prepared.human_torque_mv *
-		(uint32_t)prepared.cadence_for_assist_rpm *
-		HUMAN_POWER_NUMERATOR_SCALE;
-	uint32_t human_power_mw =
-		human_power_numerator / HUMAN_POWER_MW_DENOMINATOR;
-	uint32_t assist_basis_power_numerator =
-		(uint32_t)prepared.torque_for_assist_mv *
-		(uint32_t)prepared.cadence_for_assist_rpm *
-		HUMAN_POWER_NUMERATOR_SCALE;
-	uint32_t assist_basis_power_mw =
-		assist_basis_power_numerator / HUMAN_POWER_MW_DENOMINATOR;
+	uint8_t power_cadence = prepared.cadence_seeded ?
+		0U : prepared.cadence_for_assist_rpm;
+	uint32_t human_power_mw = calculate_human_power_mw(
+		prepared.human_load_centikg, power_cadence);
+	uint32_t assist_basis_power_mw = calculate_human_power_mw(
+		prepared.assist_load_centikg, power_cadence);
 
+	uint32_t target_for_power_q = target_x160_q;
+	uint32_t target_full_scale_q =
+		EMTB_TSDZ_TORQUE_RANGE * EMTB_FIXED_Q_ONE;
+	if (target_for_power_q > target_full_scale_q) {
+		target_for_power_q = target_full_scale_q;
+	}
+	uint32_t target_current_ma =
+		(target_for_power_q * EMTB_UNIT_CURRENT_MA +
+		EMTB_FIXED_Q_ONE / 2U) / EMTB_FIXED_Q_ONE;
 	uint32_t motor_power_mw =
-		((target_x160 * reference_voltage_mv) / 1000U) *
-		EMTB_UNIT_CURRENT_MA;
+		(target_current_ma * reference_voltage_mv) / 1000U;
 	uint32_t support_ratio_pct = (assist_basis_power_mw > 0U) ?
-		(motor_power_mw * 100U) / assist_basis_power_mw : 0U;
+		(uint32_t)(((uint64_t)motor_power_mw * 100U) /
+		assist_basis_power_mw) : 0U;
+	int32_t phase_iq_request = calculate_target_x160_iq_request(
+		target_x160_q, iq_limit);
 
 	output->emtb_denominator = (uint16_t)denominator;
-	output->emtb_target_x160 = (target_x160 > UINT16_MAX) ?
-		UINT16_MAX : (uint16_t)target_x160;
+	uint32_t target_x160_display =
+		(target_x160_q + EMTB_FIXED_Q_ONE - 1U) / EMTB_FIXED_Q_ONE;
+	output->emtb_target_x160 = (target_x160_display > UINT16_MAX) ?
+		UINT16_MAX : (uint16_t)target_x160_display;
 
 	return finish_power_request(
+		input,
 		config,
 		battery_voltage_mv,
 		iq_limit,
@@ -520,14 +606,15 @@ static bool calculate_emtb(
 		assist_basis_power_mw,
 		support_ratio_pct,
 		motor_power_mw,
+		phase_iq_request,
 		output);
 }
 
 /*
  * Faithful port of emmebrusa TSDZ2-Smart-EBike-1 apply_torque_assist()
  * (src/ebike_app.c:841): target current = torque delta * factor / 120 in
- * the TSDZ 0..160 range, normalized to the profile reference voltage.
- * Cadence gates the assist but does not scale it.
+ * the TSDZ 0..160 range. Q8 preserves small requests before conversion to
+ * EBICS phase Iq. Cadence gates the assist but does not scale it.
  */
 static bool calculate_torque_assist(
 	const rider_input_t *input,
@@ -554,35 +641,46 @@ static bool calculate_torque_assist(
 		reference_voltage_mv = EMTB_REFERENCE_VOLTAGE_MAX_MV;
 	}
 
-	uint32_t delta_x160 =
-		((uint32_t)prepared.torque_for_assist_mv * EMTB_TSDZ_TORQUE_RANGE +
-		ASSIST_TORQUE_DELTA_MAX_MV / 2U) / ASSIST_TORQUE_DELTA_MAX_MV;
-	uint32_t target_x160 = (delta_x160 * config->torque_assist_factor) /
+	uint32_t torque_range = torque_input_span_native();
+	uint32_t delta_x160_q =
+		((uint32_t)prepared.torque_for_assist_mv * EMTB_TSDZ_TORQUE_RANGE *
+		EMTB_FIXED_Q_ONE +
+		torque_range / 2U) / torque_range;
+	uint32_t target_x160_q =
+		(delta_x160_q * config->torque_assist_factor) /
 		TORQUE_ASSIST_FACTOR_DENOMINATOR;
 
-	uint32_t human_power_numerator =
-		(uint32_t)prepared.human_torque_mv *
-		(uint32_t)prepared.cadence_for_assist_rpm *
-		HUMAN_POWER_NUMERATOR_SCALE;
-	uint32_t human_power_mw =
-		human_power_numerator / HUMAN_POWER_MW_DENOMINATOR;
-	uint32_t assist_basis_power_numerator =
-		(uint32_t)prepared.torque_for_assist_mv *
-		(uint32_t)prepared.cadence_for_assist_rpm *
-		HUMAN_POWER_NUMERATOR_SCALE;
-	uint32_t assist_basis_power_mw =
-		assist_basis_power_numerator / HUMAN_POWER_MW_DENOMINATOR;
+	uint8_t power_cadence = prepared.cadence_seeded ?
+		0U : prepared.cadence_for_assist_rpm;
+	uint32_t human_power_mw = calculate_human_power_mw(
+		prepared.human_load_centikg, power_cadence);
+	uint32_t assist_basis_power_mw = calculate_human_power_mw(
+		prepared.assist_load_centikg, power_cadence);
 
+	uint32_t target_for_power_q = target_x160_q;
+	uint32_t target_full_scale_q =
+		EMTB_TSDZ_TORQUE_RANGE * EMTB_FIXED_Q_ONE;
+	if (target_for_power_q > target_full_scale_q) {
+		target_for_power_q = target_full_scale_q;
+	}
+	uint32_t target_current_ma =
+		(target_for_power_q * EMTB_UNIT_CURRENT_MA +
+		EMTB_FIXED_Q_ONE / 2U) / EMTB_FIXED_Q_ONE;
 	uint32_t motor_power_mw =
-		((target_x160 * reference_voltage_mv) / 1000U) *
-		EMTB_UNIT_CURRENT_MA;
+		(target_current_ma * reference_voltage_mv) / 1000U;
 	uint32_t support_ratio_pct = (assist_basis_power_mw > 0U) ?
-		(motor_power_mw * 100U) / assist_basis_power_mw : 0U;
+		(uint32_t)(((uint64_t)motor_power_mw * 100U) /
+		assist_basis_power_mw) : 0U;
+	int32_t phase_iq_request = calculate_target_x160_iq_request(
+		target_x160_q, iq_limit);
 
-	output->emtb_target_x160 = (target_x160 > UINT16_MAX) ?
-		UINT16_MAX : (uint16_t)target_x160;
+	uint32_t target_x160_display =
+		(target_x160_q + EMTB_FIXED_Q_ONE - 1U) / EMTB_FIXED_Q_ONE;
+	output->emtb_target_x160 = (target_x160_display > UINT16_MAX) ?
+		UINT16_MAX : (uint16_t)target_x160_display;
 
 	return finish_power_request(
+		input,
 		config,
 		battery_voltage_mv,
 		iq_limit,
@@ -590,6 +688,7 @@ static bool calculate_torque_assist(
 		assist_basis_power_mw,
 		support_ratio_pct,
 		motor_power_mw,
+		phase_iq_request,
 		output);
 }
 
