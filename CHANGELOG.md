@@ -4,6 +4,28 @@
 
 ### Nowe funkcje
 
+**0.0187 / FW-022 — diagnostyka kalibracji Halla po potwierdzonym teście Walk Assist**
+- Po naprawie `Para1` w 0.0186 Walk Assist docierał do rdzenia silnika (`i_q` oraz PWM były aktywne), ale wirnik tylko buczał i nie obracał koła. Wykluczyło to poziomy wspomagania, czujnik nacisku i silnik jazdy TSDZ/Legacy jako bezpośrednią przyczynę tego objawu.
+- Autodetekcja pozycji `0x6200`, wykonana ze zdjętym łańcuchem, zakończyła fazę prądową i została potwierdzona testem sprzętowym: po kalibracji Walk Assist poprawnie obracał kołem. To wskazuje na kąty/kolejność Halla albo korekcję komutacji.
+- 0.0187 dodaje tylko dla Canable/BESST (`source=5`) odczyt `0x6017`: 36 B z kierunkiem Halla, sześcioma kątami `q31`, `MP.angle_correction` i stanem kalibracji. Zmiana jest diagnostyczna i nie zmienia sterowania silnikiem.
+- Odczyt po wgraniu 0.0187 zwrócił stare wartości skompilowane oraz `angle_correction=0`. Ponieważ przed flashowaniem skalibrowany Walk Assist działał, wynik kalibracji najprawdopodobniej nie przetrwał aktualizacji. Nie jest to jeszcze finalna poprawka: dokładne wartości trzeba odczytać bezpośrednio po kolejnej kalibracji, przed restartem lub flashowaniem.
+- Build sprzętowy: `.build/0.0187_M820_BL820.bin`, 81156 B, SHA-256 `04EF08B1A5BF71FA8CFE10B9836CC51D12E920DAEAE95BBC2D7993869FED9D07`.
+
+**0.0186 — naprawa uszkodzonego `Para1` potwierdzona odczytem CAN**
+- Bezpośredni odczyt pracującego sterownika z firmware `0.0185` wykazał wspólną przyczynę braku TSDZ, Legacy i Walk Assist: zapisany próg podnapięciowy miał wartość `0xFFFF`. Po przeliczeniu dawało to `voltage_min=3855` ADC, więcej niż bieżące napięcie akumulatora (`37,17 V`), więc wspólny limiter zawsze zerował żądanie prądu.
+- Ten sam rekord zawierał `0xFF` w napięciu systemowym/maksymalnym oraz limitach poziomów, `58 A` limitu baterii i wyliczony z `Para1[9]=254` skrajnie zawyżony limit fazowy. Samo odblokowanie undervoltage byłoby niebezpieczne.
+- `parse_MOparams()` waliduje teraz cały krytyczny rdzeń parametrów po starcie. Naprawia wartości spoza bezpiecznych zakresów i zapisuje poprawiony rekord do EEPROM, zachowując dołączone później banki Ride Core, tuning, wybór silnika i kalibrację nacisku.
+- `parse_DPparams()` stosuje tę samą walidację przy zapisie z Canable/HMI i nie dzieli przez zero, gdy `Para1[39]` jest zerowe.
+- Limity poziomów większe niż `100%` wracają do bezpiecznego układu `20/40/60/80/100%`, a limity prędkości do `100%`.
+- Poprawiono granice inicjalizacji `assist_profile`: tablica ma `5 x 6`, a stara pętla zapisywała `6 x 7` i wychodziła poza jej koniec.
+
+**Pedał-assist / CAN — poprawki po teście 0.0177/0.0179 (brak wspomagania w TSDZ i Legacy)**
+- **Reset `0x6101` nie zostawia już martwej konfiguracji:** stary przycisk `CalibrateTorqueSensor` wysyła `0x6101`, a w EBICS ta komenda jest historycznie resetem EEPROM. Po takim resecie brakowało domyślnych `speedLimitx100` i `wheel_cirumference`, więc po restarcie limit prędkości mógł być `0` i oba silniki jazdy widziały zerowy limit. `InitEEPROM()` zapisuje teraz `SPEEDLIMIT=2500` i `WHEEL_CIRCUMFERENCE=2218`, a `parse_MOparams()` naprawia też już zapisany/stary EEPROM z zerami.
+- **Zapis `0x3203` jest odporny na zera i krótkie ramki:** jeśli HMI/BESST poda błędny limit prędkości albo obwód koła, firmware wraca do bezpiecznych defaultów zamiast zapisać konfigurację, która wycina wspomaganie.
+- **Wyświetlacze 3/5/9 poziomów:** 10 slotów HMI mapuje się teraz na 5 realnych profili: `1/2 -> L1`, `3/4 -> L2`, `5/6 -> L3`, `7/8 -> L4`, `9 -> L5`. Dodano też obsługę prostych kodów numerycznych `4/5/7/8/9`; `6` zostaje Walk Assist.
+- **Legacy pressure floor:** stare `TQO_threshold=3299` z EEPROM nie odwraca już mapowania nacisku do prądu. Domyślny próg startu podłogi naciskowej to `750 + TQ_GATE_MIN`.
+- **Diagnostyka `0x6029` v2:** dodano flagi blokad wspólnych dla obu trybów (hamulec, PAS, wstecz, torque fault, aktywna kalibracja, watchdog CAN, PWM) oraz bieżące żądanie `i_q`, żeby następny test pokazał, gdzie dokładnie znika wspomaganie.
+
 **Walk Assist — strojenie po teście 0.0135: start ×2, utrzymanie ÷2**
 - Objaw z jazdy: pierwsza chwila za słaba, potem po ~1 s rower „gna" aż do odcięcia anty-przelotowego.
 - **Start = bezwzględny % prądu fazowego** (`WA_START_PCT`=100): sufit przy 0 km/h to teraz pełny prąd fazowy (było min(200%·wa_max, 60% fazowego) = 60%; żądane ×2=120% obcięte fizycznie do 100%). Odwiązany od Walk Current z Canable/HMI — ta sama filozofia co niezależny od poziomów boost pedałowy. Wygasa liniowo do sufitu utrzymania przy 3 km/h (`WA_START_FULL_SPEED` bez zmian).

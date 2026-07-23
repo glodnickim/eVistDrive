@@ -77,6 +77,119 @@ Zmieniasz wartość → przebudowa (`build_firmware.ps1`) → wgranie. Domyślne
 
 ## 4. Co zmieniliśmy (changelog — od najnowszego)
 
+### 0.0187 / FW-022 — Odczyt kalibracji Halla i potwierdzenie przyczyny
+Po naprawie konfiguracji w `0.0186` żądanie Walk Assist dochodziło już do
+sterowania silnikiem: diagnostyka pokazała aktywny PWM oraz prąd `i_q`.
+Silnik jednak tylko buczał i nie obracał koła. Ponieważ Walk Assist nie zależy
+od czujnika nacisku ani od wyboru TSDZ/Legacy, objaw wskazał niższą warstwę:
+synchronizację wirnika z czujnikami Halla.
+
+Kalibracja pozycji `0x6200`, wykonana ze zdjętym łańcuchem, zakończyła się, a
+test użytkownika potwierdził: **po kalibracji Walk Assist poprawnie obracał
+kołem**. Jest to potwierdzony wynik sprzętowy.
+
+Wersja `0.0187` dodaje diagnostyczny odczyt `0x6017`, dostępny wyłącznie dla
+Canable/BESST (`source=5`). Pakiet 36 B zwraca bez przeliczania:
+- kolejność/kierunek Halla,
+- sześć kątów Halla w formacie `q31`,
+- `MP.angle_correction`,
+- stan procedury kalibracji.
+
+Po wgraniu `0.0187` odczyt pokazał ponownie stare wartości skompilowane i
+`angle_correction=0`. To, razem z działającym Walk Assist przed flashowaniem,
+silnie wskazuje, że wynik kalibracji nie przetrwał aktualizacji albo został
+zastąpiony inicjalizacją pustego wirtualnego EEPROM. To jest obecnie
+**diagnoza wymagająca końcowego potwierdzenia**, ponieważ dokładnych wartości
+nie odczytano bezpośrednio po pierwszej kalibracji, a log jazdy nie został
+zapisany.
+
+Następny test: na `0.0187`, ze zdjętym łańcuchem, wykonać `0x6200`, zaczekać na
+stan zakończony i bez restartu odczytać `0x6017`. Odczytane wartości zostaną
+wpisane jako domyślne do następnego buildu; ręczna kalibracja pozostanie
+dostępna. Pełny zapis dowodów, protokołu i planu odbioru:
+`FW-022_HALL_CALIBRATION_PERSISTENCE.md`.
+
+### 0.0186 — Naprawa całego uszkodzonego `Para1`
+Bezpośredni odczyt CAN ze sterownika pracującego na `0.0185` potwierdził, że
+czujnik nacisku jest sprawny (`zero=473 mV`, `span=1139`, status valid), hamulec,
+torque fault i watchdog CAN są nieaktywne, a komunikacja HMI działa. Odczyt
+pełnego `Para1` ujawnił jednak właściwą wspólną blokadę:
+`undervoltage=0xFFFF`, czyli wewnętrzne `voltage_min=3855` ADC. Przy napięciu
+akumulatora `37,17 V` wspólny limiter zerował TSDZ, Legacy i Walk Assist.
+
+Rekord miał też `0xFF` w napięciu systemowym, maksymalnym i limitach poziomów
+oraz skrajnie zawyżone limity prądu. Dlatego nie wystarczy ominąć samego
+undervoltage — po takim obejściu silnik dostałby niebezpieczną konfigurację.
+
+Naprawa w `parse_MOparams()`:
+- sprawdza przy starcie napięcia, limity prądu, próg podnapięciowy, parametry
+  pedałowania, gazu, Walk Assist oraz wartości profili,
+- zastępuje tylko pola niepoprawne bezpiecznymi wartościami instalacyjnymi,
+- zapisuje naprawiony rekord do EEPROM,
+- zachowuje banki Ride Core, tuning, kalibrację nacisku i wybór silnika.
+
+Ta sama walidacja działa po zapisie parametrów z Canable/HMI.
+`Para1[39]=0` nie powoduje już dzielenia przez zero. Poprawiono również błąd
+granic pętli resetu fabrycznego: `assist_profile` ma rozmiar `5 x 6`, a stary
+kod inicjalizował `6 x 7`.
+
+### 0.0185 — Fix martwego wspomagania po `0x6101` / zerowym speed-limit
+Co znaleziono po testach 0.0177 i 0.0179: rower nie wspomagał ani w nowym
+silniku TSDZ/Ride Core, ani w Legacy, więc przyczyna musiała leżeć przed
+samym algorytmem jazdy. Tropem była nowa kalibracja czujnika nacisku:
+stary przycisk `CalibrateTorqueSensor` wysyła ramkę `0x6101`, a w EBICS ta
+komenda jest historycznie używana jako reset ustawień EEPROM. Po takim resecie
+`InitEEPROM()` nie wpisywał do flasha dwóch pól wspólnych dla obu trybów:
+`speedLimitx100` i `wheel_cirumference`. Po restarcie odczyt EEPROM mógł więc
+nadpisać poprawne defaulty zerami; przy `speedLimitx100=0` oba tryby widzą
+zerowy limit i nie mają z czego wygenerować wspomagania.
+
+Naprawa: `InitEEPROM()` zapisuje teraz `SPEEDLIMIT=2500` i
+`WHEEL_CIRCUMFERENCE=2218`, a `parse_MOparams()` przy starcie naprawia także
+już istniejący/stary EEPROM, jeśli te pola są zerowe albo poza zakresem.
+Zapis `0x3203` (limit prędkości i obwód koła z HMI/BESST) dostał identyczny
+fallback, więc krótka albo zerowa ramka nie zapisze konfiguracji, która wycina
+wspomaganie. Nowa kalibracja nacisku EBICS pozostaje na `0x6026`, a odczyt jej
+stanu na `0x6025`; `0x6101` traktować jako reset, nie jako kalibrację.
+WYMAGANY TEST: wgrać 0.0185, uruchomić po ewentualnym wcześniejszym resecie
+`0x6101`, sprawdzić wspomaganie na poziomie 3/5/9 oraz odczytać diagnostykę
+`0x6029`, jeśli silnik nadal milczy.
+
+Wynik testu: `0.0185` nadal nie uruchomiło silnika. Późniejszy bezpośredni
+odczyt CAN wykazał, że speed-limit nie był jedyną możliwą postacią uszkodzenia;
+cały stary rekord `Para1` zawierał wartości `0xFF`. Pełna naprawa jest w
+`0.0186`.
+
+### 0.0184 — Wyświetlacze 3/5/9 poziomów i proste kody poziomu
+Firmware nadal ma 10 slotów poziomu HMI (`0..9`), ale konfiguracja silnika ma
+5 realnych profili prądu/prędkości. Mapowanie jest teraz bez dziur:
+`1/2 -> profil 1`, `3/4 -> profil 2`, `5/6 -> profil 3`,
+`7/8 -> profil 4`, `9 -> profil 5`. To obsługuje wyświetlacze pokazujące
+3, 5 albo 9 poziomów bez wpadania w profil `0 A`. Dekoder `0x6300` rozumie
+także proste kody numeryczne `4/5/7/8/9`; kod `6` pozostaje Walk Assist,
+bo w tym protokole jest osobnym żądaniem prowadzenia roweru.
+
+### 0.0183 — Bezpieczne mapowanie poziomu do profilu Ride/Legacy
+Poprzednie mapowanie `level_to_array_element` miało dziury (`1/3/5/7 -> 0`).
+Jeśli dany wyświetlacz wysyłał pośredni slot, firmware wybierał profil zerowy:
+limit prądu `0%`, limit prędkości `0%`, a w nowym silniku także indeks
+konfiguracji bez wspomagania. Poprawka mapuje każdy niezerowy poziom na realny
+profil oraz zabezpiecza interpolację profilu przed indeksem `-1`, gdy poziom
+albo limit prędkości są zerowe.
+
+### 0.0182 — Diagnostyka startu i poprawka starego `TQO_threshold`
+Diagnostyka `0x6029` ma wersję v2 i pokazuje wspólne blokady obu trybów:
+hamulec, aktywne pedałowanie, torque fault, kręcenie wstecz, aktywną kalibrację
+nacisku, utratę CAN/HMI i stan PWM. Dodatkowo pokazuje bieżące oraz szczytowe
+żądanie `i_q`, więc w następnym teście widać, czy problem jest przed rampą,
+na rampie, czy już przy FOC.
+
+Legacy dostało ochronę przed starym EEPROM: wcześniejsze `TQO_threshold=3299`
+jest większe niż obecne `TQ_FULL_SCALE_MV=2000`, co odwracało mapę
+`nacisk -> prąd` i mogło dawać zerową podłogę naciskową. Domyślny próg startu
+to teraz `750 + TQ_GATE_MIN`, a runtime koryguje stare wartości większe od
+pełnej skali.
+
 ### 0.0164 — Rampy przyspieszenia/zwalniania i tempo boostu startowego w CANable (FW-010)
 Co to jest: dwie wartości strojenia charakteru, które wcześniej były zaszyte
 na sztywno w kodzie, są teraz w zakładce **Banks → Global Ride-Feel Tuning**:

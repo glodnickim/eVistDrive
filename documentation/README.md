@@ -1,6 +1,6 @@
 # Przewodnik po dokumentacji — gdzie czego szukać
 
-Aktualizacja: 2026-07-16. Zasada: **jeden temat = jedno źródło prawdy.**
+Aktualizacja: 2026-07-23. Zasada: **jeden temat = jedno źródło prawdy.**
 Dokumenty oznaczone ARCHIWALNY mają na górze baner wskazujący następcę —
 zostają w repo tylko jako historia decyzji.
 
@@ -24,6 +24,8 @@ działa / co dodać w CANable?" → **status**. „Dlaczego kod jest tak podziel
 | `../protocol/HMI_COMMAND_AUDIT.md` | Które komendy CAN są zajęte, które bloki to konfiguracja, a które telemetria | AKTUALNY |
 | `CAN_PROTOCOL_REFERENCE.md` | Analiza logu FABRYCZNEGO firmware Bafang (jak działa oryginał) | AKTUALNY (referencja) |
 | `PARAMETERS.md` | Historyczny rejestr bajtów `Para0/1/2` | ARCHIWALNY → status w `RIDE_CORE_STATUS_CANABLE.md` |
+| `FW-018_CB-007_SOC_FULL_VOLTAGE.md` | Karta konfigurowalnego napięcia pełnego pakietu i kotwicy SOC 100% | WDROŻONE W DRZEWIE, test sprzętowy progu oczekuje |
+| `FW-022_HALL_CALIBRATION_PERSISTENCE.md` | Karta diagnostyki Halla: dowody z 0.0186/0.0187, format `0x6017`, ryzyka EEPROM i kolejność testu końcowego | AKTUALNY (finalna poprawka czeka na odczyt po kalibracji) |
 
 ## 3. Dla użytkownika (jak działa i co ustawiać)
 

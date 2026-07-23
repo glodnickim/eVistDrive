@@ -75,7 +75,12 @@ bit EFF `0x80000000`; nie należy go mylić z częścią identyfikatora firmware
 | `0x6010` | `Para0` | Aktywny blok 64 B |
 | `0x6011` | `Para1` | Aktywny blok 64 B |
 | `0x6012` | `Para2` + marker zakończenia HMI | Aktywny blok 64 B |
-| `0x6101` | reset ustawień fabrycznych | Aktywna, wykorzystuje komendę kalibracji momentu |
+| `0x6017` | dokładna telemetria kalibracji Halla (`FW-022`) | Aktywna od 0.0187, tylko Canable/BESST (`source=5`), odczyt 36 B |
+| `0x6025` | telemetria czujnika nacisku i stan kalibracji | Aktywna, tylko Canable/BESST (`source=5`) |
+| `0x6026` | operacje kalibracji nacisku EBICS | Aktywna, tylko Canable/BESST (`source=5`): start/capture/commit/cancel/default |
+| `0x6029` | diagnostyka jazdy v2 | Aktywna, tylko Canable/BESST (`source=5`): blokady wspólne, żądanie `i_q`, PWM |
+| `0x602B` | próg napięcia pełnej baterii dla SOC 100% | Aktywna, tylko Canable/BESST (`source=5`), CRC-8/SMBUS |
+| `0x6101` | reset ustawień fabrycznych | Aktywna; historyczny przycisk `CalibrateTorqueSensor`, NIE używać do kalibracji EBICS |
 | `0x6200` | autodetekcja / kalibracja pozycji | Aktywna |
 | `0x62D9` | `TS_coeff` / startup angle | Aktywna |
 | `0x6300..0x6304` | operacyjne ramki HMI | Zakres zarezerwowany; aktywne `0x6300`, `0x6303` |
