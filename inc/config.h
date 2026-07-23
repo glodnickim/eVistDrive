@@ -108,10 +108,10 @@
 //---------------------------------------------------------------------
 //power settings
 #define PH_CURRENT_MAX (BATTERYCURRENT_MAX / CAL_I)  //ties phase ceiling to battery limit; Para1[9]
-#define BATTERYCURRENT_MAX 12000
+#define BATTERYCURRENT_MAX 15000
 #define REVERSE -1 //1 for normal direction, -1 for reverse //use field Motor Type (Para1[18]) 1 = 1, 0 = -1
 #define VOLTAGE_MIN 1320 //33V
-#define SYSTEM_VOLTAGE 52// in V
+#define SYSTEM_VOLTAGE 40// in V
 #define MAX_VOLTAGE 59// in V
 
 // Ride Core developer selector. Keep 0 for normal/Legacy firmware.
@@ -152,6 +152,7 @@
 #define WA_KP_SHIFT  4      //   3/16 ~= 0.19 i_q per 0.01km/h error: full error (~600) saturates ceiling => kick from standstill
 #define WA_KI_SHIFT  11     // I gain: integral term = wa_integral >> WA_KI_SHIFT (larger = slower trim @4kHz). TUNE.
 #define WA_KICK_SPEED 50    // Speedx100 < 0.5 km/h at engage = standstill -> apply kick; above -> resume without kick
+#define WALK_ASSIST_CURRENT_DEFAULT 30 // % of phase_current_max stored in Para1[36]
 // Start boost: raised current ceiling at low speed so the initial shove actually moves the bike.
 // Ride test 0.0133: launch too weak at the very first moment, then runaway until the overspeed cut.
 // Requested: launch x2, hold power /2. Launch is now an ABSOLUTE % of phase current (independent of the

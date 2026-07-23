@@ -89,7 +89,7 @@ static uint8_t repair_motor_params(MotorParams_t* MP){
 		repaired=1;
 	}
 	if(MP->walk_assist_current==0 || MP->walk_assist_current>100){
-		MP->walk_assist_current=30;
+		MP->walk_assist_current=WALK_ASSIST_CURRENT_DEFAULT;
 		repaired=1;
 	}
 	if(MP->reverse!=-1 && MP->reverse!=1){
@@ -177,7 +177,7 @@ void parse_DPparams(MotorParams_t* MP){
 	MP->walk_assist_speed = Para1[60]+(Para1[61]<<8);
 	if (MP->walk_assist_speed == 0) MP->walk_assist_speed = 600; // fallback: 6.0 km/h
 	MP->walk_assist_current = Para1[36];
-	if (MP->walk_assist_current == 0 || MP->walk_assist_current > 100) MP->walk_assist_current = 30; // fallback: 30% (start boost 2x fits under 60% phase ceiling)
+	if (MP->walk_assist_current == 0 || MP->walk_assist_current > 100) MP->walk_assist_current = WALK_ASSIST_CURRENT_DEFAULT; // fallback: start boost fits under the phase ceiling
 
 	// Battery capacity (Canable "Expected Battery Capacity", Para1[7..8], mAh)
 	MP->battery_capacity_mah = Para1[7] + (Para1[8]<<8);
@@ -300,7 +300,7 @@ void InitEEPROM(MotorParams_t* MP){
 	MP->PAS_timeout = PAS_TIMEOUT;
 	MP->ramp_end = RAMP_END;
 	MP->walk_assist_speed = 600; // default 6.0 km/h
-	MP->walk_assist_current = 30; // default 30% of phase_current_max (start boost 2x = 60% ceiling)
+	MP->walk_assist_current = WALK_ASSIST_CURRENT_DEFAULT;
 	MP->system_voltage = SYSTEM_VOLTAGE;
 	MP->max_voltage = MAX_VOLTAGE;
 	MP->decay_base =255;
@@ -320,11 +320,11 @@ void InitEEPROM(MotorParams_t* MP){
 	}
 
 	for (k=0; k < 4; k++){
-		MP->assist_settings[k+1][0]=100; //current limit (%)
+		MP->assist_settings[k+1][0]=(k+1)*20; //current limit: 20/40/60/80%
 		MP->assist_settings[k+1][1]=100; //speed limit (%)
 		MP->assist_settings[k+1][2]=TQFILTER;  //ride mode (Acceleraton in Canable Tool)
 	}
-	MP->assist_settings[5][0]=100;
+	MP->assist_settings[5][0]=100; //level 5 current limit
 	MP->assist_settings[5][1]=100;
 	MP->assist_settings[5][2]=TQFILTER;
 
