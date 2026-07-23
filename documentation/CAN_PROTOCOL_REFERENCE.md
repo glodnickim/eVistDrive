@@ -256,10 +256,10 @@ Fabryczny string modelu sterownika. Widoczny w zakładce "Info" HMI.
 #### `0x6001` — wersja firmware sterownika (20 bajtów, padding do 20)
 ```
 Fabryczny FW: "FAKE TAXI 20260522w1"   ← nazwa roweru testowego + data buildu
-EBiCS:        "EBICS 0.0081           " ← wersja EBiCS padowana spacjami do 20 znaków
+eVistDrive:   "eVD 0.0081             " ← wersja eVistDrive (skrót eVD) padowana spacjami do 20 znaków
 ```
 **TO** jest pole które użytkownik widzi w HMI jako "wersja softu sterownika".
-**EBiCS:** `sprintf(tx_data, "EBICS %s", EBICS_BUILD_VERSION)` → CAN_Display.c:451.
+**eVistDrive:** `sprintf(tx_data, "eVD %s", EBICS_BUILD_VERSION)` → CAN_Display.c:597. (Nazwa makra `EBICS_BUILD_VERSION` pozostaje — to identyfikator techniczny wersji buildu.)
 
 #### `0x6002` — skrót modelu sterownika (14 bajtów)
 ```

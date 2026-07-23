@@ -1,4 +1,10 @@
-Master Branch is for the hubmotor controller CRA101C with GD32F303RCT6 processor.
+# eVistDrive Firmware
+
+**eVistDrive** is an open-source torque-sensing e-bike motor control platform. This repository holds the motor controller firmware for the hubmotor controller CRA101C with the GD32F303RCT6 processor.
+
+eVistDrive combines the proven motor control architecture of **EBiCS** with rider-assistance concepts inspired by open-source **TSDZ** firmware projects. It is an independent open-source fork — **not** an official product of the original EBiCS or TSDZ developers.
+
+> eVistDrive is derived from the EBiCS motor controller firmware and incorporates concepts inspired by open-source TSDZ firmware projects. Original copyright notices and licenses are preserved.
 
 This project is under construction. All you are doing with this project is on your own risk. The authors do not accept any liability for damage to property or personal injury!  
 It is strongly recommented to use a fuse between controller and battery. 

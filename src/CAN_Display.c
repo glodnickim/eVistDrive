@@ -530,7 +530,7 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 
 
 		// Controller info as MULTIFRAME (like factory firmware) so the HMI shows name/version.
-		// Strings kept factory-identical except the customer/serial field (0x6001) -> EBICS + build version.
+		// Strings kept factory-identical except the customer/serial field (0x6001) -> eVistDrive (eVD) + build version.
 		case 0x6000: //manufacturer / hw id (factory: "CR X30P.250.FC 2.1")
 			if(Ext_ID_Rx.operation==1){
 				tx_data_length=sprintf(tx_data, "CR X30P.250.FC 2.1");
@@ -538,9 +538,9 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 			}
 			break;
 
-		case 0x6001: //serial/customer field -> EBICS + current build version (factory was "FAKE TAXI ...")
+		case 0x6001: //serial/customer field -> eVistDrive (eVD) + current build version (factory was "FAKE TAXI ...")
 			if(Ext_ID_Rx.operation==1){
-				tx_data_length=sprintf(tx_data, "EBICS %s", EBICS_BUILD_VERSION);
+				tx_data_length=sprintf(tx_data, "eVD %s", EBICS_BUILD_VERSION);
 				while(tx_data_length<20) tx_data[tx_data_length++]=' '; //pad to factory serial length (20)
 				send_multiframe(Ext_ID_Rx.command, &tx_data[0], tx_data_length);
 			}
