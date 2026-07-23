@@ -7,3 +7,8 @@ documentation/~$BANFANGHUB Pinout.pptx
 documentation/export.txt
 # Auto-generated build version header (injected at build time, never committed)
 inc/build_version.h
+
+# Local build, backup, and diagnostic artifacts
+/.build/
+/.backup/
+/logs/
