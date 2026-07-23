@@ -30,12 +30,12 @@ Branch: test/soc-temp
 
 | Para1[x] | Nazwa w MP / config | Skalowanie | Zakres bajtu | Domyślna | Efekt |
 |----------|---------------------|-----------|-------------|---------|-------|
-| [0] | `system_voltage` | 1 V/bit | 24–72 | 52 | Napięcie nominalne systemu; używane w obliczeniach zasięgu |
-| [1] | `battery_current_max` | 1 A/bit | 5–30 | 12 | Limit prądu baterii [A]; góra mocy całkowitej |
+| [0] | `system_voltage` | 1 V/bit | 24–72 | 40 | Napięcie nominalne systemu; używane w obliczeniach zasięgu |
+| [1] | `battery_current_max` | 1 A/bit | 5–30 | 15 | Limit prądu baterii [A]; góra mocy całkowitej |
 | [2] | `max_voltage` | 1 V/bit | 42–84 | 59 | Napięcie maksymalne (ładowanie pełne); ochrona BMS |
 | [3,4] | `voltage_min` (2B LE) | CAL_BAT_V=17 → V×17 | — | 1320 (33V) | Napięcie odcięcia; poniżej → ramp-down mocy |
 | [7,8] | `battery_capacity_mah` (2B LE) | 1 mAh/bit | 1000–50000 | 14000 | Pojemność baterii; używane do liczenia zasięgu i SOC |
-| [9] | `phase_current_max` | A×CAL_I/1000 → bajt | 5–25 | 126 (=12A bat) | Limit prądu fazowego; bezwzględny sufit mocy silnika |
+| [9] | `phase_current_max` | A×CAL_I/1000 → bajt | 5–25 | 157 (=15A bat) | Limit prądu fazowego; bezwzględny sufit mocy silnika |
 | [10] | `limp_soc_limit` | 1 %SOC/bit, 0xFF=wyłączone | 0–100, 0xFF | 0xFF | SOC próg limp mode (redukcja mocy przy niskim SoC) |
 | [11] | `limp_soc_limit_stage2` | 1 %SOC/bit, 0xFF=wyłączone | 0–100, 0xFF | 0xFF | SOC próg limp mode stage 2 (min moc) |
 | [12] | `Cadence_exponent` | bezwymiarowy | 0–20 | 10 | Wykładnik kadencji w formule mocy: power ∝ cadence^(1/(1+exp)). 0 = liniowy, 10 = pierwiastkowy, 20 = słabo zależny od kadencji |
@@ -51,10 +51,10 @@ Branch: test/soc-temp
 | [37] | `Override_Duration` | ×40 tyki @4kHz | 0–255 | 100 (=4000 tyk=1s) | Czas trwania Extended Boost po ostatnim peak momentu |
 | [38] | `PAS_timeout` | ×400 tyki @4kHz (=×0,1s) | 1–10 | 1 (=400 tyk=0,1s) | Czas "hold" przed wejściem w decay gdy siła <760mV. **Zwiększyć do 5 (0,5s) aby zlikwidować pulsowanie w martwym punkcie korby** |
 | [39] | `ramp_end` | **MARTWY** — parsowany, nieużywany | — | 1200 | Kiedyś próg kadencji dla ramp-down. Aktualnie nieaktywny w kodzie |
-| [41] | `assist_settings[1][0]` | 1 % / bit | 0–100 | 100 | Limit prądu dla poziomu 1 (% z phase_current_max) |
-| [43] | `assist_settings[2][0]` | 1 % / bit | 0–100 | 100 | Limit prądu dla poziomu 2 |
-| [45] | `assist_settings[3][0]` | 1 % / bit | 0–100 | 100 | Limit prądu dla poziomu 3 |
-| [47] | `assist_settings[4][0]` | 1 % / bit | 0–100 | 100 | Limit prądu dla poziomu 4 |
+| [41] | `assist_settings[1][0]` | 1 % / bit | 0–100 | 20 | Limit prądu dla poziomu 1 (% z phase_current_max) |
+| [43] | `assist_settings[2][0]` | 1 % / bit | 0–100 | 40 | Limit prądu dla poziomu 2 |
+| [45] | `assist_settings[3][0]` | 1 % / bit | 0–100 | 60 | Limit prądu dla poziomu 3 |
+| [47] | `assist_settings[4][0]` | 1 % / bit | 0–100 | 80 | Limit prądu dla poziomu 4 |
 | [48] | `assist_settings[5][0]` | 1 % / bit | 0–100 | 100 | Limit prądu dla poziomu 5 |
 | [50] | `assist_settings[1][1]` | 1 % / bit | 0–100 | 100 | Limit prędkości dla poziomu 1 (% z speedLimitx100) |
 | [52] | `assist_settings[2][1]` | 1 % / bit | 0–100 | 100 | Limit prędkości dla poziomu 2 |
