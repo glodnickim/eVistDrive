@@ -189,6 +189,10 @@ typedef struct
 	uint8_t        	ride_engine;                    // 0 = Legacy, 1 = TSDZ (new ride-core)
 	uint8_t        	ride_engine_pad;
 
+	//--- FW-018: configurable full-charge PACK voltage (100% anchor at boot) ---
+	uint16_t       	soc_full_magic;                 // 0x5F01 = soc_full_pack_10mv holds a valid threshold
+	uint16_t       	soc_full_pack_10mv;             // full-charge pack voltage in units of 10 mV (4587 = 45.87 V); 0 = not set
+
 }MotorParams_t;
 
 typedef struct

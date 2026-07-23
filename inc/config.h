@@ -133,6 +133,13 @@
 #define RANGE_LEARN_MIN_M 300        // start blending real consumption after this distance [m]
 #define RANGE_EMA_ALPHA 0.05f        // EMA gain for avg_wh_per_km
 #define RECHARGE_MARGIN_PCT 5        // min OCV-vs-stored SOC rise to treat restart as a recharge [%]
+//FW-018: configurable full-charge PACK-voltage threshold -> anchor SOC to 100% at boot (set from Canable)
+#define SOC_FULL_MAGIC       0x5F01  // MP.soc_full_magic value marking soc_full_pack_10mv valid
+#define SOC_FULL_BOOT_SETTLE_S  10   // seconds of stable pack voltage after boot before the 100% anchor
+#define SOC_FULL_BOOT_STABLE_MV 200  // max pack-voltage wobble allowed inside the settle window [mV]
+#define SOC_FULL_PACK_MIN_MV 20000   // hard safety range for the configured threshold [mV]
+#define SOC_FULL_PACK_MAX_MV 90000
+#define SOC_FULL_RELEASE_FRAC 0.010f // release the 100% anchor after using 1.0% of estimated capacity
 //Limp mode (motor power reduction at low SoC), Canable Para1[10] / Para1[11], 0xFF = disabled
 #define LIMP_FLOOR_PCT 30            // motor power floor at 0% SoC [%]
 #define LIMP_STAGE2_PCT 15           // motor power at/below stage-2 SoC threshold [%]
@@ -238,6 +245,7 @@
 // (mapped_torque) is unaffected. Higher = firmer press to engage; too high = light pedalling won't assist.
 // (Was gating on torque_filtered which is TQfilter/EMA-dependent per level -> broke high levels; fixed.)
 #define TQ_GATE_MIN 18
+#define TQ_PRESSURE_FLOOR_START_MV (750 + TQ_GATE_MIN)
 
 // --- Consistent engagement (#engage): forward crank steps required to arm assist (jiggle-proof). ---
 // Assist engages only with REAL pressure (TQ_GATE_MIN) AND >=START_MIN_STEPS consecutive forward quadrature

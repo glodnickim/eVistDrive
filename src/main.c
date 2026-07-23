@@ -186,6 +186,7 @@ uint16_t tq_fault_ticks=0;      // debounce for out-of-range signal
 uint32_t tq_fault_hold=0;       // min hold after the cause clears (~5 s) - no flicker/assist chatter
 volatile uint8_t bank_save_request=0; //FW-006: 0x6022 received -> persist banks at next standstill
 volatile uint8_t ride_engine_request=0xFF; //FW-014: 0x6027 sets 0/1 = pending engine; 0xFF = none
+volatile uint8_t soc_full_persist=0;       //FW-018: 0x602B sets 1 = MP.soc_full_* changed, flash-persist at standstill
 //FW-015b: peak-hold diagnostics (reset on each 0x6029 read) - lets a brief bench press be captured
 volatile uint8_t diag_peak_reset=0;
 volatile uint8_t diag_peak_cadence=0;
@@ -277,6 +278,13 @@ int32_t soc_slot_index=-1;        //index of latest written slot (-1 = none)
 float cycle_start_soc=-1.0f;      //SOC at start of a discharge cycle (-1 = none)
 float cycle_discharge_mah=0;      //accumulated discharge during the cycle
 uint8_t shutdown_saved=0;         //guard: save state only once on shutdown
+//--- FW-018: boot-time full-charge detection (pack-voltage threshold -> 100% anchor) ---
+uint8_t soc_full_anchor=0;        //1 = SOC display pinned at 100% after a detected full charge
+uint8_t soc_boot_full_done=0;     //boot full-charge check finished (runs once)
+uint8_t soc_boot_settle_s=0;      //seconds counted inside the boot settle window
+uint16_t soc_boot_vmin=0xFFFF;    //min pack voltage seen during the settle window [mV]
+uint16_t soc_boot_vmax=0;         //max pack voltage seen during the settle window [mV]
+float soc_anchor_start_mah=0;     //remaining_mah captured when the anchor was set
 #if ASSIST_TORQUE_MODE==2
 //per-level expo curve (mode 2): percent table indexed like assist_settings (element 0 = no assist level)
 static const int8_t assist_curve_expo_pct[6]={0,ASSIST_CURVE_EXPO_L1,ASSIST_CURVE_EXPO_L2,ASSIST_CURVE_EXPO_L3,ASSIST_CURVE_EXPO_L4,ASSIST_CURVE_EXPO_L5};
@@ -290,7 +298,7 @@ uint32_t Speedx100_cumulated=0;
 uint32_t torque_cumulated=0;
 uint8_t array_temp[88];
 
-uint8_t level_to_array_element[10]={0,0,1,0,2,0,3,0,4,5}; //map assist Level to array element
+uint8_t level_to_array_element[10]={0,1,1,2,2,3,3,4,4,5}; //map 10 HMI assist slots to 5 real assist profiles
 int32_t ic1value = 0,AngleFromPWM = 0;
 __IO uint16_t dutycycle = 0;
 __IO uint16_t frequency = 0;
@@ -1660,7 +1668,7 @@ void reg_ADC_processing(void)
         }
         //persist only at full standstill: flash write stalls the CPU, so never while driving
         uint8_t torque_cal_persist = torque_input_cal_take_persist_request();
-        if((bank_save_pending || bank_save_request || torque_cal_persist || engine_persist) && MS.i_q_setpoint==0 && MS.cadence==0 && MS.Speedx100==0){
+        if((bank_save_pending || bank_save_request || torque_cal_persist || engine_persist || soc_full_persist) && MS.i_q_setpoint==0 && MS.cadence==0 && MS.Speedx100==0){
             MP.active_profile_bank = assist_modes_get_active_bank();
             if(bank_save_request){ //FW-006/FW-010: 0x6022 -> persist banks and ride-feel tuning together
                 assist_modes_serialize_bank(0, &MP.bank_store[0][0]);
@@ -1676,6 +1684,7 @@ void reg_ADC_processing(void)
             write_virtual_eeprom();
             bank_save_pending=0;
             bank_save_request=0;
+            soc_full_persist=0; //FW-018: threshold now in flash
         }
     }
     {
@@ -1706,13 +1715,15 @@ void reg_ADC_processing(void)
         //FW-015b: peak-hold of TSDZ diagnostics so a brief press on the bench is catchable
         {
             const assist_mode_output_t* do_ = assist_modes_get_last_output();
+            int32_t current_iq_req = (ride_control_get_engine()==RIDE_ENGINE_TSDZ) ?
+                do_->iq_request : MS.i_q_setpoint_temp;
             if(diag_peak_reset){ diag_peak_cadence=0; diag_peak_torque=0; diag_peak_human_w=0; diag_peak_support=0; diag_peak_motor_w=0; diag_peak_iq_req=0; diag_peak_iq_set=0; diag_peak_reset=0; }
             if(do_->cadence_for_assist_rpm>diag_peak_cadence) diag_peak_cadence=do_->cadence_for_assist_rpm;
             if(do_->torque_for_assist_mv>diag_peak_torque) diag_peak_torque=do_->torque_for_assist_mv;
             if(do_->human_power_w>diag_peak_human_w) diag_peak_human_w=do_->human_power_w;
             if(do_->applied_support_ratio_pct>diag_peak_support) diag_peak_support=do_->applied_support_ratio_pct;
             if(do_->motor_power_w>diag_peak_motor_w) diag_peak_motor_w=do_->motor_power_w;
-            if(do_->iq_request>diag_peak_iq_req) diag_peak_iq_req=do_->iq_request;
+            if(current_iq_req>diag_peak_iq_req) diag_peak_iq_req=current_iq_req;
             if(MS.i_q_setpoint>diag_peak_iq_set) diag_peak_iq_set=MS.i_q_setpoint;
         }
     }
@@ -2078,6 +2089,8 @@ uint8_t interpolate_assistfactor(void){
 	uint16_t interval= speedlimitx100_scaled/5 ;
 	uint8_t ui8_speedfactor=0;
 	uint8_t ui8_speedcase=0;
+	uint8_t assist_profile_index=level_to_array_element[MS.assist_level];
+	if(assist_profile_index==0 || interval==0)return 0;
 	if (MS.Speedx100 < interval)ui8_speedcase=0;
 	else if (MS.Speedx100 < 2*interval)ui8_speedcase=1;
 	else if (MS.Speedx100 < 3*interval)ui8_speedcase=2;
@@ -2088,8 +2101,8 @@ uint8_t interpolate_assistfactor(void){
 			MS.Speedx100,
 			ui8_speedcase*interval,
 			(ui8_speedcase+1)*interval,
-			MP.assist_profile[level_to_array_element[MS.assist_level]-1][ui8_speedcase],
-			MP.assist_profile[level_to_array_element[MS.assist_level]-1][ui8_speedcase+1]);
+			MP.assist_profile[assist_profile_index-1][ui8_speedcase],
+			MP.assist_profile[assist_profile_index-1][ui8_speedcase+1]);
 	return ui8_speedfactor;
 }
 
@@ -2342,6 +2355,27 @@ void soc_init(void){
 }
 
 void soc_update(void){
+	//--- FW-018: boot-time full-charge detection (once, over the first SOC_FULL_BOOT_SETTLE_S seconds) ---
+	//Compares the WHOLE-PACK voltage directly against the user threshold - no cell count, no /3.6.
+	if(!soc_boot_full_done){
+		if(MP.soc_full_magic==SOC_FULL_MAGIC){
+			if(MS.Voltage<soc_boot_vmin) soc_boot_vmin=MS.Voltage;
+			if(MS.Voltage>soc_boot_vmax) soc_boot_vmax=MS.Voltage;
+			if(++soc_boot_settle_s>=SOC_FULL_BOOT_SETTLE_S){
+				soc_boot_full_done=1;
+				if((uint16_t)(soc_boot_vmax-soc_boot_vmin)<=SOC_FULL_BOOT_STABLE_MV &&
+				   (uint32_t)MS.Voltage>=(uint32_t)MP.soc_full_pack_10mv*10U){
+					MS.remaining_mah=(float)MP.battery_capacity_estimated_mah; //battery is full
+					MS.soc_real=100.0f; MS.soc_display=100.0f; MS.SOC=100;
+					soc_full_anchor=1;
+					soc_anchor_start_mah=MS.remaining_mah;
+				}
+			}
+		} else {
+			soc_boot_full_done=1; //feature not configured -> skip, keep the coulomb counter
+		}
+	}
+
 	//--- integrate this second's charge ---
 	float dmah=soc_mAs_acc/3600.0f;   //mA*s -> mAh (signed)
 	soc_mAs_acc=0;
@@ -2379,6 +2413,16 @@ void soc_update(void){
 	if(MS.soc_display<0)MS.soc_display=0;
 	if(MS.soc_display>100)MS.soc_display=100;
 	MS.SOC=(uint8_t)(MS.soc_display+0.5f);
+
+	//--- FW-018: hold display at 100% right after a detected full charge (anti flicker to 99%) ---
+	//Released once ~SOC_FULL_RELEASE_FRAC of capacity has actually been consumed; soc_real keeps tracking underneath.
+	if(soc_full_anchor){
+		if((soc_anchor_start_mah-MS.remaining_mah) < SOC_FULL_RELEASE_FRAC*(float)MP.battery_capacity_estimated_mah){
+			MS.soc_display=100.0f; MS.SOC=100;
+		} else {
+			soc_full_anchor=0; //enough used -> resume normal display tracking
+		}
+	}
 
 	//--- Range from remaining energy / PER-LEVEL average consumption ---
 	float remaining_wh=(MS.remaining_mah/1000.0f)*(float)MP.system_voltage;
@@ -2618,8 +2662,10 @@ uint16_t legacy_assist_calculate_monolith(void){
 	            }
 	            //calculate setpoint, if brake is not activated
 	            else{
+					uint16_t tq_floor_start = MP.TQO_threshold[level_to_array_element[MS.assist_level]];
+					if(tq_floor_start>=TQ_FULL_SCALE_MV) tq_floor_start=TQ_PRESSURE_FLOOR_START_MV; //stale EEPROM may hold old 3299, which inverts the pressure-floor map
 					mapped_throttle= map(adc_value[1], MP.throttle_offset, MP.throttle_max, 0, phase_current_max_scaled);
-					mapped_torque= map(MS.torque_on_crank, MP.TQO_threshold[level_to_array_element[MS.assist_level]], TQ_FULL_SCALE_MV, 0, phase_current_max_scaled); //#4 upper span configurable (3300=old; lower=more pressure-linear)
+					mapped_torque= map(MS.torque_on_crank, tq_floor_start, TQ_FULL_SCALE_MV, 0, phase_current_max_scaled); //#4 upper span configurable (3300=old; lower=more pressure-linear)
 #if STARTUP_BOOST_ENABLE
 					{	//TSDZ2-style startup boost: scale the pressure signal by a factor that is max at cadence 0 and
 						//decays geometrically with cadence -> pressure-proportional pull-away kick that fades on its own.
