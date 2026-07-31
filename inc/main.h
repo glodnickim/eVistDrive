@@ -146,7 +146,7 @@ typedef struct
 	uint16_t		battery_current_max;
 	int16_t       	voltage_min;
 	uint16_t       	speedLimitx100;
-	uint16_t       	walk_assist_speed; // in km/h x100, e.g. 600 = 6.0 km/h
+	uint16_t       	walk_assist_speed; // raw front-chainring RPM; legacy field name kept for EEPROM/CAN
 	uint8_t        	walk_assist_current; // 0-100 %, maps to Para1[36] (speed_limit_enabled in JS)
 	uint16_t       	TQO_threshold[6];
 	uint8_t       	com_mode;
@@ -170,12 +170,15 @@ typedef struct
 	uint8_t       	limp_soc_limit_stage2;          // Canable Para1[11], 0xFF = disabled
 
 	//--- FW-006: profile bank storage (appended at end to keep EEPROM offsets stable) ---
+	// FW-068/069: 320 B per bank (wire format v6 uses 295) so the next per-level field costs a
+	// version bump, not another change of MotorParams_t — every size change here invalidates the
+	// whole stored record (FW-023 length check) and resets ALL settings to defaults.
 	uint16_t       	bank_store_magic;               // 0xB16B = bank_store holds valid serialized banks
-	uint8_t       	bank_store[2][192];             // serialized bank blobs (wire format v1, 185 B used)
+	uint8_t       	bank_store[2][256];             // serialized bank blobs (wire format v6, 245 B used)
 
 	//--- FW-010: global ride-feel tuning storage (appended at end) ---
 	uint16_t       	tuning_store_magic;             // 0x7501 = tuning_store holds valid values
-	uint8_t       	tuning_store[16];               // serialized tuning blob (wire format v1)
+	uint8_t       	tuning_store[64];               // serialized tuning blob (FW-068: wire format v6, 32 B used)
 
 	//--- FW-013: user torque calibration (span only; zero is always automatic) ---
 	uint16_t       	torque_cal_magic;               // 0x7C41 = fields below hold a valid user calibration
@@ -186,7 +189,7 @@ typedef struct
 
 	//--- FW-014: persisted ride engine choice ---
 	uint16_t       	ride_engine_magic;              // 0x5E01 = ride_engine byte is valid
-	uint8_t        	ride_engine;                    // 0 = Legacy, 1 = TSDZ (new ride-core)
+	uint8_t        	ride_engine;                    // 0 = Legacy, 1 = ride core
 	uint8_t        	ride_engine_pad;
 
 	//--- FW-018: configurable full-charge PACK voltage (100% anchor at boot) ---

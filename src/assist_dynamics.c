@@ -1,18 +1,48 @@
 #include "assist_dynamics.h"
 
 #include "config.h"
-#include "tuning_config.h"
 
 #define CONTROL_TICKS_PER_MS 4
 #define PROFILE_RELEASE_MAX_MS 3000
+
+/* FW-069: fallbacks used only if the caller left a ramp field at 0. The real values are
+ * per level and arrive through assist_dynamics_input_t. */
+#define RAMP_UP_SLOW_FALLBACK_MS   600
+#define RAMP_UP_FAST_FALLBACK_MS   300
+#define RAMP_DOWN_SLOW_FALLBACK_MS 1000
+#define RAMP_DOWN_FAST_FALLBACK_MS 140
+
+static int32_t ramp_ticks(uint16_t ms, int32_t fallback_ms)
+{
+	int32_t value = (ms > 0U) ? (int32_t)ms : fallback_ms;
+	return value * CONTROL_TICKS_PER_MS;
+}
+
+/*
+ * FW-072: the release fade is ONE linear ramp again.
+ *
+ * FW-047 had added a slow tail over the last 15 % of the starting level, on the theory that
+ * the gearbox clunk came from torque being removed at a constant rate right down to zero.
+ * Testing did not bear that out: the clunk stayed, and the tail silently stretched the fade —
+ * release_ms reached 15 %, then a further 600 ms ran before the current actually hit zero.
+ * A configured 650 ms behaved like ~1250 ms, which is not what the field says it does.
+ *
+ * Now: current at the moment pedalling stops -> 0 over exactly release_ms, whatever that
+ * current was.
+ */
 
 int32_t map(int32_t x, int32_t in_min, int32_t in_max, int32_t out_min, int32_t out_max);
 
 #if IQ_RAMP_TIME_MODE
 static int32_t iq_reference_q;
-static uint32_t profile_release_fraction;
-static int32_t profile_release_ticks_cached;
-static int32_t profile_release_scale_q_cached;
+/*
+ * FW-040: fixed-time release fade. The generic ramp derives its step from the FULL
+ * current scale, so a release that starts from a partial level (normal riding is well
+ * below full scale) reached zero in a fraction of release_ms — the fade felt far too
+ * short. The release path now latches the Iq value at fade start and divides THAT by
+ * release_ms, so the configured time is the real time to zero from any level.
+ */
+static int32_t profile_release_step_q;      /* per-tick step for the active fade */
 #endif
 
 int32_t assist_dynamics_apply(
@@ -20,19 +50,38 @@ int32_t assist_dynamics_apply(
 	int32_t iq_reference,
 	const assist_dynamics_input_t *input)
 {
+	/*
+	 * Leaving WA is a dead-man stop. The WA controller has already discarded
+	 * its command; do not feed its last Iq into the normal ride release fade.
+	 */
+	if (input->immediate_cut) {
 #if IQ_RAMP_TIME_MODE
-	if (input->safety_cut) {
+		iq_reference_q = 0;
+		profile_release_step_q = 0;
+#endif
+		return 0;
+	}
+#if IQ_RAMP_TIME_MODE
+	/*
+	 * FW-060: WA owns its complete Iq trajectory, including start and release
+	 * slew. Keep the shared ramp synchronized for a smooth exit, but do not put
+	 * a second dynamic element behind the speed controller.
+	 */
+	if (input->walk_active) {
 		iq_reference_q = iq_target << IQ_RAMP_Q_SHIFT;
-		profile_release_fraction = 0;
-		profile_release_ticks_cached = 0;
-		profile_release_scale_q_cached = 0;
+		profile_release_step_q = 0;
 		return iq_target;
 	}
+	// FW-037: safety cuts no longer snap Iq to 0. The caller (ride_control) forces
+	// iq_target = 0 with a short release ramp on brake/backward/overtemp/torque-fault,
+	// so the bridge fades out smoothly (no gearbox klik). Only overcurrent hard-cuts
+	// the bridge, in FOC.c. The normal ramp/release path below handles the fade.
 
-	int32_t ramp_up_slow = tuning_config_ramp_up_slow_ticks();
-	int32_t ramp_up_fast = tuning_config_ramp_up_fast_ticks();
-	int32_t ramp_down_slow = tuning_config_ramp_down_slow_ticks();
-	int32_t ramp_down_fast = tuning_config_ramp_down_fast_ticks();
+	//FW-069: per level, supplied by the caller from the active bank's level config
+	int32_t ramp_up_slow = ramp_ticks(input->ramp_up_slow_ms, RAMP_UP_SLOW_FALLBACK_MS);
+	int32_t ramp_up_fast = ramp_ticks(input->ramp_up_fast_ms, RAMP_UP_FAST_FALLBACK_MS);
+	int32_t ramp_down_slow = ramp_ticks(input->ramp_down_slow_ms, RAMP_DOWN_SLOW_FALLBACK_MS);
+	int32_t ramp_down_fast = ramp_ticks(input->ramp_down_fast_ms, RAMP_DOWN_FAST_FALLBACK_MS);
 
 #if IQ_RAMP_ADAPTIVE
 	int32_t up_s = map((int32_t)input->speed_x100,
@@ -54,10 +103,18 @@ int32_t assist_dynamics_apply(
 	int32_t dn_ticks = ramp_down_slow;
 #endif
 
-	if (input->walk_active) {
-		up_ticks = ramp_up_fast;
-		dn_ticks = ramp_down_fast;
+	/*
+	 * FW-048: the motor has slowed to where the commutation angle switches formula and steps.
+	 * Finish here so nothing is driven through that transition — the motor coasts out on its
+	 * own inertia. By this point the fade has already brought the current low, so releasing it
+	 * is not felt; carrying it further is exactly what produced the clunk at standstill.
+	 */
+	if (input->coast_release && iq_target == 0) {
+		iq_reference_q = 0;
+		profile_release_step_q = 0;
+		return 0;
 	}
+
 	bool profile_release_active = iq_target == 0 &&
 		!input->profile_pedaling_active &&
 		input->profile_release_ms > 0;
@@ -80,22 +137,22 @@ int32_t assist_dynamics_apply(
 	int32_t iq_scale_q = iq_scale << IQ_RAMP_Q_SHIFT;
 	int32_t step_q;
 	if (profile_release_active && target_q < iq_reference_q) {
-		if (profile_release_ticks_cached != ticks ||
-			profile_release_scale_q_cached != iq_scale_q) {
-			profile_release_fraction = 0;
-			profile_release_ticks_cached = ticks;
-			profile_release_scale_q_cached = iq_scale_q;
+		/*
+		 * FW-040: latch the level this fade starts from and spread it over release_ms,
+		 * so the configured time is the real time to zero FROM ANY LEVEL — deriving the
+		 * step from the full current scale is what made a partial-level release finish in
+		 * a fraction of the configured time.
+		 *
+		 * FW-072: one step for the whole fade. Rounding UP guarantees the ramp actually
+		 * reaches zero within release_ms instead of crawling the last fraction of a step.
+		 */
+		if (profile_release_step_q == 0) {
+			profile_release_step_q = (iq_reference_q + ticks - 1) / ticks;
+			if (profile_release_step_q < 1) profile_release_step_q = 1;
 		}
-		step_q = iq_scale_q / ticks;
-		profile_release_fraction += (uint32_t)(iq_scale_q % ticks);
-		if (profile_release_fraction >= (uint32_t)ticks) {
-			step_q++;
-			profile_release_fraction -= (uint32_t)ticks;
-		}
+		step_q = profile_release_step_q;
 	} else {
-		profile_release_fraction = 0;
-		profile_release_ticks_cached = 0;
-		profile_release_scale_q_cached = 0;
+		profile_release_step_q = 0;
 		step_q = (iq_scale_q + ticks - 1) / ticks;
 		if (step_q < 1) step_q = 1;
 	}
@@ -111,10 +168,14 @@ int32_t assist_dynamics_apply(
 	iq_reference = (iq_reference_q + (1 << (IQ_RAMP_Q_SHIFT - 1))) >> IQ_RAMP_Q_SHIFT;
 	if (iq_target == 0 && iq_reference == 0) {
 		iq_reference_q = 0;
-		profile_release_fraction = 0;
+		profile_release_step_q = 0;   /* FW-040: fade finished, arm the next one */
 	}
 	return iq_reference;
 #else
+	/* FW-060: the WA controller already applies its own bounded Iq slew. */
+	if (input->walk_active) {
+		return iq_target;
+	}
 #if IQ_RAMP_ADAPTIVE
 	int32_t up_s = map((int32_t)input->speed_x100,
 		IQ_RAMP_SPEED_LO, IQ_RAMP_SPEED_HI, IQ_SLEW_UP_SLOW, IQ_SLEW_UP_FAST);
@@ -130,7 +191,7 @@ int32_t assist_dynamics_apply(
 	int32_t dn_step = IQ_SLEW_DOWN;
 #endif
 
-	if (input->safety_cut) return iq_target;
+	// FW-037: safety cuts ramp (see note above), so no immediate snap here either.
 	if (iq_target > iq_reference) {
 		int32_t d = iq_target - iq_reference;
 		return iq_reference + ((d > up_step) ? up_step : d);

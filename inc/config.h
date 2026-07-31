@@ -25,7 +25,9 @@
 #define CAL_BAT_I_OFFSET 2035
 #define CAL_V 15LL<<8
 #define CAL_I 95 //Zurückgerechnet aus Batteriestrom = Tastverhältnis * Motorstrom
+#ifndef BOOTLOADER
 #define BOOTLOADER 820
+#endif
 // BionX IGH3
 //#define INDUCTANCE 12LL
 //#define RESISTANCE 220LL
@@ -44,15 +46,20 @@
 //#define INDIVIDUAL_MODES
 //#define SPEEDTHROTTLE
 //#define PRINTDEBUG_UART
-// --- Developer motor-tuning telemetry on CAN ---
-// Controls the two EXTRA frames used only for developer tuning:
-//   0x81F83100 (torque/cadence, every 10 ms) and 0x80010203 (FOC debug: Ibat, u_q, i_q).
-// 0 = OFF (default). Factory M820 does NOT send these; EBICS flooding them at startup can stop the
-//     HMI from completing its firmware/info readout. Keep 0 for normal riding.
-// 1 = ON (developer only).
-#define SEND_DEV_TELEMETRY 0
-#if SEND_DEV_TELEMETRY
-#define PRINTDEBUG_CAN
+// --- Optional CAN diagnostics (one compile-time master switch) ---
+// 0 = normal riding build (default): no unsolicited developer frames and no
+//     on-demand diagnostic blocks 0x6017, 0x6025 or 0x6029.
+// 1 = developer build: enables the 0x81F83100 stream, debug frames
+//     0x00010203..0x00010206 and the three Canable diagnostic blocks above.
+// Essential HMI traffic and Canable configuration (including 0x6020/0x6023
+// and system/config status 0x6028) are never disabled by this switch.
+// scripts/build-firmware.ps1 sets this from -Variant; the fallback keeps IDE
+// and other direct compiler builds quiet.
+#ifndef CAN_DIAGNOSTICS_ENABLE
+#define CAN_DIAGNOSTICS_ENABLE 0
+#endif
+#if (CAN_DIAGNOSTICS_ENABLE != 0) && (CAN_DIAGNOSTICS_ENABLE != 1)
+#error "CAN_DIAGNOSTICS_ENABLE must be 0 or 1"
 #endif
 #define R_TEMP_PULLUP 3500
 #define SIXSTEPTHRESHOLD 10000
@@ -98,7 +105,7 @@
 #define SPEEDLIMIT 2500
 #define PULSES_PER_REVOLUTION 1 //wheel revolution, Para1[20]
 // Speed display stop detection + decay (was: frozen last value for 5 s after stopping).
-#define SPEED_STOP_TICKS 10600      // ticks @4kHz = 2.65 s without a wheel pulse -> speed = 0. Min detectable speed = circ*1440/ticks ~= 3.0 km/h @2218mm (TSDZ2 uses ~2.1 s / ~3.7 km/h).
+#define SPEED_STOP_TICKS 10600      // ticks @4kHz = 2.65 s without a wheel pulse -> speed = 0. Min detectable speed = circ*1440/ticks ~= 3.0 km/h @2218mm.
 #define SPEED_DECAY_MARGIN_PCT 25   // between pulses show at most the speed implied by the silence so far, but only once a pulse is >25% overdue -> steady riding never touched, braking display falls smoothly instead of freezing
 #define SPEEDSOURCE EXTERNAL
 #define SPEEDFILTER 1
@@ -107,7 +114,10 @@
 
 //---------------------------------------------------------------------
 //power settings
-#define PH_CURRENT_MAX (BATTERYCURRENT_MAX / CAL_I)  //ties phase ceiling to battery limit; Para1[9]
+// FW-030/dev: phase current ceiling DECOUPLED from the battery limit and fixed at 700 (dev value).
+// Mid-drive: phase current > battery current gives launch torque; the battery-current limiter
+// (main.c runPIcontrol) still caps actual battery current at BATTERYCURRENT_MAX. More motor heat.
+#define PH_CURRENT_MAX 700
 #define BATTERYCURRENT_MAX 15000
 #define REVERSE -1 //1 for normal direction, -1 for reverse //use field Motor Type (Para1[18]) 1 = 1, 0 = -1
 #define VOLTAGE_MIN 1320 //33V
@@ -115,7 +125,7 @@
 #define MAX_VOLTAGE 59// in V
 
 // Ride Core developer selector. Keep 0 for normal/Legacy firmware.
-// 0 = frozen Legacy path, 1 = new TSDZ Power Linear path.
+// 0 = frozen Legacy path, 1 = ride-core Power Linear path.
 #define RIDE_ENGINE_DEFAULT 0
 
 //---------------------------------------------------------------------
@@ -153,6 +163,9 @@
 #define WA_KI_SHIFT  11     // I gain: integral term = wa_integral >> WA_KI_SHIFT (larger = slower trim @4kHz). TUNE.
 #define WA_KICK_SPEED 50    // Speedx100 < 0.5 km/h at engage = standstill -> apply kick; above -> resume without kick
 #define WALK_ASSIST_CURRENT_DEFAULT 30 // % of phase_current_max stored in Para1[36]
+#define WALK_ASSIST_RPM_DEFAULT     50 // raw chainring RPM stored in Para1[60..61]
+#define WALK_ASSIST_RPM_MIN         20
+#define WALK_ASSIST_RPM_MAX         60
 // Start boost: raised current ceiling at low speed so the initial shove actually moves the bike.
 // Ride test 0.0133: launch too weak at the very first moment, then runaway until the overspeed cut.
 // Requested: launch x2, hold power /2. Launch is now an ABSOLUTE % of phase current (independent of the
@@ -161,7 +174,7 @@
 #define WA_START_PCT        100 // % of phase_current_max commanded at 0 km/h (was min(200%*wa_max,60%)=60%; x2=120% clamps at 100 = full phase)
 #define WA_START_FULL_SPEED 300 // 0.01 km/h: launch shove fully faded down to the hold ceiling at 3 km/h
 #define WA_HOLD_PCT         50  // % of (phase_current_max*walk_assist_current) used as the PI hold ceiling: 50 = half the user setting
-// TSDZ2-style approach control: power is limited EARLIER, before the target speed is reached (no overshoot).
+// Approach control: power is limited EARLIER, before the target speed is reached (no overshoot).
 #define WA_FADE_BAND 250    // 0.01 km/h: power ceiling fades linearly over the last 2.5 km/h before walk_assist_speed
 #define WA_NEAR_HOLD_PCT 15 // % of wa_hold still allowed AT the target (keeps the bike walking; 0 would stall+pump below target)
 #define WA_OVERSPEED_MARGIN 50 // 0.01 km/h: at target+0.5 km/h output -> 0 and integrator flushed (hard anti-overshoot)
@@ -177,18 +190,18 @@
 // 0 = OFF (default): power follows the pedal directly (Bosch-like, smooth power-down). 1 = ON (legacy carry).
 #define EXTENDED_BOOST_ENABLE 0
 
-// --- Adaptive i_q ramp (#1): how fast motor current rises/falls, scaled by wheel speed + cadence (TSDZ2-style) ---
+// --- Adaptive i_q ramp (#1): how fast motor current rises/falls, scaled by wheel speed + cadence ---
 // 1 = adaptive (gentle at low speed, snappy at speed -> smooth transitions & start).
 // 0 = fixed ramp (slow tick constants in time mode, IQ_SLEW_* in legacy mode).
 #define IQ_RAMP_ADAPTIVE   1
 
-// 1 = time-based ramp using fractional internal steps. This can reproduce TSDZ2-like multi-second
+// 1 = time-based ramp using fractional internal steps. This can reproduce multi-second
 // ramps at 4kHz. 0 = legacy integer step ramp below (IQ_SLEW_*).
 #define IQ_RAMP_TIME_MODE  1
 #define IQ_RAMP_Q_SHIFT    8    // fractional bits for internal ramp accumulator; keep >=1
 
 // Time-based ramp targets in 4kHz control ticks. Slow is used near standstill/low cadence, fast at speed/cadence.
-// TSDZ2 reference: ramp-up about 2.3s slow / 0.3s fast, ramp-down about 1.0s slow / 0.14s fast.
+// Reference figures: ramp-up about 2.3s slow / 0.3s fast, ramp-down about 1.0s slow / 0.14s fast.
 // UP_SLOW 9200 (2.3s) smeared the STARTUP_BOOST kick into a 2-second crawl -> 2400 (0.6s) lets the
 // pull-away kick actually be felt while still protecting the drivetrain; revert to 9200 if start feels harsh.
 #define IQ_RAMP_UP_SLOW_TICKS    2400
@@ -212,18 +225,18 @@
 #define SMOOTH_START_ENABLE 0
 #define START_RAMP_TICKS   1200 // ~300 ms envelope
 
-// --- TSDZ2-style STARTUP BOOST: cadence-decaying MULTIPLIER on pedal pressure (ported from OSF TSDZ2
+// --- STARTUP BOOST: cadence-decaying MULTIPLIER on pedal pressure
 // apply_startup_boost()). The ONLY pull-away boost mechanism (STARTUP_FLOOR was removed so effects can't
 // stack -> clean, attributable ride feedback). It SCALES the pressure signal (mapped_torque) by a factor
 // that is maximal at cadence 0 and decays geometrically as cadence builds:
-//   factor(cad)% = STARTUP_BOOST_FACTOR * (1 - CADENCE_STEP/256)^cad   (same law as TSDZ2, which precomputes
+//   factor(cad)% = STARTUP_BOOST_FACTOR * (1 - CADENCE_STEP/256)^cad   (the same law used by the reference implementation, which precomputes
 // it into a 120-entry table; here powf() computes it directly). Boost is proportional to how hard you press
 // -> a strong press gives a strong-but-controlled kick that fades on its own with cadence.
 // Boosted pressure is capped to full MP.phase_current_max (level-independent kick).
 #define STARTUP_BOOST_ENABLE        1
-#define STARTUP_BOOST_FACTOR        200  // factor[0] in %: extra pressure at cadence 0 (TSDZ "start boost torque factor"). 200 = up to +200%
-#define STARTUP_BOOST_CADENCE_STEP  25   // geometric decay per RPM (step/256). Higher = boost fades faster with cadence (TSDZ "cadence step").
-                                         // 25 = TSDZ-typical: ~36% left at 10 rpm, ~13% at 20 rpm, gone ~40 rpm. 50 faded so fast the kick barely outlived the first crank degrees
+#define STARTUP_BOOST_FACTOR        200  // factor[0] in %: extra pressure at cadence 0 (start boost torque factor). 200 = up to +200%
+#define STARTUP_BOOST_CADENCE_STEP  25   // geometric decay per RPM (step/256). Higher = boost fades faster with cadence (cadence step).
+                                         // 25 = typical: ~36% left at 10 rpm, ~13% at 20 rpm, gone ~40 rpm. 50 faded so fast the kick barely outlived the first crank degrees
 #define STARTUP_BOOST_MODE          0    // 0=CADENCE (always on, fades w/ cadence); 1=SPEED (only from standstill, drop >45 rpm); 2=AUTO (off when little press while rolling)
 #define STARTUP_BOOST_AUTO_TQ       20   // AUTO mode only: pressure [mV above ~750 rest] below which boost drops once already moving
 
@@ -233,6 +246,9 @@
 #define SOFT_CUTOFF_ENABLE  1
 // liczba cykli petli sterowania (~4 kHz) na wygaszenie do neutral; 40 ~= 10 ms
 #define SOFT_CUTOFF_TICKS   40
+// Test diagnostyczny kliku: bazowo 4000 ~= 1 s, 12000 ~= 3 s.
+// Jesli klik przesunie sie o 2 s, jego zrodlem jest koncowe wylaczenie mostka.
+#define POWER_STAGE_STOP_TICKS 12000
 
 // --- Torque->power upper span (#4): map(torque_on_crank, TQO_threshold, TQ_FULL_SCALE_MV, 0, current). ---
 // 3300 = old (hard pressure barely reaches full assist). 2000 = pressure-linear / "naciskowe" (Bosch-like):
@@ -252,9 +268,13 @@
 // Assist engages only with REAL pressure (TQ_GATE_MIN) AND >=START_MIN_STEPS consecutive forward quadrature
 // steps. Any reverse step resets the counter -> back/forth wiggle on descents/dead-spots can't engage.
 // ~96 steps/rev, so 4 steps ≈ 15° of crank -> fast & repeatable. Higher = firmer/longer push to start.
+// FW-068: for the RIDE-CORE path this is now only the DEFAULT. The live value is configurable from
+// Canable (Dynamics -> "Crank movement to start", TUNING_START_STEPS_*), and main.c reads it through
+// tuning_config_start_steps(). The constant below still applies verbatim inside the frozen Legacy
+// monolith (Walk Assist + position calibration), which is why it stays here.
 #define START_MIN_STEPS 4
 
-// --- TSDZ2-style cadence seed: after a fresh valid forward start, publish a small temporary cadence ---
+// --- Cadence seed: after a fresh valid forward start, publish a small temporary cadence ---
 // This does not engage assist by itself. It only avoids a dead first cadence calculation while the normal
 // START_MIN_STEPS + TQ_GATE_MIN latch still decides whether motor power may start.
 #define START_CADENCE_SEED_ENABLE 1
@@ -278,7 +298,7 @@
 #define ASSIST_TORQUE_MODE 0
 
 // Per-level curve bend for ASSIST_TORQUE_MODE=2, in percent -100..+100 (0 = straight line = mode 1):
-//   +% = progressive: soft on light pedalling, power comes when you PUSH (sporty; +50 ~ TSDZ2 eMTB feel)
+//   +% = progressive: soft on light pedalling, power comes when you PUSH (sporty; +50 ~ eMTB feel)
 //   -% = degressive: strong from the first touch, flattens on hard press (city/comfort)
 // Exponent mapping: E>=0 -> 1+E/33.3 (up to 4.0); E<0 -> 1/(1-E/33.3) (down to 0.25). Endpoints 0/100% fixed,
 // output always rises with pressure (monotonic by construction). Applied once per level change, powf per tick.
@@ -294,10 +314,22 @@
 #define TQ_FAULT_LOW_MV     300   // torque_on_crank < this = disconnect/short-to-gnd -> Error 25 (rest ~740 mV)
 #define TQ_FAULT_HIGH_MV    4300  // factory value; NOTE: EBiCS scale caps ~3300 mV so high never fires here (kept for parity)
 #define TQ_FAULT_TICKS      400   // ~100 ms @4kHz out-of-range before raising fault (debounce)
-#define TQ_RECAL_IDLE_TICKS 6000  // ~1.5 s @4kHz of no pedalling -> coast/idle -> eligible for re-zero (catches in-ride coasting)
+// FW-058: re-zero was firing on essentially every in-ride coast. One coast can move the zero by
+// TQ_RECAL_MAX_STEP (20 mV ~ 0.74 kg), which is MORE than the whole assist engage threshold
+// (Minimum pedal load, 18 mV ~ 0.67 kg) -> the force needed to pick assist up while rolling kept
+// changing. Longer idle window + a minimum period between corrections while moving. Standstill is
+// left alone: with a foot on the ground the sensor sees a genuinely unloaded rest, so that
+// re-zero is the trustworthy one.
+#define TQ_RECAL_IDLE_TICKS 20000 // ~5 s @4kHz of no pedalling -> coast/idle -> eligible for re-zero (was 6000 = 1.5 s)
+#define TQ_RECAL_MIN_PERIOD_TICKS 240000U // ~60 s @4kHz minimum between applied corrections WHILE MOVING (standstill unrestricted)
+#define TQ_RECAL_MOVING_X100 100  // >= 1.0 km/h counts as moving (MS.Speedx100 scale) -> the lockout above applies
 #define TQ_RECAL_SETTLE_TICKS 2000// coast must last this long (~0.5 s) before its averaged rest is trusted
 #define TQ_RECAL_BAND_MV    30    // re-zero immediately if rest within 740±this (~1.1 kg @27mV/kg) - static pedal load must stay outside
-#define TQ_RECAL_MAX_STEP   20    // max offset correction per coast (mV) - rate limit so one coast can't jump the zero
+#define TQ_RECAL_MAX_STEP   5     // max offset correction per coast (mV). FW-059: was 20, which alone exceeded the
+                                  // 18 mV assist engage threshold - one bad coast could redefine how hard you must
+                                  // press. Thermal drift is slow, so 5 mV/correction still tracks it.
+#define TQ_RECAL_STABLE_MV  10    // FW-059: max spread of the corrected signal across the sampling window; a coast
+                                  // noisier than this (rough road, chain slap, foot shifting) yields no calibration
 #define TQ_REACQUIRE_COASTS 3     // out-of-band rest must REPEAT consistently over this many coasts -> real drift -> re-acquire (anti-stuck)
 #define TQ_REACQUIRE_TOL_MV 30    // consecutive coasts must agree within this to count as "consistent" (not a random load)
 #define TQ_REACQUIRE_MAX_MV 40    // reacquire accepts only rest within this of the zero: drift (~1.5 kg) yes, a static 2+ kg load never
@@ -311,7 +343,18 @@
 //Quadrature PAS decoder (PC12=A, PD2=B), polled @4kHz. Confirmed by CAN log: forward = negative raw step.
 #define PAS_DIR_SIGN -1       // sign applied to raw quadrature step so that FORWARD pedalling => +1 (from test)
 #define PAS_STEPS_PER_PULSE 4 // cadence pulse every 4 quadrature transitions. Tested OK on HMI (=true RPM) -> implies ~96 transitions/rev (24 magnets). Reverser says "48 pulses/rev"; if that means 48 transitions, this would read half - VERIFY by measuring before changing to 2.
-#define PAS_STOP_TICKS 2000   // ticks @4kHz = 500 ms with no quadrature transition -> pedalling stopped (cadence=0)
+#define PAS_STOP_TICKS 800    // FW-025: ticks @4kHz = 200 ms with no quadrature transition -> pedalling stopped
+                              // (was 2000 = 500 ms). Under load the cadence is HELD until this window, so assist
+                              // lingered ~500 ms after you stop pedalling. Measured on 0.0194:
+                              // quadrature transitions arrive every ~10-60 ms while pedalling, so 200 ms keeps a
+                              // 3-6x margin against a false stop even at low cadence.
+                              // Shared by both engines; also gates cadence-zero, forward_pedaling and the FW-024b
+                              // reverse-flag clear (all consistent).
+// FW-024: one reverse step LATCHES Backwards_counter to this value instead of netting +1. Forward steps bleed
+// it down by 1 each, so a clean forward run (this many steps) is needed to clear -> reliable backward detection
+// despite crank jitter during backpedalling (the old net +1 vs -1 never reached the >=4 cut threshold). Chosen
+// so the backward hold clears at roughly the same forward-step count as the fwd_run re-engage (START_MIN_STEPS).
+#define BACKWARD_LATCH_COUNT 8
 
 //---------------------------------------------------------------------
 // Auto-off (self power-off after inactivity) + comms watchdog (CAN loss from HMI).
@@ -354,8 +397,7 @@
 #define WA_BUTTON_THRESHOLD_HIGH 3700
 #define WA_BUTTON_DEBOUNCE       20
 #define WA_BUTTON_RELEASE        20    // probki poza zakresem [LOW,HIGH] by wylaczyc przycisk (anty-chatter)
-#define WA_TIMEOUT_MS            10000
-#define WA_TIMEOUT_TICKS         (WA_TIMEOUT_MS * 4)
+#define WA_SPEED_RESUME_HYST_X100 50   // restart 0.5 km/h below the per-bank wheel cut-off
 
 //---------------------------------------------------------------------
 #define AUTODETECT 0

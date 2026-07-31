@@ -12,7 +12,8 @@ typedef struct {
 	uint16_t torque_raw_mv;
 	int16_t torque_corrected_mv;
 	uint16_t torque_filtered;
-	uint16_t torque_assist_filtered;
+	uint16_t torque_assist_filtered;   /* fast 35 ms: start, safety, start-gate */
+	uint16_t torque_run_filtered;      /* FW-033: slow RUN estimator: power/eMTB/torque, boost */
 	uint16_t torque_load_centikg;
 
 	uint8_t cadence_rpm;

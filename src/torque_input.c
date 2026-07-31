@@ -8,6 +8,8 @@ static uint16_t span_native = TORQUE_DEFAULT_SPAN_NATIVE;
 static uint8_t calibration_source = TORQUE_CAL_SOURCE_DEFAULT;
 static torque_snapshot_t snapshot;
 static int32_t assist_filter_q;
+static int32_t run_filter_q;                                  /* FW-033 */
+static uint16_t run_filter_ms = TORQUE_RUN_FILTER_MS_DEFAULT; /* FW-033 */
 
 static int32_t offset_correction;
 static bool cal_fault;
@@ -18,6 +20,32 @@ static int32_t last_coast_rest;
 static uint8_t reacquire_count;
 static uint32_t stuck_ticks;
 static bool stuck_fault;
+static uint32_t recal_lockout_ticks; /* FW-058: ticks left before the next in-ride re-zero */
+static int32_t coast_candidate;      /* FW-059: rest frozen mid-coast, not at its end */
+static bool coast_candidate_stable;  /* FW-059: sampling window was quiet enough to trust */
+static int32_t coast_window_min;
+static int32_t coast_window_max;
+/* FW-061 diagnostics. Counters are cumulative and are never cleared by a read:
+ * a single sample tells you nothing about whether a zero is drifting. */
+static uint8_t coast_last_result = TORQUE_COAST_NONE;
+static int16_t coast_last_step;
+static uint16_t coast_windows_started;
+static uint16_t coast_windows_completed;
+static uint16_t coast_applied_count;
+static uint16_t coast_reject_too_short;
+static uint16_t coast_reject_unstable;
+static uint16_t coast_reject_lockout;
+static uint16_t coast_reject_out_of_range;
+static uint16_t coast_reject_implausible;
+static uint16_t coast_no_change_count;
+static bool coast_last_was_moving;
+
+static void bump(uint16_t *counter)
+{
+	if (*counter < 65535U) {
+		(*counter)++;
+	}
+}
 
 static bool span_in_range(uint16_t value)
 {
@@ -103,23 +131,86 @@ static uint16_t update_assist_filter(uint16_t target_native)
 		TORQUE_ASSIST_FILTER_Q_SHIFT);
 }
 
+/*
+ * FW-033: second, slower first-order filter of the fast signal. This is the RUN
+ * effort estimator: it averages pedal load over a fraction of a crank turn so the
+ * power calc no longer follows every single leg peak. Reuses the fast filter's
+ * Q format; the only difference is the (configurable, longer) time constant.
+ */
+static uint16_t update_run_filter(uint16_t target_native)
+{
+	int32_t filter_ticks = (int32_t)run_filter_ms * TORQUE_INPUT_TICKS_PER_MS;
+	if (filter_ticks < 1) {
+		filter_ticks = 1;
+	}
+	int32_t target_q = (int32_t)target_native << TORQUE_ASSIST_FILTER_Q_SHIFT;
+	int32_t error_q = target_q - run_filter_q;
+	if (error_q != 0) {
+		int32_t step_q = error_q / filter_ticks;
+		if (step_q == 0) {
+			step_q = (error_q > 0) ? 1 : -1;
+		}
+		run_filter_q += step_q;
+	}
+	return (uint16_t)((run_filter_q +
+		(1L << (TORQUE_ASSIST_FILTER_Q_SHIFT - 1U))) >>
+		TORQUE_ASSIST_FILTER_Q_SHIFT);
+}
+
+void torque_input_set_run_filter_ms(uint16_t ms)
+{
+	run_filter_ms = (ms > TORQUE_RUN_FILTER_MS_MAX) ?
+		TORQUE_RUN_FILTER_MS_MAX : ms;
+}
+
+void torque_input_seed_run(uint16_t value_native)
+{
+	run_filter_q = (int32_t)value_native << TORQUE_ASSIST_FILTER_Q_SHIFT;
+}
+
 static bool rest_raw_plausible(int32_t raw_rest)
 {
 	return raw_rest >= TQ_REST_RAW_MIN && raw_rest <= TQ_REST_RAW_MAX;
 }
 
+/*
+ * FW-059: the rest sample is frozen once the settle window closes, instead of
+ * being read at the end of the coast. The old code evaluated the running average
+ * at the moment the coast ended - which is the moment the rider has already begun
+ * pressing the pedal but the crank has not yet clicked a PAS step, so the sample
+ * absorbed that pre-load and dragged the zero towards it. The window is also
+ * checked for quiet: a coast noisier than TQ_RECAL_STABLE_MV yields no
+ * calibration at all rather than a bad one.
+ */
 static void coast_accumulate(int16_t torque_corrected_native)
 {
 	if (!coast_active) {
 		coast_active = true;
 		coast_ticks = 0;
 		coast_rest_acc = (int32_t)torque_corrected_native << 6;
+		coast_window_min = torque_corrected_native;
+		coast_window_max = torque_corrected_native;
+		coast_candidate = torque_corrected_native;
+		coast_candidate_stable = false;
+		bump(&coast_windows_started); /* FW-061 */
 		return;
+	}
+	if (coast_ticks > TQ_RECAL_SETTLE_TICKS) {
+		return; /* candidate already frozen; the rest of the coast is ignored */
 	}
 	coast_rest_acc -= coast_rest_acc >> 6;
 	coast_rest_acc += torque_corrected_native;
-	if (coast_ticks < 64000U) {
-		coast_ticks++;
+	if (torque_corrected_native < coast_window_min) {
+		coast_window_min = torque_corrected_native;
+	}
+	if (torque_corrected_native > coast_window_max) {
+		coast_window_max = torque_corrected_native;
+	}
+	coast_ticks++;
+	if (coast_ticks > TQ_RECAL_SETTLE_TICKS) {
+		coast_candidate = coast_rest_acc >> 6;
+		coast_candidate_stable =
+			(coast_window_max - coast_window_min) <= TQ_RECAL_STABLE_MV;
 	}
 }
 
@@ -143,7 +234,12 @@ static bool drift_confirmed(int32_t rest)
 	return false;
 }
 
-static void apply_offset_step(int32_t diff)
+/*
+ * FW-061: returns the step actually taken, after clamping. The caller needs it
+ * because a zero-sized step must not arm the lockout - otherwise one pointless
+ * evaluation blocks the next correction that is genuinely needed.
+ */
+static int32_t apply_offset_step(int32_t diff)
 {
 	if (diff > TQ_RECAL_MAX_STEP) {
 		diff = TQ_RECAL_MAX_STEP;
@@ -151,32 +247,84 @@ static void apply_offset_step(int32_t diff)
 		diff = -TQ_RECAL_MAX_STEP;
 	}
 	offset_correction += diff;
+	return diff;
 }
 
-static void coast_evaluate(void)
+/*
+ * FW-058: applying a correction arms the lockout only while the bike is moving.
+ * At standstill the rest reading is trustworthy (the rider usually has a foot on
+ * the ground, so nothing loads the pedals) and stays as frequent as before.
+ * FW-061: an evaluation that changes nothing is reported as NO_CHANGE and leaves
+ * the lockout alone.
+ */
+static void apply_and_arm(int32_t diff, bool bike_moving)
 {
-	int32_t rest = coast_rest_acc >> 6;
+	int32_t step = apply_offset_step(diff);
+	coast_last_step = (int16_t)step;
+	if (step == 0) {
+		coast_last_result = TORQUE_COAST_NO_CHANGE;
+		bump(&coast_no_change_count);
+		return;
+	}
+	coast_last_result = TORQUE_COAST_APPLIED;
+	bump(&coast_applied_count);
+	if (bike_moving) {
+		recal_lockout_ticks = TQ_RECAL_MIN_PERIOD_TICKS;
+	}
+}
+
+static void coast_evaluate(bool bike_moving)
+{
+	int32_t rest = coast_candidate; /* FW-059: frozen mid-coast, not read at its end */
 	int32_t raw_rest = rest - offset_correction;
 	int32_t diff;
 	int32_t distance;
 
+	/* The plausibility check stays ahead of both gates: sensor-fault detection
+	 * (Error 25) must keep running at its old rate. The gates below only ever
+	 * suppress moving the zero. */
+	coast_last_was_moving = bike_moving;
+	bump(&coast_windows_completed);
+
 	if (!rest_raw_plausible(raw_rest)) {
 		cal_fault = true;
+		coast_last_result = TORQUE_COAST_IMPLAUSIBLE_RAW;
+		bump(&coast_reject_implausible);
 		return;
 	}
 	cal_fault = false;
+
+	if (!coast_candidate_stable) { /* FW-059 */
+		coast_last_result = TORQUE_COAST_UNSTABLE;
+		bump(&coast_reject_unstable);
+		return;
+	}
+	if (bike_moving && recal_lockout_ticks > 0U) {
+		coast_last_result = TORQUE_COAST_LOCKOUT;
+		bump(&coast_reject_lockout);
+		return;
+	}
 
 	diff = REST_TARGET_NATIVE - rest;
 	distance = diff < 0 ? -diff : diff;
 	if (distance <= TQ_RECAL_BAND_MV) {
 		reacquire_count = 0;
-		apply_offset_step(diff);
+		apply_and_arm(diff, bike_moving);
 	} else if (distance <= TQ_REACQUIRE_MAX_MV) {
+		/* 31..40 mV: real drift has to repeat across TQ_REACQUIRE_COASTS coasts,
+		 * otherwise a foot resting on the pedal would be adopted as the new zero. */
 		if (drift_confirmed(rest)) {
-			apply_offset_step(diff);
+			apply_and_arm(diff, bike_moving);
+		} else {
+			coast_last_result = TORQUE_COAST_NO_CHANGE;
+			bump(&coast_no_change_count);
 		}
 	} else {
+		/* Above 40 mV nothing is corrected automatically - but it must not be
+		 * silent, or a stuck/failing sensor looks exactly like a quiet ride. */
 		reacquire_count = 0;
+		coast_last_result = TORQUE_COAST_OUT_OF_REACQUIRE_RANGE;
+		bump(&coast_reject_out_of_range);
 	}
 }
 
@@ -194,8 +342,14 @@ int16_t torque_input_correct(uint16_t raw_native)
 	return (int16_t)(raw_native + offset_correction);
 }
 
-void torque_input_coast_update(int16_t torque_corrected_native, bool coast_eligible)
+void torque_input_coast_update(int16_t torque_corrected_native, bool coast_eligible,
+	bool bike_moving)
 {
+	/* Called every 4 kHz tick regardless of coasting, so this is the tick source
+	 * for the FW-058 minimum period between in-ride corrections. */
+	if (recal_lockout_ticks > 0U) {
+		recal_lockout_ticks--;
+	}
 	if (torque_input_calibration_active()) {
 		coast_active = false;
 		return;
@@ -204,8 +358,16 @@ void torque_input_coast_update(int16_t torque_corrected_native, bool coast_eligi
 		coast_accumulate(torque_corrected_native);
 		return;
 	}
-	if (coast_active && coast_ticks > TQ_RECAL_SETTLE_TICKS) {
-		coast_evaluate();
+	if (coast_active) {
+		if (coast_ticks > TQ_RECAL_SETTLE_TICKS) {
+			coast_evaluate(bike_moving);
+		} else {
+			/* FW-061: a window that never reached the settle time is its own
+			 * outcome. Without this it would be invisible, or worse, get blamed
+			 * on the stability gate. */
+			coast_last_result = TORQUE_COAST_TOO_SHORT;
+			bump(&coast_reject_too_short);
+		}
 	}
 	coast_active = false;
 }
@@ -221,6 +383,7 @@ void torque_input_init(void)
 	calibration_source = TORQUE_CAL_SOURCE_DEFAULT;
 	snapshot = (torque_snapshot_t){0};
 	assist_filter_q = 0;
+	run_filter_q = 0;
 	snapshot.zero_effective_native = TORQUE_ZERO_TARGET_NATIVE;
 	snapshot.span_native = span_native;
 }
@@ -251,6 +414,20 @@ void torque_input_update(uint16_t raw_native, int16_t torque_corrected_native,
 	snapshot.assist_delta_native = assist_delta;
 	snapshot.assist_delta_filtered_native = update_assist_filter(
 		sensor_valid ? assist_delta : 0U);
+	/*
+	 * FW-033: RUN estimator filters the FAST signal (cascade fast->run). When
+	 * disabled (ms == 0) run tracks fast exactly = old behaviour; keep the state
+	 * synced so enabling it later starts smoothly.
+	 */
+	if (run_filter_ms == 0U) {
+		run_filter_q = (int32_t)snapshot.assist_delta_filtered_native <<
+			TORQUE_ASSIST_FILTER_Q_SHIFT;
+		snapshot.assist_delta_run_native =
+			snapshot.assist_delta_filtered_native;
+	} else {
+		snapshot.assist_delta_run_native = update_run_filter(
+			snapshot.assist_delta_filtered_native);
+	}
 	snapshot.load_centikg = native_delta_to_centikg((uint16_t)delta);
 	snapshot.span_native = span_native;
 	snapshot.calibration_source = calibration_source;
@@ -560,8 +737,9 @@ uint16_t torque_input_serialize_telemetry(uint8_t *buffer)
 {
 	buffer[0] = 0x54;  /* 'T' */
 	buffer[1] = 0x43;  /* 'C' */
-	buffer[2] = 1;     /* version */
-	buffer[3] = TORQUE_CAP_LOAD_TELEMETRY_V1 | TORQUE_CAP_CALIBRATION_V1;
+	buffer[2] = 2;     /* FW-061: v2 = v1 layout + coast re-zero diagnostics */
+	buffer[3] = TORQUE_CAP_LOAD_TELEMETRY_V1 | TORQUE_CAP_CALIBRATION_V1 |
+		TORQUE_CAP_COAST_DIAG_V2;
 	put16(&buffer[4], snapshot.load_centikg);
 	put16(&buffer[6], snapshot.zero_effective_native);
 	put16(&buffer[8], snapshot.delta_native);
@@ -573,15 +751,43 @@ uint16_t torque_input_serialize_telemetry(uint8_t *buffer)
 	put16(&buffer[16], cal_reference_centikg);
 	put16(&buffer[18], cal_preview_span);
 	put16(&buffer[20], torque_input_full_scale_native());
+
+	/* FW-061 v2 block. Everything needed to explain a moved zero: what was
+	 * sampled, how quiet the window was, what step was taken and why not. */
+	put16(&buffer[22], snapshot.raw_native);
+	put16(&buffer[24], (uint16_t)coast_candidate);
+	uint16_t spread = (coast_window_max > coast_window_min) ?
+		(uint16_t)(coast_window_max - coast_window_min) : 0U;
+	put16(&buffer[26], spread);
+	put16(&buffer[28], (uint16_t)coast_last_step); /* signed, two's complement */
+	uint32_t lockout_s = (recal_lockout_ticks + (TORQUE_INPUT_TICKS_PER_MS * 1000U) - 1U) /
+		(TORQUE_INPUT_TICKS_PER_MS * 1000U);
+	buffer[30] = (lockout_s > 255U) ? 255U : (uint8_t)lockout_s;
+	buffer[31] = (coast_active ? 0x01U : 0U) |
+		(coast_last_was_moving ? 0x02U : 0U) |
+		(coast_candidate_stable ? 0x04U : 0U);
+	buffer[32] = coast_last_result;
+	buffer[33] = 0; /* reserved */
+	put16(&buffer[34], coast_windows_started);
+	put16(&buffer[36], coast_windows_completed);
+	put16(&buffer[38], coast_applied_count);
+	put16(&buffer[40], coast_reject_too_short);
+	put16(&buffer[42], coast_reject_unstable);
+	put16(&buffer[44], coast_reject_lockout);
+	put16(&buffer[46], coast_reject_out_of_range);
+	put16(&buffer[48], coast_reject_implausible);
+	put16(&buffer[50], coast_no_change_count);
+	put16(&buffer[52], (uint16_t)offset_correction);
+
 	uint16_t crc = 0xFFFFU;
-	for (uint8_t i = 0; i < 22; i++) {
+	for (uint8_t i = 0; i < TORQUE_TELEMETRY_BLOB_LEN - 2U; i++) {
 		crc ^= (uint16_t)buffer[i] << 8;
 		for (uint8_t bit = 0; bit < 8; bit++) {
 			crc = (crc & 0x8000U) ?
 				(uint16_t)((crc << 1) ^ 0x1021U) : (uint16_t)(crc << 1);
 		}
 	}
-	put16(&buffer[22], crc);
+	put16(&buffer[TORQUE_TELEMETRY_BLOB_LEN - 2U], crc);
 	return TORQUE_TELEMETRY_BLOB_LEN;
 }
 

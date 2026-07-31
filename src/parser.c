@@ -21,7 +21,8 @@ uint16_t l=0;
  */
 static uint8_t repair_motor_params(MotorParams_t* MP){
 	uint8_t repaired=0;
-	uint16_t phase_current_sanity_max=(uint16_t)(40000.0f/CAL_I);
+	//FW-030/dev: raised so the fixed 700 phase ceiling (PH_CURRENT_MAX) is not clamped on parse.
+	uint16_t phase_current_sanity_max=(uint16_t)(80000.0f/CAL_I);
 
 	if(MP->system_voltage<20 || MP->system_voltage>90){
 		MP->system_voltage=SYSTEM_VOLTAGE;
@@ -84,8 +85,8 @@ static uint8_t repair_motor_params(MotorParams_t* MP){
 		MP->ramp_end=RAMP_END;
 		repaired=1;
 	}
-	if(MP->walk_assist_speed==0 || MP->walk_assist_speed>700){
-		MP->walk_assist_speed=600;
+	if(MP->walk_assist_speed<WALK_ASSIST_RPM_MIN || MP->walk_assist_speed>WALK_ASSIST_RPM_MAX){
+		MP->walk_assist_speed=WALK_ASSIST_RPM_DEFAULT;
 		repaired=1;
 	}
 	if(MP->walk_assist_current==0 || MP->walk_assist_current>100){
@@ -175,7 +176,10 @@ void parse_DPparams(MotorParams_t* MP){
 	MP->PAS_timeout= Para1[38]*400; //in Zehntelsekunden, use field Current Loading Time (Ramp Up)
 	MP->ramp_end = Para1[39] ? 11250/Para1[39] : RAMP_END; //use field Current Shedding Time (Ramp Down), calculate timer tics from theshold cadence
 	MP->walk_assist_speed = Para1[60]+(Para1[61]<<8);
-	if (MP->walk_assist_speed == 0) MP->walk_assist_speed = 600; // fallback: 6.0 km/h
+	if (MP->walk_assist_speed < WALK_ASSIST_RPM_MIN ||
+		MP->walk_assist_speed > WALK_ASSIST_RPM_MAX) {
+		MP->walk_assist_speed = WALK_ASSIST_RPM_DEFAULT;
+	}
 	MP->walk_assist_current = Para1[36];
 	if (MP->walk_assist_current == 0 || MP->walk_assist_current > 100) MP->walk_assist_current = WALK_ASSIST_CURRENT_DEFAULT; // fallback: start boost fits under the phase ceiling
 
@@ -299,7 +303,7 @@ void InitEEPROM(MotorParams_t* MP){
 	MP->Override_Duration=4000;
 	MP->PAS_timeout = PAS_TIMEOUT;
 	MP->ramp_end = RAMP_END;
-	MP->walk_assist_speed = 600; // default 6.0 km/h
+	MP->walk_assist_speed = WALK_ASSIST_RPM_DEFAULT;
 	MP->walk_assist_current = WALK_ASSIST_CURRENT_DEFAULT;
 	MP->system_voltage = SYSTEM_VOLTAGE;
 	MP->max_voltage = MAX_VOLTAGE;

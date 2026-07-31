@@ -82,7 +82,7 @@ enums:
     legacy: 0
     power_linear: 1
     power_progressive: 2
-    emtb_tsdz: 3
+    emtb: 3
     emtb_custom: 4
   startup_boost_mode:
     cadence: 0
@@ -102,7 +102,7 @@ rules:
     expression: ramp_speed_low_kph <= ramp_speed_high_kph
   - id: ramp_cadence_order
     expression: ramp_cadence_low_rpm <= ramp_cadence_high_rpm
-  - id: inactive_tsdz_modes
+  - id: inactive_ride_core_modes
     expression: mode_type == legacy
     applies_until: hardware_legacy_regression_accepted
   - id: no_rotation_safe_default
