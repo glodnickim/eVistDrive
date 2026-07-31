@@ -18,8 +18,8 @@ Zmieniamy **markę** (to, co widzi człowiek: nazwy, napisy, opisy) z „Bafang 
 
 Czego **NIE** zmieniamy, żeby nic nie przestało działać:
 - **Ramki CAN, których oczekuje wyświetlacz** — pola producenta i modelu zostają fabryczne.
-- **Nazwy techniczne w kodzie** (np. `ebics-live`, `EBICS_BUILD_VERSION`, `tsdz_*`) — to „wewnętrzne etykiety", ich zmiana groziłaby zepsuciem połączeń w kodzie, a nie daje nic widocznego użytkownikowi.
-- **Historia projektu i licencje** EBiCS oraz TSDZ — zostają, dopisujemy tylko informację, że eVistDrive jest osobnym forkiem.
+- **Nazwy techniczne w kodzie** (np. `ebics-live`, `EBICS_BUILD_VERSION`) — to „wewnętrzne etykiety", ich zmiana groziłaby zepsuciem połączeń w kodzie, a nie daje nic widocznego użytkownikowi.
+- **Historia projektu i licencje** EBiCS oraz ride core — zostają, dopisujemy tylko informację, że eVistDrive jest osobnym forkiem.
 
 Robimy to **etapami, osobnymi commitami** — nigdy jednym wielkim. Niczego nie budujemy bez osobnego polecenia.
 
@@ -29,7 +29,7 @@ Robimy to **etapami, osobnymi commitami** — nigdy jednym wielkim. Niczego nie 
 
 1. **Kompatybilność HMI/CAN ma pierwszeństwo.** Nie zmieniamy formatów ramek ani pól, których wyświetlacz używa do identyfikacji sprzętu.
 2. **Rozróżniamy markę od techniki.** „EBICS Ride Core" na przycisku = marka (kandydat do zmiany). `data-tab="ebics-live"` = technika (zostaje).
-3. **Pochodzenie w kodzie zostaje.** Techniczne nazwy pochodzenia algorytmu (`ebics_foc`, `tsdz_*`, makro `EBICS_BUILD_VERSION`, identyfikatory `ebics-*`) zostają.
+3. **Pochodzenie w kodzie zostaje.** Techniczne nazwy pochodzenia algorytmu (`ebics_foc`, makro `EBICS_BUILD_VERSION`, identyfikatory `ebics-*`) zostają.
 4. **Nowe karty = jeden, czysty opis eVistDrive.** W nowych kartach nie ma podwójnych nazw — wszystko przechodzi na eVistDrive (łącznie z „Needs EBICS firmware…" → „Needs eVistDrive firmware…").
 5. **Podwójne opisy „Bafang / EBiCS" istnieją TYLKO w starych kartach i w powłoce aplikacji — NIE ruszamy ich.** Uważać, by przy edycji nowych kart nie podmienić przypadkiem opisów EBiCS w starych kartach.
 6. **Nowe karty dostają nazewnictwo eVistDrive nawet jeśli pod spodem używają tych samych ramek CAN co stare pola.** Zmieniamy nazwę karty/UI, a nie protokół — wspólna ramka nie blokuje nowej nazwy w nowej karcie.
@@ -114,7 +114,7 @@ To jest jedyna zmiana „techniczna" w Etapie 2 po stronie firmware i wymaga ost
 
 ### ETAP 1 — Branding tekstowy (zero ryzyka, nic wykonawczego)
 Commit A (repo firmware):
-- `README.md` → nagłówek `# eVistDrive Firmware` + opis wg Twojego pkt 10, z zachowaniem informacji o pochodzeniu (EBiCS/TSDZ) i licencji GPL; dopisać zdanie z pkt 8 („eVistDrive is derived from EBiCS…").
+- `README.md` → nagłówek `# eVistDrive Firmware` + opis wg Twojego pkt 10, z zachowaniem informacji o pochodzeniu (EBiCS/ride core) i licencji GPL; dopisać zdanie z pkt 8 („eVistDrive is derived from EBiCS…").
 
 Commit B (repo CANable) — **PRZENIESIONE DO OPEN** (README to dokumentacja, nie „nowa karta"; czekamy na decyzję o powłoce aplikacji).
 
@@ -146,7 +146,7 @@ Commit D (repo CANable) — WYŁĄCZNIE nowe karty + etykiety wykrywania (zgodni
 ### ETAP 3 — Porządki w kodzie (ostrożnie, opcjonalnie)
 - (jeśli D2) `package.json`/`package-lock.json` name → `vistdrive-config`.
 - Nowe moduły firmware zakładane od teraz: nazwy `vistdrive_*` / neutralne (`rider_assist.c`, `torque_control.c`).
-- **Zostają bez zmian**: `EBICS_BUILD_VERSION` (nazwa makra), identyfikatory `ebics-*` w UI, `tsdz_*`, `ebics_foc.c`, historia commitów, pliki licencji.
+- **Zostają bez zmian**: `EBICS_BUILD_VERSION` (nazwa makra), identyfikatory `ebics-*` w UI, `ebics_foc.c`, historia commitów, pliki licencji.
 
 ---
 
@@ -171,7 +171,7 @@ Powłoka aplikacji CANable, README CANable oraz decyzje D2/D3 pozostają w OPEN 
 ## 9. Dziennik wdrożenia (2026-07-23)
 
 **Firmware (`BAFANG_GD32F303RCT6`):**
-- `README.md` → nagłówek `# eVistDrive Firmware`, opis + nota o pochodzeniu EBiCS/TSDZ, licencja GPL i wszystkie ostrzeżenia zachowane.
+- `README.md` → nagłówek `# eVistDrive Firmware`, opis + nota o pochodzeniu EBiCS/ride core, licencja GPL i wszystkie ostrzeżenia zachowane.
 - `src/CAN_Display.c` → pole HMI `0x6001`: `"EBICS %s"` → `"eVD %s"` (+ komentarze). Pola `0x6000`/`0x6002` bez zmian. Makro `EBICS_BUILD_VERSION` bez zmian.
 - `documentation/CAN_PROTOCOL_REFERENCE.md` → opis pola `0x6001` zaktualizowany do `eVD`.
 

@@ -31,7 +31,7 @@
 - Start torque has no fixed current floor. It is proportional to measured load
   and is passed through the existing adaptive `Iq` ramp.
 - Position-sensor calibration has priority over both ride engines and bypasses
-  assist dynamics. A persisted TSDZ selection cannot suppress its second phase,
+  assist dynamics. A persisted ride core selection cannot suppress its second phase,
   and the completion command `Iq=0` cannot be replaced by a stale ramp value.
 
 ## Verification

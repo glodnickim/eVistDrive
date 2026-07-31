@@ -79,7 +79,7 @@ Branch: test/soc-temp
 Ta sekcja zachowuje wcześniejsze pomysły i nazwy, ale jej numery `Para1[x]`
 nie są zatwierdzonym przydziałem. Aktualne pola i zakresy są w schemacie YAML.
 
-### Aktualne stale kompilacyjne - rampa TSDZ2-like i start
+### Aktualne stale kompilacyjne - rampa referencyjny i start
 
 Te wartosci sa juz uzywane przez firmware, ale **nie sa jeszcze polami Para/CAN**. Zmienia sie je w
 `inc/config.h`, potem trzeba przebudowac firmware.

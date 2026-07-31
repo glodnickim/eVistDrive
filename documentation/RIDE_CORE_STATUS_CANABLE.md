@@ -60,7 +60,7 @@ korzystać wyłącznie z `rider_input_t`.
 | `assist_dynamics` | WDROŻONE | Adaptacyjne rampy `Iq`, profilowy Release, szybka ścieżka WA i natychmiastowe cięcia bezpieczeństwa |
 | `assist_modes` | WDROŻONE/SZKIELET | Power Linear i Progressive działają; eMTB jest następnym trybem |
 | `assist_start` | WDROŻONE | Startup Boost, niezależna obwiednia Smooth Start i Release działają |
-| `ride_control` | WDROŻONE | Wybiera Legacy/TSDZ, zachowuje priorytet Walk, stosuje limity i dynamikę, wysyła `motor_command_t` |
+| `ride_control` | WDROŻONE | Wybiera Legacy/ride core, zachowuje priorytet Walk, stosuje limity i dynamikę, wysyła `motor_command_t` |
 | `protocol/ebics_config_schema.yaml` | SZKIELET | Draft v0 opisuje pola, typy, skale, zakresy i operacje; numery `wire_id` celowo nieprzydzielone |
 | Audyt komend HMI/CAN | CZĘŚCIOWO | Firmware, lokalny log i źródła Canable master wstępnie sprawdzone; brakuje pełnych logów HMI/BESST |
 | Test sprzętowy | TEST ROWERU | Decyzją użytkownika przeniesiony na koniec całego wdrożenia |
@@ -71,7 +71,7 @@ Poniższe funkcje są aktywne w firmware, ale nie są jeszcze docelowymi moduła
 Ride Core:
 
 - dotychczasowe obliczanie wspomagania pedałowania,
-- naciskowy startup boost w stylu TSDZ2,
+- naciskowy startup boost naciskowy,
 - latch startu: nacisk + kolejne kroki PAS do przodu,
 - istniejący Walk Assist oparty na prędkości koła `Speedx100`,
 - throttle override,
@@ -85,7 +85,7 @@ Te funkcje pozostają do porównań. Nie należy dopisywać do nich nowych tryb�
 
 | Funkcja | Status | Warunek rozpoczęcia/ukończenia |
 |---|---|---|
-| Power Linear TSDZ2 | WDROŻONE/DEV | Build `0.0155`; stałoprzecinkowe Power → prąd → Iq, domyślnie nadal Legacy |
+| Power Linear | WDROŻONE/DEV | Build `0.0155`; stałoprzecinkowe Power → prąd → Iq, domyślnie nadal Legacy |
 | Lokalna `cadence_for_assist` | WDROŻONE/DEV | Kadencja syntetyczna istnieje tylko wewnątrz `assist_modes` i nie zmienia snapshotu ani Legacy |
 | Assist without pedal rotation | WDROŻONE/DEV | Per-level, domyślnie OFF; obecny próg natywny zostanie wystawiony użytkownikowi w kg |
 | Startup Boost jako ustawienie per-level | WDROŻONE/DEV | Osobny `assist_start`, tryby Cadence/Speed/Auto, krzywa przed obliczeniem Power |
@@ -93,7 +93,7 @@ Te funkcje pozostają do porównań. Nie należy dopisywać do nich nowych tryb�
 | Release niezależny od startu | WDROŻONE/DEV | Czas zejścia pełnej skali Iq po zaniku pedałowania; 0 ms zachowuje adaptacyjną rampę |
 | Asymetryczny filtr mocy | WDROŻONE/DEV | Osobny czas narastania/opadania podczas aktywnego PAS; 0 ms = bypass |
 | Power Progressive | WDROŻONE/DEV | Min/max wsparcia, moc odniesienia i mieszanie liniowe–kwadratowe 0–100% |
-| eMTB TSDZ / Custom Curve | NIE WDROŻONE | Po progresywnym Power |
+| eMTB / Custom Curve | NIE WDROŻONE | Po progresywnym Power |
 | Osobny właściciel Walk Assist | NIE WDROŻONE | `CONTROL_OWNER_WALK` + sterowanie według ERPS |
 | Stany WA open-loop/Hall/blend/speed hold | NIE WDROŻONE | Po stabilnym pomiarze ERPS |
 | Pięć pełnych profili poziomów | NIE WDROŻONE | Potrzebny nowy schemat protokołu |
@@ -116,7 +116,7 @@ Nowy moduł `assist_modes`:
 
 Referencyjne współczynniki pięciu poziomów to obecnie
 `100/200/320/420/520%`. Cztery skrajne wartości odpowiadają faktorom
-TSDZ2 `50/100/160/260`; SPORT+ jest punktem pośrednim. Są to wartości
+referencyjne `50/100/160/260`; SPORT+ jest punktem pośrednim. Są to wartości
 developerskie, jeszcze nie zapis profilu Canable.
 
 Obliczenia mocy zachowują teraz precyzję miliwatów aż do przeliczenia `P/U`.
@@ -129,10 +129,10 @@ wyłączona w każdym profilu domyślnym, ponieważ rower nie ma czujnika hamulc
 do testu developerskiego. Walk Assist zachowuje wyłączny priorytet i do czasu
 wydzielenia nowego modułu korzysta ze sprawdzonej ścieżki Legacy.
 
-### Startup Boost TSDZ — stan builda 0.0155
+### Startup Boost — stan builda 0.0155
 
 `assist_start` modyfikuje lokalny sygnał momentu przed obliczeniem mocy. Krzywa
-ma 120 wpisów i używa stałoprzecinkowej rekurencji z referencji TSDZ2:
+ma 120 wpisów i używa stałoprzecinkowej rekurencji z referencji:
 
 ```text
 factor[0] = startup_boost_strength_pct
@@ -271,7 +271,7 @@ Poniższe pola nie mają jeszcze przydzielonych ID protokołu.
 
 | Klucz | Etykieta UI | Typ / jednostka | Zalecany zakres | Status |
 |---|---|---|---|---|
-| `mode_type` | Tryb wspomagania | enum | Legacy, Power Linear, Power Progressive, eMTB TSDZ, eMTB Custom | FW Linear/Progressive; protokół + UI do podłączenia |
+| `mode_type` | Tryb wspomagania | enum | Legacy, Power Linear, Power Progressive, eMTB, eMTB Custom | FW Linear/Progressive; protokół + UI do podłączenia |
 | `support_ratio_pct` | Współczynnik wsparcia | % | 0–1000 | FW + protokół + UI |
 | `support_min_pct` | Minimalne wsparcie | % | 0–1000 | FW aktywne; protokół + UI do podłączenia |
 | `support_max_pct` | Maksymalne wsparcie | % | 0–1000 | FW aktywne; protokół + UI do podłączenia |
@@ -328,7 +328,7 @@ wymagał osobnego zestawu.
 
 Poniższe elementy są wewnętrzne albo deweloperskie:
 
-- `RIDE_ENGINE_LEGACY/TSDZ` jako normalny wybór użytkownika przed ukończeniem TSDZ,
+- `RIDE_ENGINE_LEGACY/ride core` jako normalny wybór użytkownika przed ukończeniem ride core,
 - `control_owner`, stany Halla i stany open-loop,
 - `IQ_RAMP_Q_SHIFT` i surowe wartości ticków 4 kHz,
 - parametry PI FOC, Clarke/Park, SVPWM,
@@ -338,7 +338,7 @@ Poniższe elementy są wewnętrzne albo deweloperskie:
 - surowe ADC/mV torque poza ukrytą diagnostyką developerską,
 - ręczne ustawianie punktu zerowego torque.
 
-Tryb wyboru Legacy/TSDZ może istnieć wyłącznie w ukrytym panelu developerskim.
+Tryb wyboru Legacy/ride core może istnieć wyłącznie w ukrytym panelu developerskim.
 
 ## 10. Protokół — decyzja przed pracą w Canable
 

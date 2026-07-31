@@ -1,7 +1,7 @@
 # Przegląd i plan: SOC baterii, zasięg, konfigurowalna krzywa OCV
 
 Krytyczny przegląd algorytmu SOC/zasięgu w EBICS + plan poprawek. Zasada: „bardziej
-rozbudowane ≠ poprawne". Powiązane: [[COMPARISON_SOC_range]] (porównanie z TSDZ2).
+rozbudowane ≠ poprawne". Powiązane: [[archive/COMPARISON_SOC_range]] (porównanie z rozwiązaniem referencyjnym).
 
 Pliki/funkcje: `soc_update()` @1 Hz (main.c:2166), `soc_init()` (2122), `calculate_SOC()`
 (2000), coulomb w `reg_ADC_processing()` (1481), stałe w `config.h:108-120`.

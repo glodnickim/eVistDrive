@@ -88,4 +88,4 @@ ignorowane. Zapis flash tylko na pełnym postoju (wspólny mechanizm).
 - 0x6025/0x6026 zweryfikowane jako wolne w audycie/logu/źródłach; pełne logi
   BESST wciąż niedostępne (znane ograniczenie).
 - eMTB/Torque skalowane teraz realnym span zamiast 2550 — zmiana w nieaktywnej
-  ścieżce TSDZ, i tak czeka strojenie jazdą.
+  ścieżce ride core, i tak czeka strojenie jazdą.

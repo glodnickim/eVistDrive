@@ -33,7 +33,7 @@ Ten plik jest nadrzędną listą całego zadania. Statusy:
   w `mV` ani w surowych krokach ADC.
 - [x] Skala użytkownika: brak nacisku = `0,00 kg`, pełna skala czujnika =
   `60,00 kg`.
-- [x] Górny punkt kalibracji można ustawić procedurą podobną do TSDZ.
+- [x] Górny punkt kalibracji można ustawić procedurą podobną do ride core.
 - [x] Dolny próg mapowania nacisku pozostaje regulowany, ale w `kg`.
 
 ## 2. Kontrakt czujnika nacisku
@@ -99,7 +99,7 @@ oryginalnym sposobem obliczeń, a użytkownik pracuje wyłącznie w kg.
   `4774de3`, build `0.0149`.
 - [x] Assist without pedal rotation jako ustawienie per poziom, domyślnie OFF —
   `4774de3`.
-- [x] Startup Boost TSDZ: Cadence / Speed / Auto, per poziom — `a88f2b9`,
+- [x] Startup Boost: Cadence / Speed / Auto, per poziom — `a88f2b9`,
   build `0.0150`.
 - [x] Niezależny Smooth Start per poziom — `9fd2d51`, build `0.0151`.
 - [x] Niezależny Release po zakończeniu pedałowania — `2be1ff9`,
@@ -131,7 +131,7 @@ oryginalnym sposobem obliczeń, a użytkownik pracuje wyłącznie w kg.
 
 - [~] Formalne przejście publicznych pól torque z mV na kg w schemacie i
   dokumentacji.
-- [~] eMTB TSDZ: rozpoczęte przygotowanie wspólnego wejścia trybów i pól profilu;
+- [~] eMTB: rozpoczęte przygotowanie wspólnego wejścia trybów i pól profilu;
   nie ma jeszcze kompletnego wzoru, wyboru w runtime ani zatwierdzonego builda.
 
 Rozpoczętego kodu eMTB nie oznaczać jako gotowy, dopóki nie przejdzie builda,
@@ -152,13 +152,13 @@ audytu wzoru i osobnego commita.
 
 ### 7.2. eMTB
 
-- [x] Dokończyć wierny tryb eMTB TSDZ na przygotowanym sygnale EBICS —
+- [x] Dokończyć wierny tryb eMTB na przygotowanym sygnale EBICS —
   `df7bc8c`, build `0.0160`; wzór zacytowany ze źródła emmebrusa
   (`apply_emtb_assist`, ebike_app.c:950): `delta²/(510−2·param[−kadencja
   przy based_on_power]+10)`, 1 jednostka = 0,16 A, normalizacja do napięcia
   odniesienia profilu.
 - [x] Zachować dynamiczny mianownik i opcjonalną zależność od kadencji/mocy
-  zgodnie z referencją TSDZ — `df7bc8c`.
+  zgodnie z referencją ride core — `df7bc8c`.
 - [ ] Dodać eMTB Custom z regulowaną krzywą.
 - [x] Nałożyć wspólne: Boost, filtry, limity, Smooth Start, Release i dynamikę
   — eMTB używa `prepare_assist_input` (boost) + wspólnego
@@ -172,7 +172,7 @@ audytu wzoru i osobnego commita.
 ### 7.2a. Banki profili (nowy wymóg właściciela, 2026-07-16 — FW-005)
 
 - [x] Struktura banków (2 × 6 poziomów, arch. rozszerzalna): bank 1 = Power
-  Linear, bank 2 = eMTB TSDZ (te same poziomy mocy) — `8e1d134`, build `0.0161`.
+  Linear, bank 2 = eMTB (te same poziomy mocy) — `8e1d134`, build `0.0161`.
 - [x] Gest przełączania (wariant A zaakceptowany): na BOOST szybkie
   wahnięcie BOOST↔SPORT+ dwa razy w ~2,5 s; wykrywany na zmianach kodu
   poziomu z ramki 0x6300 — `8e1d134`.
@@ -283,7 +283,7 @@ Pełne typy i zakresy pozostają w `protocol/ebics_config_schema.yaml`.
 - [ ] Kadencja niska 20–30 RPM oraz wysoka 80–120 RPM.
 - [ ] Brak przerw pomiędzy nogami i kontrolowany Release po zatrzymaniu.
 - [ ] Natychmiastowe odcięcie przy kręceniu do tyłu.
-- [ ] Power Linear, Progressive, eMTB TSDZ i eMTB Custom na każdym poziomie.
+- [ ] Power Linear, Progressive, eMTB i eMTB Custom na każdym poziomie.
 - [ ] Assist without rotation tylko po świadomym włączeniu.
 - [ ] Walk: płasko, pod górę, koło w powietrzu, stall i puszczenie przycisku.
 - [ ] Zapis ustawień, restart kontrolera, ponowny odczyt i Revert.

@@ -1,11 +1,11 @@
 # Karta zmiany FW-022 — kalibracja Halla i trwałe wartości domyślne
 
 - **Data:** 2026-07-23
-- **Status:** DIAGNOZA POTWIERDZONA CZĘŚCIOWO. Telemetria została wdrożona,
-  zbudowana i wgrana jako `0.0187`. Kalibracja naprawiła Walk Assist przed
-  flashowaniem, lecz dokładne wartości po kalibracji nie zostały wtedy
-  odczytane. Finalny zestaw wartości i poprawka trwałości czekają na następne
-  podłączenie roweru.
+- **Status:** ZAMKNIĘTE — POTWIERDZONE NA SPRZĘCIE (`0.0191`, 2026-07-23).
+  Skalibrowany zestaw kątów i `angle_correction` wpisano do `src/main.c` jako
+  domyślne. Odczyt `0x6017` po flashowaniu zwrócił dokładnie te wartości, a
+  **silnik ożył i wspomaga — potwierdzone w jeździe zarówno na Legacy, jak i na
+  ride core**. Walidacja rekordu EEPROM przeniesiona do [[FW-023]] i również wdrożona.
 - **Zakres:** firmware sterownika M820; Canable służy tylko do wywołania
   kalibracji i surowego odczytu.
 - **Powiązane:** `0.0186` (naprawa `Para1`), diagnostyka jazdy `0x6029`,
@@ -18,7 +18,7 @@
 Brak wspomagania miał dwie niezależne warstwy:
 
 1. W `0.0185` uszkodzony rekord `Para1` zawierał m.in. próg podnapięciowy
-   `0xFFFF`, więc wspólny limiter zerował TSDZ, Legacy i Walk Assist. Naprawiono
+   `0xFFFF`, więc wspólny limiter zerował ride core, Legacy i Walk Assist. Naprawiono
    to w `0.0186`.
 2. Po odblokowaniu limitera Walk Assist dochodził już do sterowania silnikiem,
    ale silnik tylko buczał i nie obracał koła. Kalibracja pozycji Halla
@@ -26,7 +26,7 @@ Brak wspomagania miał dwie niezależne warstwy:
    poprawnie obracać kołem.
 
 Walk Assist nie potrzebuje nacisku na pedał i nie korzysta z algorytmu jazdy
-TSDZ/Legacy. Jeżeli jego żądanie prądu dochodzi do FOC, a wirnik tylko buczy,
+ride core/Legacy. Jeżeli jego żądanie prądu dochodzi do FOC, a wirnik tylko buczy,
 przyczyny trzeba szukać w komutacji: kolejności Halla, kątach przejść albo
 `angle_correction`.
 
@@ -66,6 +66,37 @@ Odczyt `0x6017` zwrócił:
 Są to dokładnie stare wartości skompilowane w `src/main.c`, nie zapis nowego
 wyniku, którego oczekiwano po kalibracji. Po flashowaniu użytkownik zgłosił
 ponowny brak wspomagania.
+
+### Odczyt po udanej kalibracji (2026-07-23)
+
+Kalibracja zakończyła się poprawnie (stan końcowy `1`) i zwróciła:
+
+| Pole | Odczyt | Kąt |
+|---|---:|---:|
+| `hall_order` | `1` | — |
+| `Hall_32` | `-1598682050` | `-134°` |
+| `Hall_13` | `-882854150` | `-74°` |
+| `Hall_51` | `-143165320` | `-12°` |
+| `Hall_45` | `572662580` | `+48°` |
+| `Hall_64` | `1276560015` | `+107°` |
+| `Hall_26` | `1992387915` | `+167°` |
+| `angle_correction` | `71582790` | `+6°` |
+
+Zestaw jest wewnętrznie spójny: sześć przejść Halla leży w równych odstępach
+około `60°`, a `angle_correction` to dokładnie `6 × one_deg`, czyli wynik
+drugiej fazy `0x6200`. Względem starych stałych zmienił się też kierunek
+(`hall_order` z `-1` na `1`).
+
+Te wartości zostały wpisane do `src/main.c` jako domyślne (punkt 6).
+
+Pierwszym firmware, które je zawiera, jest **`0.0191`** — buildy `0.0189`
+i `0.0190` powstały wcześniej i mają jeszcze kąty obcego silnika.
+
+**Potwierdzone na sprzęcie (2026-07-23).** Po wgraniu `0.0191` odczyt `0x6017`
+zwrócił dokładnie te osiem wartości, a stan rekordu EEPROM wynosi `0` (rekord
+ważny, kąty przeszły kontrolę sensowności). Kalibracja przetrwała flashowanie
+bez powtarzania procedury `0x6200` — czyli cel karty został osiągnięty.
+Pozostaje test ruchowy Walk Assist ze zdjętym łańcuchem.
 
 ### Czego nie udało się potwierdzić
 
@@ -142,24 +173,55 @@ natomiast `MP.angle_correction` zaczyna od `0`.
 7. Sprawdzić Walk Assist ze zdjętym łańcuchem.
 8. Zapisać odczytane wartości jako domyślne w kodzie.
 9. Zbudować następną wersję, wgrać ją i ponownie odczytać `0x6017`.
-10. Sprawdzić kolejno Walk Assist, Legacy i TSDZ pod bezpiecznym obciążeniem.
+10. Sprawdzić kolejno Walk Assist, Legacy i ride core pod bezpiecznym obciążeniem.
 
 Jeżeli podczas próby silnik tylko buczy, nie zwiększać poziomu ani czasu
 zasilania. Przerwać test i wrócić do kalibracji.
 
 ---
 
-## 6. Plan finalnej poprawki
+## 6. Stan poprawki
 
-Po uzyskaniu dokładnego odczytu:
+### Zrobione
 
-- zastąpić stare stałe Halla wartościami skalibrowanymi dla tego silnika,
-- ustawić skalibrowaną wartość domyślną `angle_correction`,
-- zachować możliwość ponownego wykonania `0x6200`,
-- dodać wiarygodną walidację rekordu Halla (magic, wersja i CRC),
-- rozróżnić wartości domyślne od poprawnego rekordu zapisanego przez
+- `src/main.c` — stare stałe Halla zastąpione zestawem skalibrowanym dla tego
+  silnika, `i32_hall_order` zmieniony z `-1` na `1`. Stary zestaw pozostał
+  w komentarzu nad deklaracjami.
+- `src/main.c` — domyślne `MP.angle_correction` zmienione z `0` na `71582790`
+  (`+6°`).
+- Kalibracja `0x6200` działa bez zmian i nadal może nadpisać te wartości.
+
+Zakres celowo ograniczony do wartości domyślnych: nie ruszono FOC, strojenia
+ride core/Legacy ani kalibracji czujnika nacisku.
+
+### Do zrobienia
+
+Przeniesione do osobnej karty **FW-023 — integralność rekordu wirtualnego
+EEPROM** (`FW-023_EEPROM_RECORD_INTEGRITY.md`, do akceptacji):
+
+- wiarygodna walidacja rekordu (magic, wersja, długość i CRC zapisywane na
+  końcu),
+- rozróżnienie wartości domyślnych od poprawnego rekordu zapisanego przez
   kalibrację,
+- kontrola sensowności kątów Halla przy odczycie,
+- brak zapisu strony, gdy nic się nie zmieniło.
+
+Pozostaje w tej karcie:
+
 - sprawdzić, czy bootloader kasuje stronę `0x0803F000` podczas aktualizacji.
+  Odczyt `0x6017` po wgraniu `0.0187` zwrócił dokładnie skompilowane defaulty,
+  co wskazuje, że **strona jest kasowana przy flashowaniu** — a więc każda
+  aktualizacja gubi kalibrację. To jest właśnie powód, dla którego wpisano
+  wartości domyślne do kodu.
+
+### Ważne ograniczenie
+
+Wartości domyślne działają wyłącznie wtedy, gdy strona wirtualnego EEPROM jest
+pusta. Jeżeli po flashu strona przetrwa ze starą, złą zawartością,
+`read_virtual_eeprom()` i tak nadpisze kąty oraz całe `MP` (razem
+z `angle_correction`) danymi z flasha, a domyślne wartości nie zadziałają.
+Dlatego walidacja z magic/CRC pozostaje potrzebna — ten wpis rozwiązuje tylko
+przypadek skasowanej strony.
 
 Wpisanie wartości domyślnych rozwiąże problem po flashowaniu nawet wtedy, gdy
 bootloader nie zachowuje strony EEPROM. Magic/CRC zapobiegną natomiast
@@ -191,5 +253,5 @@ zaakceptowaniu zapisu pustego lub częściowo uszkodzonego.
 - `protocol/HMI_COMMAND_AUDIT.md`,
 - `protocol/ebics_config_schema.yaml`.
 
-**Poza zakresem tej wersji:** zmiana FOC, nowe strojenie TSDZ/Legacy, zmiana
+**Poza zakresem tej wersji:** zmiana FOC, nowe strojenie ride core/Legacy, zmiana
 kalibracji czujnika nacisku i automatyczne uruchamianie kalibracji Halla.

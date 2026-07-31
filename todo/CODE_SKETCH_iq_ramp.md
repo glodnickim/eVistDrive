@@ -3,8 +3,8 @@
 > **ARCHIWALNY** (2026-07-16): szkic zrealizowany w module assist_dynamics (build 0.0148). Zobacz documentation/RIDE_CORE_REFACTOR.md.
 
 Cel: zastąpić skokowe zmiany `MS.i_q_setpoint` w trakcie jazdy (Błąd #5 z
-`PLAN_POWER_PATH_smooth_ride.md`) rampą stosowaną PRZY KAŻDEJ zmianie (góra i dół),
-z krokiem adaptacyjnym od prędkości i kadencji (wzorzec TSDZ2 `set_motor_ramp`).
+`archive/PLAN_POWER_PATH_smooth_ride.md`) rampą stosowaną PRZY KAŻDEJ zmianie (góra i dół),
+z krokiem adaptacyjnym od prędkości i kadencji (wzorzec `set_motor_ramp`).
 
 To jest szkic referencyjny dla Opusa — nazwy/skale do dostrojenia na rowerze.
 Kontekst kodu: `reg_ADC_processing()` @4 kHz, `map()` przycina do zakresu (`main.c:1864`).
@@ -21,7 +21,7 @@ Kontekst kodu: `reg_ADC_processing()` @4 kHz, `map()` przycina do zakresu (`main
 #define IQ_RAMP_DOWN_SLOW   2   // niskie prędkości: miękkie schodzenie mocy
 #define IQ_RAMP_DOWN_FAST   8   // przy prędkości: szybkie, ale gładkie odcięcie
 
-// Punkty mapy adaptacji (jak w TSDZ2: 4-20 kph, 20-70 rpm)
+// Punkty mapy adaptacji (4-20 kph, 20-70 rpm)
 #define IQ_RAMP_SPEED_LO    400   // MS.Speedx100 = 4.00 km/h
 #define IQ_RAMP_SPEED_HI   2000   // 20.00 km/h
 #define IQ_RAMP_CAD_LO       20   // rpm

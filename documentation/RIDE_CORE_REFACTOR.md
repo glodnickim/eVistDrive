@@ -60,7 +60,7 @@ To pole pozostaje częścią Legacy do czasu wydzielenia `legacy_assist` oraz
 6. Zbudować firmware i porównać rozmiar oraz ostrzeżenia z buildem bazowym.
 
 Każdy z powyższych kroków kończy się osobnym buildem. Test na rowerze jest
-wymagany przed rozpoczęciem portu Power TSDZ2.
+wymagany przed rozpoczęciem prac nad Power.
 
 ## Rider Input
 
@@ -91,7 +91,7 @@ Progi i kolejność obliczeń nie zostały zmienione.
 ## Ride Control
 
 `ride_control_update_request()` jest teraz jedynym wyborem silnika jazdy.
-`RIDE_ENGINE_LEGACY` pozostaje domyślny, a `RIDE_ENGINE_TSDZ` uruchamia nową
+`RIDE_ENGINE_LEGACY` pozostaje domyślny, a `RIDE_ENGINE_ride core` uruchamia nową
 ścieżkę Power Linear. Walk zachowuje priorytet i do czasu wydzielenia własnego
 modułu używa dotychczasowej ścieżki Legacy.
 
@@ -114,7 +114,7 @@ aktualną prędkością, kadencją, limitami i stanem cięcia bezpieczeństwa.
 Build `0.0155` rozwija `assist_modes` z trybami Power Linear i Progressive.
 Power Linear
 używa istniejącego przeliczenia mocy człowieka EBICS, współczynnika wsparcia
-poziomu oraz wzorca TSDZ2 `requested current = motor power / battery voltage`.
+poziomu oraz wzorca `requested current = motor power / battery voltage`.
 Żądany prąd jest zamieniany na natywne jednostki `Iq` przez `CAL_I` i
 ograniczany przed przekazaniem do wspólnej dynamiki.
 
@@ -125,11 +125,11 @@ sygnał momentu ponad próg tworzy wyłącznie lokalne `cadence_for_assist=1`;
 globalne `MS.cadence`, snapshot wejść i zachowanie Legacy nie są modyfikowane.
 Wszystkie poziomy domyślne mają tę opcję wyłączoną.
 
-## Startup Boost TSDZ
+## Startup Boost
 
 `assist_start` portuje boost jako transformację momentu wykonywaną przed
 obliczeniem Power. Krzywa 120 wartości jest budowana rekurencją
-`next = (previous * (256 - 20)) >> 8`, tak jak w referencji TSDZ2. Dostępne są
+`next = (previous * (256 - 20)) >> 8`, zgodnie z referencją. Dostępne są
 tryby Cadence, Speed i Auto, siła jest ograniczona do 300%, a lokalny moment
 do zakresu czujnika 2550 mV ponad zero.
 
@@ -153,7 +153,7 @@ obwiednię i zwracają zero natychmiast.
 ## Release
 
 Wspólna funkcja `assist_dynamics_apply()` obsługuje zarówno niezmienione rampy
-Legacy, jak i opcjonalny Release profilu TSDZ. Po zaniku pedałowania target
+Legacy, jak i opcjonalny Release profilu ride core. Po zaniku pedałowania target
 wynosi zero; `release_ms` określa czas zejścia pełnej skali `Iq` do zera.
 Nie ma fazy podtrzymywania poprzedniego prądu.
 
@@ -186,7 +186,7 @@ Zakresy są ograniczone zgodnie ze schematem: wsparcie 0–1000%, odniesienie
 Domyślny `mode_type` nie zmienia się, a min/max każdego poziomu są początkowo
 równe jego liniowemu współczynnikowi, co daje neutralne przełączenie trybu.
 
-Tryb jest dostępny przez `RIDE_ENGINE_TSDZ`, ale
+Tryb jest dostępny przez `RIDE_ENGINE_ride core`, ale
 `RIDE_ENGINE_DEFAULT=0` pozostawia Legacy jako bezpieczny domyślny silnik.
 Power nie steruje FOC, PWM ani rampami bezpośrednio.
 

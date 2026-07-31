@@ -134,7 +134,7 @@ Ta karta korzysta już z właściwych bloków EBICS:
 Do przeniesienia z obecnej karty:
 
 - dwa banki i pięć poziomów,
-- wybór Power Linear / Power Progressive / eMTB TSDZ / Torque TSDZ,
+- wybór Power Linear / Power Progressive / eMTB / Torque,
 - Support, parametry Progressive, eMTB i Torque,
 - limity mocy oraz `Iq`,
 - Assist without rotation,
@@ -215,8 +215,8 @@ Pola zależne od trybu:
 |---|---|
 | Power Linear | Support (%) |
 | Power Progressive | Support min/max, moc odniesienia, progresja |
-| Torque TSDZ | Torque gain, z opisem `120 = 1,0×` |
-| eMTB TSDZ | parametr eMTB, zależność od mocy/kadencji |
+| Torque | Torque gain, z opisem `120 = 1,0×` |
+| eMTB | parametr eMTB, zależność od mocy/kadencji |
 | eMTB Custom | własne punkty krzywej, gdy firmware je udostępni |
 
 Nieaktywne pola mają być ukryte, a nie tylko wyszarzone w wielkiej tabeli.
