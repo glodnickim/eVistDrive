@@ -4,6 +4,17 @@
 
 ### Nowe funkcje
 
+> **FW-074 / build diagnostyczny `0.0269_M820_BL820.bin`: 94 096 B, SHA-256**
+> `D4604C53F4B02C756C41B6E73C1ECA6B7FC26CB22189C0BA3D95642BBE4D8EA9`,
+> CAN diagnostics ON.
+
+**FW-074 — Walk Assist bez cyklu zatrzymania i ponownego rozruchu**
+- Test sprzętowy diagnostycznego `0.0268` potwierdził, że WA nadal okresowo zatrzymuje i ponownie uruchamia silnik. Przyczyna była jednoznaczna w kodzie: governor z FW-067 przy `target + 20 rpm` ustawiał `force_coast`, zerował żądanie PI i sprowadzał `Iq` do zera, a przy `target + 5 rpm` albo po zaniku Halla uruchamiał RUN/`REACQUIRE`. Był to dokładnie osobny automat start/stop, chociaż właściwy regulator miał już płynną rampę prądu.
+- Usunięto cały normalny tor `overspeed_coast`: progi `target+20/+5 rpm`, licznik oczekiwania bez Halla, `force_coast`, `coast_requested` i stan pamiętający oczekiwany coast. Podczas ciągłego żądania WA nie istnieje już próg RPM, który wymusza `Iq=0`.
+- Po jednorazowym START regulator pozostaje stale w RUN `5..36 Iq`. Powyżej celu PI odwija całkę, a wyjście schodzi z istniejącą rampą `31,25 Iq/s` wyłącznie do `5 Iq`; poniżej celu narasta `15,625 Iq/s`. Dzięki niezerowej podłodze wirnik nie jest celowo puszczany na wybieg i nie wpada w cykl Hall/`REACQUIRE`.
+- Zabezpieczenia pozostają bez zmian: puszczenie WA, hamulec, fault i bankowy limit prędkości koła nadal odcinają napęd, a nieoczekiwany zanik Halla lub zakleszczenie nadal korzystają z ograniczonego `REACQUIRE`, `LIMIT` i zatrzasku `STALL`. To ścieżki awaryjne, nie element normalnej regulacji prędkości.
+- Test regresji wymaga braku symboli governora, ciągłego niezerowego `Iq` nawet daleko ponad celem, zachowania obu ramp i braku ponownego START przy lekkim napędzie. Pełny zestaw testów firmware **5/5 PASS**.
+
 > **Buildy FW-068…FW-073 + CB-019.** Normalny `0.0267_M820_BL820.bin`: 90 048 B, SHA-256
 > `660B77B8A768D441CCBBBFAA815ACC1AE45E6CBE4D11EC65F212B07C0AE7D470`, CAN diagnostics OFF.
 > Diagnostyczny `0.0268_M820_BL820.bin`: 94 576 B, SHA-256
@@ -35,6 +46,19 @@
 > uszkodzenie — nigdy nie dochodzi do odczytania śmieci, firmware kładzie świeży rekord
 > z wartości domyślnych. Kąty Halla wracają do wkompilowanych `HALL_DEF_*`; jeśli silnik
 > brzęczy zamiast płynnie ruszać, należy powtórzyć kalibrację pozycji (0x6200).
+
+**CB-020 — presety jazdy: zapis do pliku i wczytanie cudzych ustawień**
+- **Tylko Canable. Firmware, protokół i format banków bez zmian.**
+- Zakładka Data Backup zrzuca wszystkie zdarzenia CAN z całego roweru — wyświetlacz, baterię, czujnik, numery seryjne — wymaga wcześniejszej synchronizacji każdej zakładki i przywraca wszystko naraz. To kopia zapasowa jednego egzemplarza, nie ustawienia, które da się komuś wysłać.
+- Preset to **mały, czytelny plik JSON z samym strojeniem jazdy**: oba banki po 5 poziomów (tryb i jego parametry, limity, warunek startu, boost, rampy, wygaszanie, filtry), ustawienia bankowe (kompensacja kadencji, Walk Assist) oraz blok globalny. Plus metadane: nazwa, notatka, data, wersja firmware i formatu banków.
+- **Nie zawiera niczego, co należy do jednego roweru:** kalibracji span czujnika nacisku, napięcia 100% pakietu, pojemności baterii, obwodu koła, numerów seryjnych ani `active_bank`. To nie jest czarna lista do pilnowania — eksport bierze dokładnie dwa obiekty stanu (banki i blok globalny), a te rzeczy w nich nie występują. Test szuka w wygenerowanym pliku śladów `span_native`, `soc_full_pack_10mv`, `wheel`, `serial` i kończy się niepowodzeniem, gdyby któryś się pojawił.
+- **Import nie pisze do sterownika.** Wypełnia edytor; zapis dopiero po „Write (RAM)" i „Save to Flash". Panel wyboru pozwala wczytać pojedyncze poziomy z każdego banku i osobno blok globalny, z licznikiem — wzorowany na „Copy to…" z FW-071.
+- Trzy zabezpieczenia importu: poziom w trybie, którego firmware nie umie zapisać, jest wyszarzony z wyjaśnieniem (inaczej sterownik odrzuciłby **cały bank**); wartości spoza zakresu są przycinane do granic edytora z raportem przed/po; import bez wcześniejszego odczytu roweru jest blokowany, żeby preset nie nałożył się na wartości zastępcze. Zakresy pochodzą z tych samych deskryptorów pól, z których renderuje się edytor — nie ma drugiego zestawu, który mógłby się rozjechać.
+
+**CB-021 — numer wersji aplikacji Canable**
+- **Tylko Canable.** Firmware ma licznik buildów od dawna; aplikacja nie miała nic — `package.json` stał na `1.0.0`, `.exe` zawsze nazywał się tak samo, a interfejs nie pokazywał numeru.
+- To nie był problem teoretyczny: świeży firmware został uruchomiony ze **starym `.exe` sprzed kilku godzin** i wyglądało to identycznie jak para dopasowana, tyle że nowych pól nie było widać. Bez numeru szuka się przyczyny w firmware.
+- `scripts/bump-version.js` podbija patch i zapisuje `ui/version.json`. Podpięty jako `prebuild`/`prebuild:win`, więc npm uruchamia go **automatycznie** — nie da się zbudować binarki bez nadania jej numeru. Numer widoczny przy tytule w nagłówku, z datą spakowania w dymku. Uruchomienie ze źródeł pokazuje `dev`, a nie pustkę.
 
 **CB-019 — czytelne dymki parametrów (wartość fabryczna, zakres, kierunek zmiany)**
 - **Tylko Canable. Firmware, protokół i format banków bez zmian.**
