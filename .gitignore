@@ -78,3 +78,13 @@ inc/build_version.h
 /documentation/local-notes/TEMP_SENSOR_TODO_PL.md
 /documentation/local-notes/WALK_ASSIST_BUTTON_PL.md
 documentation/CHANGELOG_PL.md
+
+# Old EBiCS UI screenshots — different interface than this fork's CANable tool, kept
+# locally for reference only.
+/documentation/AssistFullTab.JPG
+/documentation/BatteryParameters.JPG
+/documentation/DrivingParameters.JPG
+/documentation/ElectricParameters.JPG
+/documentation/MechanicalParameters.JPG
+/documentation/SpeedSettings.JPG
+/documentation/ThrottleParameters.JPG
