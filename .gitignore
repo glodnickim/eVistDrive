@@ -12,3 +12,6 @@ inc/build_version.h
 /.build/
 /.backup/
 /logs/
+
+# Internal working notes/plans, not part of the published project
+/todo/
