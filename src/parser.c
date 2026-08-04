@@ -161,15 +161,22 @@ void parse_DPparams(MotorParams_t* MP){
 	MP->battery_current_max=Para1[1]*1000;
 	MP->max_voltage = Para1[2];
 	MP->phase_current_max=Para1[9]*1000/CAL_I; //uses field Max Current on Low Charge
-	MP->gear_ratio=Para1[19];
+	// gear_ratio is intentionally NOT taken from Para1[19] here: it must match the
+	// physical motor (pole pairs x gearbox ratio) and every speed/cadence/Walk Assist
+	// RPM calculation depends on it. A wrong value sent over CAN (accidentally or by a
+	// tool that does not know this motor) would silently break all of those. Stays a
+	// firmware-side constant (GEAR_RATIO in config.h) for now; a future motor with a
+	// different ratio can still get its own build.
 	MP->MagicNumber=Para1[24]+(Para1[25]<<8);
 	MP->throttle_offset=(Para1[34]<<12)/33; //map 3.3V to 12 bit ADC resolution
 	MP->throttle_max=(Para1[35]<<12)/33; //map 3.3V to 12 bit ADC resolution
 	MP->voltage_min=(Para1[3]+(Para1[4]<<8))/CAL_BAT_V;
 	MP->Cadence_exponent=Para1[12];
 	MP->legalflag=Para1[14];
-	if (!Para1[18])MP->reverse=-1;
-	else MP->reverse=1;
+	// reverse (motor direction) is intentionally NOT taken from Para1[18] here, for the
+	// same reason as gear_ratio above: a wrong value over CAN makes the motor fight
+	// itself or spin the wrong way. Stays a firmware-side constant (REVERSE in
+	// config.h) — change it there and rebuild if a specific motor's wiring needs it.
 	MP->pulses_per_revolution=Para1[20];
 	MP->decay_base=Para1[21];
 	MP->Override_Duration=Para1[37]*40;
