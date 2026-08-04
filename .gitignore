@@ -15,3 +15,66 @@ inc/build_version.h
 
 # Internal working notes/plans, not part of the published project
 /todo/
+
+# Polish-language internal documentation and notes — kept locally, not published.
+# (English documentation stays tracked. CHANGELOG.md was replaced with a fresh English
+# summary; the original Polish detail lives in documentation/CHANGELOG_PL.md below.)
+/archive/COMPARISON_SOC_range.md
+/archive/PLAN_POWER_PATH_smooth_ride.md
+/archive/PLAN_walk_assist_speed_hold.md
+/archive/README.md
+/documentation/BUILD_FIRMWARE.md
+/documentation/CANABLE_EBICS_UI_AUDIT_PL.md
+/documentation/CAN_PROTOCOL_REFERENCE.md
+/documentation/CB-019_HELP_BUBBLES.md
+/documentation/CB-020_RIDE_PRESETS.md
+/documentation/CB-021_APP_BUILD_VERSION.md
+/documentation/EBICS_ZMIANY_I_KONFIGURACJA_PL.md
+/documentation/FW-018_CB-007_SOC_FULL_VOLTAGE.md
+/documentation/FW-022_HALL_CALIBRATION_PERSISTENCE.md
+/documentation/FW-023_EEPROM_RECORD_INTEGRITY.md
+/documentation/FW-024_PAS_DIRECTION_LATCH.md
+/documentation/FW-025_PAS_STOP_CUT.md
+/documentation/FW-027_RIDE_CORE_RUNAWAY_DIAG.md
+/documentation/FW-028_PI_WINDUP_FIX.md
+/documentation/FW-030_SINGLE_RIDE_ENGINE.md
+/documentation/FW-031_RIDE_LATCH_FLOOR.md
+/documentation/FW-032_LATCH_CANABLE_TUNING.md
+/documentation/FW-039_SINGLE_ENGINE_STATUS.md
+/documentation/FW-043_WA_RPM_UNLOCK_BANK_CUTOFF.md
+/documentation/FW-047_FADE_TAIL.md
+/documentation/FW-048_COAST_RELEASE.md
+/documentation/FW-049_STALE_LIMITS.md
+/documentation/FW-051_054_WA_BANK_CONFIG.md
+/documentation/FW-051_WA_SETTINGS_PER_BANK_PLAN.md
+/documentation/FW-055_REMOVE_BANKS_TAB.md
+/documentation/FW-056_POWER_CURVE_MODE.md
+/documentation/FW-057_CADENCE_COMPENSATION.md
+/documentation/FW-058_COAST_REZERO_RATE.md
+/documentation/FW-059_COAST_SAMPLE_QUALITY.md
+/documentation/FW-060_WA_CONSTANT_RPM_CONTROLLER.md
+/documentation/FW-061_COAST_CLASSIFY_AND_DIAG.md
+/documentation/FW-068_START_CONDITION_CONFIGURABLE.md
+/documentation/FW-069_RAMPS_PER_LEVEL.md
+/documentation/FW-070_DYNAMICS_TAB_MERGED.md
+/documentation/FW-071_SECTION_COPY.md
+/documentation/FW-072_SINGLE_RELEASE_RAMP.md
+/documentation/FW-074_ASSIST_CARRY_OVER_PLAN.md
+/documentation/MANUAL_KRZYWA_NACISKU.md
+/documentation/PARAMETERS.md
+/documentation/PLAN_FLASH_CONFIG_STORAGE_EXPANSION_PL.md
+/documentation/PROJECT_CLEANUP_BASELINE_INVENTORY_PL.md
+/documentation/PROJECT_CLEANUP_MASTER_PLAN_PL.md
+/documentation/README.md
+/documentation/RIDE_CORE_MASTER_CHECKLIST_PL.md
+/documentation/RIDE_CORE_REFACTOR.md
+/documentation/RIDE_CORE_STATUS_CANABLE.md
+/documentation/SPEED_SENSOR_AND_AUTO_OFF.md
+/documentation/TORQUE_PATH_AUDIT.md
+/documentation/TORQUE_PATH_REPORT.md
+/documentation/VISTDRIVE_REBRAND_PLAN_PL.md
+/documentation/WALK_ASSIST_DZIALANIE.md
+/protocol/HMI_COMMAND_AUDIT.md
+/documentation/local-notes/TEMP_SENSOR_TODO_PL.md
+/documentation/local-notes/WALK_ASSIST_BUTTON_PL.md
+documentation/CHANGELOG_PL.md

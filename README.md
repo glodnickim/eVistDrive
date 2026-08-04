@@ -9,6 +9,8 @@ eVistDrive combines the proven motor control architecture of **[EBiCS](https://g
 This project is under construction. All you are doing with this project is on your own risk. The authors do not accept any liability for damage to property or personal injury!  
 It is strongly recommented to use a fuse between controller and battery. 
 Basic functions are implemented, a very first release is published. 
+**New here? See [QUICKSTART.md](QUICKSTART.md) for flashing and the minimum setup before riding.**
+
 **Configuration requires the matching CANable tool from this project's own fork: [glodnickim/bafang_canable_pro](https://github.com/glodnickim/bafang_canable_pro).** This is not an optional alternative — this firmware's CAN protocol has been extended (additional fields, newer bank blob versions) beyond the original EBiCS protocol, so an unmodified/other CANable build will not understand every parameter this firmware exposes.
 
 The canable tool can be used to setup most relevant parameters, but some fields have a different meaning than in the original Bafang firmware and some fields have no function at all yet.  

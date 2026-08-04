@@ -3163,7 +3163,7 @@ uint16_t legacy_assist_calculate_monolith(void){
 						//throttle override
 					if(mapped_throttle>MS.i_q_setpoint_temp)MS.i_q_setpoint_temp=mapped_throttle;
 
-					//apply Extended Boost (holds power after pedal stops -> "przeciąganie". Gated by EXTENDED_BOOST_ENABLE; default OFF for smooth power-down)
+					//apply Extended Boost (holds power after pedal stops -> "power drag-on". Gated by EXTENDED_BOOST_ENABLE; default OFF for smooth power-down)
 					if(EXTENDED_BOOST_ENABLE && Overrun_counter<(MP.Override_Duration*MS.ext_boost_duration)/100&&Backwards_counter<4){
 						MS.i_q_setpoint_temp=(Overrun_strength*MS.ext_boost_strength)/100;
 						if(MS.i_q_setpoint_temp>MP.phase_current_max)MS.i_q_setpoint_temp = MP.phase_current_max;
