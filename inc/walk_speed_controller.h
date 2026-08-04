@@ -25,11 +25,10 @@ typedef struct {
 	uint16_t target_erps;
 	uint16_t measured_erps;
 	bool hall_valid;
-	bool reacquire;                 /* gentle restart after an intentional zero-Iq coast */
-	bool force_coast;               /* hard RPM governor requests a controlled zero-Iq coast */
+	bool reacquire;                 /* bounded recovery after Hall loss */
 	int32_t iq_ceiling;
+	int32_t run_iq_min;             /* normal RUN keepalive; 0 disables */
 	int32_t run_iq_max;             /* soft RUN ceiling; unlike safety ceiling it uses the fall slew */
-	int32_t iq_floor;               /* normal REGULATE hold; caller keeps safety paths at 0 */
 	int32_t downstream_iq;
 } walk_speed_controller_input_t;
 
@@ -42,7 +41,6 @@ typedef struct {
 	int16_t startup_iq;
 	bool startup_active;
 	bool above_target;
-	bool coast_requested;
 	bool saturated;
 } walk_speed_controller_output_t;
 

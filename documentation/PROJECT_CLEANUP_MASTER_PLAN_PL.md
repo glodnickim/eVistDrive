@@ -63,7 +63,7 @@ Projekt jest gotowy do publicznej publikacji dopiero wtedy, gdy:
 | [PLAN_FLASH_CONFIG_STORAGE_EXPANSION_PL.md](PLAN_FLASH_CONFIG_STORAGE_EXPANSION_PL.md) | Szczegółowy podplan linkera, Config A/B, migracji, pojemności blobów i bezpiecznego multiframe CAN |
 | `RIDE_CORE_MASTER_CHECKLIST_PL.md` | Zachowanie i rozwój silnika wspomagania Ride Core |
 | `RIDE_CORE_REFACTOR.md` | Zapis dotychczasowych decyzji architektonicznych Ride Core |
-| `protocol/ebics_config_schema.yaml` | Schemat przyszłych parametrów i ich jednostek |
+| `protocol/evistdrive_config_schema.yaml` | Schemat przyszłych parametrów i ich jednostek |
 | `CHANGELOG.md` | Historia zmian funkcjonalnych, nie bieżący plan porządkowania |
 
 Jeżeli dokumenty są sprzeczne w sprawie kolejności porządków i publikacji,

@@ -1,5 +1,10 @@
 # FW-049 — limity przeliczane na biezaco (limit predkosci / pradu / limp nie dzialaly do zmiany poziomu)
 
+> **Aktualizacja FW-075:** ten dokument zachowuje historyczny stan FW-049.
+> Aktualne źródła mają `LEGALFLAG=1`, więc po inicjalizacji ustawień fabrycznych
+> limit legalny 25 km/h jest domyślnie włączony. Istniejąca poprawna wartość
+> zapisana w EEPROM nadal ma pierwszeństwo przed wartością kompilacyjną.
+
 - **Data:** 2026-07-28
 - **Status:** WDROZONE W DRZEWIE — **NIE ZBUDOWANE** (czeka na polecenie).
 - **Zakres:** `src/main.c`, jedno miejsce w petli glownej. Bez zmian w logice limitow,

@@ -5,7 +5,32 @@
 > Obsługiwany publiczny target to M820 / GD32F303RCT6 / BL820. Skrypty znajdujące
 > się lokalnie w katalogu głównym nie są częścią odtwarzalnego procesu.
 
-Aktualizacja: 2026-07-31.
+Aktualizacja: 2026-08-03.
+
+## 0. Lokalny katalog używany do wgrywania na tym stanowisku
+
+Na stanowisku użytkownika aktualizator pobiera kolejne pliki z dotychczasowego
+katalogu głównego:
+
+```text
+C:\Projekty\EBICS\BAFANG_GD32F303RCT6\.build\<wersja>_M820_BL820.bin
+```
+
+Artefakt przekazywany do testu sprzętowego należy więc zbudować lokalnym
+`build_firmware.ps1`, tak jak wcześniejsze `0.0267`, `0.0268`, `0.0271` i
+`0.0272`:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `
+  "& '.\build_firmware.ps1' -ArtifactName '<wersja>' -BootloaderMode ''"
+```
+
+Lokalny skrypt pobiera następny numer z `.build/version.txt`; przed buildem
+trzeba sprawdzić, czy licznik zawiera numer poprzedniego firmware. Skrypt
+`scripts/build-firmware.ps1` pozostaje odtwarzalnym buildem kontrolnym i zapisuje
+wyniki w katalogach profilowych, ale tej ścieżki nie należy podawać użytkownikowi
+jako miejsca wyboru pliku do wgrania. Dla kandydata sprzętowego oba obrazy należy
+porównać przez SHA-256.
 
 ## 1. Wymagania
 

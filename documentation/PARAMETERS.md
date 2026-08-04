@@ -39,7 +39,7 @@ Branch: test/soc-temp
 | [10] | `limp_soc_limit` | 1 %SOC/bit, 0xFF=wyłączone | 0–100, 0xFF | 0xFF | SOC próg limp mode (redukcja mocy przy niskim SoC) |
 | [11] | `limp_soc_limit_stage2` | 1 %SOC/bit, 0xFF=wyłączone | 0–100, 0xFF | 0xFF | SOC próg limp mode stage 2 (min moc) |
 | [12] | `Cadence_exponent` | bezwymiarowy | 0–20 | 10 | Wykładnik kadencji w formule mocy: power ∝ cadence^(1/(1+exp)). 0 = liniowy, 10 = pierwiastkowy, 20 = słabo zależny od kadencji |
-| [14] | `legalflag` | 0/1 | 0–1 | 0 | 1 = limit prędkości aktywny (EU 25 km/h); 0 = offroad |
+| [14] | `legalflag` | 0/1 | 0–1 | 1 | 1 = limit prędkości aktywny (EU 25 km/h); 0 = offroad |
 | [18] | `reverse` | 0=-1, 1=+1 | 0–1 | 0 | Kierunek silnika; odwrócić jeśli jedzie wspak |
 | [19] | `gear_ratio` | bezwymiarowy | 1–200 | 80 | Przełożenie silnik/koło; używane do obliczania prędkości |
 | [20] | `pulses_per_revolution` | impulsy/obrót koła | 1–8 | 1 | Liczba impulsów czujnika prędkości koła na obrót |
@@ -210,5 +210,5 @@ Co sekundę w `soc_update()`: jeśli `|I_bat| < I_REST_MA (500 mA)` przez ≥ `R
 - Bajt nieodczytywany przez aktualny parser nie jest automatycznie wolny dla HMI.
 - Nowe profile Ride Core wymagają osobnego, wersjonowanego bloku; nie mieszczą
   się bezpiecznie w `Para1`.
-- Aktualne źródła prawdy: `protocol/ebics_config_schema.yaml` oraz
+- Aktualne źródła prawdy: `protocol/evistdrive_config_schema.yaml` oraz
   `protocol/HMI_COMMAND_AUDIT.md`.

@@ -260,7 +260,7 @@ buforem ani zastosować częściowej konfiguracji.
 - [ ] **FS-604** Zachować odczyt starszych wersji tuningu.
 - [ ] **FS-605** Nową wersję wysyłać wyłącznie do Canable, które rozpoznało
       możliwości firmware.
-- [ ] **FS-606** Zaktualizować `ebics_config_schema.yaml`.
+- [ ] **FS-606** Zaktualizować `evistdrive_config_schema.yaml`.
 - [ ] **FS-607** Zaktualizować parser i testy Canable.
 - [ ] **FS-608** Dodać test zgodności firmware ↔ Canable bez cichego pomijania,
       gdy wymagany artefakt integracyjny jest nieobecny.

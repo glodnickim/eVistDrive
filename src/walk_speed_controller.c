@@ -3,24 +3,20 @@
 #define WA_SPEED_IQ_Q_SHIFT             8
 #define WA_SPEED_CONTROL_DIV           20  /* 200 Hz PI inside the 4 kHz caller */
 
-#define WA_SPEED_DEADBAND_ERPS           7  /* about 5.25 chainring rpm */
+#define WA_SPEED_DEADBAND_ERPS           2  /* about 1.5 chainring rpm */
 #define WA_SPEED_ERROR_CLAMP_ERPS       12  /* FW-064: soften catch-up after a coast */
 #define WA_SPEED_KP_IQ_PER_ERPS          1
-#define WA_SPEED_KI_STEP_Q               1
+#define WA_SPEED_KI_STEP_Q               2
 #define WA_SPEED_KI_UNWIND_STEP_Q        8  /* FW-064: unload stale I before the next catch-up */
 #define WA_SPEED_INTEGRAL_MAX_IQ       121
 
-#define WA_SPEED_PRELOAD_IQ             18
-#define WA_SPEED_PRELOAD_TICKS         320  /* 80 ms */
-#define WA_SPEED_BREAKAWAY_IQ           80
-#define WA_SPEED_BREAKAWAY_TICKS      1520  /* full floor after 380 ms */
-#define WA_SPEED_START_HANDOVER_IQ      36
+#define WA_SPEED_START_IQ               40
 #define WA_SPEED_START_SEED_MAX_IQ       8
-#define WA_SPEED_START_FULL_PCT          8
-#define WA_SPEED_START_DONE_PCT         30
+#define WA_SPEED_START_DONE_ERPS          8  /* about 6 chainring rpm */
 
-#define WA_SPEED_START_RISE_STEP_Q       6  /* FW-066: 93.75 Iq/s, 80 Iq in about 0.85 s */
-#define WA_SPEED_RUN_RISE_STEP_Q         1  /* 15.625 Iq/s near target/reacquire */
+#define WA_SPEED_START_RISE_STEP_Q       6  /* 93.75 Iq/s, 40 Iq in about 0.43 s */
+#define WA_SPEED_RUN_RISE_STEP_Q         2  /* 31.25 Iq/s during normal RUN */
+#define WA_SPEED_REACQUIRE_RISE_STEP_Q   2  /* 31.25 Iq/s; slower than START, fast enough before timeout */
 #define WA_SPEED_FALL_STEP_Q             2  /* 31.25 Iq/s normal RUN/coast decrease */
 #define WA_SPEED_TRACK_MARGIN_IQ         6
 #define WA_SPEED_HALL_LOSS_UNWIND_Q     64
@@ -31,19 +27,6 @@ static int32_t clamp32(int32_t value, int32_t low, int32_t high)
 		return low;
 	}
 	return (value > high) ? high : value;
-}
-
-static int32_t map_clamped(int32_t value, int32_t in_low, int32_t in_high,
-	int32_t out_low, int32_t out_high)
-{
-	if (in_high <= in_low || value >= in_high) {
-		return out_high;
-	}
-	if (value <= in_low) {
-		return out_low;
-	}
-	return out_low +
-		((value - in_low) * (out_high - out_low)) / (in_high - in_low);
 }
 
 static int16_t control_error(int32_t raw_error)
@@ -59,38 +42,9 @@ static int16_t control_error(int32_t raw_error)
 		WA_SPEED_ERROR_CLAMP_ERPS);
 }
 
-static int32_t startup_floor_iq(const walk_speed_controller_t *controller,
-	const walk_speed_controller_input_t *input)
+static int32_t startup_floor_iq(const walk_speed_controller_t *controller)
 {
-	if (controller->startup_complete) {
-		return 0;
-	}
-
-	int32_t time_floor = WA_SPEED_PRELOAD_IQ;
-	if (controller->session_ticks > WA_SPEED_PRELOAD_TICKS) {
-		time_floor = map_clamped(
-			(int32_t)controller->session_ticks,
-			WA_SPEED_PRELOAD_TICKS,
-			WA_SPEED_BREAKAWAY_TICKS,
-			WA_SPEED_PRELOAD_IQ,
-			WA_SPEED_BREAKAWAY_IQ);
-	}
-
-	int32_t speed_full = ((int32_t)input->target_erps *
-		WA_SPEED_START_FULL_PCT) / 100;
-	int32_t speed_done = ((int32_t)input->target_erps *
-		WA_SPEED_START_DONE_PCT) / 100;
-	if (speed_full < 2) {
-		speed_full = 2;
-	}
-	if (speed_done <= speed_full) {
-		speed_done = speed_full + 1;
-	}
-	if (!input->hall_valid || input->measured_erps <= speed_full) {
-		return time_floor;
-	}
-	return map_clamped(input->measured_erps,
-		speed_full, speed_done, time_floor, WA_SPEED_START_HANDOVER_IQ);
+	return controller->startup_complete ? 0 : WA_SPEED_START_IQ;
 }
 
 static void clear_output(walk_speed_controller_output_t *output)
@@ -106,7 +60,6 @@ static void clear_output(walk_speed_controller_output_t *output)
 	output->startup_iq = 0;
 	output->startup_active = false;
 	output->above_target = false;
-	output->coast_requested = false;
 	output->saturated = false;
 }
 
@@ -180,11 +133,7 @@ int32_t walk_speed_controller_update(
 		(int32_t)input->target_erps - (int32_t)input->measured_erps;
 	int16_t effective_error = control_error(raw_error);
 	int32_t p_iq = (int32_t)effective_error * WA_SPEED_KP_IQ_PER_ERPS;
-	int32_t start_done_erps =
-		((int32_t)input->target_erps * WA_SPEED_START_DONE_PCT) / 100;
-	if (start_done_erps < 2) {
-		start_done_erps = 2;
-	}
+	int32_t start_done_erps = WA_SPEED_START_DONE_ERPS;
 
 	bool startup_just_completed = false;
 	if (!controller->startup_complete && input->hall_valid &&
@@ -199,11 +148,7 @@ int32_t walk_speed_controller_update(
 
 	if (++controller->control_divider >= WA_SPEED_CONTROL_DIV) {
 		controller->control_divider = 0;
-		if (input->force_coast) {
-			/* A hard RPM coast discards stale PI demand but not the one-shot START latch. */
-			controller->integral_q = 0;
-			controller->desired_iq = 0;
-		} else if (!controller->startup_complete) {
+		if (!controller->startup_complete) {
 			controller->integral_q = 0;
 		} else if (!input->hall_valid) {
 			if (!input->reacquire) {
@@ -268,21 +213,18 @@ int32_t walk_speed_controller_update(
 		}
 	}
 
-	if (input->force_coast) {
-		/* Do not leave up to 5 ms of stale desired current between PI steps. */
-		controller->integral_q = 0;
-		controller->desired_iq = 0;
-	}
-
-	int32_t start_floor = input->force_coast ?
-		0 : startup_floor_iq(controller, input);
-	int32_t desired_before_limit = input->force_coast ?
-		0 : controller->desired_iq;
-	if (!input->force_coast && start_floor > desired_before_limit) {
+	int32_t start_floor = startup_floor_iq(controller);
+	int32_t desired_before_limit = controller->desired_iq;
+	if (start_floor > desired_before_limit) {
 		desired_before_limit = start_floor;
 	}
-	if (!input->force_coast && input->iq_floor > desired_before_limit) {
-		desired_before_limit = input->iq_floor;
+	if (controller->startup_complete && input->hall_valid &&
+		!input->reacquire && input->run_iq_min > desired_before_limit) {
+		/*
+		 * Keep the rotor/Hall alive during normal RUN. Safety states pass zero
+		 * here, so brake, release, fault, LIMIT and STALL still permit true 0 Iq.
+		 */
+		desired_before_limit = input->run_iq_min;
 	}
 	int32_t desired_ceiling = ceiling;
 	if (controller->startup_complete && input->run_iq_max > 0 &&
@@ -299,8 +241,15 @@ int32_t walk_speed_controller_update(
 	int32_t target_q = desired << WA_SPEED_IQ_Q_SHIFT;
 	int32_t rise_step_q = WA_SPEED_RUN_RISE_STEP_Q;
 	if (!controller->startup_complete) {
-		/* Keep the proven one-shot 80 Iq breakaway capability. */
+		/* One-shot START is deliberately limited to the selected 40 Iq. */
 		rise_step_q = WA_SPEED_START_RISE_STEP_Q;
+	} else if (input->reacquire) {
+		/*
+		 * A stopped rotor needs a bounded restart before Hall can report speed.
+		 * The ordinary RUN slew took longer to reach 24 Iq than the old 1.5 s
+		 * reacquire timeout, so the state machine could latch STALL by itself.
+		 */
+		rise_step_q = WA_SPEED_REACQUIRE_RISE_STEP_Q;
 	}
 	if (controller->iq_command_q < target_q) {
 		int32_t delta = target_q - controller->iq_command_q;
@@ -335,7 +284,6 @@ int32_t walk_speed_controller_update(
 			(int16_t)clamp32(start_floor, 0, 32767);
 		output->startup_active = !controller->startup_complete;
 		output->above_target = raw_error < 0;
-		output->coast_requested = input->force_coast;
 		output->saturated =
 			desired_before_limit != desired || current_iq != desired;
 	}

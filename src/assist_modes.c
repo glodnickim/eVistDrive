@@ -8,7 +8,8 @@
 #define ASSIST_LEVEL_COUNT 5
 #define ASSIST_MOTOR_POWER_HARD_MAX_W 1500U
 #define ASSIST_SUPPORT_RATIO_MAX_PCT 1000U
-#define ASSIST_WITHOUT_ROTATION_THRESHOLD_MAX_MV 300U
+#define ASSIST_LEGACY_MIN_PEDAL_LOAD_MAX_MV 300U
+#define ASSIST_LEGACY_START_LOAD_REDUCTION_MAX_MV 100U
 #define HUMAN_POWER_CENTIKG_RPM_NUMERATOR 1694U
 #define HUMAN_POWER_CENTIKG_RPM_DENOMINATOR 1000U
 #define RIDE_CORE_FULL_IQ_SUPPORT_PCT 500U
@@ -53,15 +54,13 @@
 	.max_motor_power_w = 0, \
 	.max_iq_pct = 100, \
 	.assist_without_rotation = false, \
-	.without_rotation_threshold_mv = 18, \
+	.minimum_pedal_load_centikg = ASSIST_MIN_PEDAL_LOAD_DEFAULT_CENTIKG, \
 	.startup_boost = {true, ASSIST_STARTUP_BOOST_CADENCE, 100, 27}, \
 	.smooth_start = {false, 300}, \
 	.release_ms = 650, \
 	.power_rise_filter_ms = 150, \
 	.power_fall_filter_ms = 375, \
-	.start_load_reduction_mv = 0, \
-	.start_rise_mv = 0, \
-	.start_rise_window_ms = ASSIST_START_RISE_WINDOW_DEFAULT_MS, \
+	.riding_start_load_centikg = ASSIST_RIDING_MIN_PEDAL_LOAD_DEFAULT_CENTIKG, \
 	.iq_rise_slow_ms = 600, \
 	.iq_rise_fast_ms = 300, \
 	.iq_fall_slow_ms = 1000, \
@@ -75,10 +74,10 @@
 	.curve_exponent_high_x10 = POWER_CURVE_EXP_DEFAULT_X10, \
 	.emtb_based_on_power = true, \
 	.emtb_reference_voltage_mv = 36000, \
-	.without_rotation_threshold_mv = 18, \
+	.minimum_pedal_load_centikg = ASSIST_MIN_PEDAL_LOAD_DEFAULT_CENTIKG, \
 	.startup_boost = {false, ASSIST_STARTUP_BOOST_CADENCE, 0, 45}, \
 	.smooth_start = {false, 300}, \
-	.start_rise_window_ms = ASSIST_START_RISE_WINDOW_DEFAULT_MS, \
+	.riding_start_load_centikg = ASSIST_RIDING_MIN_PEDAL_LOAD_DEFAULT_CENTIKG, \
 	/* FW-069: level 0 never assists, but the shared Iq ramp still runs through it while \
 	 * the current fades out after a level change to 0. Zero here would mean "no ramp". */ \
 	.iq_rise_slow_ms = 600, \
@@ -129,7 +128,7 @@ static uint8_t active_bank;
 #define BANK_WA_CURRENT_DEFAULT       30U
 #define BANK_WA_CURRENT_MIN           1U
 #define BANK_WA_CURRENT_MAX           100U
-#define BANK_WA_TARGET_RPM_DEFAULT    50U
+#define BANK_WA_TARGET_RPM_DEFAULT    20U
 #define BANK_WA_TARGET_RPM_MIN        20U
 #define BANK_WA_TARGET_RPM_MAX        60U
 #define BANK_WA_LATCH_DEFAULT         0U
@@ -158,13 +157,17 @@ static uint8_t bank_cadence_comp_enabled[ASSIST_BANK_COUNT];
 /* FW-057: v5 adds header byte 12 = cadence compensation on/off for this bank.
  * 190 B still fits bank_store[2][192], BankBlob[192] and the 24-frame limit. */
 #define BANK_BLOB_VERSION_V5 5U
-/* FW-068/069: v6 is the first version to GROW THE RECORD (35 -> 56 B). Everything up to v5
+/* FW-068/069: v6 is the first version to GROW THE RECORD (35 -> 46 B). Everything up to v5
  * assumed one compile-time record length, which is why buffer[5] used to be compared against
  * it instead of being used. From here on buffer[5] is the actual stride, so a shorter (older)
  * record is read field by field and the tail is backfilled - growing the record no longer
  * silently discards the user's whole profile configuration. */
 #define BANK_BLOB_VERSION_V6 6U
-#define BANK_BLOB_VERSION BANK_BLOB_VERSION_V6
+/* FW-077: v7 changes the start-load domain. The record stays 46 B: minimum
+ * load is u16 centikg quantized to decikg at [19..20], and rolling minimum is
+ * u8 decikg at [35]. The removed rise-detector bytes [36..37] are reserved. */
+#define BANK_BLOB_VERSION_V7 7U
+#define BANK_BLOB_VERSION BANK_BLOB_VERSION_V7
 #define BANK_BLOB_HEADER_LEN_V1 8U
 #define BANK_BLOB_HEADER_LEN_V2 10U
 #define BANK_BLOB_HEADER_LEN_V3 12U
@@ -561,12 +564,14 @@ static bool prepare_assist_input(
 		cadence_for_assist == 0 &&
 		input->torque_sensor_valid &&
 		input->pas_sensor_valid) {
-		uint16_t threshold_mv = config->without_rotation_threshold_mv;
-		if (threshold_mv > ASSIST_WITHOUT_ROTATION_THRESHOLD_MAX_MV) {
-			threshold_mv = ASSIST_WITHOUT_ROTATION_THRESHOLD_MAX_MV;
-		}
 		uint16_t corrected_delta_mv = input->torque_assist_filtered;
-		if (corrected_delta_mv > threshold_mv) {
+		uint16_t corrected_load_centikg =
+			torque_input_native_delta_to_centikg(corrected_delta_mv);
+		uint16_t threshold_centikg = config->minimum_pedal_load_centikg;
+		if (threshold_centikg > ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG) {
+			threshold_centikg = ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG;
+		}
+		if (corrected_load_centikg > threshold_centikg) {
 			/* Keep synthetic cadence local; never modify MS or rider_input. */
 			cadence_for_assist = 1;
 			torque_for_assist = corrected_delta_mv;
@@ -596,8 +601,9 @@ static bool prepare_assist_input(
 
 	assist_startup_boost_input_t boost_input = {
 		.torque_input_mv = torque_for_assist,
-		/* The temporary 18 rpm seed arms the mode but is not real cadence. */
-		.cadence_for_assist_rpm = input->cadence_seeded ? 0U : cadence_for_assist,
+		/* Same cadence the rest of the control path sees (real, or the small
+		 * START_CADENCE_SEED_RPM placeholder) - no separate override for boost. */
+		.cadence_for_assist_rpm = cadence_for_assist,
 		.wheel_speed_x100 = input->wheel_speed_x100,
 		.torque_sensor_valid = input->torque_sensor_valid
 	};
@@ -1050,6 +1056,23 @@ static uint16_t get_u16(const uint8_t *buffer)
 	return (uint16_t)buffer[0] | ((uint16_t)buffer[1] << 8);
 }
 
+static uint16_t round_start_load_centikg(uint16_t centikg,
+	uint16_t maximum_centikg)
+{
+	if (centikg > maximum_centikg) {
+		centikg = maximum_centikg;
+	}
+	return (uint16_t)(((centikg + ASSIST_START_LOAD_WIRE_STEP_CENTIKG / 2U) /
+		ASSIST_START_LOAD_WIRE_STEP_CENTIKG) *
+		ASSIST_START_LOAD_WIRE_STEP_CENTIKG);
+}
+
+static uint8_t centikg_to_wire_decikg(uint16_t centikg, uint16_t maximum_centikg)
+{
+	return (uint8_t)(round_start_load_centikg(centikg, maximum_centikg) /
+		ASSIST_START_LOAD_WIRE_STEP_CENTIKG);
+}
+
 uint16_t assist_modes_serialize_bank(uint8_t bank_index, uint8_t *buffer)
 {
 	if (bank_index >= ASSIST_BANK_COUNT || buffer == 0) {
@@ -1096,7 +1119,9 @@ uint16_t assist_modes_serialize_bank(uint8_t bank_index, uint8_t *buffer)
 		put_u16(&record[15], cfg->max_motor_power_w);
 		record[17] = cfg->max_iq_pct;
 		record[18] = cfg->assist_without_rotation ? 1U : 0U;
-		put_u16(&record[19], cfg->without_rotation_threshold_mv);
+		put_u16(&record[19], round_start_load_centikg(
+			cfg->minimum_pedal_load_centikg,
+			ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG));
 		record[21] = cfg->startup_boost.enabled ? 1U : 0U;
 		record[22] = (uint8_t)cfg->startup_boost.mode;
 		put_u16(&record[23], cfg->startup_boost.strength_pct);
@@ -1106,12 +1131,13 @@ uint16_t assist_modes_serialize_bank(uint8_t bank_index, uint8_t *buffer)
 		put_u16(&record[29], cfg->release_ms);
 		put_u16(&record[31], cfg->power_rise_filter_ms);
 		put_u16(&record[33], cfg->power_fall_filter_ms);
-		//FW-068: u8 on the wire (0..100 mV), window in 10 ms units - the blob has to
-		//stay under the 255 B multiframe ceiling, see assist_modes.h.
-		record[35] = (uint8_t)cfg->start_load_reduction_mv;
-		record[36] = (uint8_t)cfg->start_rise_mv;
-		record[37] = (uint8_t)(cfg->start_rise_window_ms /
-			ASSIST_START_RISE_WINDOW_WIRE_STEP_MS);
+		/* FW-077: both public start loads use 0.1 kg precision. Keep the
+		 * removed rise-detector bytes zero so the v7 record remains 46 B. */
+		record[35] = centikg_to_wire_decikg(
+			cfg->riding_start_load_centikg,
+			ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG);
+		record[36] = 0;
+		record[37] = 0;
 		put_u16(&record[38], cfg->iq_rise_slow_ms);          //FW-069
 		put_u16(&record[40], cfg->iq_rise_fast_ms);
 		put_u16(&record[42], cfg->iq_fall_slow_ms);
@@ -1156,12 +1182,16 @@ bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length)
 		version == BANK_BLOB_VERSION_V4) { //FW-056: v4 == v3 layout
 		header_len = BANK_BLOB_HEADER_LEN_V3;
 	} else if (version == BANK_BLOB_VERSION_V5 ||
-		version == BANK_BLOB_VERSION_V6) { //FW-057 header; FW-068/069 longer record
+		version == BANK_BLOB_VERSION_V6 ||
+		version == BANK_BLOB_VERSION_V7) { //FW-077 keeps the v6 header/stride
 		header_len = BANK_BLOB_HEADER_LEN;
 	} else {
 		return false;
 	}
 
+	if (version == BANK_BLOB_VERSION_V7 && record_len != BANK_RECORD_LEN) {
+		return false;
+	}
 	expected_len = header_len + (uint16_t)ASSIST_LEVEL_COUNT * record_len + 2U;
 	if (length < expected_len) {
 		return false;
@@ -1230,8 +1260,20 @@ bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length)
 			0, ASSIST_MOTOR_POWER_HARD_MAX_W);
 		cfg->max_iq_pct = (record[17] > 100U) ? 100U : record[17];
 		cfg->assist_without_rotation = record[18] != 0;
-		cfg->without_rotation_threshold_mv = clamp_u16(get_u16(&record[19]),
-			0, ASSIST_WITHOUT_ROTATION_THRESHOLD_MAX_MV);
+		if (version >= BANK_BLOB_VERSION_V7) {
+			cfg->minimum_pedal_load_centikg = round_start_load_centikg(
+				get_u16(&record[19]),
+				ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG);
+		} else {
+			/* v1..v6 stored a calibrated sensor delta in mV. Convert it
+			 * once while loading so the physical threshold is preserved. */
+			uint16_t legacy_threshold_mv = clamp_u16(
+				get_u16(&record[19]), 0,
+				ASSIST_LEGACY_MIN_PEDAL_LOAD_MAX_MV);
+			cfg->minimum_pedal_load_centikg = round_start_load_centikg(
+				torque_input_native_delta_to_centikg(legacy_threshold_mv),
+				ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG);
+		}
 		cfg->startup_boost.enabled = record[21] != 0;
 		cfg->startup_boost.mode = (record[22] > ASSIST_STARTUP_BOOST_AUTO) ?
 			ASSIST_STARTUP_BOOST_CADENCE :
@@ -1253,13 +1295,25 @@ bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length)
 		 * whatever happens to sit past the end of the record.
 		 */
 		if (record_len >= BANK_RECORD_LEN) {
-			cfg->start_load_reduction_mv = clamp_u16(record[35],
-				0, ASSIST_START_LOAD_REDUCTION_MAX_MV);
-			cfg->start_rise_mv = clamp_u16(record[36],
-				0, ASSIST_START_RISE_MAX_MV);
-			cfg->start_rise_window_ms = clamp_u16(
-				(uint16_t)record[37] * ASSIST_START_RISE_WINDOW_WIRE_STEP_MS,
-				0, ASSIST_START_RISE_WINDOW_MAX_MS);
+			if (version >= BANK_BLOB_VERSION_V7) {
+				cfg->riding_start_load_centikg = clamp_u16(
+					(uint16_t)record[35] * ASSIST_START_LOAD_WIRE_STEP_CENTIKG,
+					0, ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG);
+			} else {
+				/* v6 carried a reduction in mV. Convert it to the direct
+				 * rolling threshold used by v7; its rise fields are ignored. */
+				uint16_t legacy_threshold_mv = clamp_u16(
+					get_u16(&record[19]), 0,
+					ASSIST_LEGACY_MIN_PEDAL_LOAD_MAX_MV);
+				uint16_t legacy_reduction_mv = clamp_u16(record[35], 0,
+					ASSIST_LEGACY_START_LOAD_REDUCTION_MAX_MV);
+				uint16_t rolling_threshold_mv =
+					(legacy_reduction_mv >= legacy_threshold_mv) ? 0U :
+					(uint16_t)(legacy_threshold_mv - legacy_reduction_mv);
+				cfg->riding_start_load_centikg = round_start_load_centikg(
+					torque_input_native_delta_to_centikg(rolling_threshold_mv),
+					ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG);
+			}
 			cfg->iq_rise_slow_ms = clamp_u16(get_u16(&record[38]),
 				ASSIST_RAMP_MS_MIN, ASSIST_RAMP_MS_MAX);
 			cfg->iq_rise_fast_ms = clamp_u16(get_u16(&record[40]),
@@ -1271,9 +1325,8 @@ bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length)
 		} else {
 			const assist_level_config_t *fallback =
 				&bank_defaults[bank_index][level];
-			cfg->start_load_reduction_mv = fallback->start_load_reduction_mv;
-			cfg->start_rise_mv = fallback->start_rise_mv;
-			cfg->start_rise_window_ms = fallback->start_rise_window_ms;
+			cfg->riding_start_load_centikg =
+				cfg->minimum_pedal_load_centikg;
 			cfg->iq_rise_slow_ms = fallback->iq_rise_slow_ms;
 			cfg->iq_rise_fast_ms = fallback->iq_rise_fast_ms;
 			cfg->iq_fall_slow_ms = fallback->iq_fall_slow_ms;

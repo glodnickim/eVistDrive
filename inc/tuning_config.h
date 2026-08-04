@@ -8,9 +8,10 @@
  * Single owner of the GLOBAL ride-feel tuning values that were previously
  * compile-time constants: the ride-core startup boost cadence decay
  * (assist_start), the ride latch, the RUN torque estimator and the start-condition
- * crank movement. Legacy's own separate STARTUP_BOOST_CADENCE_STEP in config.h is
- * untouched. Values are stored in RAM; MotorParams persistence is handled by the
- * caller (main.c), same pattern as profile banks.
+ * crank movement. FW-0xx removed the legacy monolith's separate STARTUP_BOOST_*
+ * constants and boost application - this module is now the only source. Values
+ * are stored in RAM; MotorParams persistence is handled by the caller (main.c),
+ * same pattern as profile banks.
  *
  * FW-069: the four Iq ramps LEFT this module and are now per level, in the bank blob
  * (assist_level_config_t). Their four u16 slots stay in the wire format so an older

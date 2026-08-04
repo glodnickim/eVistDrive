@@ -32,8 +32,15 @@ OFF
 
 Najważniejsze decyzje:
 
-1. `PAS_STOP_TICKS` pozostaje bez zmian. Jest detektorem końca pedałowania, a nie czasem
-   overrunu.
+1. `PAS_STOP_TICKS` pozostaje detektorem końca pedałowania, a nie czasem overrunu — ta
+   zasada się nie zmienia. **Aktualizacja 2026-08-03:** sama wartość progu jest teraz
+   adaptacyjna (patrz [[FW-025_PAS_STOP_CUT]], sekcja "Aktualizacja 2026-08-03) —
+   `PAS_STOP_TICKS` (200 ms) to niezmieniona DOLNA granica, `PAS_STOP_TICKS_MAX` (500 ms)
+   to nowa górna granica używana tylko przy realnie wolnej/nierównej kadencji. Poniższe
+   tabele czasów ("≈ 200 ms + carry-over + release") zakładają górny zakres kadencji
+   (szybkie/normalne pedałowanie); przy bardzo wolnym pedałowaniu (np. techniczny podjazd)
+   ten pierwszy człon może realnie wynosić do 500 ms zamiast 200 ms — do uwzględnienia przy
+   wdrażaniu carry-over i jego opisach w UI.
 2. `Power fall filter` pozostaje filtrem spadków mocy **w czasie pedałowania**. Nie wolno
    używać go jako overrunu, ponieważ przy utracie ważnego wejścia wspomagania jego stan jest
    zerowany przez `stop_power_filter()`.
@@ -227,7 +234,7 @@ To położenie jest wiążące:
 Ścieżki, które wychodzą wcześniej (`position_calibration_active`, Walk Assist), muszą jawnie
 wywołać reset modułu. Sam brak wywołania `apply()` nie może zostawić timera na później.
 
-## 6. Bank blob v7 i kompatybilność
+## 6. Bank blob v8 i kompatybilność
 
 Parametr jest per bank i per poziom, więc powinien wejść do bank blob, a nie do globalnego
 tuning blob.
@@ -238,7 +245,7 @@ Obecny format v6:
 13 B header + 5 * 46 B record + 2 B CRC = 245 B
 ```
 
-Nowy format v7:
+Nowy format v8:
 
 ```text
 13 B header + 5 * 47 B record + 2 B CRC = 250 B
@@ -252,20 +259,20 @@ Nowy bajt rekordu:
 
 Zmiany w firmware:
 
-1. Dodać `BANK_BLOB_VERSION_V7 = 7`, ustawić wersję bieżącą na v7.
+1. Dodać `BANK_BLOB_VERSION_V8 = 8`, ustawić wersję bieżącą na v8 (v7 zajmuje FW-077 Start condition w kg).
 2. Nazwać stare długości jawnie: `BANK_RECORD_LEN_V5 = 35`,
-   `BANK_RECORD_LEN_V6 = 46`, `BANK_RECORD_LEN_V7 = 47`.
+   `BANK_RECORD_LEN_V7 = 46`, `BANK_RECORD_LEN_V8 = 47`.
 3. Ustawić `ASSIST_BANK_BLOB_LEN = 250`.
 4. Serializer zapisuje `record[46]`.
 5. Parser przy `record_len >= 47` przyjmuje tylko 0..3; wartość spoza zakresu zamienia na `Off`.
 6. Dla v1-v6 ustawiać `carry_over_mode = Off`, zachowując wszystkie dotychczasowe pola.
-7. **Nie zmieniać** sprawdzania pól FW-068/069 na `record_len >= BANK_RECORD_LEN_V7`.
+7. **Nie zmieniać** sprawdzania pól FW-068/069/FW-077 na `record_len >= BANK_RECORD_LEN_V8`.
    Musi pozostać osobny warunek `record_len >= BANK_RECORD_LEN_V6`, inaczej odczyt banku v6
    straci warunki startu i rampy Iq.
 8. Dodać statyczne asercje długości i limitu `<= 255`.
 
 `MotorParams_t.bank_store[2][256]` już mieści blob 250 B. Nie zmieniać rozmiaru tablicy ani
-układu `MotorParams_t`; dzięki temu samo wdrożenie v7 nie powinno unieważnić całego rekordu
+układu `MotorParams_t`; dzięki temu samo wdrożenie v8 nie powinno unieważnić całego rekordu
 ustawień. Poprawić przy okazji nieaktualne komentarze o rozmiarach w `inc/main.h`,
 `inc/assist_modes.h`, `src/assist_modes.c` i `src/CAN_Display.c`.
 
@@ -284,7 +291,7 @@ na:
 if (Ext_ID_Rx.command < 31)   // nowe, pozwala dopisać ramkę 31
 ```
 
-Bufor `BankBlob[256]` wystarcza. Limit protokołu 255 B pozostawia po v7 jeszcze 5 B miejsca w
+Bufor `BankBlob[256]` wystarcza. Limit protokołu 255 B pozostawia po v8 jeszcze 5 B miejsca w
 formacie przewodowym.
 
 ## 7. Zmiany w Canable
@@ -295,17 +302,17 @@ Repozytorium: `C:\Projekty\bafang_canable_pro`.
 
 W `bafang-parser.js`:
 
-- dopuścić wersję banku 7;
+- dopuścić wersję banku 8;
 - nadal brać stride z `d[5]`;
 - odczytać `carry_over_mode: RECORD >= 47 && d[r + 46] <= 3 ? d[r + 46] : 0`.
 
 W `canbus.js`:
 
-- negocjować v7 tylko, gdy odczytany kontroler zgłosił `bank_schema_version >= 7`;
-- dla v7 ustawić `RECORD = 47`, `BLOB_LEN = 250` i zapisać offset 46;
+- negocjować v8 tylko, gdy odczytany kontroler zgłosił `bank_schema_version >= 8`;
+- dla v8 ustawić `RECORD = 47`, `BLOB_LEN = 250` i zapisać offset 46;
 - do firmware v6 i starszego nadal wysyłać ich obsługiwany format, bez pola carry-over.
 
-Nie wolno bezwarunkowo wysyłać v7 do starszego firmware — odrzuci blob jako nieobsługiwaną
+Nie wolno bezwarunkowo wysyłać v8 do starszego firmware — odrzuci blob jako nieobsługiwaną
 wersję.
 
 ### 7.2. Interfejs
@@ -406,12 +413,12 @@ w ruchu drogowym.
 
 1. Parser firmware nadal przyjmuje poprawne v1-v6.
 2. V6 zachowuje pola z offsetów 35..45 i tylko dodaje `carry_over_mode = Off`.
-3. V7 ma 250 B, rekord 47 B, poprawny CRC i round-trip wszystkich pięciu poziomów.
+3. V8 ma 250 B, rekord 47 B, poprawny CRC i round-trip wszystkich pięciu poziomów.
 4. Odbiornik przyjmuje ostatnią ramkę o indeksie 31.
-5. Canable nigdy nie wysyła v7 do kontrolera, który zgłosił maksymalnie v6.
+5. Canable nigdy nie wysyła v8 do kontrolera, który zgłosił maksymalnie v7.
 6. Restore/copy level/copy section zachowują `carry_over_mode`.
 
-W Canable rozszerzyć istniejące testy round-trip v6 i dodać osobny test v7. V6 powinno pozostać
+W Canable rozszerzyć istniejące testy round-trip v7 i dodać osobny test v8. V7 powinno pozostać
 niezmienione bajt w bajt.
 
 ## 10. Test stanowiskowy i kryteria odbioru
@@ -435,20 +442,20 @@ Kryteria wydania:
 - domyślnie `Off` w nowych i migrowanych bankach;
 - brak regresji przebiegu przy `Off`;
 - brak wzrostu Iq na wejściu do HOLD;
-- pełne testy safety i kompatybilności v6/v7;
+- pełne testy safety i kompatybilności v7/v8;
 - wersja testowa/diagnostyczna przed normalnym buildem;
 - aktualizacja `CHANGELOG.md`, dokumentacji użytkownika i dymków Canable.
 
 ## 11. Kolejność prac dla developera
 
-1. Dodać enum, pole per-level, domyślne `Off` i bank blob v7 wraz z migracją.
+1. Dodać enum, pole per-level, domyślne `Off` i bank blob v8 wraz z migracją.
 2. Naprawić limit ramki 31 i komentarze o rzeczywistych długościach.
 3. Dodać czysty moduł `assist_carry_over` i jego testy jednostkowe.
 4. Wpiąć moduł za latchem, przed manetką; dodać jawne resety na wszystkich ścieżkach wyjścia.
 5. Rozszerzyć telemetrię diagnostyczną co najmniej o flagę `carry_over_active` i pozostałe takty
    HOLD. Bez tej informacji trudno odróżnić błąd timera od zwykłego `release_ms`.
 6. Zaktualizować parser, serializer, model, UI i dymki Canable.
-7. Uruchomić testy v1-v7, testy Ride Core oraz build normalny i diagnostyczny.
+7. Uruchomić testy v1-v8, testy Ride Core oraz build normalny i diagnostyczny.
 8. Wykonać procedurę stanowiskową; wartości presetów zmieniać dopiero na podstawie logów.
 
 ## 12. Referencje producentów

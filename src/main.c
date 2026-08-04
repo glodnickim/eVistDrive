@@ -196,6 +196,19 @@ MotorParams_t MP;
 _Static_assert(FMC_OFFSET_FOOTER + sizeof(param_footer_t) <= (FMC_WRITE_END_ADDR - FMC_WRITE_START_ADDR),
 	"MotorParams_t + record footer no longer fit the virtual EEPROM page");
 _Static_assert(sizeof(param_footer_t) == 16, "param_footer_t must stay 4 words with crc last");
+/*
+ * FW-076: the wheel-diameter code took over the four bytes the ride-engine choice used
+ * before FW-030 removed engine selection. It has to stay EXACTLY four bytes in exactly that
+ * place: any change to sizeof(MotorParams_t) fails the FW-023 length check on the stored
+ * record, and every setting on the bike silently reverts to defaults on the next boot.
+ * Asserting the neighbour's offset is what actually pins that down — a same-sized field in
+ * the wrong place would still shift everything after it.
+ */
+_Static_assert(__builtin_offsetof(MotorParams_t, soc_full_magic)
+	== __builtin_offsetof(MotorParams_t, wheel_diameter_magic) + 4,
+	"wheel diameter must occupy exactly the 4 bytes the ride-engine fields did");
+_Static_assert(sizeof(((MotorParams_t*)0)->wheel_diameter_code) == 2,
+	"the Bafang wheel code is two raw bytes");
 //structs for PI_control
 PI_control_t PI_iq;
 PI_control_t PI_id;
@@ -212,8 +225,10 @@ uint16_t uint16_cadence_filtered=0;
 uint8_t pas_qstate=0xFF;     //last quadrature state (0..3), 0xFF=uninit
 int8_t pas_fwd_steps=0;      //net forward steps toward one magnet pulse (PAS_STEPS_PER_PULSE)
 uint16_t pas_cycle_ticks=0;  //ticks since last forward magnet pulse (for cadence)
-uint8_t cadence_seeded=0;    //1 while MS.cadence holds the START_CADENCE_SEED value (no real measurement yet) -> startup boost must treat cadence as 0
+uint8_t cadence_seeded=0;    //1 while MS.cadence holds the START_CADENCE_SEED value (no real measurement yet)
 uint16_t pas_idle_ticks=0;   //ticks since last quadrature transition (for stop detection)
+uint16_t pas_last_period_ticks=PAS_STOP_TICKS; //ticks between the two most recent forward transitions -> adaptive stop-timeout basis
+uint16_t pas_stop_timeout=PAS_STOP_TICKS; //this tick's adaptive stop threshold, clamp(2*pas_last_period_ticks, PAS_STOP_TICKS, PAS_STOP_TICKS_MAX)
 uint8_t forward_pedaling=0;  //1 = cranks turning forward (cadence>0, not reverse, not stopped)
 uint8_t fwd_run=0;           //consecutive forward quadrature steps (reset on any backward step or stop) -> jiggle-proof engage gate
 volatile uint16_t pas_fwd_accum=0; //FW-027 diag: free-running count of forward quadrature steps (never reset, wraps at 65535). Log analysis diffs consecutive frames; nonzero delta while crank is stopped => phantom (EMI) transitions.
@@ -576,8 +591,12 @@ int main(void)
 	//software value always wins. Battery still protected at BATTERYCURRENT_MAX by the PI limiter.
 	MP.phase_current_max = PH_CURRENT_MAX;
     ride_core_iq_limit_scaled = MP.phase_current_max;
-    torque_input_init(); //MP.torque_full_scale_native is deprecated (no magic/version); user span arrives with the calibration persist block
-    assist_modes_init();
+	    torque_input_init(); //MP.torque_full_scale_native is deprecated (no magic/version); user span arrives with the calibration persist block
+	    //FW-013/FW-016/FW-077: restore calibration before v1..v6 bank mV -> kg migration.
+	    //The migration and live control must use the same sensor span.
+	    torque_input_restore_persist(MP.torque_cal_magic, MP.torque_cal_version,
+	        MP.torque_cal_span_native, MP.torque_cal_crc);
+	    assist_modes_init();
     assist_modes_seed_wa_defaults(MP.walk_assist_current, MP.walk_assist_speed); //FW-051: v1 bank migration seed
     if(MP.bank_store_magic==0xB16B){ //FW-006: restore user bank configs (bad blobs are rejected -> defaults stay)
         //FW-068/069: pass the STORE size, not the current wire length. The blob carries its own
@@ -589,10 +608,16 @@ int main(void)
     if(MP.tuning_store_magic==0x7501){ //FW-010: restore user ramp/boost tuning (bad blob rejected -> defaults stay)
         tuning_config_apply_blob(&MP.tuning_store[0], sizeof(MP.tuning_store));
     }
-    //FW-013/FW-016: bad/absent user record -> measured default 0/6/84 kg curve
-    torque_input_restore_persist(MP.torque_cal_magic, MP.torque_cal_version,
-        MP.torque_cal_span_native, MP.torque_cal_crc);
     //FW-030: engine selection removed (ride core only) — no ride-engine restore.
+    //FW-076: the same four bytes now hold the Bafang wheel-diameter code. A controller
+    //flashed before this change has the old ride-engine content there (magic 0 or 0x5E01),
+    //which is not a wheel code — the magic is what tells the two apart. Anything that is
+    //not our magic becomes the 27.5" default, so the app never reads a nonsense wheel.
+    if(MP.wheel_diameter_magic!=WHEEL_DIAMETER_MAGIC){
+        MP.wheel_diameter_magic=WHEEL_DIAMETER_MAGIC;
+        MP.wheel_diameter_code[0]=WHEEL_DIAMETER_CODE_0;
+        MP.wheel_diameter_code[1]=WHEEL_DIAMETER_CODE_1;
+    }
 
     for (int i = 0; i < 2000; i++) {//let the ADC stabilize
     	while(!reg_ADC_flag);
@@ -1644,6 +1669,7 @@ void reg_ADC_processing(void)
 			int8_t st = qd[(pas_qstate<<2)|s]*PAS_DIR_SIGN; //+1 = forward
 			pas_qstate=s;
 			if(st>0){            //forward step
+				pas_last_period_ticks=pas_idle_ticks; //gap since the previous forward transition -> adaptive stop-timeout basis
 				pas_idle_ticks=0;
 				pas_fwd_accum++;            //FW-027 diag: free-running forward-step counter (EMI test)
 				if(fwd_run<250)fwd_run++;   //consecutive forward steps (jiggle-proof engage)
@@ -1684,8 +1710,18 @@ void reg_ADC_processing(void)
 				Backwards_counter=BACKWARD_LATCH_COUNT;
 			}
 		}
-		if(pas_idle_ticks>PAS_STOP_TICKS){ MS.cadence=0; cadence_seeded=0; uint16_cadence_filtered=0; pas_fwd_steps=0; fwd_run=0; } //stop
-		forward_pedaling = (MS.cadence>0 && Backwards_counter<4 && pas_idle_ticks<=PAS_STOP_TICKS);
+		//FW-0xx: adaptive stop timeout - 2x the last real forward-transition gap, clamped to
+		//[PAS_STOP_TICKS..PAS_STOP_TICKS_MAX], so a momentary gap at low/uneven cadence doesn't
+		//misread as a full stop the way the fixed PAS_STOP_TICKS alone did. Recomputed every
+		//tick, before the stop check below; also reused later this tick (Backwards_counter cleanup).
+		{
+			uint32_t stop_timeout_calc = (uint32_t)pas_last_period_ticks*2U; //uint32_t: pas_last_period_ticks can be up to 64000, *2 overflows uint16_t
+			if(stop_timeout_calc<PAS_STOP_TICKS) stop_timeout_calc=PAS_STOP_TICKS;
+			else if(stop_timeout_calc>PAS_STOP_TICKS_MAX) stop_timeout_calc=PAS_STOP_TICKS_MAX;
+			pas_stop_timeout = (uint16_t)stop_timeout_calc;
+		}
+		if(pas_idle_ticks>pas_stop_timeout){ MS.cadence=0; cadence_seeded=0; uint16_cadence_filtered=0; pas_fwd_steps=0; fwd_run=0; } //stop
+		forward_pedaling = (MS.cadence>0 && Backwards_counter<4 && pas_idle_ticks<=pas_stop_timeout);
 	}
 	//FW-061: latch "the wheel turned at some point since pedalling stopped". Sampling
 	//the speed at the END of a coast misclassifies a coast that finishes at a
@@ -1738,6 +1774,8 @@ void reg_ADC_processing(void)
 			.pas_forward = ride_core_pedaling,
 			.pas_backward = Backwards_counter >= 4,
 			.pedaling_active = ride_core_pedaling,
+			.crank_forward_steps = fwd_run, //FW-083: raw step count for ride_control's rolling-start reduction
+			.crank_direction_ok = forward_pedaling != 0, //FW-083: direction half of ride_core_pedaling, without the step count
 			.cadence_seeded = cadence_seeded != 0,
 			.torque_sensor_valid = torque_fault == 0 &&
 				!torque_input_calibration_active(),
@@ -1975,7 +2013,7 @@ void reg_ADC_processing(void)
 			//every tick during backpedalling and wiping Backwards_counter -> the FW-024 latch never held
 			//>=4 (measured on 0.0193: WSTECZ flag never lit). Gating on pas_idle_ticks fixes that: while the
 			//crank still moves (backward) the latch survives; once it stops the stale reverse flag clears.
-			if(pas_idle_ticks>PAS_STOP_TICKS) Backwards_counter=0;
+			if(pas_idle_ticks>pas_stop_timeout) Backwards_counter=0;
 			MS.cadence=0;
 			MS.p_human=0;
 			uint16_cadence_filtered=0;
@@ -2064,6 +2102,11 @@ void runPIcontrol(void){
 }
 
 void autodetect(void) {
+	// Position calibration owns the bridge directly. Cancel any pending normal
+	// soft cut-off before phase 1 so its delayed state cannot interfere here.
+	pwm_cutoff_active=0;
+	pwm_cutoff_tick=0;
+	uint16_half_rotation_counter=0;
 	timer_primary_output_config(TIMER0,ENABLE);
 	ui_8_PWM_ON_Flag=1;
 	MS.hall_angle_detect_flag = 0; //set uq to contstant value in FOC.c for open loop control
@@ -2168,8 +2211,13 @@ void autodetect(void) {
 	timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,0);
 	delay_1ms(25);
 	timer_primary_output_config(TIMER0,DISABLE); //Disable PWM if motor is not turning
-
-	//ui_8_PWM_ON_Flag=0;
+	// Phase 1 disabled the hardware bridge, therefore the software state must
+	// also say OFF. Phase 2 requests Iq=100 below; the normal bridge-on path will
+	// then re-enable PWM immediately instead of waiting for the rotor-stop timer.
+	ui_8_PWM_ON_Flag=0;
+	pwm_cutoff_active=0;
+	pwm_cutoff_tick=0;
+	uint16_half_rotation_counter=0;
 
     MS.i_d = 0;
     MS.i_q = 0;
@@ -2190,6 +2238,7 @@ void autodetect(void) {
 	}
 
 	//write_virtual_eeprom();
+	temp6=0; //phase-2 u_d accumulator must not inherit an earlier FOC/calibration value
 	p=0;
 	MS.hall_angle_detect_flag = 2;
 
@@ -3061,29 +3110,6 @@ uint16_t legacy_assist_calculate_monolith(void){
 					if(tq_floor_start>=TQ_FULL_SCALE_MV) tq_floor_start=TQ_PRESSURE_FLOOR_START_MV; //stale EEPROM may hold old 3299, which inverts the pressure-floor map
 					mapped_throttle= map(adc_value[1], MP.throttle_offset, MP.throttle_max, 0, phase_current_max_scaled);
 					mapped_torque= map(MS.torque_on_crank, tq_floor_start, TQ_FULL_SCALE_MV, 0, phase_current_max_scaled); //#4 upper span configurable (3300=old; lower=more pressure-linear)
-#if STARTUP_BOOST_ENABLE
-					{	//startup boost: scale the pressure signal by a factor that is max at cadence 0 and
-						//decays geometrically with cadence -> pressure-proportional pull-away kick that fades on its own.
-						//factor(cad)% = STARTUP_BOOST_FACTOR * (1 - CADENCE_STEP/256)^cad
-						uint8_t sb_active=1;
-#if STARTUP_BOOST_MODE==1   //SPEED: arm only from standstill, drop once spinning >45 rpm
-						static uint8_t sb_flag=0;
-						if(MS.Speedx100==0) sb_flag=1; else if(MS.cadence>45) sb_flag=0;
-						sb_active=sb_flag;
-#elif STARTUP_BOOST_MODE==2 //AUTO: on, but off when little pressure while already moving
-						if(MS.torque_on_crank < (750+STARTUP_BOOST_AUTO_TQ) && MS.Speedx100>0) sb_active=0;
-#endif
-						if(sb_active && mapped_torque>0){
-							//seeded cadence is a placeholder, not a measurement -> factor must be evaluated at true 0
-							//or the boost is mostly cancelled right at the pull-away it exists for
-							uint8_t sb_cad = cadence_seeded ? 0 : MS.cadence;
-							float f = (float)STARTUP_BOOST_FACTOR * powf(1.0f-(float)STARTUP_BOOST_CADENCE_STEP/256.0f, (float)sb_cad);
-							uint32_t boosted = (uint32_t)mapped_torque + (uint32_t)((float)mapped_torque*f/100.0f);
-							if(boosted>(uint32_t)MP.phase_current_max) boosted=(uint32_t)MP.phase_current_max; //level-independent cap
-							mapped_torque=(uint16_t)boosted;
-						}
-					}
-#endif
 
 					if(Backwards_counter<4){//normal ride mode, motor power only if pedals are not turned backwards
 						//CONSISTENT ENGAGEMENT with HYSTERESIS: arm on firm press + >=START_MIN_STEPS forward steps;
@@ -3166,7 +3192,10 @@ uint16_t legacy_assist_calculate_monolith(void){
 					MS.i_q_setpoint_temp=100;
 					temp6-=temp6>>4;
 					temp6+=MS.u_d;
-					if (p>70){
+					// Never accept/store a phase-2 result while the bridge is off. At
+					// the phase transition ui_8_PWM_ON_Flag is deliberately zero; the
+					// normal main-loop start path sets it after it physically enables PWM.
+					if (p>70 && ui_8_PWM_ON_Flag){
 						p=60;
 						if ((MP.reverse*temp6>>4)>100)MP.angle_correction+=one_deg;
 						else if ((MP.reverse*temp6>>4)<-50)MP.angle_correction-=one_deg;
@@ -3178,6 +3207,10 @@ uint16_t legacy_assist_calculate_monolith(void){
 							timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,_T>>1);
 							timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,_T>>1);
 							timer_primary_output_config(TIMER0,DISABLE); //Disable PWM
+							ui_8_PWM_ON_Flag=0;
+							pwm_cutoff_active=0;
+							pwm_cutoff_tick=0;
+							uint16_half_rotation_counter=0;
 							write_virtual_eeprom();
 							MS.hall_angle_detect_flag=1;
 						}
@@ -3214,4 +3247,3 @@ int fputc(int ch, FILE *f)
     return ch;
 }
 #endif /* GD_ECLIPSE_GCC */
-

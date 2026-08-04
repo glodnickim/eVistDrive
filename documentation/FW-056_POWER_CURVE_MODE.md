@@ -57,7 +57,7 @@ wejdzie do buildu bez zmian w skrypcie.
   `build_firmware.ps1` odpala się tylko na wyraźne polecenie. Zajętość Flash
   po dodaniu 3404 B tablicy jest więc **niepotwierdzona**.
 - Brak testów sprzętowych (rozdziały 8.3 i 8.4).
-- `protocol/ebics_config_schema.yaml` nietknięty — porządki dokumentacyjne,
+- `protocol/evistdrive_config_schema.yaml` nietknięty — porządki dokumentacyjne,
   świadomie odłożone (uzasadnienie w rozdziale 7).
 
 ### Odchyłki od planu
@@ -415,7 +415,7 @@ Nie ma etapu, w którym firmware umie coś, czego Canable nie potrafi ustawić.
 - Testy z punktów 8.3 i 8.4, ewentualna korekta domyślnych profili testowych.
 - Aktualizacja tej karty: status, numer buildu, wyniki.
 
-Etap „schemat protokołu": `protocol/ebics_config_schema.yaml` ma
+Etap „schemat protokołu": `protocol/evistdrive_config_schema.yaml` ma
 `version: 0`, `status: draft`, `complete_for_codegen: false` i wszystkie
 `wire_id: null` — **to nie jest źródło formatu wire**, tylko dokument roboczy.
 Aktualizujemy go osobno, przy okazji (dopisać `torque: 5`, `power_curve: 6`,

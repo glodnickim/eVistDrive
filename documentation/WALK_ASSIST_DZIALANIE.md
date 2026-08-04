@@ -1,141 +1,149 @@
 # Walk Assist — aktualne działanie
 
-Aktualizacja: 2026-07-31, FW-067, build testowy `0.0264`.
+Aktualizacja: 2026-08-04, FW-082, firmware `0.0282`.
 
-Status: testy hostowe 5/5 i build normalny/diagnostyczny przeszły. Firmware
-oczekuje testu na stojaku. Nie testować WA na ziemi przed zaliczeniem testu
-z uniesionym kołem.
+Status: wszystkie 7 testów hostowych i oficjalny build M820/BL820 przeszły.
+Szybsza reakcja na obciążenie i podtrzymanie Halla przez minimum 2 Iq oczekują
+na test z uniesionym kołem.
 
-## Najważniejsze zachowanie
+## Co steruje prędkością
 
-Walk Assist steruje obrotami zębatki/łańcucha, a nie bezpośrednio prędkością
-koła. Bieg mechaniczny decyduje, jak szybko porusza się rower.
+Walk Assist reguluje obroty zębatki/łańcucha na podstawie Halla silnika. Nie
+reguluje bezpośrednio prędkości koła. Bieg mechaniczny nadal decyduje, jak szybko
+porusza się rower.
 
-Po naciśnięciu przycisku:
-
-1. Jednorazowy START rusza energicznie do maksymalnie `80 Iq`. Prąd narasta
-   płynnie z szybkością `93,75 Iq/s`, więc pełną wartość osiąga po około 0,85 s.
-2. Po rozpędzeniu sterowanie przechodzi do spokojnego RUN w zakresie
-   `5..36 Iq`.
-3. W RUN prąd narasta maksymalnie `15,625 Iq/s`, a maleje `31,25 Iq/s`.
-4. Bankowy `Target chainring RPM` jest miękkim celem. Regulator nie zeruje
-   momentu natychmiast po jego przekroczeniu.
-5. Twardy wybieg `Iq=0` włącza się przy `Target chainring RPM + 20 rpm`.
-6. RUN może wrócić przy `Target chainring RPM + 5 rpm`. Stała histereza 15 rpm
-   zapobiega szybkiemu przełączaniu na jednej granicy.
-7. Powrót z wybiegu nie uruchamia ponownie START 80 Iq.
-8. Pełne puszczenie przycisku kończy sesję i pozwala uzbroić następny START.
-
-Schemat:
+Bankowy parametr `Target chainring RPM` jest rzeczywistym celem regulatora:
 
 ```text
-OFF -> START do 80 Iq -> RUN 5..36 Iq -> COAST przy target+20
-                           ^                    |
-                           +-- przy target+5 ---+
+motor ERPS = chainring rpm × 4 / 3
 ```
 
-Na bardzo lekko obciążonym, uniesionym kole stałe minimum `5 Iq` może rozpędzić
-napęd powyżej miękkiego celu. Jest to zamierzony skutek wymagania, aby prąd nie
-zanikał w normalnym zakresie. Obroty ogranicza regulator zależny od celu.
+Przykłady:
 
-| Ustawiony cel | Iq=0 / COAST | Powrót RUN |
+| Ustawienie | Cel silnika |
+|---:|---:|
+| 30 rpm | 40 ERPS |
+| 50 rpm | 67 ERPS |
+
+Wpis spoza zakresu 20–60 rpm jest zastępowany wartością domyślną 20 rpm.
+
+## Przebieg po naciśnięciu przycisku
+
+1. Jednorazowy START ma cel i twardy sufit `40 Iq`. Prąd narasta płynnie
+   `93,75 Iq/s`, więc pełną wartość osiąga po około 0,42 s, jeżeli silnik wcześniej nie ruszy.
+2. Pierwszy wiarygodny filtrowany ruch `8 ERPS` kończy START i przełącza do RUN
+   `2..40 Iq`. Jest to około `6 rpm` zębatki; przy przełożeniu 36/48 i kole
+   29 cali odpowiada około `0,63 km/h`.
+3. W RUN prąd narasta maksymalnie `31,25 Iq/s` i maleje `31,25 Iq/s`.
+   Dodatnia całka PI również działa dwukrotnie szybciej niż w FW-081.
+4. Poniżej celu PI zwiększa prąd tylko tak mocno, jak wymaga obciążenie.
+5. Powyżej celu PI odwija całkę i płynnie schodzi do podłogi `2 Iq`, która ma
+   podtrzymać wirnik oraz impulsy Halla bez dawnego rozpędzania przez 5 Iq.
+6. Nie ma twardego progu `target+20 rpm`, przełączania `5/0 Iq` ani osobnego
+   automatu COAST.
+7. Jeżeli Hall zaniknie mimo 2 Iq, ograniczone odzyskanie może podjąć wirnik
+   maksymalnie do 24 Iq. Nie uruchamia ponownie START.
+8. Pełne puszczenie przycisku kończy sesję i uzbraja START na następne użycie.
+
+```text
+OFF -> jednorazowy START <=40 Iq, do 8 ERPS -> RUN: PI 2..40 Iq
+                              |
+                              +-- za wolno: płynnie więcej Iq
+                              +-- za szybko: płynnie do 2 Iq
+                              +-- Hall zniknął: odzyskanie do 24 Iq, bez START
+```
+
+Deadband regulatora wynosi `±2 ERPS`, czyli około `±1,5 rpm` zębatki. Na
+rzeczywistym napędzie chwilowy błąd może być większy podczas START, zmiany
+obciążenia lub zmiany biegu; nie powinien jednak stale narastać.
+
+## Dlaczego zmieniono FW-074
+
+FW-074 utrzymywał minimum `5 Iq` nawet daleko ponad celem. Na lekkim napędzie
+30 i 50 rpm zbiegały przez to do niemal tej samej prędkości wynikającej z oporów.
+Test również błędnie uznawał ten stan za poprawny.
+
+FW-079 usunął problematyczną podłogę 5 Iq. Aktualny model lekkiego napędu uzyskuje oddzielne
+punkty równowagi:
+
+| Nastawa | Wynik modelu | W przeliczeniu na zębatkę |
 |---:|---:|---:|
-| 20 rpm | 40 rpm | 25 rpm |
-| 40 rpm | 60 rpm | 45 rpm |
-| 50 rpm | 70 rpm | 55 rpm |
-| 60 rpm | 80 rpm | 65 rpm |
+| 30 rpm | 38,2 ERPS | około 28,7 rpm |
+| 50 rpm | 66,9 ERPS | około 50,2 rpm |
 
-Cel bliski maksymalnym 60 rpm nie psuje algorytmu: najwyższe aktywne progi
-wynoszą wtedy 80/65 rpm. Wpis spoza poprawnego zakresu 20–60 rpm jest zastępowany
-celem domyślnym 50 rpm.
+Model uwzględnia deadband i zaokrąglenie pomiaru. Ostateczną dokładność trzeba
+potwierdzić na silniku.
+
+FW-082 utrzymuje minimalne `2 Iq`, czyli mniej niż połowę problematycznych 5 Iq.
+Celem nie jest napędzanie zębatki, lecz niedopuszczenie do zatrzymania wirnika
+i utraty pomiaru Halla. Test nadal wymaga oddzielnych wyników dla 30 i 50 rpm.
+
+Przy maksymalnym dodatnim błędzie model całego regulatora osiąga około `30 Iq`
+po 1 s i pełne `40 Iq` po około `1,51 s`. To czas odpowiedzi PI razem z rampą,
+a nie gwarantowany czas mechanicznego rozpędzenia roweru — ten zależy od obciążenia.
 
 ## Ustawienia banku
 
-Aktywne ustawienia:
+Aktywne ustawienia WA:
 
-- `Target chainring RPM`, zakres 20–60 rpm;
-- `Walk assist cut-off`, niezależny limit prędkości koła;
+- `Target chainring RPM`: 20–60 rpm;
+- `Walk assist cut-off`: niezależny limit prędkości koła;
 - podtrzymanie po puszczeniu przycisku i timeout podtrzymania.
 
-Przeliczenie dla M820:
-
-```text
-motor ERPS = chainring rpm * 4 / 3
-```
-
 Pole `Walk current` pozostaje w banku dla zgodności ze starszym Canable, ale
-FW-067 nie używa go do regulacji. Granice RUN `5/36 Iq` są obecnie stałymi
-testowymi w firmware, natomiast progi COAST wynikają z aktywnego celu banku.
-
-Canable ma oddzielny, nierozwiązany problem: po zapisie ponowny `Read` może
-pokazać starą wartość. Firmware `0.0264` nie zmienia Canable. Do testu należy
-przyjąć wartość rzeczywiście zwróconą przez `Read`.
+aktualny regulator WA go nie używa. Zakres RUN `2..40 Iq` jest stałą firmware.
 
 ## Bezpieczeństwo
 
-Hamulec, fault sterownika oraz bankowy limit prędkości koła są nadrzędne wobec
-regulatora WA.
-
-Stany raportowane przez sterownik:
+Hamulec, fault sterownika i bankowy limit prędkości koła są nadrzędne.
 
 | Stan | Znaczenie |
 |---|---|
 | `OFF` | Walk Assist nie steruje silnikiem |
-| `REGULATE` | START, RUN, COAST albo kontrolowane odzyskanie Halla |
+| `REGULATE` | jednorazowy START, RUN albo łagodny REACQUIRE |
 | `LIMIT` | wykryty problem ruchu; prąd ograniczony do `15 Iq` |
 | `STALL` | brak poprawy przez 400 ms; `Iq=0`, blokada do puszczenia WA |
 
-Jeżeli Hall zniknie podczas celowego COAST:
-
-1. firmware utrzymuje `Iq=0` i czeka 1 s;
-2. następnie może rozpocząć łagodne odzyskanie do maksymalnie `24 Iq`;
-3. powrót Halla kontynuuje RUN bez ponownego START;
-4. brak skutecznego odzyskania nadal prowadzi do `LIMIT/STALL`.
-
-Istniejący watchdog zablokowania pozostaje aktywny. Przy nagłym dużym oporze
-sterownik nie powinien gwałtownie podnosić momentu ponad zakres RUN. Bezpieczne
-ograniczenie lub zatrzymanie ma pierwszeństwo.
+Nieoczekiwany zanik Halla przy małym prądzie ma sufit `24 Iq` i timeout `1,5 s`.
+Zanik Halla mimo podłogi 2 Iq może być odzyskiwany do `24 Iq` przez maksymalnie
+4 s. Obie ścieżki narastają
+`31,25 Iq/s` (około `6 Iq` po 200 ms), czyli trzy razy wolniej niż pierwszy
+START. Brak skutecznego odzyskania nadal prowadzi do `LIMIT/STALL`.
 
 ## Firmware do testu
 
-Normalny:
-
 ```text
-.build/M820_BL820/debug/normal/0.0264_M820_BL820.bin
-88 844 B
-SHA-256 438CC4E68712586112C575DFC98352A3D1DF5FEB7C25550AE5BC198269B85CC7
+.build/0.0282_M820_BL820.bin
+89 644 B
+SHA-256 E36E0BCF1937205BAAE36007208C0ED09E775BCB317F8EDE99941F65AF1B87E9
 CAN diagnostics OFF
 ```
 
-Diagnostyczny, tylko do logowania:
+Plik powstał tym samym skryptem i w tym samym katalogu, co wcześniejsze
+firmware wgrywane do sterownika:
 
-```text
-.build/M820_BL820/debug/diagnostic/0.0264-diag_M820_BL820.bin
-93 384 B
-SHA-256 584A0BE4667C3AAEFE8901AF92F6352D62CE7F3A1E782D339DB416F60E6366DB
-CAN diagnostics ON
+```powershell
+.\build_firmware.ps1
 ```
 
-Do pierwszego testu wgrać wariant normalny, ustawić najniższy bieg i pozostawić
-koło w powietrzu. Start ma być zdecydowany, ale bez uderzenia. Po ruszeniu nie
-może wystąpić szybkie doganianie, okresowy zanik momentu ani szarpanie.
+Numer `0.0281` został zużyty przez przerwany przebieg kompilacji i nie jest
+gotowym obrazem. Format konfiguracji i protokół CAN nie zmieniły się, dlatego
+do tej poprawki nie trzeba budować ani wgrywać nowego Canable.
 
-Na lekkim kole można pozwolić na wejście dynamicznego regulatora, stale trzymając
-przycisk. Dla celu 50 rpm oczekiwany jest COAST około 70 rpm i powrót około
-55 rpm, bez impulsu 80 Iq. Test przerwać przy gwałtownym wzroście prędkości,
-szarpaniu, niekontrolowanym wzroście prądu lub braku reakcji hamulca.
+## Pierwszy test sprzętowy
 
-Pełna procedura, historia diagnozy i kolejność strojenia:
+1. Wgrać wyłącznie powyższy plik `0.0282_M820_BL820.bin`.
+2. Unieść koło, wybrać najniższy bieg i zapewnić natychmiastowy dostęp do hamulca.
+3. Ustawić 20 rpm i przytrzymać WA co najmniej 15 s. Minimum 2 Iq ma utrzymać
+   Hall; jeżeli mimo to zaniknie, napęd ma wrócić bez puszczenia przycisku.
+4. Przy nadal trzymanym WA delikatnie zwiększyć opór. Iq ma zwiększać się płynnie,
+   bez skoku i nie przekraczać 40 Iq.
+5. Puścić przycisk, sprawdzić osobno 30 rpm i 50 rpm.
+6. Przy 50 rpm zębatka musi obracać się wyraźnie szybciej niż przy 30 rpm. Obie
+   próby mają dojść do stanu ustalonego, a nie stale się rozpędzać.
+7. Niedopuszczalne są powtarzające się mocne cykle zatrzymania/rozruchu,
+   przekroczenie startowego limitu 40 Iq,
+   dalsze rozpędzanie mimo przekroczenia celu lub brak reakcji hamulca.
+
+Historia wcześniejszych prób i szczegóły regulatora są w
 `documentation/FW-060_WA_CONSTANT_RPM_CONTROLLER.md`.
-
-## Historia ostatnich prób
-
-| Firmware | Wynik |
-|---|---|
-| `0.0258` | stale rozpędzał uniesione koło, w jednym teście do około 15 km/h |
-| `0.0259` | ograniczył rozpędzanie, ale szarpał przez przełączanie `5/0 Iq` |
-| `0.0260` | zbyt mocno doganiał, cyklicznie przestrzeliwał i prawdopodobnie wchodził w `STALL` |
-| `0.0261` | zastąpiony przed testem po decyzji o wolniejszych rampach |
-| `0.0262` | zastąpiony przed testem po doprecyzowaniu koncepcji `Iq_min..Iq_max` i odcięcia przy 80–90 rpm |
-| `0.0263` | START 80 Iq, RUN 5–36 Iq i stały COAST 85/70 rpm; zastąpiony przed testem |
-| `0.0264` | aktualny kandydat: ten sam START/RUN, dynamiczny COAST `target+20/+5 rpm` |

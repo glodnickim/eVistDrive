@@ -24,6 +24,13 @@ typedef struct {
 	bool pas_forward;
 	bool pas_backward;
 	bool pedaling_active;
+	/* FW-083: raw consecutive-forward-step count and direction (the two
+	 * components pedaling_active above is built from — cadence>0, not
+	 * reversed, not idle-timed-out), exposed separately so ride_control can
+	 * apply a lower step requirement specifically while the bike is already
+	 * rolling, without re-deriving the direction check from scratch. */
+	uint8_t crank_forward_steps;
+	bool crank_direction_ok;
 	bool cadence_seeded;
 	bool torque_sensor_valid;
 	bool pas_sensor_valid;

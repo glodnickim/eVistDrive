@@ -61,7 +61,7 @@ korzystać wyłącznie z `rider_input_t`.
 | `assist_modes` | WDROŻONE/SZKIELET | Power Linear i Progressive działają; eMTB jest następnym trybem |
 | `assist_start` | WDROŻONE | Startup Boost, niezależna obwiednia Smooth Start i Release działają |
 | `ride_control` | WDROŻONE | Wybiera Legacy/ride core, zachowuje priorytet Walk, stosuje limity i dynamikę, wysyła `motor_command_t` |
-| `protocol/ebics_config_schema.yaml` | SZKIELET | Draft v0 opisuje pola, typy, skale, zakresy i operacje; numery `wire_id` celowo nieprzydzielone |
+| `protocol/evistdrive_config_schema.yaml` | SZKIELET | Draft v0 opisuje pola, typy, skale, zakresy i operacje; numery `wire_id` celowo nieprzydzielone |
 | Audyt komend HMI/CAN | CZĘŚCIOWO | Firmware, lokalny log i źródła Canable master wstępnie sprawdzone; brakuje pełnych logów HMI/BESST |
 | Test sprzętowy | TEST ROWERU | Decyzją użytkownika przeniesiony na koniec całego wdrożenia |
 
@@ -351,10 +351,10 @@ Utworzono pierwszy, nieaktywny draft źródła prawdy:
 
 ```text
 protocol/
-├── ebics_config_schema.yaml
+├── evistdrive_config_schema.yaml
 └── generated/
     ├── ebics_config_ids.h
-    └── ebics_config_schema.js
+    └── evistdrive_config_schema.js
 ```
 
 Plik YAML istnieje, natomiast katalog `generated` i oba pliki wynikowe powstaną

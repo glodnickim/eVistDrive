@@ -4,6 +4,65 @@
 
 ### Nowe funkcje
 
+**FW-082 — Walk Assist: szybsza reakcja RUN i zakres 2–40 Iq**
+- Po teście `0.0280` kierunek zmian został potwierdzony, ale START i minimum/maksimum RUN były odczuwalnie za małe, a reakcja na nagły wzrost obciążenia zbyt wolna.
+- Jednorazowy START ma teraz cel i twardy sufit `40 Iq`. Zachowuje rampę `93,75 Iq/s`, więc od zera dochodzi do limitu po około `0,42 s`, jeżeli wcześniej nie zakończy go ruch silnika.
+- START przechodzi do RUN przy stałym progu `8 ERPS` (około `6 rpm` zębatki). Dla przełożenia 36/48 i koła 29 cali odpowiada to około `0,63 km/h`; przełączenie nie zależy już od bankowej nastawy 20–60 rpm.
+- Normalny RUN pracuje w zakresie `2..40 Iq`. Minimum `2 Iq` działa wyłącznie przy poprawnym Hallu w stanie `REGULATE`; puszczenie WA, hamulec, fault, limit koła, `LIMIT` i `STALL` nadal wymuszają prawdziwe `0 Iq`.
+- Dodatnią rampę RUN zwiększono z `15,625` do `31,25 Iq/s`, a dodatni krok całki PI z `1` do `2` w Q8. Rampa opadania pozostaje `31,25 Iq/s`. W teście maksymalnego błędu RUN osiąga około `30 Iq` po 1 s i `40 Iq` po `1,51 s`, zamiast około 2,6 s potrzebnych wcześniejszemu wariantowi do osiągnięcia 36 Iq.
+- Odzyskiwanie Halla pozostaje ograniczone do `24 Iq`, nie uzbraja ponownie START i nadal kończy się `LIMIT/STALL`, jeśli rotor nie ruszy. Progi watchdoga `24/24 Iq` i wszystkie nadrzędne odcięcia bezpieczeństwa pozostają bez zmian.
+- Regresja lekkiego napędu zachowuje dwa oddzielne punkty pracy: `38,2 ERPS` dla nastawy 30 rpm i `66,9 ERPS` dla 50 rpm. Wszystkie 7 testów hostowych przeszło.
+- Format banku i protokół CAN nie zmieniły się, dlatego Canable nie wymaga przebudowy. Normalny build wykonany głównym `build_firmware.ps1`: `.build/0.0282_M820_BL820.bin`, 89 644 B, CAN diagnostics OFF, SHA-256 `E36E0BCF1937205BAAE36007208C0ED09E775BCB317F8EDE99941F65AF1B87E9`. Numer `0.0281` został zużyty przez przerwany przebieg skryptu i nie jest gotowym kandydatem do wgrania.
+
+**FW-081 — Walk Assist: Hall keepalive 1 Iq i START ograniczony do 30 Iq**
+- Test `0.0279` wyjaśnił pozostały cykl: RUN schodził do `0 Iq`, wirnik zatrzymywał się za wolnobiegiem, Hall znikał, a odzyskanie ponownie rozpędzało silnik. Po kilku takich przejściach jedna nieskuteczna próba mogła nadal zakończyć się zatrzaśniętym `STALL`.
+- Normalny RUN pracuje teraz w zakresie `1..36 Iq`. Podłoga `1 Iq` (około 95 mA) działa wyłącznie przy aktywnym `REGULATE`, zakończonym START, poprawnym Hallu i bez REACQUIRE. Puszczenie WA, hamulec, fault, limit koła, `LIMIT` i `STALL` nadal wymuszają prawdziwe `0 Iq`.
+- Stara trajektoria START `18→80 Iq` została całkowicie zastąpiona jednym celem i twardym sufitem `30 Iq`. Wyjście nadal narasta bez skoku (`93,75 Iq/s`) i dochodzi do 30 Iq po około `0,32 s`, jeżeli wcześniej nie pojawi się ruch. START kończy pierwszy wiarygodny filtrowany pomiar `2 ERPS`, nie 30% celu, więc służy tylko ruszeniu wirnika.
+- Obie próby odzyskania Halla są ograniczone do `24 Iq`; zwykła ma timeout `1,5 s`, a rozpoznana utrata Halla przy podłodze 1 Iq zachowuje wydłużone 4 s. Żadna nie uzbraja ponownie START.
+- Progi watchdoga prądu obniżono z `50/45 Iq` do `24/24 Iq`. Jest to konieczne po ograniczeniu START do 30 Iq: zablokowany od początku wirnik nadal przechodzi do `LIMIT/STALL`, zamiast pozostawać bezterminowo pod prądem poniżej starego progu.
+- Format banku i CAN pozostają bez zmian, więc Canable nie wymaga przebudowy. Wszystkie 7 testów hostowych przeszło. Normalny build z głównego `build_firmware.ps1`: `.build/0.0280_M820_BL820.bin`, 89 644 B, CAN diagnostics OFF, SHA-256 `C15D63B0F12EBB2732EF23F349FA4AA47533CD76FF002C9040C88D09395E0A66`.
+
+**FW-080 — Walk Assist wraca po wybiegu bez puszczania przycisku**
+- Test sprzętowy `0.0277` z celem 20 rpm ujawnił zatrzymanie po około sekundzie i zatrzask `STALL` aż do puszczenia WA. Przyczyna była deterministyczna: limit zwykłego `REACQUIRE` wynosił `24 Iq`, rampa tylko `15,625 Iq/s`, a timeout `1,5 s`. Od zera potrzeba około `1,54 s`, więc automat kończył próbę, zanim prąd zdążył osiągnąć limit i poruszyć wirnik.
+- Odzyskiwanie narasta teraz `31,25 Iq/s`, nadal trzy razy wolniej od jednorazowego START. Nieoczekiwany zanik Halla pozostaje ograniczony do `24 Iq / 1,5 s`; osiąga limit po około `0,75 s` i ma około `0,75 s` na wytworzenie impulsu Halla.
+- Zamierzony wybieg po zejściu regulatora do zera ma osobną, nadal ograniczoną ścieżkę do pełnego sufitu RUN `36 Iq / 4 s`. Osiąga 36 Iq po około `1,14 s` i pozostawia około `2,86 s` zapasu. Nie uzbraja ponownie START 80 Iq; rzeczywiste zakleszczenie nadal kończy się `LIMIT/STALL`.
+- Zamiar wybiegu jest zapamiętywany już wtedy, gdy PI żąda `0 Iq` ponad celem, a nie dopiero po fizycznym zejściu rampy wyjściowej do zera. Usuwa to drugi fałszywy przypadek utraty Halla podczas prawidłowego zwalniania.
+- Domyślna i minimalna nastawa zębatki są spójnie ustawione na `20 rpm` w banku, regulatorze oraz starszym polu EEPROM `walk_assist_speed`, które zasila banki podczas migracji. Usunięto diagnostyczną wartość 18 rpm ze źródeł `0.0277` i pozostawione 50 rpm ze starego defaultu.
+- Wszystkie 7 testów hostowych przeszło. Normalny build wykonano głównym `build_firmware.ps1`: `.build/0.0279_M820_BL820.bin`, 89 852 B, CAN diagnostics OFF, SHA-256 `471EC3AB2C3E0B2CDC5496D1CB82F15602AD289383DC8391560C40A0009D2B0C`.
+
+**FW-079 — Walk Assist ponownie reguluje zadaną prędkość zębatki**
+- Test sprzętowy `0.0275` ujawnił, że nastawy 30 i 50 rpm nie dawały dwóch różnych prędkości: po jednorazowym START kod zawsze wymuszał co najmniej `5 Iq`, również daleko ponad celem. Na lekkim napędzie stały dodatni moment rozpędzał zębatkę aż do równowagi wyznaczonej przez opory, a nie przez bankowy `Target chainring RPM`.
+- Usunięto podłogę `WA_MOTOR_RUN_MIN_IQ` oraz pole `iq_floor`. RUN pracuje teraz w zakresie `0..36 Iq`; powyżej celu PI może płynnie zejść do zera z dotychczasową rampą `31,25 Iq/s`. Nie przywrócono twardego governora `target+20/+5 rpm` ani osobnego automatu COAST.
+- Deadband zmniejszono z `±7 ERPS` (około `±5,25 rpm` zębatki) do `±2 ERPS` (około `±1,5 rpm`). Przeliczenie ustawienia pozostaje bez zmian: `motor ERPS = chainring rpm × 4/3`.
+- Jeżeli po zejściu do zera zaniknie Hall, istniejący `REACQUIRE` narasta rampą RUN, bez ponownego uzbrojenia START 80 Iq. Model potwierdza około `3 Iq` po pierwszych 200 ms odzyskiwania i sufit `24 Iq` dopiero po 1,5 s.
+- Test regresji wymaga teraz `Iq=0` przy dużym przekroczeniu oraz osobnych punktów równowagi dla 30 i 50 rpm. W modelu lekkiego napędu wynoszą odpowiednio `37,5/64,5 ERPS`, czyli około `28,1/48,4 rpm` zębatki. Wszystkie 7 testów hostowych przeszło.
+- Normalny build wykonany używanym dotąd `build_firmware.ps1` i zapisany w dotychczasowym katalogu wgrywania: `.build/0.0276_M820_BL820.bin`, Arm GNU 13.2.1, 89 604 B, CAN diagnostics OFF, SHA-256 `BF7EC3CE88CBEE0A96E427E888BD3FC804E8349C2B4F3FBEC6A593D60F1BEBEA`. Obraz jest bajtowo identyczny z kontrolnym buildem profilowym, który potwierdził brak segmentu RWE.
+
+**FW-078 — naprawa drugiej fazy autokalibracji Halla**
+- Po pierwszej, wolnej fazie `0x6200` sprzętowy mostek PWM był wyłączany, ale `ui_8_PWM_ON_Flag` pozostawało równe 1. Przy obecnym 3-sekundowym `POWER_STAGE_STOP_TICKS` druga faza zdążyła po około 2,8 s fałszywie zaakceptować zerowe `u_d`, zanim normalna ścieżka ponownie uzbroiła mostek.
+- Stan PWM, miękkiego odcięcia i licznika zatrzymania jest teraz synchronizowany po obu `DISABLE`, a akumulator `temp6` zerowany przed fazą drugą. Dzięki temu jej `Iq=100` natychmiast przechodzi przez bezudarową ścieżkę włączenia mostka.
+- Zbieżność i zapis EEPROM są dodatkowo zablokowane, dopóki PWM nie jest oznaczone jako włączone. Dodano test `tests/fw078_hall_autocalibration.js`; protokół CAN i Canable pozostają bez zmian.
+- Wszystkie 7 testów hostowych przeszło. Normalny build wykonany obowiązującym `scripts/build-firmware.ps1`: `.build/M820_BL820/debug/normal/0.0275_M820_BL820.bin`, Arm GNU 13.2.1, 89 660 B, CAN diagnostics OFF, bez segmentu RWE, SHA-256 `556FB6A7A8EA9BC43E6F8E81914D020B1DBB0094174E12F3682156CC45C70B58`.
+- Test sprzętowy `0.0275` potwierdził poprawkę: autokalibracja przechodzi obie fazy i kończy się prawidłowo.
+
+**FW-077 — Start condition wyłącznie w kg**
+- Dwa ustawienia nacisku nie mieszają już domen: minimalny nacisk przy ruszaniu oraz bezpośredni minimalny nacisk podczas jazdy są przechowywane i porównywane jako kg (`centikg`). mV pozostaje tylko wewnątrz skalibrowanej obsługi czujnika.
+- `Pedal load reduction while pedalling` zastąpiono bezpośrednim `Minimum pedal load while riding`; użytkownik nie musi odejmować redukcji od progu głównego.
+- Bank blob v7 zachowuje 245 B i rekord 46 B: główny próg to u16 centikg kwantyzowany do 0,1 kg, a próg jazdy to u8/0,1 kg. Banki v1–v6 są migrowane przez aktywną kalibrację czujnika, po jej przywróceniu.
+- Obie wartości nacisku są prezentowane i zapisywane z dokładnością 0,1 kg; również migracja starszych wartości zaokrągla wynik do jednego miejsca po przecinku.
+- Usunięto cały alternatywny algorytm `Pedal-load increase to start` wraz z `Pressure rise window`. Bajty rekordu v7 `[36..37]` pozostały zarezerwowane i są zerowane, dzięki czemu rozmiar banku oraz położenie ramp Iq nie zmieniły się.
+- Dodano test `tests/fw077_start_condition_kg.js`; build kontrolny `0.0274` M820/BL820 przechodzi.
+
+> **FW-075 / build diagnostyczny `0.0270_M820_BL820.bin`: 94 096 B, SHA-256**
+> `8E1D99130D4056BE595018A54C276524AC814ACC8941BB8078985AD462398014`,
+> CAN diagnostics ON. Zawiera również poprawkę ciągłego WA z FW-074.
+
+**FW-075 — tryb legalny domyślnie włączony**
+- Kompilacyjny `LEGALFLAG` zmieniony z `0` na `1`. Nowy lub przywrócony do ustawień fabrycznych rekord parametrów startuje z aktywnym ograniczeniem prędkości; domyślny `SPEEDLIMIT=2500` oznacza 25,00 km/h.
+- Poprawna wartość `legalflag` już zapisana w EEPROM nadal ma pierwszeństwo. Aktualizacja firmware nie nadpisuje świadomie zapisanego `0`; aby zastosować nowy default na istniejącym rekordzie, trzeba w Canable ustawić Legal speed-limit flag na Enabled i zapisać do Flash albo wykonać inicjalizację ustawień fabrycznych.
+- Tryb offroad nadal czasowo omija limit, a Walk Assist nadal korzysta z własnego, bankowego `Walk assist cut-off` niezależnego od `LEGALFLAG`.
+- Tabela parametrów i historyczna karta FW-049 zostały zaktualizowane. Pełny zestaw testów firmware **5/5 PASS**.
+
 > **FW-074 / build diagnostyczny `0.0269_M820_BL820.bin`: 94 096 B, SHA-256**
 > `D4604C53F4B02C756C41B6E73C1ECA6B7FC26CB22189C0BA3D95642BBE4D8EA9`,
 > CAN diagnostics ON.
@@ -73,7 +132,7 @@
 - **Zabezpieczenie tych wartości dodane dopiero teraz.** Wcześniejszy zapis w tym changelogu twierdził, że pilnują ich testy — a to było za mocne: testy Canable sprawdzały tryby 1, 2 i 6, ale **nie 3**, a `RIDE_ENGINE_CORE` miało wartość 1 wyłącznie dlatego, że było drugim elementem enum. Dołożone realne zabezpieczenia: `RIDE_ENGINE_CORE = 1` zapisane jawnie, `_Static_assert` na **wszystkich siedmiu** wartościach trybu i na wartości silnika (kompilacja padnie, jeśli ktoś je ruszy), oraz test Canable przechodzący round trip dla trybów 1–6 z osobnym sprawdzeniem eMTB. Stored bank niesie **numer, nie nazwę** — przenumerowanie sprawiłoby, że bank zapisany jako eMTB wróciłby po aktualizacji jako inny tryb, po cichu i bez błędu.
 - Komentarze w firmware i Canable przepisane wg zasady: **opisujemy co robi wartość i dlaczego tak, a nie skąd pochodzi**. Nazwa silnika wszędzie jako „ride core".
 - Siedem plików dokumentacji przemianowanych (`FW-027`, `FW-028`, `FW-030`, `FW-033`, `FW-039` i dwa dokumenty analityczne), wszystkie odsyłacze poprawione.
-- **Pięć dokumentów porównawczych przeniesionych do `archive/`** z własnym README. Ich celem było porównanie do nazwanego projektu zewnętrznego, więc podmiana nazw pozbawiłaby je sensu; cztery z nich były już oznaczone jako archiwalne i zastąpione (wnioski dawno w kartach FW i w `ebics_config_schema.yaml`). Treść zostaje bez zmian jako materiał historyczny.
+- **Pięć dokumentów porównawczych przeniesionych do `archive/`** z własnym README. Ich celem było porównanie do nazwanego projektu zewnętrznego, więc podmiana nazw pozbawiłaby je sensu; cztery z nich były już oznaczone jako archiwalne i zastąpione (wnioski dawno w kartach FW i w `evistdrive_config_schema.yaml`). Treść zostaje bez zmian jako materiał historyczny.
 - **Zostaje celowo:** oświadczenie o pochodzeniu w `README.md` (EBiCS i firmware'y referencyjne są na GPL — to wymóg licencyjny, nie branding), katalog `.external/` z własnymi plikami `LICENSE`, oraz nazwa gałęzi git `experiment/tsdz-experiment` wraz z dwoma odwołaniami do niej w dokumentach (przepisywanie historii git to osobna operacja o innym ryzyku).
 
 **FW-072 — wygaszanie wspomagania to jedna rampa (wycofanie FW-047)**

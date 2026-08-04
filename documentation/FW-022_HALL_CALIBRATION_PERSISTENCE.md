@@ -1,4 +1,4 @@
-# Karta zmiany FW-022 — kalibracja Halla i trwałe wartości domyślne
+# Karta zmian FW-022 / FW-078 — kalibracja Halla
 
 - **Data:** 2026-07-23
 - **Status:** ZAMKNIĘTE — POTWIERDZONE NA SPRZĘCIE (`0.0191`, 2026-07-23).
@@ -251,7 +251,27 @@ zaakceptowaniu zapisu pustego lub częściowo uszkodzonego.
 - `CHANGELOG.md`,
 - `documentation/EBICS_ZMIANY_I_KONFIGURACJA_PL.md`,
 - `protocol/HMI_COMMAND_AUDIT.md`,
-- `protocol/ebics_config_schema.yaml`.
+- `protocol/evistdrive_config_schema.yaml`.
 
 **Poza zakresem tej wersji:** zmiana FOC, nowe strojenie ride core/Legacy, zmiana
 kalibracji czujnika nacisku i automatyczne uruchamianie kalibracji Halla.
+
+## 8. Aktualizacja FW-078 — poprawne przejście do drugiej fazy
+
+Test przed FW-078 pokazał, że po pierwszej, wolnej fazie `0x6200` silnik
+zatrzymywał się i nie wykonywał do końca fazy korekcji kąta. Sprzętowy mostek
+PWM był wyłączany, ale `ui_8_PWM_ON_Flag` pozostawało równe 1. Druga faza
+żądała `Iq=100`, lecz normalna ścieżka nie włączała mostka, ponieważ stan
+programowy błędnie wskazywał, że PWM już pracuje.
+
+FW-078 synchronizuje po obu wyłączeniach sprzętowy i programowy stan PWM,
+miękkiego odcięcia oraz licznika zatrzymania. Zeruje także akumulator fazy
+drugiej, a sprawdzenie zbieżności i zapis EEPROM dopuszcza dopiero po rzeczywistym
+włączeniu PWM. Dzięki temu faza druga przechodzi przez normalne, bezudarowe
+uruchomienie mostka i nie może pozornie zakończyć się przy zerowym `u_d`.
+
+Regresja `tests/fw078_hall_autocalibration.js` sprawdza przejście faz, blokadę
+fałszywego zapisu i końcową synchronizację. Test sprzętowy `0.0275` potwierdził,
+że obie fazy kończą się prawidłowo. Protokół CAN i Canable nie zmieniły się.
+Szczegóły wydania i artefaktu są prowadzone jako kolejny wpis FW-078 w
+`CHANGELOG.md`.

@@ -287,8 +287,11 @@ void InitEEPROM(MotorParams_t* MP){
 	MP->active_profile_bank=0; //FW-005: boot into Power bank
 	MP->bank_store_magic=0; //FW-006: no stored banks -> compiled-in defaults
 	MP->torque_cal_magic=0; //FW-013: no user calibration -> default span 1620
-	MP->ride_engine_magic=0; //FW-014: no stored engine -> compiled default (Legacy)
-	MP->ride_engine=0;
+	//FW-076: a factory reset gets a real wheel code, not a blank one — the app would
+	//otherwise show "unknown wheel" on a controller that has simply never been written to.
+	MP->wheel_diameter_magic=WHEEL_DIAMETER_MAGIC;
+	MP->wheel_diameter_code[0]=WHEEL_DIAMETER_CODE_0;
+	MP->wheel_diameter_code[1]=WHEEL_DIAMETER_CODE_1;
 	MP->soc_full_magic=0; //FW-018: no configured full-charge voltage -> boot 100% anchor inactive
 	MP->soc_full_pack_10mv=0;
 	MP->tuning_store_magic=0; //FW-010: no stored tuning -> compiled-in defaults

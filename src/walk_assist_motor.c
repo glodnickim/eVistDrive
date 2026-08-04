@@ -9,11 +9,12 @@
  */
 #define WA_MOTOR_IQ_ABS_MAX             157
 #define WA_MOTOR_SAFE_LIMIT_IQ           15
+#define WA_MOTOR_START_MAX_IQ            40
 
-#define WA_MOTOR_TARGET_RPM_DEFAULT      50
+#define WA_MOTOR_TARGET_RPM_DEFAULT      20
 #define WA_MOTOR_TARGET_RPM_MIN          20
 #define WA_MOTOR_TARGET_RPM_MAX          60
-#define WA_MOTOR_TARGET_ERPS_DEFAULT     67
+#define WA_MOTOR_TARGET_ERPS_DEFAULT     27
 #define WA_MOTOR_MAX_WHEEL_X100         700
 
 /* M820: 80 electrical revolutions per crank revolution -> rpm * 4 / 3. */
@@ -27,8 +28,8 @@
 #define WA_MOTOR_JAM_GRACE_TICKS       6000  /* 1.5 s for energetic start */
 #define WA_MOTOR_JAM_NO_HALL_TICKS      400  /* 100 ms */
 #define WA_MOTOR_JAM_MIN_ERPS             2
-#define WA_MOTOR_JAM_CMD_IQ              50
-#define WA_MOTOR_JAM_ACTUAL_IQ           45
+#define WA_MOTOR_JAM_CMD_IQ              24
+#define WA_MOTOR_JAM_ACTUAL_IQ           24
 #define WA_MOTOR_JAM_NO_MOTION_TICKS   1200  /* 300 ms */
 #define WA_MOTOR_JAM_PARTIAL_TICKS      800  /* 200 ms */
 #define WA_MOTOR_JAM_TARGET_PCT          15
@@ -37,16 +38,12 @@
 #define WA_MOTOR_RECOVERY_MIN_ERPS         4
 #define WA_MOTOR_REACQUIRE_IQ              24
 #define WA_MOTOR_REACQUIRE_TICKS         6000  /* 1.5 s gentle Hall reacquisition */
+#define WA_MOTOR_COAST_RECOVERY_IQ          24
+#define WA_MOTOR_COAST_RECOVERY_TICKS    16000  /* 4 s: 0.75 s ramp + 3.25 s at 24 Iq */
 #define WA_MOTOR_HALL_LOSS_DRIVE_IQ        30
-#define WA_MOTOR_RUN_MIN_IQ                   5
-#define WA_MOTOR_RUN_MAX_IQ                  36
-#define WA_MOTOR_ZERO_IQ_OFFSET_RPM          20
-#define WA_MOTOR_COAST_HYSTERESIS_RPM        15
-#define WA_MOTOR_COAST_NO_HALL_TICKS       4000  /* 1 s before gentle re-engagement */
-
-#if WA_MOTOR_COAST_HYSTERESIS_RPM >= WA_MOTOR_ZERO_IQ_OFFSET_RPM
-#error "WA coast hysteresis must leave the resume threshold above target RPM"
-#endif
+#define WA_MOTOR_RUN_MIN_IQ                   2
+#define WA_MOTOR_RUN_MAX_IQ                  40
+#define WA_MOTOR_COAST_EXIT_IQ                2
 
 static walk_motor_state_t wa_state;
 static walk_speed_controller_t wa_controller;
@@ -66,11 +63,10 @@ static uint8_t wa_hall_timeout_seen;
 static uint8_t wa_had_motion;
 static uint8_t wa_blocked;
 static uint8_t wa_jam_active;
-static uint8_t wa_coast_expected;
 static uint8_t wa_reacquire_active;
+static uint8_t wa_coast_expected;
+static uint8_t wa_coast_recovery_active;
 static uint16_t wa_reacquire_ticks;
-static uint8_t wa_overspeed_coast;
-static uint16_t wa_overspeed_coast_ticks;
 static int32_t wa_iq_cap_last;
 
 static int32_t abs32(int32_t value)
@@ -154,11 +150,10 @@ void walk_motor_reset(void)
 	wa_grace_ticks = WA_MOTOR_JAM_GRACE_TICKS;
 	wa_had_motion = 0;
 	wa_jam_active = 0;
-	wa_coast_expected = 0;
 	wa_reacquire_active = 0;
+	wa_coast_expected = 0;
+	wa_coast_recovery_active = 0;
 	wa_reacquire_ticks = 0;
-	wa_overspeed_coast = 0;
-	wa_overspeed_coast_ticks = 0;
 	wa_iq_cap_last = 0;
 	wa_control_output = (walk_speed_controller_output_t){0};
 	walk_speed_controller_reset(&wa_controller);
@@ -205,28 +200,20 @@ static void enter_limit(void)
 	wa_limit_ticks = 0;
 	wa_jam_active = 1;
 	wa_reacquire_active = 0;
+	wa_coast_expected = 0;
+	wa_coast_recovery_active = 0;
 	wa_reacquire_ticks = 0;
-	wa_overspeed_coast = 0;
-	wa_overspeed_coast_ticks = 0;
 }
 
 int32_t walk_motor_update(const walk_motor_input_t *input,
 	walk_motor_output_t *output)
 {
-	uint16_t target_rpm = WA_MOTOR_TARGET_RPM_DEFAULT;
 	uint16_t target_erps = WA_MOTOR_TARGET_ERPS_DEFAULT;
 	if (input != 0 &&
 		input->target_chainring_rpm >= WA_MOTOR_TARGET_RPM_MIN &&
 		input->target_chainring_rpm <= WA_MOTOR_TARGET_RPM_MAX) {
-		target_rpm = input->target_chainring_rpm;
-		target_erps = rpm_to_erps(target_rpm);
+		target_erps = rpm_to_erps(input->target_chainring_rpm);
 	}
-	uint16_t zero_iq_rpm =
-		(uint16_t)(target_rpm + WA_MOTOR_ZERO_IQ_OFFSET_RPM);
-	uint16_t coast_resume_rpm =
-		(uint16_t)(zero_iq_rpm - WA_MOTOR_COAST_HYSTERESIS_RPM);
-	uint16_t zero_iq_erps = rpm_to_erps(zero_iq_rpm);
-	uint16_t coast_resume_erps = rpm_to_erps(coast_resume_rpm);
 
 	uint16_t max_wheel_x100 =
 		(input != 0 && input->max_wheel_speed_x100 > 0U) ?
@@ -257,41 +244,9 @@ int32_t walk_motor_update(const walk_motor_input_t *input,
 		wa_had_motion = 1;
 		if (wa_reacquire_active) {
 			wa_reacquire_active = 0;
-			wa_reacquire_ticks = 0;
+			wa_coast_recovery_active = 0;
 			wa_coast_expected = 0;
-		}
-	}
-
-	/*
-	 * FW-067: target RPM is soft. RUN keeps 5..36 Iq until the separate
-	 * governor reaches target + 20 chainring rpm. It resumes at target + 5 rpm,
-	 * preserving 15 rpm hysteresis for every valid bank target (20..60 rpm).
-	 * If the freewheel loses Hall during coast, wait one second before the
-	 * existing gentle reacquire path.
-	 */
-	if (hall_valid && wa_erps_filtered >= zero_iq_erps) {
-		wa_overspeed_coast = 1;
-		wa_overspeed_coast_ticks = 0;
-		wa_reacquire_active = 0;
-		wa_reacquire_ticks = 0;
-	}
-	if (wa_overspeed_coast) {
-		if (hall_valid) {
-			wa_overspeed_coast_ticks = 0;
-			if (wa_erps_filtered <= coast_resume_erps) {
-				wa_overspeed_coast = 0;
-			}
-		} else {
-			if (wa_overspeed_coast_ticks < 65000U) {
-				wa_overspeed_coast_ticks++;
-			}
-			if (wa_overspeed_coast_ticks >=
-				WA_MOTOR_COAST_NO_HALL_TICKS) {
-				wa_overspeed_coast = 0;
-				wa_overspeed_coast_ticks = 0;
-				wa_reacquire_active = 1;
-				wa_reacquire_ticks = 0;
-			}
+			wa_reacquire_ticks = 0;
 		}
 	}
 
@@ -310,19 +265,31 @@ int32_t walk_motor_update(const walk_motor_input_t *input,
 			wa_iq_cmd >= WA_MOTOR_HALL_LOSS_DRIVE_IQ ||
 			abs32(input->motor_iq_actual) >= WA_MOTOR_HALL_LOSS_DRIVE_IQ;
 
-		if (wa_overspeed_coast) {
-			wa_jam_ticks = 0;
-			wa_jam_active = 0;
-		} else if (wa_had_motion && !hall_valid) {
-			if (wa_coast_expected || wa_reacquire_active ||
-				!drive_without_hall) {
+		if (wa_had_motion && !hall_valid) {
+			if (wa_coast_expected || wa_coast_recovery_active) {
+				/*
+				 * PI intentionally reached the 2 Iq keepalive after an overspeed. The motor can
+				 * stop behind the freewheel and lose Hall even though the drivetrain
+				 * is healthy. Resume only through the slow RUN slew, but allow it to
+				 * reach the bounded recovery ceiling and remain there long enough to produce
+				 * a Hall edge. This path never re-arms the 40 Iq START.
+				 */
+				wa_coast_recovery_active = 1;
+				wa_reacquire_active = 1;
+				if (wa_reacquire_ticks < 65000U) {
+					wa_reacquire_ticks++;
+				}
+				if (wa_reacquire_ticks >=
+					WA_MOTOR_COAST_RECOVERY_TICKS) {
+					enter_limit();
+				}
+			} else if (wa_reacquire_active || !drive_without_hall) {
 				/*
 				 * A stop at low torque is not a Hall fault under drive.
 				 * The gentle reacquire ceiling remains below the hard Hall-loss
-				 * threshold. FW-066 also waits one second after an intentional
-				 * hard-RPM coast before entering this path. A bounded reacquire
-				 * cannot classify its own command as an immediate fault, but it
-				 * still times out into LIMIT/STALL if the rotor cannot move.
+				 * threshold. A bounded reacquire cannot classify its own command
+				 * as an immediate fault, but it still times out into LIMIT/STALL
+				 * if the rotor cannot move.
 				 */
 				wa_reacquire_active = 1;
 				if (wa_reacquire_ticks < 65000U) {
@@ -379,35 +346,39 @@ int32_t walk_motor_update(const walk_motor_input_t *input,
 
 	wa_iq_cap_last = (wa_state == WA_STATE_LIMIT) ?
 		WA_MOTOR_SAFE_LIMIT_IQ :
+		(wa_coast_recovery_active ? WA_MOTOR_COAST_RECOVERY_IQ :
 		(wa_reacquire_active ? WA_MOTOR_REACQUIRE_IQ :
-		WA_MOTOR_IQ_ABS_MAX);
-	int32_t iq_floor = 0;
-	if (wa_state == WA_STATE_REGULATE &&
-		wa_controller.startup_complete &&
-		!wa_reacquire_active && !wa_overspeed_coast) {
-		iq_floor = WA_MOTOR_RUN_MIN_IQ;
-	}
+		(!wa_controller.startup_complete ? WA_MOTOR_START_MAX_IQ :
+		WA_MOTOR_IQ_ABS_MAX)));
 	walk_speed_controller_input_t control_input = {
 		.target_erps = target_erps,
 		.measured_erps = (uint16_t)
 			((wa_erps_filtered > 65535) ? 65535 : wa_erps_filtered),
 		.hall_valid = hall_valid,
 		.reacquire = wa_reacquire_active != 0U,
-		.force_coast = wa_overspeed_coast != 0U,
 		.iq_ceiling = wa_iq_cap_last,
+		.run_iq_min = (wa_state == WA_STATE_REGULATE &&
+			wa_controller.startup_complete && !wa_reacquire_active) ?
+			WA_MOTOR_RUN_MIN_IQ : 0,
 		.run_iq_max = WA_MOTOR_RUN_MAX_IQ,
-		.iq_floor = iq_floor,
 		.downstream_iq = input->motor_iq_reference
 	};
 	wa_iq_cmd = walk_speed_controller_update(
 		&wa_controller, &control_input, &wa_control_output);
-	if (hall_valid) {
+	if (wa_state == WA_STATE_REGULATE && hall_valid &&
+		wa_controller.startup_complete && !wa_reacquire_active) {
 		/*
-		 * Remember the controller's deceleration intent, not the delayed slew
-		 * output. With a large integral Hall may time out before Iq reaches zero;
-		 * that is still an intentional coast, not a Hall fault under drive.
+		 * Remember the PI's intent before the slower output ramp reaches zero.
+		 * Otherwise Hall can expire during an intentional deceleration and the
+		 * event is indistinguishable from an unexpected sensor loss.
 		 */
-		wa_coast_expected = wa_control_output.coast_requested ? 1U : 0U;
+		if (wa_control_output.above_target &&
+			wa_controller.desired_iq <= 0) {
+			wa_coast_expected = 1;
+		} else if (wa_controller.desired_iq > 0 &&
+			wa_iq_cmd >= WA_MOTOR_COAST_EXIT_IQ) {
+			wa_coast_expected = 0;
+		}
 	}
 	publish_output(output, target_erps, hall_valid);
 	return wa_iq_cmd;

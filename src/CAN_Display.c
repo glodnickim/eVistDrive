@@ -47,9 +47,9 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS);
 void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS);
 void sendCAN_Poll(MotorParams_t* MP, MotorState_t* MS, uint16_t command);
 void sendAcknoledge(void);
-//FW-068: replaced the old unconditional sendMultiframeWriteAck - the result of the apply
-//has to reach the tool, otherwise a rejected blob reads as a successful write.
-void sendMultiframeWriteResult(uint16_t command, uint8_t applied);
+//FW-068/076: the result of a config write has to reach the tool. Used by the multiframe
+//blobs and by the short 0x3203 write; a rejected frame must never read as a success.
+void sendWriteResult(uint16_t command, uint8_t applied);
 void send_multiframe(uint16_t command, char* data, uint8_t length );
 void append_multiframe(uint16_t command, char* data);
 void update_checksum(void);
@@ -156,6 +156,35 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 						}
 					}
 				}
+				else if(Ext_ID_Rx.command==0x3203){ //FW-076: speed limit + wheel diameter code + circumference
+					/*
+					 * Validate the WHOLE frame first, then apply. The old code applied
+					 * whatever it got and afterwards silently substituted a default for
+					 * anything out of range, so a bad frame left the bike with one new
+					 * value and one invented one, and nothing said so. It also ignored
+					 * bytes 2-3 entirely, which is why the wheel diameter never stuck.
+					 */
+					uint8_t ok = (receive_message.rx_dlen >= 6);
+					uint16_t new_limit = 0, new_circumference = 0;
+					if(ok){
+						new_limit = receive_message.rx_data[0] + (receive_message.rx_data[1]<<8);
+						new_circumference = receive_message.rx_data[4] + (receive_message.rx_data[5]<<8);
+						if(new_limit < SPEEDLIMIT_X100_MIN || new_limit > SPEEDLIMIT_X100_MAX) ok = 0;
+						if(new_circumference < WHEEL_CIRCUMFERENCE_MIN ||
+						   new_circumference > WHEEL_CIRCUMFERENCE_MAX) ok = 0;
+					}
+					if(ok){
+						MP->speedLimitx100 = new_limit;
+						MP->wheel_cirumference = new_circumference;
+						//Two raw bytes, never interpreted here: the code is metadata for the
+						//tools and the display. Speed still comes from the circumference alone.
+						MP->wheel_diameter_code[0] = receive_message.rx_data[2];
+						MP->wheel_diameter_code[1] = receive_message.rx_data[3];
+						MP->wheel_diameter_magic = WHEEL_DIAMETER_MAGIC;
+						write_virtual_eeprom();
+					}
+					sendWriteResult(0x3203, ok);
+				}
 				else if(Ext_ID_Rx.command==0x62D9){ //Startup angle, used as multiplyer here
 					MP->TS_coeff=receive_message.rx_data[0]+(receive_message.rx_data[1]<<8);
 					//save received setting
@@ -165,7 +194,11 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 				else sendCAN_Tx(MP,MS);
 				//Factory sends NO WRITE-ACK for the continuous operational data 0x6300-0x6304; only for
 				//config writes. ACKing 0x630x floods 0x822A630x that the factory never emits -> exact-match test.
-				if(!(Ext_ID_Rx.command>=0x6300 && Ext_ID_Rx.command<=0x6304)) sendAcknoledge();
+				//FW-076: 0x3203 sends its own result (ACK on success, ERROR_ACK on a rejected
+				//frame), so the generic ACK must not fire for it — the tool would see a
+				//success alongside a failure and believe the first one it matched.
+				if(!(Ext_ID_Rx.command>=0x6300 && Ext_ID_Rx.command<=0x6304)
+				   && Ext_ID_Rx.command!=0x3203) sendAcknoledge();
 				break;
 			case READ_CMD:
 				sendCAN_Tx(MP,MS);
@@ -244,12 +277,12 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 						//FW-068: answer with the REAL result - a blob rejected for a bad CRC or an
 						//unsupported version must never be reported to the tool as written.
 						uint8_t applied = assist_modes_apply_bank_blob(&BankBlob[0], rx_data_length) ? 1U : 0U;
-						sendMultiframeWriteResult(completed_cmd, applied);
+						sendWriteResult(completed_cmd, applied);
 					}
 					else if(completed_cmd==0x6024){
 						//FW-010: RAM apply only; flash write happens via 0x6022 at standstill
 						uint8_t applied = tuning_config_apply_blob(&TuningBlob[0], rx_data_length) ? 1U : 0U;
-						sendMultiframeWriteResult(completed_cmd, applied);
+						sendWriteResult(completed_cmd, applied);
 					}
 					else{
 						parse_DPparams(MP);
@@ -265,7 +298,7 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 					//out its timeout with no clue what went wrong.
 					uint16_t incomplete_cmd = Rx_MF_active;
 					if(incomplete_cmd==0x6021 || incomplete_cmd==0x6024){
-						sendMultiframeWriteResult(incomplete_cmd, 0);
+						sendWriteResult(incomplete_cmd, 0);
 					}
 					Rx_MF_active=0;
 					rx_data_length=0;
@@ -360,17 +393,9 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 			auto_off_minutes=receive_message.rx_data[0]; //overwrites the AUTO_OFF_MINUTES default
 		}
 
-		if(Ext_ID_Rx.command==0x3203&&Ext_ID_Rx.operation==WRITE_CMD){ //speed limit and wheel size
-			if(receive_message.rx_dlen>=6){
-				MP->speedLimitx100=receive_message.rx_data[0]+(receive_message.rx_data[1]<<8);
-				MP->wheel_cirumference=receive_message.rx_data[4]+(receive_message.rx_data[5]<<8);
-			}
-			if(MP->speedLimitx100==0 || MP->speedLimitx100>6000) MP->speedLimitx100=SPEEDLIMIT;
-			if(MP->wheel_cirumference==0 || MP->wheel_cirumference>4000) MP->wheel_cirumference=WHEEL_CIRCUMFERENCE;
-			//save received setting
-			write_virtual_eeprom();
-
-		}
+		//FW-076: the 0x3203 write moved into the WRITE_CMD chain above, so the frame is
+		//validated before anything is applied and answers with exactly one ACK. It used to
+		//sit here, AFTER the generic handler had already replied with the OLD values.
 
 		if(Ext_ID_Rx.command==0x6200){ //Position sensor calibration
 			autodetect();
@@ -403,7 +428,7 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
  * Operation 3 (ERROR_ACK) is already understood by the tool's request manager, which resolves
  * it as a failure, so a rejected blob now surfaces as one.
  */
-void sendMultiframeWriteResult(uint16_t command, uint8_t applied){
+void sendWriteResult(uint16_t command, uint8_t applied){
 	Ext_ID_Tx.command = command;
 	Ext_ID_Tx.operation = applied ? 2 : 3; //2 = NORMAL_ACK, 3 = ERROR_ACK
 	Ext_ID_Tx.target = Ext_ID_Rx.source; //reply to the requester (Canable/BESST = 5)
@@ -664,11 +689,13 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 				}
 			break;
 
-		case 0x3203: //to do
+		case 0x3203: //FW-076: speed limit + wheel diameter code + circumference
 			/* initialize transmit message */
 
 			Ext_ID_Tx.command = 0x3203;
-			Ext_ID_Tx.operation = 0; //write
+			//Was operation 0 (a WRITE), so the reply looked like the controller writing to
+			//the tool rather than answering it, and the request manager had nothing to match.
+			Ext_ID_Tx.operation = NORMAL_ACK;
 			Ext_ID_Tx.target = Ext_ID_Rx.source; //reply to the requester (display=3, BESST=5...) - was hardcoded 5
 			Ext_ID_Tx.source = 0x02; //controller
 			transmit_message.tx_sfid = 0x00;
@@ -678,8 +705,10 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 			transmit_message.tx_dlen = 6;
 			transmit_message.tx_data[0] = MP->speedLimitx100&0xFF;
 			transmit_message.tx_data[1] = (MP->speedLimitx100>>8)&0xFF;
-			transmit_message.tx_data[2] = (char)'A';
-			transmit_message.tx_data[3] = (char)'1';
+			//Was the constant "A1". The stored code is echoed now, so what the tool reads
+			//back is what it wrote — that is the whole point of persisting it.
+			transmit_message.tx_data[2] = MP->wheel_diameter_code[0];
+			transmit_message.tx_data[3] = MP->wheel_diameter_code[1];
 			transmit_message.tx_data[4] = MP->wheel_cirumference&0xFF;
 			transmit_message.tx_data[5] = (MP->wheel_cirumference>>8)&0xFF;
 

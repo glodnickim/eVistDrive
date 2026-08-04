@@ -1,11 +1,23 @@
 # Karta zmiany FW-025 — szybsze cięcie wspomagania po zaprzestaniu pedałowania (ride core)
 
 - **Data:** 2026-07-24
-- **Status:** POTWIERDZONE JAZDĄ (2026-07-27) — zostaje jako OK na razie
-  (`PAS_STOP_TICKS=800`=200 ms, `config.h:323`, obecne w każdym buildzie od `0.0195`
-  po `0.0206`). Zagadka „zaleganie kilkanaście sekund" z sekcji 6b poniżej okazała
-  się być OSOBNYM błędem (PI windup) — rozwiązanym przez [[FW-028_PI_WINDUP_FIX]]
+- **Status (2026-07-27):** POTWIERDZONE JAZDĄ — `PAS_STOP_TICKS=800`=200 ms
+  (`config.h`, obecne w każdym buildzie od `0.0195` po `0.0206`) zostaje jako OK.
+  Zagadka „zaleganie kilkanaście sekund" z sekcji 6b poniżej okazała się być
+  OSOBNYM błędem (PI windup) — rozwiązanym przez [[FW-028_PI_WINDUP_FIX]]
   (`0.0199`), nie przez to okno. Etap 2 (F1-F4) nie był potrzebny.
+- **Aktualizacja (2026-08-03):** F1 jednak wdrożony, ale jako DODATEK do
+  `PAS_STOP_TICKS`, nie jego zamiana — inny objaw niż testowany tu w 2026-07-27.
+  Przy stałym nacisku i niskiej/nierównej kadencji (3-40 rpm) sam 200 ms
+  fałszywie rozpoznawał stop MIĘDZY przejściami PAS (średni odstęp ~625/rpm ms
+  przy ~96 przejściach/obrót), co kasowało `assist_latched` i re-seedowało
+  Startup Boost na maksimum co ~200 ms — inny mechanizm niż „zaleganie po
+  puszczeniu pedału" opisane wyżej. `PAS_STOP_TICKS` zostaje niezmienioną DOLNĄ
+  granicą (i nadal tym samym polem konfigurowalnym z Canable, `pas_stop_ms`);
+  nowy `PAS_STOP_TICKS_MAX=2000` (500 ms) to GÓRNA granica, do której próg
+  rozciąga się tylko przy realnie wolnej kadencji (`pas_last_period_ticks` w
+  `main.c`). Przy normalnej/szybkiej kadencji zachowanie identyczne jak przed tą
+  zmianą — test z 2026-07-27 pozostaje ważny dla tego zakresu.
 - **Zakres:** reakcja toru ride core na zatrzymanie pedałowania. Miejsce poprawki
   zależne od pomiaru (warstwa czujnika PAS lub rampa) — patrz Etap 2.
 - **Powiązane:** [[FW-024_PAS_DIRECTION_LATCH]] (objaw 1, kierunek), diagnostyka

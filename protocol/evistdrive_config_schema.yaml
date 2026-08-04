@@ -227,15 +227,26 @@ profile_fields:
     safety_relevant: true
     ui_group: start_boost
 
-  - key: without_rotation_threshold_kg
+  - key: minimum_pedal_load_kg
     wire_id: null
     since: 1
     access: persistent_rw
     per_level: true
-    value: {type: u16, scale: 0.01, unit: kilogram_force, min: 0.00, max: 7.50, default: 0.45}
-    implementation: active_native_threshold_kg_boundary_planned
-    native_limit: 0_to_300_millivolt_above_auto_zero_at_40_millivolt_per_kg
-    legacy_native_default: 18_millivolt_above_zero_at_40_millivolt_per_kg
+    value: {type: u16, scale: 0.1, unit: kilogram_force, min: 0.0, max: 22.5, default: 0.7}
+    implementation: active_decikg_precision_centikg_control_bank_v7
+    wire_v7: u16_centikg_at_level_record_19_quantized_to_decikg
+    legacy_v1_to_v6: native_millivolt_delta_migrated_through_active_torque_calibration
+    ui_group: start_boost
+
+  - key: riding_minimum_pedal_load_kg
+    wire_id: null
+    since: 7
+    access: persistent_rw
+    per_level: true
+    value: {type: u8, scale: 0.1, unit: kilogram_force, min: 0.0, max: 22.5, default: 0.7}
+    implementation: active_decikg_bank_v7_centikg_control
+    wire_v7: u8_decikg_at_level_record_35
+    legacy_v6: derived_from_minimum_threshold_minus_start_load_reduction_mv
     ui_group: start_boost
 
   - key: torque_lower_threshold_kg

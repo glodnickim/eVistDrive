@@ -119,7 +119,7 @@ oryginalnym sposobem obliczeń, a użytkownik pracuje wyłącznie w kg.
 ## 5. Zrobione — dokumentacja i przygotowanie protokołu
 
 - [x] Dokument architektury Ride Core — `9e0351b`.
-- [x] Draft źródła prawdy `protocol/ebics_config_schema.yaml` — `88c3300`.
+- [x] Draft źródła prawdy `protocol/evistdrive_config_schema.yaml` — `88c3300`.
 - [x] Audyt istniejących komend firmware/HMI i bloków Para — `8e099a5`.
 - [x] Zidentyfikowane obecne pola Walk, torque override i profili Legacy.
 - [x] Zidentyfikowane miejsca Canable pokazujące torque w mV oraz ręczną
@@ -259,7 +259,7 @@ wynosi `0,00 kg`, a jego punkt techniczny zawsze wyznacza autokalibracja.
 - Walk: target ERPS, prąd bazowy/startowy, regulator, pasma, rampy i timeout.
 - System: wersja schematu, capabilities, CRC i status zapisanej konfiguracji.
 
-Pełne typy i zakresy pozostają w `protocol/ebics_config_schema.yaml`.
+Pełne typy i zakresy pozostają w `protocol/evistdrive_config_schema.yaml`.
 
 ## 11. Końcowa weryfikacja przed przekazaniem do testu
 

@@ -387,7 +387,7 @@ zakładce Walk.
 8. Zbudować firmware i wykonać test bez obciążenia.
 9. Dopiero po testach usunąć starą kartę `Banks`.
 10. Zaktualizować `WALK_ASSIST_DZIALANIE.md`,
-    `RIDE_CORE_STATUS_CANABLE.md` i `protocol/ebics_config_schema.yaml`.
+    `RIDE_CORE_STATUS_CANABLE.md` i `protocol/evistdrive_config_schema.yaml`.
 
 ---
 

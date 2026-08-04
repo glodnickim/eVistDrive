@@ -1,6 +1,6 @@
 # TSDZ2 experiment - CAN configuration candidates
 
-> **ARCHIWALNY** (2026-07-16): kandydaci parametrow przeniesieni do protocol/ebics_config_schema.yaml (zrodlo prawdy przyszlych pol CAN).
+> **ARCHIWALNY** (2026-07-16): kandydaci parametrow przeniesieni do protocol/evistdrive_config_schema.yaml (zrodlo prawdy przyszlych pol CAN).
 
 This file tracks the temporary constants added for the early assist
 experiment. Nothing here is exposed over CAN yet. If the ride tests confirm the

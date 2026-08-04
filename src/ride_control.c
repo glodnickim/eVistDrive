@@ -30,37 +30,23 @@
  *
  * FW-032: run deadband / hold time / floor % are now global ride-feel tuning
  * (tuning_config, Canable Dynamics), persisted with the tuning blob. The START
- * threshold is the existing per-level "Minimum pedal load"
- * (without_rotation_threshold_mv) — no new variable for it.
+ * threshold is the existing per-level "Minimum pedal load".
  */
 static bool assist_latched;
 static int32_t assist_hold_ticks;
 
 /*
- * FW-068: two additions to the START condition, both per level, both inert at 0.
- *
- * 1. start_load_reduction_mv lowers the engage threshold WHILE THE CRANKS ARE TURNING.
+ * FW-068/077: riding_start_load_centikg is the direct engage threshold while the bike is
+ *    rolling and the cranks are turning. All public start-load values now use kg.
  *    The reason it matters: the latch drops the moment
  *    the cranks stop, so re-catching assist at 25 km/h used to demand exactly the same push
  *    as pulling away from a standstill. Standstill launches keep the full threshold - there
  *    is no crank movement there to vouch for the rider's intent.
- *
- * 2. start_rise_mv engages on a RISE of pedal load measured from the moment the crank
- *    condition was met, held for START_RISE_CONFIRM_MS. This is immune to zero drift (the
- *    auto re-zero moves the absolute threshold around, see FW-058/059) and it is ordered:
- *    crank first, load rise second. A root strike while free-wheeling produces a spike, not
- *    a sustained rise that follows a run of forward PAS steps.
- *
- * The baseline is held at the MINIMUM seen inside the window. Tracking the latest value
- * instead would let a slow, steady push creep the baseline along with it, so the difference
- * never reaches the threshold and path B would never fire.
  */
-#define START_RISE_CONFIRM_MS 40
-#define START_RISE_CONFIRM_TICKS (START_RISE_CONFIRM_MS * 4)
 
 /*
- * Minimum wheel speed (MS.Speedx100 scale) before start_load_reduction_mv may lower the
- * threshold at all. Crank movement alone is NOT enough: at a standstill the rider can turn
+ * Minimum wheel speed (MS.Speedx100 scale) before the direct rolling threshold may replace
+ * the standstill threshold. Crank movement alone is NOT enough: at a standstill the rider can turn
  * the cranks forward with the chain slack and no load, which is exactly the case the full
  * threshold exists to catch. The reduction is for RE-catching assist on a rolling bike.
  *
@@ -69,11 +55,6 @@ static int32_t assist_hold_ticks;
  * 1.0 km/h is the same "actually moving" bar TQ_RECAL_MOVING_X100 already uses.
  */
 #define RIDE_START_REDUCTION_MIN_SPEED_X100 100
-
-static uint16_t start_baseline_mv;
-static int32_t start_window_ticks;
-static int32_t start_rise_ticks;
-static bool start_window_open;
 
 // FW-037: soft-stop release time for safety cuts (brake / backward / overtemp / torque
 // fault / torque-cal). Fades assist to 0 over this ramp instead of a hard bridge cut.
@@ -112,10 +93,6 @@ void ride_control_init(void)
 {
 	assist_latched = false;
 	assist_hold_ticks = 0;
-	start_baseline_mv = 0;
-	start_window_ticks = 0;
-	start_rise_ticks = 0;
-	start_window_open = false;
 	preload_active = false;
 	preload_ticks = 0;
 	walk_was_active = false;
@@ -205,86 +182,62 @@ void ride_control_update(const ride_control_input_t *input)
 		// FW-031: ride latch + current floor (see header comment). Acts on the ASSIST
 		// target only, before the throttle floor, so throttle keeps working without pedalling.
 		{
-			uint16_t torque_mv = rider->torque_assist_filtered;
-			uint16_t start_deadband_mv = level->without_rotation_threshold_mv;
+			// FW-083: the start GATE compares against the fully raw kg reading (no
+			// assist deadband, no 35 ms filter) — those exist to protect the smoothed
+			// RUN estimator from sensor noise, which the start threshold (0.3-0.7 kg,
+			// set by the rider) already has plenty of margin above. Using the
+			// filtered/deadbanded signal here silently raised every configured start
+			// threshold by ~0.4 kg. torque_load_centikg is the same raw value already
+			// shown to the rider as their live pedal load.
+			uint16_t torque_centikg = rider->torque_load_centikg;
+			uint16_t standstill_threshold_centikg =
+				level->minimum_pedal_load_centikg;
 			uint16_t run_deadband_mv = tuning_config_run_deadband_mv();
 			int32_t hold_ticks_full = tuning_config_assist_hold_ticks();
 			// FW-034: assist level 0 = fully off. The latch must never arm or apply its
 			// current floor there, otherwise the floor keeps the motor pulling at level 0.
 			bool assist_off = (input->assist_level_index == 0);
-			// FW-068: the crank condition itself (forward PAS steps, no reverse) already
-			// lives in rider->pedaling_active — main.c builds it from the configurable
-			// tuning_config_start_steps(). Here it gates BOTH engage paths below.
-			bool crank_ok = !input->safety_cut && !assist_off && rider->pedaling_active;
-			// FW-068 path A: absolute threshold, lowered only while the bike is genuinely
+			// FW-083: crank_ok, required_steps computed below (after bike_rolling).
+			// Moved out of pedaling_active so only the step count can be relaxed.
+			// Direction is still required in full; only the step count eases.
+			// (eased by one step while rolling; never below 0; see below.)
+			// FW-068: absolute threshold, lowered only while the bike is genuinely
 			// ROLLING and the cranks are turning. A standstill launch (and
 			// assist-without-rotation, which runs at zero cadence) always faces the full
 			// threshold - turning the cranks on a stationary bike proves nothing.
 			bool bike_rolling =
 				input->speed_x100 >= RIDE_START_REDUCTION_MIN_SPEED_X100;
-			uint16_t engage_threshold_mv = start_deadband_mv;
+				uint8_t standstill_steps = tuning_config_start_steps();
+				uint8_t required_steps = bike_rolling ?
+					(standstill_steps > 0 ? standstill_steps - 1 : 0) : standstill_steps;
+				bool crank_moving_enough = rider->crank_direction_ok &&
+					rider->crank_forward_steps >= required_steps;
+				bool crank_ok = !input->safety_cut && !assist_off && crank_moving_enough;
+			uint16_t engage_threshold_centikg = standstill_threshold_centikg;
 			if (crank_ok && bike_rolling) {
-				uint16_t reduction = level->start_load_reduction_mv;
-				engage_threshold_mv = (reduction >= engage_threshold_mv) ?
-					0U : (uint16_t)(engage_threshold_mv - reduction);
+				engage_threshold_centikg = level->riding_start_load_centikg;
 			}
-			if (input->safety_cut || !rider->pedaling_active || assist_off) {
+			if (input->safety_cut || !crank_moving_enough || assist_off) {
 				// Brake / backward / fault, cranks stopped, or level 0 -> disarm immediately.
 				assist_latched = false;
 				assist_hold_ticks = 0;
 			}
-			// FW-068 path B: rise detector. The window opens on the rising edge of the
-			// crank condition and closes on its loss or on timeout.
-			if (!crank_ok || assist_latched) {
-				start_window_open = false;
-				start_window_ticks = 0;
-				start_rise_ticks = 0;
-			} else if (!start_window_open) {
-				start_window_open = true;
-				start_baseline_mv = torque_mv;
-				start_window_ticks = (int32_t)level->start_rise_window_ms * 4;
-				start_rise_ticks = 0;
-			} else {
-				if (torque_mv < start_baseline_mv) {
-					start_baseline_mv = torque_mv; // hold the minimum, see header comment
-				}
-				if (start_window_ticks > 0) {
-					start_window_ticks--;
-				}
-			}
-			bool rise_engaged = false;
-			if (start_window_open && level->start_rise_mv > 0U &&
-				start_window_ticks > 0) {
-				uint16_t rise = (torque_mv > start_baseline_mv) ?
-					(uint16_t)(torque_mv - start_baseline_mv) : 0U;
-				if (rise >= level->start_rise_mv) {
-					if (start_rise_ticks < START_RISE_CONFIRM_TICKS) {
-						start_rise_ticks++;
-					}
-					rise_engaged = (start_rise_ticks >= START_RISE_CONFIRM_TICKS);
-				} else {
-					// A single impact must not accumulate towards the next one.
-					start_rise_ticks = 0;
-				}
-			}
 			if (!assist_latched) {
-				if (crank_ok &&
-					(torque_mv >= engage_threshold_mv || rise_engaged)) {
+				if (crank_ok && torque_centikg >= engage_threshold_centikg) {
 					// Legal start: real forward pedal load -> arm.
 					assist_latched = true;
 					assist_hold_ticks = hold_ticks_full;
-					start_window_open = false;
 					// FW-033: seed the RUN estimator to the fast value at the
 					// start instant so the launch magnitude is crisp (not rubbery),
 					// then it smooths the following leg peaks.
-					torque_input_seed_run(torque_mv);
+					torque_input_seed_run(rider->torque_assist_filtered);
 				} else {
 					// Not started yet: no assist from a light touch.
 					iq_target = 0;
 				}
 			}
 			if (assist_latched) {
-				if (torque_mv >= run_deadband_mv) {
+				if (rider->torque_assist_filtered >= run_deadband_mv) {
 					assist_hold_ticks = hold_ticks_full;
 				} else if (assist_hold_ticks > 0) {
 					assist_hold_ticks--;

@@ -118,8 +118,7 @@ void assist_start_apply_boost(
 		return;
 	}
 
-	if (!boost_enabled ||
-		input->cadence_for_assist_rpm > config->end_rpm) {
+	if (!boost_enabled) {
 		return;
 	}
 
@@ -133,11 +132,16 @@ void assist_start_apply_boost(
 		return;
 	}
 
+	/*
+	 * Deliberately not clamped to torque_range here: this is the "virtual"
+	 * boosted torque, allowed to exceed the raw sensor span. Downstream,
+	 * torque_input_native_delta_to_centikg() clamps to the wider
+	 * TORQUE_SPAN_MAX_NATIVE, and the profile/power/Iq/phase-current/battery/
+	 * thermal limits still apply after that — those are the intended ceiling,
+	 * not the sensor's physical range.
+	 */
 	uint32_t boosted_torque = torque_input_mv +
 		((uint32_t)torque_input_mv * extra_pct) / 100U;
-	if (boosted_torque > torque_range) {
-		boosted_torque = torque_range;
-	}
 
 	output->torque_output_mv = (uint16_t)boosted_torque;
 	output->extra_pct = extra_pct;

@@ -19,7 +19,7 @@ typedef enum {
 
 /*
  * WIRE VALUES — byte 0 of every level record in the bank blob, and the mode_type enum in
- * protocol/ebics_config_schema.yaml. A stored bank carries the NUMBER, not the name, so
+ * protocol/evistdrive_config_schema.yaml. A stored bank carries the NUMBER, not the name, so
  * renumbering any of these silently reinterprets every profile the rider already saved:
  * a bank written as eMTB would come back as something else after a firmware update, with
  * no error anywhere. Renaming a member is free; changing its value is not.
@@ -56,20 +56,20 @@ typedef struct {
 	uint16_t max_motor_power_w;
 	uint8_t max_iq_pct;
 	bool assist_without_rotation;
-	uint16_t without_rotation_threshold_mv;
+	/* FW-077: every rider-facing start-load setting is entered in 0.1 kg.
+	 * Control stays in centikg, but configured thresholds are quantized to
+	 * decikg. Native mV stays confined to torque_input, where the active sensor
+	 * calibration is applied. This threshold is shared by a normal standstill
+	 * start and the optional assist-without-rotation path. */
+	uint16_t minimum_pedal_load_centikg;
 	assist_startup_boost_config_t startup_boost;
 	assist_smooth_start_config_t smooth_start;
 	uint16_t release_ms;
 	uint16_t power_rise_filter_ms;
 	uint16_t power_fall_filter_ms;
-	/* FW-068: start condition, per level. All zero = exactly the pre-FW-068 behaviour.
-	 * start_load_reduction_mv lowers without_rotation_threshold_mv while the cranks are
-	 * actually turning, so re-catching assist in motion no longer costs as much as a
-	 * standstill launch. start_rise_* is the alternative engage path: a *rise* of pedal
-	 * load after the crank moved, which is immune to zero drift (see FW-058/FW-059). */
-	uint16_t start_load_reduction_mv;
-	uint16_t start_rise_mv;
-	uint16_t start_rise_window_ms;
+	/* FW-077: direct minimum while already rolling, not an mV reduction the
+	 * rider has to subtract mentally. */
+	uint16_t riding_start_load_centikg;
 	/* FW-069: Iq ramps, moved here from the global tuning blob. They decide the character
 	 * of how power builds, so they belong next to release_ms/power_*_filter_ms, which were
 	 * already per level. Per level in a per-bank store also gives per-bank for free. */
@@ -104,26 +104,29 @@ typedef struct {
 
 #define ASSIST_BANK_COUNT 2U
 /*
- * FW-068/069: v6, 13 B header + 5x46 B + CRC = 245 B.
+ * FW-068/069/077: 13 B header + 5x46 B + CRC = 245 B.
  *
  * HARD CEILING: the multiframe write protocol carries the total length in ONE byte
  * (CAN_Display.c rx_data_length, taken from rx_data[0]), and send_multiframe() takes a
  * uint8_t length. A blob above 255 B cannot be transferred at all - the write would fail
- * on CRC with no useful error. That is why the three FW-068 fields are u8 on the wire
- * (0..100 mV fits; the rise window travels in 10 ms units) even though they are u16 here.
+ * on CRC with no useful error. v6 therefore placed its three added fields in u8 slots.
+ * FW-077 reuses [35] for the rolling kg threshold and reserves the removed [36..37].
  *
- * Only 10 B of headroom are left (2 B per level). The next per-level field beyond that
- * needs a 16-bit length on both sides of the protocol first.
+ * FW-077 keeps the length unchanged: record[19..20] carries a centikg value
+ * quantized to 0.1 kg; record[35] carries the rolling threshold in 0.1 kg.
+ * Removed rise-detector bytes [36..37] stay reserved and zero for compatibility.
  */
 #define ASSIST_BANK_BLOB_LEN 245U
-/* Wire resolution of start_rise_window_ms: stored in ms, transferred in 10 ms units. */
-#define ASSIST_START_RISE_WINDOW_WIRE_STEP_MS 10U
-
-/* FW-068 per-level start condition limits. */
-#define ASSIST_START_LOAD_REDUCTION_MAX_MV 100U
-#define ASSIST_START_RISE_MAX_MV 100U
-#define ASSIST_START_RISE_WINDOW_MAX_MS 2000U
-#define ASSIST_START_RISE_WINDOW_DEFAULT_MS 400U
+/* FW-077 per-level start-load limits in the centikg control domain. Every
+ * configured value is rounded to ASSIST_START_LOAD_WIRE_STEP_CENTIKG so the
+ * user-facing precision is consistently one decimal place. */
+#define ASSIST_START_LOAD_WIRE_STEP_CENTIKG 10U
+#define ASSIST_MIN_PEDAL_LOAD_DEFAULT_CENTIKG 70U
+/* Boot default for the "while riding" threshold only — deliberately lower than the
+ * standstill threshold above, so assist stays on through lighter pedalling once you are
+ * already moving, without lowering the guard against an accidental start from a stop. */
+#define ASSIST_RIDING_MIN_PEDAL_LOAD_DEFAULT_CENTIKG 30U
+#define ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG 2250U
 /* FW-069 per-level Iq ramp limits (same range the global tuning blob used). */
 #define ASSIST_RAMP_MS_MIN 20U
 #define ASSIST_RAMP_MS_MAX 5000U

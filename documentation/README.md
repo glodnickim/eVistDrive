@@ -1,6 +1,6 @@
 # Przewodnik po dokumentacji — gdzie czego szukać
 
-Aktualizacja: 2026-07-31. Zasada: **jeden temat = jedno źródło prawdy.**
+Aktualizacja: 2026-08-04. Zasada: **jeden temat = jedno źródło prawdy.**
 Dokumenty oznaczone ARCHIWALNY mają na górze baner wskazujący następcę —
 zostają w repo tylko jako historia decyzji.
 
@@ -19,6 +19,9 @@ zostają w repo tylko jako historia decyzji.
 | `RIDE_CORE_MASTER_CHECKLIST_PL.md` | **NADRZĘDNA lista całego zadania**: decyzje wiążące, co zrobione, co w toku, kolejność dalszych prac, testy końcowe | AKTUALNY |
 | `RIDE_CORE_STATUS_CANABLE.md` | Szczegóły techniczne statusu + pełny plan zmian w CANable (tabele parametrów, układ ekranów) | AKTUALNY |
 | `RIDE_CORE_REFACTOR.md` | Zapis architektury etapu 1 (kto może pisać prąd silnika, opis modułów) | AKTUALNY (zapis architektury) |
+| [`FW-048_COAST_RELEASE.md`](FW-048_COAST_RELEASE.md) | Źródło analizy kąta Halla/six-step: klik przy zatrzymaniu oraz hipotezy i wymagane logi dla pulsowania pod obciążeniem przy małym ERPS | ANALIZA DO TESTU SPRZĘTOWEGO |
+| [`FW-022_HALL_CALIBRATION_PERSISTENCE.md`](FW-022_HALL_CALIBRATION_PERSISTENCE.md) | Kolejne wpisy FW-022/FW-078: trwałość kalibracji oraz poprawne przejście obu faz `0x6200` | FW-078 POTWIERDZONE SPRZĘTOWO 0.0275 |
+| [`FW-068_START_CONDITION_CONFIGURABLE.md`](FW-068_START_CONDITION_CONFIGURABLE.md) | Kolejne wpisy FW-068/FW-077: historia warunku startu oraz aktualny jeden próg w kg, bank v7 i migracja | FW-077 WDROŻONE; TEST SPRZĘTOWY OCZEKUJE |
 | `FW-033_TORQUE_CONDITIONING_PLAN.md` | Plan brakujacej warstwy ride core: diagnostyka saturacji torque, `torque_run_mv`, mniej pikujace eMTB i testy A/B | PLAN DO WDROZENIA |
 | [`FW-074_ASSIST_CARRY_OVER_PLAN.md`](FW-074_ASSIST_CARRY_OVER_PLAN.md) | Plan bezpiecznego, opcjonalnego dociągnięcia po końcu pedałowania: presety, maszyna stanów, bank blob v7, Canable i testy | PLAN DO WDROŻENIA |
 
@@ -30,7 +33,7 @@ działa / co dodać w CANable?" → **status**. „Dlaczego kod jest tak podziel
 
 | Dokument | Rola | Status |
 |---|---|---|
-| `../protocol/ebics_config_schema.yaml` | **Źródło prawdy przyszłych parametrów** (typy, zakresy, jednostki; ID jeszcze nieprzydzielone) | AKTUALNY (draft) |
+| `../protocol/evistdrive_config_schema.yaml` | **Źródło prawdy przyszłych parametrów** (typy, zakresy, jednostki; ID jeszcze nieprzydzielone) | AKTUALNY (draft) |
 | [`PLAN_FLASH_CONFIG_STORAGE_EXPANSION_PL.md`](PLAN_FLASH_CONFIG_STORAGE_EXPANSION_PL.md) | **Podplan planu nadrzędnego:** poprawna granica aplikacji, Config A/B, migracja ustawień, większe bloby banku/tuningu i bezpieczny CAN | REALIZACJA — MAPA FLASH WDROŻONA |
 | `../protocol/HMI_COMMAND_AUDIT.md` | Które komendy CAN są zajęte, które bloki to konfiguracja, a które telemetria | AKTUALNY |
 | `CAN_PROTOCOL_REFERENCE.md` | Analiza logu FABRYCZNEGO firmware Bafang (jak działa oryginał) | AKTUALNY (referencja) |
@@ -54,7 +57,7 @@ działa / co dodać w CANable?" → **status**. „Dlaczego kod jest tak podziel
 | Dokument | Rola | Status |
 |---|---|---|
 | `WALK_ASSIST_DZIALANIE.md` | Obecne działanie (źródło prawdy) | AKTUALNY |
-| `FW-060_WA_CONSTANT_RPM_CONTROLLER.md` | Architektura, zabezpieczenia, diagnoza kolejnych testów oraz procedura testu regulatora RPM | POPRAWKA FW-067 / 0.0264, TEST STOJAKOWY OCZEKUJE |
+| `FW-060_WA_CONSTANT_RPM_CONTROLLER.md` | Architektura, zabezpieczenia, diagnoza kolejnych testów oraz procedura testu regulatora RPM | FW-082 / 0.0282, TEST STOJAKOWY OCZEKUJE |
 | `FW-029_WALK_ASSIST_MOTOR_SPEED_PLAN.md` | Historyczny plan wcześniejszych regulatorów i prób strojenia | ARCHIWALNY → FW-060 |
 | `FW-051_WA_SETTINGS_PER_BANK_PLAN.md` | Prąd, RPM i próg odcięcia WA zapisane osobno dla Banku 1/2 w bank blob v2; migracja v1 bez resetu EEPROM | WDROŻONE 0.0238 |
 | `FW-054_WA_TIMED_RUN.md` | Opcjonalne bankowe podtrzymanie WA po puszczeniu przycisku, timeout 1-120 s i zatrzymanie dowolnym przyciskiem | WDROŻONE 0.0242, TEST SPRZĘTOWY |
@@ -68,7 +71,7 @@ Wszystkie zastąpione przez dokumenty Ride Core (sekcja 1) i schemat (sekcja 2):
 | Dokument | Czym było | Następca |
 |---|---|---|
 | `../archive/ASSIST_ANALYSIS_AND_ROADMAP.md` | Analiza i mapa drogowa pierwszego eksperymentu | `RIDE_CORE_MASTER_CHECKLIST_PL.md` |
-| `../archive/EXPERIMENT_CAN_CANDIDATES.md` | Kandydaci parametrów do CAN | `../protocol/ebics_config_schema.yaml` |
+| `../archive/EXPERIMENT_CAN_CANDIDATES.md` | Kandydaci parametrów do CAN | `../protocol/evistdrive_config_schema.yaml` |
 | `../archive/PLAN_POWER_PATH_smooth_ride.md` | Plan płynnej ścieżki mocy (pisany na zepsutej 0.0114) | zrealizowane: strojenia 0.0133/0.0134 + Ride Core (Smooth Start/Release/filtry) |
 | `../todo/CODE_SKETCH_iq_ramp.md` | Szkic adaptacyjnej rampy prądu | zrealizowane w `assist_dynamics` (build 0.0148) |
 

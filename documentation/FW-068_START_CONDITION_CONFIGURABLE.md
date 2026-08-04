@@ -1,4 +1,4 @@
-# FW-068 — warunek startu asysty: konfigurowalny, z osobnym progiem dla jazdy
+# FW-068 / FW-077 — warunek startu asysty i próg podczas jazdy
 
 - **Data:** 2026-07-31
 - **Status:** ZAIMPLEMENTOWANE, **niezbudowane i nieprzetestowane na sprzęcie**
@@ -11,6 +11,10 @@
   `FW-058`/`FW-059` — dryf zera, który ta karta obchodzi detektorem przyrostu.
 
 > **Jednorazowy reset ustawień.** Patrz sekcja 6.
+>
+> **AKTUALIZACJA FW-077 (2026-08-03):** algorytm przyrostu nacisku i okno
+> czasowe opisane historycznie w tej karcie zostały usunięte. Aktualne zachowanie
+> i format banku opisuje sekcja 10.
 
 ---
 
@@ -228,3 +232,28 @@ Kolejność ma znaczenie: najpierw punkt odniesienia, potem **po jednej zmiennej
 12. **Odrzucenie musi być widoczne:** wymusić błąd (np. starszy Canable wysyłający v6 do
     firmware bez FW-068, albo celowo uszkodzone CRC) → karta pokazuje „was not written",
     a nie ciche powodzenie. To jest test zmiany z sekcji 8.
+
+## 10. Aktualizacja FW-077 — jeden próg nacisku w kg
+
+FW-077 zastępuje trzy historyczne ustawienia FW-068 jednym bezpośrednim progiem
+podczas jazdy. Użytkownik nie miesza już kg, mV i okna czasowego:
+
+| Pole aktualne | Znaczenie | Reprezentacja banku v7 |
+|---|---|---:|
+| `Minimum pedal load (kg)` | minimalny nacisk przy ruszaniu z miejsca i dla Assist without rotation | u16 centikg, kwantyzacja do 0,1 kg |
+| `Minimum pedal load while riding (kg)` | bezpośredni minimalny nacisk do ponownego załączenia podczas jazdy | u8 decikg, 0,1 kg |
+
+Próg podczas jazdy działa przy prędkości koła co najmniej 1,0 km/h oraz
+prawidłowym obrocie korby do przodu. Nie jest redukcją odejmowaną od progu
+głównego. `Engage on pressure rise` i `Pressure rise window` zostały całkowicie
+usunięte z algorytmu oraz interfejsu.
+
+Bank v7 zachowuje 245 B: rekord `[19..20]` niesie główny próg w centikg,
+`[35]` próg jazdy w decikg, `[36..37]` pozostają zarezerwowane i zerowane, a
+rampy Iq pozostają w `[38..45]`. Stare banki v1–v6 są migrowane przez aktywną
+kalibrację czujnika; wynik jest zaokrąglany do jednego miejsca po przecinku.
+Dawne ustawienia detektora przyrostu są ignorowane.
+
+Weryfikacja: `tests/fw077_start_condition_kg.js` przechodzi, format v7 ma
+round-trip, a starsze formaty i presety zachowują migrację. Szczegóły wydania
+i build są prowadzone jako kolejny wpis FW-077 w `CHANGELOG.md`.

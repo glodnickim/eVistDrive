@@ -174,7 +174,7 @@ typedef struct
 	// version bump, not another change of MotorParams_t — every size change here invalidates the
 	// whole stored record (FW-023 length check) and resets ALL settings to defaults.
 	uint16_t       	bank_store_magic;               // 0xB16B = bank_store holds valid serialized banks
-	uint8_t       	bank_store[2][256];             // serialized bank blobs (wire format v6, 245 B used)
+	uint8_t       	bank_store[2][256];             // serialized bank blobs (wire format v7, 245 B used)
 
 	//--- FW-010: global ride-feel tuning storage (appended at end) ---
 	uint16_t       	tuning_store_magic;             // 0x7501 = tuning_store holds valid values
@@ -187,10 +187,13 @@ typedef struct
 	uint16_t       	torque_cal_span_native;         // native span for 60.00 kg
 	uint16_t       	torque_cal_crc;                 // CRC16-CCITT over version+span
 
-	//--- FW-014: persisted ride engine choice ---
-	uint16_t       	ride_engine_magic;              // 0x5E01 = ride_engine byte is valid
-	uint8_t        	ride_engine;                    // 0 = Legacy, 1 = ride core
-	uint8_t        	ride_engine_pad;
+	//--- FW-076: persisted Bafang wheel-diameter code (0x3203 bytes 2-3) ---
+	// Reuses the FW-014 ride-engine slot, which went dead when engine selection was removed
+	// in FW-030: uint16 + uint8 + uint8 in, uint16 + uint8[2] out. Same size, same order,
+	// same alignment — deliberately, because ANY change to sizeof(MotorParams_t) invalidates
+	// the stored record (FW-023 length check) and resets every setting the rider has.
+	uint16_t       	wheel_diameter_magic;           // 0x5744 = wheel_diameter_code is valid
+	uint8_t        	wheel_diameter_code[2];         // raw Bafang code, e.g. B5 01 = 27.5"
 
 	//--- FW-018: configurable full-charge PACK voltage (100% anchor at boot) ---
 	uint16_t       	soc_full_magic;                 // 0x5F01 = soc_full_pack_10mv holds a valid threshold

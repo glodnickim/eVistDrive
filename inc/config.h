@@ -101,6 +101,19 @@
 //--------------------------------------------------------------------
 //Speed settings
 #define WHEEL_CIRCUMFERENCE 2218 //mm; 27.5" rim (584) + 2.4" tire (2x61) -> dia 706 * pi. HMI 0x3203 write overrides at runtime.
+// FW-076: Bafang wheel-diameter code carried in 0x3203 bytes 2-3. It is METADATA for the
+// tools and the display — speed and distance are computed from WHEEL_CIRCUMFERENCE alone —
+// but it has to survive a power cycle, or the app shows a different wheel after every boot.
+// B5 01 = 27.5", D0 01 = 29". Two raw bytes, never interpreted by the controller.
+#define WHEEL_DIAMETER_CODE_0 0xB5
+#define WHEEL_DIAMETER_CODE_1 0x01
+#define WHEEL_DIAMETER_MAGIC  0x5744
+// Accepted ranges for a 0x3203 write. A frame outside them is rejected WHOLE — a partially
+// applied frame would leave the bike with one new value and one old, and nothing would say so.
+#define SPEEDLIMIT_X100_MIN 1
+#define SPEEDLIMIT_X100_MAX 6000
+#define WHEEL_CIRCUMFERENCE_MIN 400
+#define WHEEL_CIRCUMFERENCE_MAX 4000
 #define GEAR_RATIO 80 //11 for BionX IGH3
 #define SPEEDLIMIT 2500
 #define PULSES_PER_REVOLUTION 1 //wheel revolution, Para1[20]
@@ -110,7 +123,7 @@
 #define SPEEDSOURCE EXTERNAL
 #define SPEEDFILTER 1
 #define SPDSHFT 0
-#define LEGALFLAG 0
+#define LEGALFLAG 1
 
 //---------------------------------------------------------------------
 //power settings
@@ -163,7 +176,7 @@
 #define WA_KI_SHIFT  11     // I gain: integral term = wa_integral >> WA_KI_SHIFT (larger = slower trim @4kHz). TUNE.
 #define WA_KICK_SPEED 50    // Speedx100 < 0.5 km/h at engage = standstill -> apply kick; above -> resume without kick
 #define WALK_ASSIST_CURRENT_DEFAULT 30 // % of phase_current_max stored in Para1[36]
-#define WALK_ASSIST_RPM_DEFAULT     50 // raw chainring RPM stored in Para1[60..61]
+#define WALK_ASSIST_RPM_DEFAULT     20 // raw chainring RPM stored in Para1[60..61]
 #define WALK_ASSIST_RPM_MIN         20
 #define WALK_ASSIST_RPM_MAX         60
 // Start boost: raised current ceiling at low speed so the initial shove actually moves the bike.
@@ -225,20 +238,9 @@
 #define SMOOTH_START_ENABLE 0
 #define START_RAMP_TICKS   1200 // ~300 ms envelope
 
-// --- STARTUP BOOST: cadence-decaying MULTIPLIER on pedal pressure
-// apply_startup_boost()). The ONLY pull-away boost mechanism (STARTUP_FLOOR was removed so effects can't
-// stack -> clean, attributable ride feedback). It SCALES the pressure signal (mapped_torque) by a factor
-// that is maximal at cadence 0 and decays geometrically as cadence builds:
-//   factor(cad)% = STARTUP_BOOST_FACTOR * (1 - CADENCE_STEP/256)^cad   (the same law used by the reference implementation, which precomputes
-// it into a 120-entry table; here powf() computes it directly). Boost is proportional to how hard you press
-// -> a strong press gives a strong-but-controlled kick that fades on its own with cadence.
-// Boosted pressure is capped to full MP.phase_current_max (level-independent kick).
-#define STARTUP_BOOST_ENABLE        1
-#define STARTUP_BOOST_FACTOR        200  // factor[0] in %: extra pressure at cadence 0 (start boost torque factor). 200 = up to +200%
-#define STARTUP_BOOST_CADENCE_STEP  25   // geometric decay per RPM (step/256). Higher = boost fades faster with cadence (cadence step).
-                                         // 25 = typical: ~36% left at 10 rpm, ~13% at 20 rpm, gone ~40 rpm. 50 faded so fast the kick barely outlived the first crank degrees
-#define STARTUP_BOOST_MODE          0    // 0=CADENCE (always on, fades w/ cadence); 1=SPEED (only from standstill, drop >45 rpm); 2=AUTO (off when little press while rolling)
-#define STARTUP_BOOST_AUTO_TQ       20   // AUTO mode only: pressure [mV above ~750 rest] below which boost drops once already moving
+// FW-0xx: the legacy monolith's own STARTUP_BOOST_* constants and powf()-based boost were
+// removed (single source of truth). Startup boost for real riding lives in tuning_config.c /
+// assist_start.c (Canable-configurable, 120-entry integer table) - see assist_start.h.
 
 // --- Soft cut-off stopnia mocy (usuwa klik przy koncowym DISABLE po zatrzymaniu) ---
 // 1 = przed wylaczeniem mostka zjedz napiecia faz do wektora neutralnego (_T/2)
@@ -279,7 +281,10 @@
 // START_MIN_STEPS + TQ_GATE_MIN latch still decides whether motor power may start.
 #define START_CADENCE_SEED_ENABLE 1
 #define START_CADENCE_SEED_STEPS 2
-#define START_CADENCE_SEED_RPM 18   // was 10 - higher seed = more power right at start (cadence^helper term bigger from the first move); still gated by START_MIN_STEPS + pressure
+#define START_CADENCE_SEED_RPM 1    // FW-0xx: was 18 (then 10). A high seed forced the startup-boost curve to
+	// evaluate near its max on every reseed (assist_modes.c fed the boost cadence_for_assist_rpm=0 whenever
+	// cadence_seeded, specifically to counter this). Now the seed itself is the small TSDZ2-style placeholder
+	// (~1 rpm) and boost reads the SAME cadence as the rest of the control path - no separate override needed.
 
 // --- Engagement HYSTERESIS (#hold): once engaged, stay engaged until pressure drops to TQ_GATE_RELEASE mV
 // above rest (must be < TQ_GATE_MIN). Without it the assist unloads the pedal -> pressure falls below the
@@ -343,7 +348,16 @@
 //Quadrature PAS decoder (PC12=A, PD2=B), polled @4kHz. Confirmed by CAN log: forward = negative raw step.
 #define PAS_DIR_SIGN -1       // sign applied to raw quadrature step so that FORWARD pedalling => +1 (from test)
 #define PAS_STEPS_PER_PULSE 4 // cadence pulse every 4 quadrature transitions. Tested OK on HMI (=true RPM) -> implies ~96 transitions/rev (24 magnets). Reverser says "48 pulses/rev"; if that means 48 transitions, this would read half - VERIFY by measuring before changing to 2.
-#define PAS_STOP_TICKS 800    // FW-025: ticks @4kHz = 200 ms with no quadrature transition -> pedalling stopped
+// FW-025 set this to a fixed 200 ms and ride-confirmed it as OK (the "runs on for seconds"
+// symptom that prompted looking at this window turned out to be the unrelated PI windup bug,
+// not this timeout). FW-0xx revisits it: at low/uneven cadence the average inter-transition gap
+// (~625/rpm ms at ~96 transitions/rev) can exceed 200 ms well before a real stop, misreading a
+// slow pedal stroke as "stopped" and re-arming the startup boost/seed on every recovery. Kept as
+// the CANable-configurable floor (`pas_stop_ms`, evistdrive_config_schema.yaml) - same meaning as
+// before at normal/fast cadence - and stretched adaptively above it only when the crank is
+// genuinely turning slowly; see PAS_STOP_TICKS_MAX and pas_last_period_ticks in main.c.
+#define PAS_STOP_TICKS 800    // FW-025: ticks @4kHz = 200 ms floor with no quadrature transition -> pedalling stopped
+#define PAS_STOP_TICKS_MAX 2000 // FW-0xx: ticks @4kHz = 500 ms ceiling for the adaptive stretch at low cadence
                               // (was 2000 = 500 ms). Under load the cadence is HELD until this window, so assist
                               // lingered ~500 ms after you stop pedalling. Measured on 0.0194:
                               // quadrature transitions arrive every ~10-60 ms while pedalling, so 200 ms keeps a

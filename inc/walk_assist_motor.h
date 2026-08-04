@@ -5,11 +5,13 @@
 #include <stdint.h>
 
 /*
- * FW-060/FW-067: Walk Assist uses motor Hall ERPS to regulate a soft
- * chainring-speed target. FW-066 added bounded RUN current; FW-067 derives
- * the coast governor from the bank target (+20 rpm, resume at +5 rpm).
+ * FW-060/FW-079/FW-080/FW-081/FW-082: Walk Assist uses motor Hall ERPS to regulate the
+ * configured chainring-speed target. Normal RUN keeps 2 Iq so the rotor/Hall
+ * need not stop above the target. A Hall timeout uses a bounded recovery up to
+ * 24 Iq. Neither path re-arms the one-shot START, and both still time out to
+ * STALL.
  *
- * This facade owns Hall estimation, the hard RPM governor and safety states.
+ * This facade owns Hall estimation and safety states.
  * The one-shot start trajectory, bounded PI and output slew live in
  * walk_speed_controller.c. Wheel speed remains an independent safety cut-off;
  * changing gear intentionally changes walking speed.
