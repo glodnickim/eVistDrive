@@ -19,13 +19,14 @@ int32_t assist_limits_apply(
 	limited = map(input->controller_temperature_c, 75, 90, limited, 0);
 
 	if (input->legal_enabled && !input->offroad && !input->walk_active) {
-		if ((input->cadence_filtered_x8 >> 3) > 15) {
+		if (input->source == ASSIST_LIMIT_SOURCE_PEDAL_CONFIRMED) {
 			limited = map(input->speed_x100,
 				input->speed_limit_x100,
 				input->speed_limit_x100 + 200,
 				limited,
 				0);
 		} else {
+			/* Non-pedal demand (throttle, without-rotation launch): 5..7 km/h. */
 			limited = map(input->speed_x100, 500, 700, limited, 0);
 		}
 	}
@@ -41,11 +42,18 @@ int32_t assist_limits_apply_legacy(
 	const MotorState_t *motor_state,
 	const MotorParams_t *motor_params)
 {
+	/*
+	 * FW-091: the frozen Legacy monolith keeps its original behaviour, cadence guess and
+	 * all — it is not part of the ride core and must not change. The cadence value is
+	 * mapped to the new source enum here so the shared limiter has one code path.
+	 */
 	assist_limits_input_t input = {
 		.voltage_raw = voltage_raw,
 		.voltage_min_raw = motor_params->voltage_min,
 		.controller_temperature_c = motor_state->int_Temperature,
-		.cadence_filtered_x8 = cadence_filtered,
+		.source = ((cadence_filtered >> 3) > 15) ?
+			ASSIST_LIMIT_SOURCE_PEDAL_CONFIRMED :
+			ASSIST_LIMIT_SOURCE_NON_PEDAL,
 		.speed_x100 = motor_state->Speedx100,
 		.speed_limit_x100 = speed_limit_x100,
 		.legal_enabled = motor_params->legalflag != 0,

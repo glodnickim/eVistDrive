@@ -48,10 +48,14 @@ function nativeToCentikg(delta) {
 const roundToDecikg = (centikg) =>
     Math.floor((centikg + wireStep / 2) / wireStep) * wireStep;
 
-check(/#define\s+BANK_BLOB_VERSION\s+BANK_BLOB_VERSION_V7/.test(assistC),
-    'serializer must advertise bank schema v7');
-check(constant(assistC, 'BANK_RECORD_LEN') === 46, 'v7 record must remain 46 B');
-check(constant(assistH, 'ASSIST_BANK_BLOB_LEN') === 245, 'v7 bank must remain 245 B');
+// FW-084 grew the record to 48 B and the current version to v8. What FW-077 still owns is
+// the v7 GEOMETRY: a v7 blob must keep being accepted at exactly 46 B, or every profile
+// saved before FW-084 is rejected on load and silently replaced by defaults.
+check(constant(assistC, 'BANK_RECORD_LEN_V7') === 46, 'v7 record must remain 46 B');
+check(/version == BANK_BLOB_VERSION_V7 && record_len != BANK_RECORD_LEN_V7/.test(assistC),
+    'a v7 blob must still be required to be exactly 46 B per record');
+check(/record_len >= BANK_RECORD_LEN_V7/.test(assistC),
+    'the FW-068/069/077 tail fields must stay gated on the v7 length, not the newest one');
 check(wireStep === 10, 'start-load fields must use 0.1 kg resolution');
 
 for (const oldName of ['without_rotation_threshold_mv', 'start_load_reduction_mv',
@@ -97,8 +101,11 @@ check(!rideC.includes('engage_threshold_centikg -'),
 for (const removed of ['START_RISE_CONFIRM', 'start_window_open', 'rise_engaged']) {
     check(!rideC.includes(removed), `${removed} rise-detector code must be removed`);
 }
-check(assistC.includes('record[36] = 0;') && assistC.includes('record[37] = 0;'),
-    'removed rise-detector wire bytes must remain reserved and zero');
+// FW-084 spent the two bytes FW-077 reserved. What must hold now is that they are read as
+// Extended Boost ONLY from v8 on — a v6/v7 blob still carries the dead rise-detector value
+// there, and interpreting it would turn stale bytes into a live boost setting.
+check(/version >= BANK_BLOB_VERSION_V8 && record_len >= BANK_RECORD_LEN_V8/.test(assistC),
+    'record[36..37] may only be read as Extended Boost from v8 on');
 
 console.log(failures === 0
     ? 'FW-077 Start condition kg: PASS'

@@ -34,12 +34,14 @@
 #define TUNING_HOLD_MS_MAX 3000U
 #define TUNING_MIN_IQ_PCT_MAX 25U
 
-/* FW-033: RUN torque estimator time constant. */
-#define TUNING_TORQUE_RUN_FILTER_MS_MAX 1000U
+/* FW-085: RUN torque estimator averaging window, in CRANK DEGREES (was ms up to v6). */
+#define TUNING_TORQUE_RUN_WINDOW_DEG_MAX 360U
+#define TUNING_TORQUE_RUN_WINDOW_DEG_DEFAULT 180U
 
 /* Blob: v2 = 22 B (+3 latch u16), v3/v4/v5 = 24 B (+1 torque-run u16),
- * v6 = 32 B (+1 start-steps u16 + 3 reserved u16). apply_blob accepts all of them;
- * the per-version body/length table lives in tuning_config.c. */
+ * v6 = 32 B (+1 start-steps u16 + 3 reserved u16), v7 = 32 B (same layout as v6;
+ * the field at offset 20 changes unit from ms to crank degrees). apply_blob accepts
+ * all of them; the per-version body/length table lives in tuning_config.c. */
 #define TUNING_BLOB_LEN 32U
 #define TUNING_BLOB_LEN_V3 24U
 #define TUNING_BLOB_LEN_V2 22U
@@ -54,8 +56,8 @@ uint16_t tuning_config_run_deadband_mv(void);
 int32_t tuning_config_assist_hold_ticks(void);
 uint16_t tuning_config_min_iq_pct(void);
 
-/* FW-033: RUN torque estimator time constant (ms; 0 = disabled). */
-uint16_t tuning_config_assist_torque_run_filter_ms(void);
+/* FW-085: RUN torque estimator window (crank degrees; 0 = disabled). */
+uint16_t tuning_config_assist_torque_run_window_deg(void);
 
 uint16_t tuning_config_serialize(uint8_t *buffer);
 bool tuning_config_apply_blob(const uint8_t *buffer, uint16_t length);

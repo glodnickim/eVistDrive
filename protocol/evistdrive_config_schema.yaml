@@ -373,6 +373,42 @@ profile_fields:
     zero_semantics: bypass
     ui_group: dynamics_release
 
+  # FW-084 Extended Boost. Safety relevant as a group: together they can hold drive current
+  # with the cranks stationary. duration_ms = 0 is the switch, and it is the default.
+  - key: extended_boost_trigger_load_kg
+    wire_id: null
+    since: 8
+    access: persistent_rw
+    per_level: true
+    # 0.5 kg per wire unit, unlike every other kilogram_force field: one byte had to cover
+    # the full 60 kg sensor scale and the bank record is at the 255 B transport ceiling. 0.5
+    # rather than 0.25 so every storable value is exact at one decimal place.
+    value: {type: u8, scale: 0.5, unit: kilogram_force, min: 1.0, max: 60.0, default: 20.0}
+    implementation: bank_v8_record_36
+    safety_relevant: true
+    ui_group: extended_boost
+
+  - key: extended_boost_strength_pct
+    wire_id: null
+    since: 8
+    access: persistent_rw
+    per_level: true
+    value: {type: u8, scale: 1, unit: percent_multiplier, min: 0, max: 255, default: 100}
+    implementation: bank_v8_record_37
+    safety_relevant: true
+    ui_group: extended_boost
+
+  - key: extended_boost_duration_ms
+    wire_id: null
+    since: 8
+    access: persistent_rw
+    per_level: true
+    value: {type: u16, scale: 1, unit: millisecond, min: 0, max: 1000, default: 0}
+    implementation: bank_v8_record_46
+    zero_semantics: disabled
+    safety_relevant: true
+    ui_group: extended_boost
+
   - key: taper_start_kph
     wire_id: null
     since: 1

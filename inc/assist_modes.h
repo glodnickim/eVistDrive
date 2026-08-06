@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "assist_extended_boost.h"
 #include "assist_start.h"
 #include "rider_input.h"
 
@@ -77,6 +78,9 @@ typedef struct {
 	uint16_t iq_rise_fast_ms;
 	uint16_t iq_fall_slow_ms;
 	uint16_t iq_fall_fast_ms;
+	/* FW-084: Extended Boost, per level like the ramps above. duration_ms = 0 disables
+	 * it completely, which is what every new and every migrated profile gets. */
+	assist_extended_boost_config_t extended_boost;
 } assist_level_config_t;
 
 typedef struct {
@@ -104,19 +108,22 @@ typedef struct {
 
 #define ASSIST_BANK_COUNT 2U
 /*
- * FW-068/069/077: 13 B header + 5x46 B + CRC = 245 B.
+ * FW-084: 13 B header + 5x48 B + CRC = 255 B.
  *
- * HARD CEILING: the multiframe write protocol carries the total length in ONE byte
- * (CAN_Display.c rx_data_length, taken from rx_data[0]), and send_multiframe() takes a
+ * HARD CEILING, NOW REACHED: the multiframe write protocol carries the total length in ONE
+ * byte (CAN_Display.c rx_data_length, taken from rx_data[0]), and send_multiframe() takes a
  * uint8_t length. A blob above 255 B cannot be transferred at all - the write would fail
  * on CRC with no useful error. v6 therefore placed its three added fields in u8 slots.
- * FW-077 reuses [35] for the rolling kg threshold and reserves the removed [36..37].
- *
- * FW-077 keeps the length unchanged: record[19..20] carries a centikg value
- * quantized to 0.1 kg; record[35] carries the rolling threshold in 0.1 kg.
- * Removed rise-detector bytes [36..37] stay reserved and zero for compatibility.
+ * FW-077 reuses [35] for the rolling kg threshold and reserved the removed [36..37];
+ * FW-084 spends those two reserved bytes plus two new ones, which is the last room there is.
+ * THE NEXT per-level field cannot simply grow the record: it needs an existing byte reused,
+ * a different packing, or a transport version carrying the length as u16.
  */
-#define ASSIST_BANK_BLOB_LEN 245U
+#define ASSIST_BANK_BLOB_LEN 255U
+_Static_assert(ASSIST_BANK_BLOB_LEN == 255U,
+	"FW-084 bank blob is exactly 255 B: 13 B header + 5x48 B record + 2 B CRC");
+_Static_assert(ASSIST_BANK_BLOB_LEN <= 255U,
+	"bank blob length must fit the single length byte of the multiframe protocol");
 /* FW-077 per-level start-load limits in the centikg control domain. Every
  * configured value is rounded to ASSIST_START_LOAD_WIRE_STEP_CENTIKG so the
  * user-facing precision is consistently one decimal place. */
@@ -149,6 +156,18 @@ void assist_modes_seed_wa_defaults(uint8_t current_pct, uint16_t target_rpm);
 
 /* FW-057: cadence compensation on/off for the active bank. */
 bool assist_modes_get_cadence_comp_enabled(void);
+
+/*
+ * FW-084: the current ceiling of the active LEVEL — max_iq_pct plus max_motor_power_w
+ * converted the same way the mode path converts it. Needed by any caller that substitutes a
+ * pedal-only target after assist_modes_calculate() has already applied those two, which is
+ * what Extended Boost does. Not for throttle: that keeps its own non-pedal path.
+ */
+int32_t assist_modes_profile_iq_ceiling(
+	const assist_level_config_t *config,
+	const rider_input_t *input,
+	uint32_t battery_voltage_mv,
+	int32_t iq_limit);
 
 uint16_t assist_modes_serialize_bank(uint8_t bank_index, uint8_t *buffer);
 bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length);

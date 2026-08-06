@@ -177,13 +177,33 @@ int32_t assist_start_apply_smooth(
 		};
 	}
 
+	/*
+	 * FW-092: a rolling bike is not stopped, however still the cranks and the motor are.
+	 * Smooth start exists to soften a launch from a standstill; arming it while the rider
+	 * is merely coasting turns every mid-ride re-engage into a fresh launch ramp.
+	 */
 	bool stopped =
-		input->measured_cadence_rpm == 0 && input->motor_erps == 0;
+		input->measured_cadence_rpm == 0 && input->motor_erps == 0 &&
+		!input->bike_rolling;
 	if (stopped && !smooth_start_state.stopped_seen) {
 		smooth_start_state.armed = true;
 		smooth_start_state.elapsed_ticks = 0;
 	}
 	smooth_start_state.stopped_seen = stopped;
+
+	/*
+	 * An armed envelope that was never spent must not lie in wait. Standing still arms it;
+	 * if the rider then rolls away without pedalling — a push off, a downhill start — the
+	 * arming survived, because nothing cleared it until an envelope actually completed. The
+	 * first pedal stroke at 15 km/h then got a standstill launch ramp it had not earned.
+	 *
+	 * Only cancelled while rolling with NO demand. An envelope already running under real
+	 * demand is legitimate and must be allowed to finish, which is why iq_target is checked.
+	 */
+	if (input->bike_rolling && input->iq_target <= 0) {
+		smooth_start_state.armed = false;
+		smooth_start_state.elapsed_ticks = 0;
+	}
 
 	if (input->safety_cut || input->iq_target <= 0) {
 		last_smooth_output = *output;

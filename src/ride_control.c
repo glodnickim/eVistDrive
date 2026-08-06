@@ -1,6 +1,7 @@
 #include "ride_control.h"
 
 #include "assist_dynamics.h"
+#include "assist_extended_boost.h"
 #include "assist_limits.h"
 #include "assist_modes.h"
 #include "config.h"
@@ -96,6 +97,7 @@ void ride_control_init(void)
 	preload_active = false;
 	preload_ticks = 0;
 	walk_was_active = false;
+	assist_extended_boost_init();   //FW-084
 	assist_modes_reset();
 }
 
@@ -123,6 +125,9 @@ void ride_control_update(const ride_control_input_t *input)
 	 * re-enable the bridge.
 	 */
 	if (input->position_calibration_active) {
+		//FW-084: this path never reaches the Extended Boost block below, so clear it here
+		//or an arming survives the whole service mode and fires on the way out.
+		assist_extended_boost_reset(ASSIST_EXT_BOOST_CANCEL_CALIBRATION);
 		int32_t calibration_iq = legacy_assist_calculate();
 		motor_command_t calibration_command = {
 			.iq_target = calibration_iq,
@@ -157,6 +162,7 @@ void ride_control_update(const ride_control_input_t *input)
 		 * dedicated ERPS-based module replaces it. It must not disappear when
 		 * the developer selects the ride core engine.
 		 */
+		assist_extended_boost_reset(ASSIST_EXT_BOOST_CANCEL_WALK);   //FW-084
 		iq_target = legacy_assist_calculate();
 	} else {
 		const rider_input_t *rider = rider_input_get();
@@ -245,9 +251,11 @@ void ride_control_update(const ride_control_input_t *input)
 					assist_latched = false;   // too long with almost no load -> release
 				}
 				if (assist_latched) {
+					/* FW-091: round UP, so a small percentage of a small limit does not
+					 * vanish in integer division and quietly leave no floor at all. */
 					int32_t min_iq =
-						(input->ride_core_iq_limit *
-						tuning_config_min_iq_pct()) / 100;
+						((input->ride_core_iq_limit *
+						tuning_config_min_iq_pct()) + 99) / 100;
 					if (iq_target < min_iq) {
 						iq_target = min_iq;
 						// Active hold -> no release fade while latched.
@@ -257,39 +265,161 @@ void ride_control_update(const ride_control_input_t *input)
 			}
 		}
 
-		// FW-030: throttle ported from Legacy. Throttle acts as a current FLOOR (drives the
-		// motor without pedalling), goes through the same limit/ramp chain as assist below,
-		// and is cut by safety_cut (brake / backward / fault) — stricter than the old Legacy.
-		if (!input->safety_cut && input->throttle_iq > iq_target) {
-			iq_target = input->throttle_iq;
-			profile_pedaling_active = true;   // active demand -> no release fade while on throttle
+		bool boost_active = false;   //FW-084: decides the limiter source explicitly, below
+		/*
+		 * FW-084: Extended Boost. It acts on the PEDAL-ONLY target, while iq_target still
+		 * holds exactly that — before the throttle floor is merged in below. Putting it
+		 * here is what makes "the boost can never copy throttle current" structural
+		 * rather than a rule someone has to remember.
+		 *
+		 * It also sits BEFORE safety_cut and both limiter calls, so brake, reverse,
+		 * speed, power, voltage and temperature all still have the last word.
+		 */
+		{
+			assist_extended_boost_input_t boost_input = {
+				/* The RAW pedalling state, not profile_pedaling_active: the latter
+				 * is also raised by the latch floor and by throttle, and the boost
+				 * must trigger on the cranks actually stopping. */
+				.pedaling_active = rider->pedaling_active,
+				/* The latch is the proof that assist started legally. The module
+				 * only reads it while the cranks are still turning — see the note
+				 * on the PAS STOP edge in assist_extended_boost.c. */
+				.pedal_assist_latched = assist_latched,
+				.motion_valid =
+					input->speed_x100 >= EXT_BOOST_MIN_SPEED_X100 &&
+					rider->motor_erps >= EXT_BOOST_MIN_MOTOR_ERPS,
+				.safety_cut = input->safety_cut,
+				.walk_active = false,                    /* not this branch */
+				.position_calibration_active = false,    /* returned above */
+				.torque_sensor_valid = rider->torque_sensor_valid,
+				.pas_sensor_valid = rider->pas_sensor_valid,
+				.crank_reverse = rider->pas_backward,
+				.bank_index = assist_modes_get_active_bank(),
+				.level_index = input->assist_level_index,
+				.pedal_load_centikg = rider->torque_load_centikg,
+				.ride_core_iq_limit = input->ride_core_iq_limit
+			};
+			assist_extended_boost_output_t boost_output;
+			assist_extended_boost_update(
+				&boost_input,
+				&level->extended_boost,
+				&boost_output);
+			if (boost_output.active) {
+				/*
+				 * The boost REPLACES the mode's result, and the level's own
+				 * ceiling — Maximum motor current and Maximum motor power — was
+				 * applied inside assist_modes_calculate() to that result. Without
+				 * re-applying it here a level limited to 20 % would be handed the
+				 * full global limit by one hard pedal push.
+				 */
+				int32_t profile_ceiling = assist_modes_profile_iq_ceiling(
+					level,
+					rider,
+					input->battery_voltage_mv,
+					input->ride_core_iq_limit);
+				iq_target = (boost_output.iq_target > profile_ceiling) ?
+					profile_ceiling : boost_output.iq_target;
+				boost_active = true;
+			}
+			if (boost_output.profile_hold_active) {
+				/* Hold the profile "pedalling" while the boost runs, so the single
+				 * release ramp starts ONCE, when the boost timer ends — not now. */
+				profile_pedaling_active = true;
+			}
 		}
 
 		if (input->safety_cut) {   // FW-037: fade assist/throttle out via release ramp; only overcurrent hard-cuts (FOC.c)
-				iq_target = 0;
-				profile_pedaling_active = false;
-				profile_release_ms = RIDE_SAFETY_RELEASE_MS;
-				assist_latched = false;
-				assist_hold_ticks = 0;
-			}
+			iq_target = 0;
+			profile_pedaling_active = false;
+			profile_release_ms = RIDE_SAFETY_RELEASE_MS;
+			assist_latched = false;
+			assist_hold_ticks = 0;
+		}
 
-			assist_limits_input_t limits_input = {
+		/*
+		 * FW-091: the two demands are limited SEPARATELY and only then combined.
+		 *
+		 * Throttle used to be merged into iq_target before the limiter (FW-030), which was
+		 * fine while the limiter guessed the source from cadence. It stops being fine the
+		 * moment the ride latch decides the classification: a latched rider would hand the
+		 * throttle the full pedal speed limit, letting it drive past 7 km/h with no
+		 * pedalling at all. Separate limiter calls make that structurally impossible —
+		 * whatever the latch says, throttle current is only ever judged as non-pedal.
+		 *
+		 * Voltage and temperature limits are inside assist_limits_apply(), so both sources
+		 * still get them, exactly as before.
+		 */
+		assist_limits_input_t limits_input = {
 			.voltage_raw = input->voltage_raw,
 			.voltage_min_raw = input->voltage_min_raw,
 			.controller_temperature_c = input->controller_temperature_c,
-			.cadence_filtered_x8 = input->cadence_filtered_x8,
+			.source = ASSIST_LIMIT_SOURCE_PEDAL_CONFIRMED,
 			.speed_x100 = input->speed_x100,
 			.speed_limit_x100 = input->speed_limit_x100,
 			.legal_enabled = input->legal_enabled,
 			.offroad = input->offroad,
 			.walk_active = input->walk_active
 		};
-		iq_target = assist_limits_apply(iq_target, &limits_input);
+
+		/*
+		 * The latch IS the confirmation: it cannot arm without forward crank direction and
+		 * the configured PAS step count (crank_moving_enough above), on top of the kg
+		 * threshold, the assist level and the safety cuts. Nothing else needs asking.
+		 *
+		 * An earlier version also demanded !assist_without_rotation_active here, which was
+		 * wrong twice over. That flag is raised purely on "cadence reads 0 and load exceeds
+		 * the STANDSTILL threshold" (assist_modes.c:563) — it never checks whether the
+		 * cranks are turning. So mid-ride, before the first cadence pulse, a firm push
+		 * raised it even though the rider was demonstrably pedalling, dropping the request
+		 * to the non-pedal limit and zeroing it at riding speed. Worse, it made the outcome
+		 * depend on HOW HARD you pushed: a load between the riding and standstill thresholds
+		 * left the flag clear and assist worked, while pushing harder set the flag and
+		 * killed it. Harder pedalling giving less assist is exactly backwards.
+		 */
+		limits_input.source = assist_latched ?
+			ASSIST_LIMIT_SOURCE_PEDAL_CONFIRMED :
+			ASSIST_LIMIT_SOURCE_NON_PEDAL;
+		/*
+		 * FW-084 — DECIDED POLICY, not a side effect: while Extended Boost is running the
+		 * request is classified NON_PEDAL.
+		 *
+		 * The cranks are stopped, so nothing is confirming pedalling in that moment; in
+		 * legal mode this means the boost tapers from 5 km/h and is zero from 7 km/h. That
+		 * is the conservative reading of a feature that keeps the motor pulling with the
+		 * cranks stationary, and it is what the rider is told in the Canable help text.
+		 *
+		 * It is written out here rather than left to fall out of assist_latched == false on
+		 * the PAS STOP edge: the latch dropping in that same tick made the classification an
+		 * accident of ordering, which the next change to the latch could silently reverse.
+		 *
+		 * The alternative — earlier confirmed pedalling authorizing PEDAL_CONFIRMED for the
+		 * duration of ACTIVE — is a product/legal decision, not a code cleanup. It must not
+		 * be introduced by deleting these three lines.
+		 */
+		if (boost_active) {
+			limits_input.source = ASSIST_LIMIT_SOURCE_NON_PEDAL;
+		}
+		int32_t pedal_iq = assist_limits_apply(iq_target, &limits_input);
+
+		int32_t throttle_iq = 0;
+		if (!input->safety_cut && input->throttle_iq > 0) {
+			limits_input.source = ASSIST_LIMIT_SOURCE_NON_PEDAL;
+			throttle_iq = assist_limits_apply(input->throttle_iq, &limits_input);
+		}
+
+		iq_target = (throttle_iq > pedal_iq) ? throttle_iq : pedal_iq;
+		if (throttle_iq > 0 && throttle_iq >= pedal_iq) {
+			profile_pedaling_active = true; // active demand -> no release fade while on throttle
+		}
 
 		assist_smooth_start_input_t smooth_input = {
 			.iq_target = iq_target,
 			.measured_cadence_rpm = rider->cadence_rpm,
 			.motor_erps = rider->motor_erps,
+			/* FW-092: one owner of "the bike is rolling" — the same constant the eased
+			 * start-step count above uses. assist_start holds no threshold of its own. */
+			.bike_rolling =
+				input->speed_x100 >= RIDE_START_REDUCTION_MIN_SPEED_X100,
 			.safety_cut = input->safety_cut
 		};
 		iq_target = assist_start_apply_smooth(

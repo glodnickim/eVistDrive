@@ -33,9 +33,49 @@
 #define TORQUE_ASSIST_FILTER_MS          35U
 #define TORQUE_INPUT_TICKS_PER_MS        4U
 #define TORQUE_ASSIST_FILTER_Q_SHIFT     8U
-/* FW-033: slow "RUN" effort estimator (second filter of the fast signal). */
-#define TORQUE_RUN_FILTER_MS_DEFAULT     300U
-#define TORQUE_RUN_FILTER_MS_MAX         1000U
+/*
+ * FW-033/085: slow "RUN" effort estimator (second filter of the fast signal).
+ *
+ * FW-085: its window is a CRANK ANGLE, not a time. The quadrature decoder steps
+ * every 3.75 deg (96 steps per crank revolution), and the estimator advances one
+ * step per forward transition instead of once per control tick — so the window
+ * stays the same fraction of a pedal stroke at every cadence. Expressed in
+ * milliseconds (the FW-033 form) it could not: 300 ms covered 45 % of a turn at
+ * 90 rpm but only 25 % at 50 rpm, which is what made assist pulse once per leg on
+ * steep climbs. Being clocked by the crank also removes the need for any clamp,
+ * fallback or 32-bit guard: a stopped crank simply stops advancing the filter.
+ */
+#define TORQUE_RUN_WINDOW_DEG_MAX        360U /* one full crank revolution */
+#define TORQUE_RUN_WINDOW_DEG_DEFAULT    180U /* half a turn = one leg */
+#define TORQUE_RUN_WINDOW_DEG_STEP       15U  /* exactly 4 quadrature steps */
+#define TORQUE_RUN_WINDOW_STEPS_MAX      96U  /* quadrature steps per revolution */
+
+/*
+ * FW-090: fast attack. The averaging window exists to kill the DIPS between leg pushes;
+ * it has no business delaying a genuine RISE in effort by half a crank turn. Without this,
+ * re-catching assist after the power faded mid-ride was a lottery: if the buffer still held
+ * decent samples a touch was enough, but after coasting it was full of near-zero samples
+ * and the rider had to push through ~180 deg before the magnitude caught up. (The ride
+ * latch does not rescue it: torque_input_seed_run() only fires when the latch ARMS, and a
+ * brief fade never disarms it.)
+ *
+ * So a sustained rise re-seeds the window. Both thresholds are deliberately set so ordinary
+ * pedalling can NEVER trigger it — that would bring back the per-leg pulsing FW-085 fixed:
+ *   - a rectified-sine leg push peaks at ~1.57x its own mean, so the 2x margin sits clear
+ *     above anything normal pedalling produces;
+ *   - a single leg peak is far shorter than 8 steps (30 deg), so it cannot hold the margin.
+ */
+#define TORQUE_RUN_ATTACK_NUM            2U   /* sample must exceed average x (NUM/DEN) */
+#define TORQUE_RUN_ATTACK_DEN            1U
+/*
+ * FW-091: 0 = OFF (shipped default). Set to 8 (30 deg of crank) to enable. The complaint
+ * this mechanism was written for is now understood to come from the limiter, not from this
+ * average — ride FW-091 first and only reach for this if re-engagement is still lazy.
+ */
+#define TORQUE_RUN_ATTACK_STEPS          0U   /* consecutive steps holding the rise; 0 = off */
+/* ...and by at least this much in absolute terms, so sensor jitter around a near-zero
+ * average cannot satisfy the ratio test (average 3 vs sample 7 would otherwise pass). */
+#define TORQUE_RUN_ATTACK_MIN_DELTA      TORQUE_ASSIST_DEADBAND_NATIVE
 
 typedef enum {
 	TORQUE_CAL_SOURCE_DEFAULT = 0,
@@ -95,11 +135,18 @@ void torque_input_update(uint16_t raw_native, int16_t torque_corrected_native,
 
 const torque_snapshot_t *torque_input_get_snapshot(void);
 
-/* FW-033: RUN effort estimator. set_run_filter_ms configures the slow filter
- * (0 = disabled, run tracks the fast signal = old behaviour). seed_run pre-loads
- * the filter (e.g. to the fast value at ride start) for a crisp launch. */
-void torque_input_set_run_filter_ms(uint16_t ms);
+/* FW-033/085: RUN effort estimator. set_run_window_deg configures the averaging
+ * window as a crank angle (0 = disabled, run tracks the fast signal = old
+ * behaviour). seed_run pre-loads the filter (e.g. to the fast value at ride
+ * start) for a crisp launch. */
+void torque_input_set_run_window_deg(uint16_t window_deg);
 void torque_input_seed_run(uint16_t value_native);
+/*
+ * FW-085: advance the RUN estimator by one crank step. Call once per FORWARD
+ * quadrature transition (3.75 deg), never from the control-tick loop — that is
+ * exactly what makes the window cadence-independent.
+ */
+void torque_input_run_filter_step(void);
 
 uint16_t torque_input_load_centikg(void);
 uint16_t torque_input_zero_native(void);

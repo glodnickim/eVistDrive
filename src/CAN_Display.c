@@ -22,6 +22,7 @@
 #include "CAN_Display.h"
 #include "parser.h"
 #include "FOC.h"
+#include "assist_extended_boost.h"
 #include "assist_modes.h"
 #include "tuning_config.h"
 #include "torque_input.h"
@@ -58,7 +59,7 @@ char tx_data[64];
 uint8_t Para0[64];
 uint8_t Para1[64];
 uint8_t Para2[64];
-uint8_t BankBlob[256]; //FW-006/FW-051/FW-056/FW-057/FW-068/FW-069: one serialized profile bank (245 B used, 31 frames)
+uint8_t BankBlob[256]; //FW-006/../FW-069/FW-084: one serialized profile bank (255 B used, 32 frames)
 uint8_t TuningBlob[32]; //FW-010: global ride-feel tuning blob (FW-068: 32 B used, 4 frames)
 uint8_t TorqueBlob[56]; //FW-013/FW-061: torque telemetry + calibration + coast re-zero diagnostics (v2 = 56 B)
 extern volatile uint8_t bank_save_request; //FW-006/FW-010: set by 0x6022, consumed in main.c at standstill
@@ -237,8 +238,8 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 					//FW-068/069: these bounds cap the frame index that may be written. They must grow
 					//with the blob or the closing frames are dropped in silence and the write fails
 					//on CRC with nothing to point at the cause.
-					case 0x6021: //bank write: 245 B -> last frame index 30, BankBlob[256]
-						if(Ext_ID_Rx.command < 30) append_multiframe(Ext_ID_Rx.command+1, (char*)&BankBlob[0]);
+					case 0x6021: //FW-084: bank write, 255 B -> last frame index 31 (7 B), BankBlob[256]
+						if(Ext_ID_Rx.command < 31) append_multiframe(Ext_ID_Rx.command+1, (char*)&BankBlob[0]);
 						break;
 					case 0x6024: //tuning write: 32 B -> last frame index 3, TuningBlob[32]
 						if(Ext_ID_Rx.command < 3) append_multiframe(Ext_ID_Rx.command+1, (char*)&TuningBlob[0]);
@@ -259,8 +260,8 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 						append_multiframe(Ext_ID_Rx.command+1, &Para2[0]);
 
 						break;
-					case 0x6021: //FW-006/FW-068/FW-069: bank write, 245 B -> last frame index 30
-						if(Ext_ID_Rx.command < 30) append_multiframe(Ext_ID_Rx.command+1, (char*)&BankBlob[0]);
+					case 0x6021: //FW-006/FW-068/FW-069/FW-084: bank write, 255 B -> last frame index 31
+						if(Ext_ID_Rx.command < 31) append_multiframe(Ext_ID_Rx.command+1, (char*)&BankBlob[0]);
 						break;
 					case 0x6024: //FW-010/FW-068: tuning write, 32 B -> last frame index 3
 						if(Ext_ID_Rx.command < 3) append_multiframe(Ext_ID_Rx.command+1, (char*)&TuningBlob[0]);
@@ -827,8 +828,8 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 				if(cur_iqr<0)cur_iqr=0;
 				if(cur_iqr>32767)cur_iqr=32767;
 				int32_t cur_iqs = MS->i_q_setpoint; if(cur_iqs<0)cur_iqs=0; if(cur_iqs>32767)cur_iqs=32767;
-				uint8_t dg[48];
-				dg[0]=0x44; dg[1]=0x47; dg[2]=4; //'D''G' ver4 (46 B): FW-057 added cadence comp + u_abs + pack voltage
+				uint8_t dg[56];
+				dg[0]=0x44; dg[1]=0x47; dg[2]=5; //'D''G' ver5 (55 B): FW-084 appended the Extended Boost state
 				dg[3]=(uint8_t)ride_control_get_engine();
 				uint32_t bcur = diag_peak_motor_w ? ((uint32_t)diag_peak_motor_w*1000000UL)/(MS->Voltage?MS->Voltage:40000) : 0; if(bcur>65535)bcur=65535;
 				int32_t iqr = diag_peak_iq_req; if(iqr>32767)iqr=32767; else if(iqr<0)iqr=0;
@@ -857,9 +858,21 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 				dg[41]=pack_mv&0xFF; dg[42]=(pack_mv>>8)&0xFF;                                     //pack voltage [mV]
 				dg[43]=rin->cadence_rpm;                                                           //current cadence (not peak-held)
 				dg[44]=assist_modes_get_cadence_comp_enabled()?0x01:0;                             //bank setting, so the log shows on/off
-				uint16_t c=0xFFFF; for(uint8_t i=0;i<45;i++){c^=(uint16_t)dg[i]<<8; for(uint8_t b=0;b<8;b++)c=(c&0x8000)?((c<<1)^0x1021):(c<<1);}
-				dg[45]=c&0xFF; dg[46]=(c>>8)&0xFF;
-				send_multiframe(Ext_ID_Rx.command, (char*)&dg[0], 47);
+				//FW-084: without these five fields a log cannot tell "never armed" from
+				//"armed, waiting for PAS STOP" from "a limit trimmed it" from "timer done".
+				assist_extended_boost_diag_t eb; assist_extended_boost_get_diag(&eb);
+				int32_t eb_iq=eb.boost_iq; if(eb_iq<0)eb_iq=0; if(eb_iq>65535)eb_iq=65535;
+				dg[45]=(uint8_t)((eb.state==ASSIST_EXT_BOOST_QUALIFY?0x01:0) |
+				                 (eb.state==ASSIST_EXT_BOOST_ARMED?0x02:0) |
+				                 (eb.state==ASSIST_EXT_BOOST_ACTIVE?0x04:0) |
+				                 (eb.arm_expired?0x08:0));
+				dg[46]=eb.peak_load_centikg&0xFF; dg[47]=(eb.peak_load_centikg>>8)&0xFF; //latest/active peak pedal load [centikg]
+				dg[48]=eb_iq&0xFF; dg[49]=(eb_iq>>8)&0xFF;                               //boost current BEFORE the shared limits
+				dg[50]=eb.remaining_ms&0xFF; dg[51]=(eb.remaining_ms>>8)&0xFF;           //ACTIVE time left [ms]
+				dg[52]=eb.cancel_reason;                                                 //see assist_extended_boost_cancel_t
+				uint16_t c=0xFFFF; for(uint8_t i=0;i<53;i++){c^=(uint16_t)dg[i]<<8; for(uint8_t b=0;b<8;b++)c=(c&0x8000)?((c<<1)^0x1021):(c<<1);}
+				dg[53]=c&0xFF; dg[54]=(c>>8)&0xFF;
+				send_multiframe(Ext_ID_Rx.command, (char*)&dg[0], 55);
 				diag_peak_reset=1; //next 4kHz cycle clears the peaks
 			}
 			break;

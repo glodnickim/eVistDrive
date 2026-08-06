@@ -8,8 +8,14 @@ static uint16_t span_native = TORQUE_DEFAULT_SPAN_NATIVE;
 static uint8_t calibration_source = TORQUE_CAL_SOURCE_DEFAULT;
 static torque_snapshot_t snapshot;
 static int32_t assist_filter_q;
-static int32_t run_filter_q;                                  /* FW-033 */
-static uint16_t run_filter_ms = TORQUE_RUN_FILTER_MS_DEFAULT; /* FW-033 */
+/* FW-085: RUN estimator — moving average over a crank-angle window. */
+static uint16_t run_window_steps = (TORQUE_RUN_WINDOW_DEG_DEFAULT * 4U) / 15U;
+static uint16_t run_buffer[TORQUE_RUN_WINDOW_STEPS_MAX];
+static uint16_t run_head;
+static uint16_t run_filled;
+static uint32_t run_sum;
+static uint16_t run_value_native;
+static uint16_t run_attack_steps; /* FW-090: consecutive steps holding a sustained rise */
 
 static int32_t offset_correction;
 static bool cal_fault;
@@ -132,40 +138,121 @@ static uint16_t update_assist_filter(uint16_t target_native)
 }
 
 /*
- * FW-033: second, slower first-order filter of the fast signal. This is the RUN
- * effort estimator: it averages pedal load over a fraction of a crank turn so the
- * power calc no longer follows every single leg peak. Reuses the fast filter's
- * Q format; the only difference is the (configurable, longer) time constant.
+ * FW-033/085: the RUN effort estimator — a plain moving average of the fast signal
+ * over a window of crank steps, so the power calc no longer follows every single
+ * leg peak.
+ *
+ * A true average (not an EMA) is used deliberately: over a whole number of leg
+ * periods it CANCELS the pedal ripple rather than merely attenuating it, which is
+ * the same reason the TSDZ2 open firmware buffers a full crank revolution. The
+ * cost is TORQUE_RUN_WINDOW_STEPS_MAX * 2 = 192 B, which is nothing on this part.
+ *
+ * The running sum is maintained incrementally, so a step costs one add and one
+ * subtract regardless of window size. Worst case 96 * 65535 still fits a uint32.
  */
-static uint16_t update_run_filter(uint16_t target_native)
+static void run_window_reset(void)
 {
-	int32_t filter_ticks = (int32_t)run_filter_ms * TORQUE_INPUT_TICKS_PER_MS;
-	if (filter_ticks < 1) {
-		filter_ticks = 1;
-	}
-	int32_t target_q = (int32_t)target_native << TORQUE_ASSIST_FILTER_Q_SHIFT;
-	int32_t error_q = target_q - run_filter_q;
-	if (error_q != 0) {
-		int32_t step_q = error_q / filter_ticks;
-		if (step_q == 0) {
-			step_q = (error_q > 0) ? 1 : -1;
-		}
-		run_filter_q += step_q;
-	}
-	return (uint16_t)((run_filter_q +
-		(1L << (TORQUE_ASSIST_FILTER_Q_SHIFT - 1U))) >>
-		TORQUE_ASSIST_FILTER_Q_SHIFT);
+	run_head = 0U;
+	run_filled = 0U;
+	run_sum = 0U;
+	run_attack_steps = 0U; /* FW-090 */
 }
 
-void torque_input_set_run_filter_ms(uint16_t ms)
+void torque_input_set_run_window_deg(uint16_t window_deg)
 {
-	run_filter_ms = (ms > TORQUE_RUN_FILTER_MS_MAX) ?
-		TORQUE_RUN_FILTER_MS_MAX : ms;
+	if (window_deg > TORQUE_RUN_WINDOW_DEG_MAX) {
+		window_deg = TORQUE_RUN_WINDOW_DEG_MAX;
+	}
+	/* 3.75 deg per step -> steps = deg * 4 / 15, exact for every 15 deg setting. */
+	uint16_t steps = (uint16_t)(((uint32_t)window_deg * 4U) / 15U);
+	if (steps > TORQUE_RUN_WINDOW_STEPS_MAX) {
+		steps = TORQUE_RUN_WINDOW_STEPS_MAX;
+	}
+	/*
+	 * main.c re-sends the configured value every control tick, so only a REAL
+	 * change may disturb the window — rebuilding it every tick would keep the
+	 * average permanently empty.
+	 */
+	if (steps != run_window_steps) {
+		run_window_steps = steps;
+		run_window_reset();
+	}
 }
 
 void torque_input_seed_run(uint16_t value_native)
 {
-	run_filter_q = (int32_t)value_native << TORQUE_ASSIST_FILTER_Q_SHIFT;
+	run_value_native = value_native;
+	if (run_window_steps == 0U) {
+		run_window_reset();
+		return;
+	}
+	/* Fill the whole window, so a seeded launch starts at full magnitude
+	 * instead of climbing out of an empty average. */
+	for (uint16_t i = 0U; i < run_window_steps; i++) {
+		run_buffer[i] = value_native;
+	}
+	run_head = 0U;
+	run_filled = run_window_steps;
+	run_sum = (uint32_t)value_native * run_window_steps;
+	run_attack_steps = 0U; /* FW-090: the window now holds this level; start counting afresh */
+}
+
+void torque_input_run_filter_step(void)
+{
+	if (run_window_steps == 0U) {
+		return; /* disabled: run tracks the fast signal, see torque_input_update */
+	}
+	uint16_t sample = snapshot.assist_delta_filtered_native;
+	if (run_filled >= run_window_steps) {
+		run_sum -= run_buffer[run_head];
+	} else {
+		run_filled++;
+	}
+	run_buffer[run_head] = sample;
+	run_sum += sample;
+	run_head++;
+	if (run_head >= run_window_steps) {
+		run_head = 0U;
+	}
+
+	/*
+	 * FW-090: sustained rise -> re-seed, so a genuine new effort is not held back by the
+	 * stale low samples still sitting in the window. Counted BEFORE the average is
+	 * recomputed, against the average the sample was actually compared with.
+	 *
+	 * FW-091: DISABLED by default (STEPS = 0). The re-engagement complaint this was written
+	 * for turned out to be caused by the limiter classifying pedal demand from filtered
+	 * cadence, not by this average being slow — see FW-091. Ride that fix first; the fast
+	 * attack may not be needed at all, and every threshold here is a chance to bring back
+	 * the per-leg pulsing FW-085 removed. The guard is explicit because with STEPS = 0 the
+	 * "counter reached the target" test below would otherwise be true on every single step.
+	 */
+	if (TORQUE_RUN_ATTACK_STEPS == 0U) {
+		run_value_native = (uint16_t)((run_sum + (run_filled / 2U)) / run_filled);
+		return;
+	}
+	bool attack_sample =
+		((uint32_t)sample * TORQUE_RUN_ATTACK_DEN >
+			(uint32_t)run_value_native * TORQUE_RUN_ATTACK_NUM) &&
+		/* Absolute floor as well as the ratio: near zero the 2x test is met by noise
+		 * (average 3, sample 7), which would have the estimator chasing its own jitter
+		 * whenever the rider is barely pressing. Both conditions must hold. */
+		(sample >= run_value_native + TORQUE_RUN_ATTACK_MIN_DELTA);
+	if (attack_sample) {
+		if (run_attack_steps < TORQUE_RUN_ATTACK_STEPS) {
+			run_attack_steps++;
+		}
+	} else {
+		run_attack_steps = 0U; /* one quiet step breaks the run: only a HELD rise counts */
+	}
+	if (run_attack_steps >= TORQUE_RUN_ATTACK_STEPS) {
+		run_attack_steps = 0U;
+		torque_input_seed_run(sample);
+		return;
+	}
+	/* Averaging over however many samples exist keeps the estimate honest before
+	 * the first full window — the alternative reads low for a whole revolution. */
+	run_value_native = (uint16_t)((run_sum + (run_filled / 2U)) / run_filled);
 }
 
 static bool rest_raw_plausible(int32_t raw_rest)
@@ -383,7 +470,8 @@ void torque_input_init(void)
 	calibration_source = TORQUE_CAL_SOURCE_DEFAULT;
 	snapshot = (torque_snapshot_t){0};
 	assist_filter_q = 0;
-	run_filter_q = 0;
+	run_value_native = 0U;
+	run_window_reset(); /* FW-085 */
 	snapshot.zero_effective_native = TORQUE_ZERO_TARGET_NATIVE;
 	snapshot.span_native = span_native;
 }
@@ -415,19 +503,18 @@ void torque_input_update(uint16_t raw_native, int16_t torque_corrected_native,
 	snapshot.assist_delta_filtered_native = update_assist_filter(
 		sensor_valid ? assist_delta : 0U);
 	/*
-	 * FW-033: RUN estimator filters the FAST signal (cascade fast->run). When
-	 * disabled (ms == 0) run tracks fast exactly = old behaviour; keep the state
-	 * synced so enabling it later starts smoothly.
+	 * FW-033/085: RUN estimator averages the FAST signal (cascade fast->run).
+	 * When disabled (window 0) run tracks fast exactly = old behaviour.
+	 *
+	 * FW-085: the average itself advances in torque_input_run_filter_step(), driven
+	 * by the crank, not by this tick. Here we only publish the value it holds — so
+	 * between crank steps the estimate stays put instead of decaying, which is
+	 * precisely what stops assist pulsing once per leg at low cadence.
 	 */
-	if (run_filter_ms == 0U) {
-		run_filter_q = (int32_t)snapshot.assist_delta_filtered_native <<
-			TORQUE_ASSIST_FILTER_Q_SHIFT;
-		snapshot.assist_delta_run_native =
-			snapshot.assist_delta_filtered_native;
-	} else {
-		snapshot.assist_delta_run_native = update_run_filter(
-			snapshot.assist_delta_filtered_native);
+	if (run_window_steps == 0U) {
+		run_value_native = snapshot.assist_delta_filtered_native;
 	}
+	snapshot.assist_delta_run_native = run_value_native;
 	snapshot.load_centikg = native_delta_to_centikg((uint16_t)delta);
 	snapshot.span_native = span_native;
 	snapshot.calibration_source = calibration_source;

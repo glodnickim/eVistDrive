@@ -1,6 +1,7 @@
 # Product sources. Keep this list explicit so a clean build does not depend on
 # directory enumeration or accidentally include a newly copied experiment.
 src/assist_dynamics.c
+src/assist_extended_boost.c
 src/assist_limits.c
 src/assist_modes.c
 src/assist_start.c

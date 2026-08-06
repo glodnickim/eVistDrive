@@ -31,7 +31,7 @@ typedef struct {
 	 * rolling, without re-deriving the direction check from scratch. */
 	uint8_t crank_forward_steps;
 	bool crank_direction_ok;
-	bool cadence_seeded;
+	bool start_phase;
 	bool torque_sensor_valid;
 	bool pas_sensor_valid;
 } rider_input_t;

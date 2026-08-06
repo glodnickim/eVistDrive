@@ -39,6 +39,18 @@ typedef struct {
 	int32_t iq_target;
 	uint8_t measured_cadence_rpm;
 	uint16_t motor_erps;
+	/*
+	 * FW-092: the bike may be rolling with BOTH the cranks and the motor stationary — that
+	 * is simply what coasting looks like on a mid-drive, where the freewheel lets the motor
+	 * stand still at speed. Judging "stopped" from cadence and motor alone therefore armed
+	 * the standstill launch envelope during an ordinary mid-ride re-engage, so the first
+	 * current arrived a whole smooth-start duration late instead of on the third PAS step.
+	 *
+	 * Passed as a ready flag rather than a speed: ride_control already owns the definition
+	 * of "the bike is rolling" for the eased start-step count, and a second speed threshold
+	 * here would be a copy that only LOOKS shared until someone changes one of them.
+	 */
+	bool bike_rolling;
 	bool safety_cut;
 } assist_smooth_start_input_t;
 

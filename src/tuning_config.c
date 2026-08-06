@@ -4,9 +4,11 @@
 #define TUNING_MAGIC0 0x54U /* 'T' */
 #define TUNING_MAGIC1 0x55U /* 'U' */
 /* FW-068/069: v6 adds start_steps and drops the ramps from this module's ownership.
- * v2/v3/v4/v5 are still accepted (see the version table in tuning_config_apply_blob). */
-#define TUNING_VERSION 6U
-#define TORQUE_RUN_FILTER_MS_DEFAULT 300U
+ * FW-085: v7 keeps v6's layout byte for byte and only changes the UNIT of the field at
+ * offset 20, from milliseconds to crank degrees. v2..v6 are still accepted (see the
+ * version table in tuning_config_apply_blob). */
+#define TUNING_VERSION 7U
+#define TUNING_VERSION_V6 6U
 
 /*
  * FW-069: the four ramp values are no longer used by anything - assist_dynamics takes them
@@ -25,8 +27,8 @@ static uint16_t run_deadband_mv = 5U;
 static uint16_t hold_ms = 1400U;
 static uint16_t min_iq_pct = 2U;
 
-/* FW-033: RUN torque estimator time constant. */
-static uint16_t torque_run_filter_ms = TORQUE_RUN_FILTER_MS_DEFAULT;
+/* FW-033/085: RUN torque estimator averaging window, in crank degrees. */
+static uint16_t torque_run_window_deg = TUNING_TORQUE_RUN_WINDOW_DEG_DEFAULT;
 
 static uint16_t clamp_max(uint16_t value, uint16_t max)
 {
@@ -74,9 +76,9 @@ uint16_t tuning_config_min_iq_pct(void)
 	return min_iq_pct;
 }
 
-uint16_t tuning_config_assist_torque_run_filter_ms(void)
+uint16_t tuning_config_assist_torque_run_window_deg(void)
 {
-	return torque_run_filter_ms;
+	return torque_run_window_deg;
 }
 
 static void put_u16(uint8_t *buffer, uint16_t value)
@@ -120,7 +122,7 @@ uint16_t tuning_config_serialize(uint8_t *buffer)
 	put_u16(&buffer[14], run_deadband_mv);
 	put_u16(&buffer[16], hold_ms);
 	put_u16(&buffer[18], min_iq_pct);
-	put_u16(&buffer[20], torque_run_filter_ms);
+	put_u16(&buffer[20], torque_run_window_deg); /* FW-085: crank degrees, was ms in v6 */
 	put_u16(&buffer[22], start_steps); /* FW-068 */
 	for (uint8_t i = 24; i < TUNING_BLOB_LEN - 2U; i++) {
 		buffer[i] = 0; /* reserve: 3 more u16 before the length has to change again */
@@ -156,7 +158,9 @@ bool tuning_config_apply_blob(const uint8_t *buffer, uint16_t length)
 	} else if (version == 3U || version == 4U || version == 5U) {
 		body = 22U;
 		min_length = TUNING_BLOB_LEN_V3;
-	} else if (version == TUNING_VERSION) {
+	} else if (version == TUNING_VERSION_V6 || version == TUNING_VERSION) {
+		/* FW-085: v7 is v6's layout with one field reinterpreted, so both share
+		 * this geometry exactly; only the meaning of offset 20 differs. */
 		body = TUNING_BLOB_LEN - 2U;
 		min_length = TUNING_BLOB_LEN;
 	} else {
@@ -188,15 +192,32 @@ bool tuning_config_apply_blob(const uint8_t *buffer, uint16_t length)
 	if (version < 5U && min_iq_pct == 4U) {
 		min_iq_pct = 2U;
 	}
-	if (version >= 3U) {
-		torque_run_filter_ms = clamp_max(get_u16(&buffer[20]),
-			TUNING_TORQUE_RUN_FILTER_MS_MAX);
+	/*
+	 * FW-085: offset 20 changed UNIT, not position — v6 and older carry milliseconds,
+	 * v7 carries crank degrees.
+	 *
+	 * The old value must NOT be converted. What a given millisecond figure was worth
+	 * depended entirely on the cadence the rider tuned it at (that dependence is the
+	 * whole reason for this card), so there is no honest conversion. Taking it
+	 * literally would be worse than useless: a saved 700 would read as 700 deg and
+	 * clamp to 360, silently doubling the smoothing. Only the "off" state carries
+	 * over, because 0 means the same thing in both units.
+	 */
+	if (version >= TUNING_VERSION) {
+		torque_run_window_deg = clamp_max(get_u16(&buffer[20]),
+			TUNING_TORQUE_RUN_WINDOW_DEG_MAX);
+	} else if (version >= 3U) {
+		torque_run_window_deg = (get_u16(&buffer[20]) == 0U) ?
+			0U : TUNING_TORQUE_RUN_WINDOW_DEG_DEFAULT;
 	} else {
-		torque_run_filter_ms = TORQUE_RUN_FILTER_MS_DEFAULT; /* v2 backfill */
+		torque_run_window_deg = TUNING_TORQUE_RUN_WINDOW_DEG_DEFAULT; /* v2 backfill */
 	}
 	/* FW-068: 0 means "written by something that does not know this field" -> keep the
-	 * default rather than removing the crank-movement condition altogether. */
-	if (version >= TUNING_VERSION) {
+	 * default rather than removing the crank-movement condition altogether.
+	 * FW-085: gate on V6, the version that INTRODUCED start_steps — not on
+	 * TUNING_VERSION. Tied to the latter, bumping the version to 7 would have made
+	 * every v6 blob silently lose its configured start steps. */
+	if (version >= TUNING_VERSION_V6) {
 		uint16_t steps = get_u16(&buffer[22]);
 		if (steps == 0U) {
 			start_steps = TUNING_START_STEPS_DEFAULT;

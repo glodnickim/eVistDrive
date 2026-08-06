@@ -198,10 +198,17 @@
 #define IQ_SLEW_UP    5     // max i_q rise per tick (~35 ms 0..700): gentle torque build-up on engage
 #define IQ_SLEW_DOWN  10    // max i_q fall per tick (~17 ms): prompt but soft release on disengage
 
-// Extended Boost ("Override"): holds motor current for a while AFTER the rider stops pushing on the pedal.
-// This is what causes the motor to "drag on" / power not dropping smoothly when you stop pedalling.
-// 0 = OFF (default): power follows the pedal directly (Bosch-like, smooth power-down). 1 = ON (legacy carry).
-#define EXTENDED_BOOST_ENABLE 0
+// LEGACY OVERRUN (inactive in Ride Core). Holds motor current for a while AFTER the rider stops
+// pushing on the pedal — the old "power drag-on" behaviour. Lives in the frozen Legacy monolith
+// (main.c: Overrun_strength / Overrun_counter / Overrun_flag) and is reached only from the Legacy
+// assist path, which the ride core no longer uses. 0 = OFF, the shipped state; leave it there.
+//
+// NOT the same thing as FW-084 Extended Boost, despite this macro's name. FW-084 is a separate,
+// per-level Ride Core feature with its own module (assist_extended_boost.c): it is armed by a
+// confirmed pedal push, starts on the PAS-STOP edge, and re-applies the level's current ceiling.
+// This block has none of that — different state sources, the counter starts at the wrong moment
+// and it bypasses part of the ride core. Do not enable it to "get" Extended Boost.
+#define EXTENDED_BOOST_ENABLE 0   /* legacy overrun; FW-084 Extended Boost is a different feature */
 
 // --- Adaptive i_q ramp (#1): how fast motor current rises/falls, scaled by wheel speed + cadence ---
 // 1 = adaptive (gentle at low speed, snappy at speed -> smooth transitions & start).
@@ -276,15 +283,27 @@
 // monolith (Walk Assist + position calibration), which is why it stays here.
 #define START_MIN_STEPS 4
 
-// --- Cadence seed: after a fresh valid forward start, publish a small temporary cadence ---
-// This does not engage assist by itself. It only avoids a dead first cadence calculation while the normal
-// START_MIN_STEPS + TQ_GATE_MIN latch still decides whether motor power may start.
-#define START_CADENCE_SEED_ENABLE 1
-#define START_CADENCE_SEED_STEPS 2
-#define START_CADENCE_SEED_RPM 1    // FW-0xx: was 18 (then 10). A high seed forced the startup-boost curve to
-	// evaluate near its max on every reseed (assist_modes.c fed the boost cadence_for_assist_rpm=0 whenever
-	// cadence_seeded, specifically to counter this). Now the seed itself is the small TSDZ2-style placeholder
-	// (~1 rpm) and boost reads the SAME cadence as the rest of the control path - no separate override needed.
+// --- Start phase: pedalling has clearly begun, but no cadence has been MEASURED yet ---
+// This does not engage assist by itself. It only stops the control path treating "no cadence
+// reading yet" as "not pedalling", while the normal START_MIN_STEPS + TQ_GATE_MIN latch still
+// decides whether motor power may start.
+//
+// FW-087: this used to be expressed by writing a fake 1 rpm into MS.cadence (via a seed-rpm
+// constant, earlier 18 then 10). That value was never read by any assist calculation - every consumer
+// substituted 0 for it - so it existed purely to get past two gates while pretending to be a
+// measurement. It made MS.cadence mean two different things, put a fake 1 on the HMI, and made the
+// whole launch protection collapse the moment anything cleared the companion flag (exactly the
+// FW-086 defect). It is now an explicit boolean, and MS.cadence only ever holds real measurements.
+#define START_PHASE_ENABLE 1
+#define START_PHASE_STEPS 2
+
+// FW-088: cadence the SUPPORT CURVE is evaluated at while the start phase is up (Power
+// Progressive / Power Curve only). Power = torque x crank speed, so a standing start has
+// ~0 W however hard the pedal is pushed, and feeding that 0 to the curve returned
+// support_min_pct - the least help exactly when pulling away needs the most. The curve
+// input alone uses this nominal cadence; reported rider power stays the true ~0.
+// 60 rpm matches PREVIEW_CADENCE_RPM in the Canable preview, so the chart and the bike agree.
+#define START_PHASE_CURVE_RPM 60
 
 // --- Engagement HYSTERESIS (#hold): once engaged, stay engaged until pressure drops to TQ_GATE_RELEASE mV
 // above rest (must be < TQ_GATE_MIN). Without it the assist unloads the pedal -> pressure falls below the
@@ -347,7 +366,26 @@
 //---------------------------------------------------------------------
 //Quadrature PAS decoder (PC12=A, PD2=B), polled @4kHz. Confirmed by CAN log: forward = negative raw step.
 #define PAS_DIR_SIGN -1       // sign applied to raw quadrature step so that FORWARD pedalling => +1 (from test)
-#define PAS_STEPS_PER_PULSE 4 // cadence pulse every 4 quadrature transitions. Tested OK on HMI (=true RPM) -> implies ~96 transitions/rev (24 magnets). Reverser says "48 pulses/rev"; if that means 48 transitions, this would read half - VERIFY by measuring before changing to 2.
+#define PAS_STEPS_PER_PULSE 4 // cadence pulse every 4 quadrature transitions -> 24 pulses/rev.
+/*
+ * FW-086: RESOLVED - 96 quadrature transitions per crank revolution (3.75 deg each).
+ * The old note here left this open, citing a reverse-engineering claim of 48 pulses/rev
+ * and asking for a bench measurement before trusting it. No measurement is needed: the
+ * arithmetic settles it, given that the reported cadence is correct in the field.
+ *
+ * Let N = transitions per revolution. Pulses per rev = N/4, and at C rpm one revolution
+ * is 240000 ticks @4kHz, so ticks per pulse = 960000/(C*N). main.c publishes
+ * MS.cadence = 10000/ticks = C * N/96. That equals the true C only when N = 96, and the
+ * reading IS true - so N = 96 and the constant 10000 is exactly that assumption baked in.
+ * (Independent check on the tick rate: SPEED_STOP_TICKS 10600 = 2.65 s -> 4000 Hz.)
+ *
+ * Both figures were right, counting different things: 24 magnet pole-pairs give 4*24 = 96
+ * QUADRATURE TRANSITIONS, while edges on a SINGLE channel give 2*24 = 48 "pulses/rev".
+ * Do NOT change this to 2 - that would halve the reported cadence.
+ *
+ * This also fixes the crank-angle scale used by FW-085 (1 step = 3.75 deg, 96 steps/rev),
+ * so its RUN smoothing window really is the fraction of a turn its label claims.
+ */
 // FW-025 set this to a fixed 200 ms and ride-confirmed it as OK (the "runs on for seconds"
 // symptom that prompted looking at this window turned out to be the unrelated PI windup bug,
 // not this timeout). FW-0xx revisits it: at low/uneven cadence the average inter-transition gap

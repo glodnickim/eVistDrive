@@ -64,7 +64,14 @@
 	.iq_rise_slow_ms = 600, \
 	.iq_rise_fast_ms = 300, \
 	.iq_fall_slow_ms = 1000, \
-	.iq_fall_fast_ms = 140 \
+	.iq_fall_fast_ms = 140, \
+	/* FW-084: OFF by default. Duration 0 is the switch, so a fresh controller and a \
+	 * migrated old profile behave identically to firmware without Extended Boost. */ \
+	.extended_boost = { \
+		ASSIST_EXT_BOOST_TRIGGER_DEFAULT_CENTIKG, \
+		ASSIST_EXT_BOOST_STRENGTH_DEFAULT_PCT, \
+		0 \
+	} \
 }
 
 #define DEFAULT_IDLE_LEVEL { \
@@ -83,7 +90,12 @@
 	.iq_rise_slow_ms = 600, \
 	.iq_rise_fast_ms = 300, \
 	.iq_fall_slow_ms = 1000, \
-	.iq_fall_fast_ms = 140 \
+	.iq_fall_fast_ms = 140, \
+	.extended_boost = { \
+		ASSIST_EXT_BOOST_TRIGGER_DEFAULT_CENTIKG, \
+		ASSIST_EXT_BOOST_STRENGTH_DEFAULT_PCT, \
+		0 \
+	} \
 }
 
 static const assist_level_config_t default_levels[ASSIST_LEVEL_COUNT + 1] = {
@@ -167,15 +179,25 @@ static uint8_t bank_cadence_comp_enabled[ASSIST_BANK_COUNT];
  * load is u16 centikg quantized to decikg at [19..20], and rolling minimum is
  * u8 decikg at [35]. The removed rise-detector bytes [36..37] are reserved. */
 #define BANK_BLOB_VERSION_V7 7U
-#define BANK_BLOB_VERSION BANK_BLOB_VERSION_V7
+/* FW-084: v8 grows the record 46 -> 48 B for Extended Boost. Trigger load (u8 decikg) and
+ * strength (u8) take over the two bytes FW-077 left reserved at [36..37]; the duration
+ * (u16 LE) is the growth at [46..47]. That puts the blob at exactly 255 B — the ceiling. */
+#define BANK_BLOB_VERSION_V8 8U
+#define BANK_BLOB_VERSION BANK_BLOB_VERSION_V8
 #define BANK_BLOB_HEADER_LEN_V1 8U
 #define BANK_BLOB_HEADER_LEN_V2 10U
 #define BANK_BLOB_HEADER_LEN_V3 12U
 #define BANK_BLOB_HEADER_LEN 13U
 #define BANK_RECORD_LEN_V5 35U
-/* 46 = 35 + 3 (FW-068 start condition, u8 each) + 8 (FW-069 four u16 ramps).
- * Kept deliberately tight: see the 255 B protocol ceiling in assist_modes.h. */
-#define BANK_RECORD_LEN 46U
+/* 46 = 35 + 3 (FW-068 start condition, u8 each) + 8 (FW-069 four u16 ramps). */
+#define BANK_RECORD_LEN_V7 46U
+/* 48 = 46 + 2 (FW-084 Extended Boost duration). See the 255 B ceiling in assist_modes.h. */
+#define BANK_RECORD_LEN_V8 48U
+#define BANK_RECORD_LEN BANK_RECORD_LEN_V8
+
+_Static_assert(BANK_BLOB_HEADER_LEN + ASSIST_LEVEL_COUNT * BANK_RECORD_LEN + 2U ==
+	ASSIST_BANK_BLOB_LEN,
+	"bank blob length must match the header/record/CRC layout");
 
 static uint16_t bank_blob_crc16(const uint8_t *buffer, uint16_t length)
 {
@@ -254,7 +276,7 @@ typedef struct {
 	uint16_t assist_load_centikg;
 	uint16_t torque_for_assist_mv;
 	bool without_rotation_active;
-	bool cadence_seeded;
+	bool start_phase;
 } prepared_assist_input_t;
 
 static power_filter_state_t power_filter_state;
@@ -572,8 +594,11 @@ static bool prepare_assist_input(
 			threshold_centikg = ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG;
 		}
 		if (corrected_load_centikg > threshold_centikg) {
-			/* Keep synthetic cadence local; never modify MS or rider_input. */
-			cadence_for_assist = 1;
+			/*
+			 * FW-087: no synthetic cadence any more. This branch already has its own
+			 * flag; the fake 1 rpm existed only to get past the cadence gate below,
+			 * which now asks the flags directly.
+			 */
 			torque_for_assist = corrected_delta_mv;
 			without_rotation_active = true;
 		}
@@ -587,22 +612,31 @@ static bool prepare_assist_input(
 
 	output->cadence_for_assist_rpm = cadence_for_assist;
 	output->assist_without_rotation_active = without_rotation_active;
+	/*
+	 * FW-087: a zero cadence blocks assist ONLY when nothing else says pedalling has
+	 * begun. Two states legitimately have no cadence reading yet and must pass:
+	 * the start phase (cranks turning, first interval not measured) and a
+	 * without-rotation launch (deliberate push from a dead stop). Both used to sneak
+	 * through by pretending the cadence was 1 rpm; asking the flags is the same test
+	 * without the pretence, and it cannot be defeated by a bad measurement.
+	 */
 	if (!input->torque_sensor_valid ||
 		!input->pas_sensor_valid ||
 		(!input->pedaling_active && !without_rotation_active) ||
-		cadence_for_assist == 0) {
+		(cadence_for_assist == 0 && !input->start_phase && !without_rotation_active)) {
 		return false;
 	}
 
 	prepared->cadence_for_assist_rpm = cadence_for_assist;
 	prepared->human_load_centikg = input->torque_load_centikg;
 	prepared->without_rotation_active = without_rotation_active;
-	prepared->cadence_seeded = input->cadence_seeded;
+	prepared->start_phase = input->start_phase;
 
 	assist_startup_boost_input_t boost_input = {
 		.torque_input_mv = torque_for_assist,
-		/* Same cadence the rest of the control path sees (real, or the small
-		 * START_CADENCE_SEED_RPM placeholder) - no separate override for boost. */
+		/* Same cadence the rest of the control path sees - no separate override for
+		 * boost. FW-087: during the start phase that is now a genuine 0 rather than a
+		 * 1 rpm placeholder, which is where the boost curve is meant to sit anyway. */
 		.cadence_for_assist_rpm = cadence_for_assist,
 		.wheel_speed_x100 = input->wheel_speed_x100,
 		.torque_sensor_valid = input->torque_sensor_valid
@@ -619,6 +653,65 @@ static bool prepare_assist_input(
 	output->startup_boost_extra_pct = boost_output.extra_pct;
 	output->startup_boost_active = boost_output.active;
 	return true;
+}
+
+/*
+ * The percentage half of the level's own current ceiling. One owner, because FW-084 has to
+ * apply the same ceiling to a target it substitutes AFTER this function has run — see
+ * assist_modes_profile_iq_ceiling() and ride_control.c.
+ */
+static int32_t profile_iq_pct_limit(
+	const assist_level_config_t *config,
+	int32_t iq_limit)
+{
+	int32_t limit = (iq_limit * (int32_t)config->max_iq_pct) / 100;
+	return (limit < 0) ? 0 : limit;
+}
+
+/*
+ * FW-084: the ceiling the ACTIVE LEVEL imposes on a pedal-only current target, for callers
+ * that produce a target OUTSIDE assist_modes_calculate().
+ *
+ * The defect this exists for: max_iq_pct and max_motor_power_w are applied inside
+ * finish_power_request(), to the mode's own result. Extended Boost REPLACES that result
+ * afterwards, so a level limited to 20 % could be handed the full global limit by a hard
+ * pedal push — the level's ceiling silently did not apply.
+ *
+ * The power half uses the same conversion finish_power_request() uses (motor power ->
+ * battery current -> phase current at the measured voltage utilization), but starts from the
+ * level's power CEILING rather than from a filtered request. That makes it an upper bound on
+ * what the level would ever have been allowed to draw, which is exactly what a substituted
+ * target needs.
+ */
+int32_t assist_modes_profile_iq_ceiling(
+	const assist_level_config_t *config,
+	const rider_input_t *input,
+	uint32_t battery_voltage_mv,
+	int32_t iq_limit)
+{
+	if (config == 0 || input == 0) {
+		return 0;
+	}
+	int32_t ceiling = profile_iq_pct_limit(config, iq_limit);
+	uint32_t power_limit_w = config->max_motor_power_w;
+	if (power_limit_w == 0 || power_limit_w > ASSIST_MOTOR_POWER_HARD_MAX_W) {
+		power_limit_w = ASSIST_MOTOR_POWER_HARD_MAX_W;
+	}
+	/* Same exclusion as the mode path: at launch the duty is near zero, so the power
+	 * conversion would produce a meaningless ceiling and the torque-derived request stays
+	 * authoritative. */
+	if (!input->start_phase && input->motor_voltage_utilization > 0U &&
+		battery_voltage_mv > 0U) {
+		uint32_t ceiling_current_ma =
+			(power_limit_w * 1000000U) / battery_voltage_mv;
+		uint32_t power_iq_limit =
+			(ceiling_current_ma * MOTOR_VOLTAGE_UTILIZATION_SCALE) /
+			((uint32_t)input->motor_voltage_utilization * CAL_I);
+		if ((uint32_t)ceiling > power_iq_limit) {
+			ceiling = (int32_t)power_iq_limit;
+		}
+	}
+	return ceiling;
 }
 
 static bool finish_power_request(
@@ -645,7 +738,7 @@ static bool finish_power_request(
 	 * is excluded explicitly — it is not a cadence anyone is pedalling at.
 	 */
 	uint16_t cadence_comp_permille = CADENCE_COMP_UNITY_PERMILLE;
-	if (bank_cadence_comp_enabled[active_bank] && !input->cadence_seeded) {
+	if (bank_cadence_comp_enabled[active_bank] && !input->start_phase) {
 		cadence_comp_permille =
 			cadence_comp_multiplier_permille(input->cadence_rpm);
 	}
@@ -681,18 +774,14 @@ static bool finish_power_request(
 	 * as the motor accelerates the power ceiling becomes effective. */
 	uint32_t requested_current_ma =
 		(motor_power_mw * 1000U) / battery_voltage_mv;
-	int32_t profile_iq_limit =
-		(iq_limit * (int32_t)config->max_iq_pct) / 100;
-	if (profile_iq_limit < 0) {
-		profile_iq_limit = 0;
-	}
+	int32_t profile_iq_limit = profile_iq_pct_limit(config, iq_limit);
 	if (phase_iq_request < 0) {
 		phase_iq_request = 0;
 	}
 	if (phase_iq_request > profile_iq_limit) {
 		phase_iq_request = profile_iq_limit;
 	}
-	if (!input->cadence_seeded && requested_current_ma > 0U &&
+	if (!input->start_phase && requested_current_ma > 0U &&
 		input->motor_voltage_utilization > 0U) {
 		uint32_t power_iq_limit =
 			(requested_current_ma * MOTOR_VOLTAGE_UTILIZATION_SCALE) /
@@ -750,15 +839,42 @@ static bool calculate_power(
 		return true;
 	}
 
-	uint8_t power_cadence = prepared.cadence_seeded ?
+	uint8_t power_cadence = prepared.start_phase ?
 		0U : prepared.cadence_for_assist_rpm;
 	uint32_t human_power_mw = calculate_human_power_mw(
 		prepared.human_load_centikg, power_cadence);
 	uint32_t assist_basis_power_mw = calculate_human_power_mw(
 		prepared.assist_load_centikg, power_cadence);
 
+	/*
+	 * FW-088: the support curve asks "how hard is the rider trying", and at launch the
+	 * rider's POWER is not that answer. Power is pedal load x crank speed, so with the
+	 * cranks barely turning it is ~0 however hard the pedal is pushed - and Progressive
+	 * and Curve mapped that 0 to support_min_pct, i.e. the least help exactly when a
+	 * standing start needs the most. (Linear was immune: its ratio is a constant, which
+	 * is why only two of the three modes ever felt weak pulling away.)
+	 *
+	 * So during the start phase the CURVE INPUT alone is evaluated at a nominal cadence:
+	 * the rider gets the support ratio their pedal load would earn at a normal cadence.
+	 * Reported human power stays the true ~0, and motor_power_mw with it, so telemetry
+	 * and the power ceiling are not inflated - and that ceiling is bypassed during the
+	 * start phase anyway (see finish_power_request). Only the ratio changes.
+	 *
+	 * BOTH launch states qualify, and for the same reason - the cranks are not turning
+	 * fast enough for power to mean anything yet. start_phase covers a normal pull-away
+	 * (cranks moving, first interval not measured); without_rotation_active covers a
+	 * deliberate push from a dead stop on a level that allows it. Keying this on
+	 * start_phase alone left the without-rotation launch on support_min - the one case
+	 * where the rider is leaning hardest on the pedal and needs the help most.
+	 */
+	uint32_t curve_basis_power_mw =
+		(prepared.start_phase || prepared.without_rotation_active) ?
+		calculate_human_power_mw(prepared.assist_load_centikg,
+			START_PHASE_CURVE_RPM) :
+		assist_basis_power_mw;
+
 	uint32_t support_ratio_pct = calculate_support_ratio_pct(
-		assist_basis_power_mw,
+		curve_basis_power_mw,
 		config,
 		output);
 	uint32_t motor_power_mw =
@@ -826,7 +942,7 @@ static bool calculate_emtb(
 
 	uint32_t denominator = EMTB_DENOMINATOR_BASE - 2U * parameter;
 	if (config->emtb_based_on_power) {
-		uint32_t cadence = prepared.cadence_seeded ?
+		uint32_t cadence = prepared.start_phase ?
 			0U : prepared.cadence_for_assist_rpm;
 		denominator = (denominator > cadence) ? denominator - cadence : 0U;
 	}
@@ -836,7 +952,7 @@ static bool calculate_emtb(
 		(delta_x160_q * delta_x160_q) /
 		(denominator * EMTB_FIXED_Q_ONE);
 
-	uint8_t power_cadence = prepared.cadence_seeded ?
+	uint8_t power_cadence = prepared.start_phase ?
 		0U : prepared.cadence_for_assist_rpm;
 	uint32_t human_power_mw = calculate_human_power_mw(
 		prepared.human_load_centikg, power_cadence);
@@ -919,7 +1035,7 @@ static bool calculate_torque_assist(
 		(delta_x160_q * config->torque_assist_factor) /
 		TORQUE_ASSIST_FACTOR_DENOMINATOR;
 
-	uint8_t power_cadence = prepared.cadence_seeded ?
+	uint8_t power_cadence = prepared.start_phase ?
 		0U : prepared.cadence_for_assist_rpm;
 	uint32_t human_power_mw = calculate_human_power_mw(
 		prepared.human_load_centikg, power_cadence);
@@ -1073,6 +1189,31 @@ static uint8_t centikg_to_wire_decikg(uint16_t centikg, uint16_t maximum_centikg
 		ASSIST_START_LOAD_WIRE_STEP_CENTIKG);
 }
 
+/*
+ * FW-084: the trigger load covers the whole 60 kg sensor scale, quantized to the 0.5 kg
+ * step the wire byte carries. Quantizing here as well as on the wire means the value the
+ * rider reads back is exactly the value the control loop compares against — an unquantized
+ * 8.37 kg in RAM would engage at a threshold the UI never showed.
+ */
+static uint16_t valid_ext_boost_trigger_centikg(uint16_t centikg)
+{
+	if (centikg < ASSIST_EXT_BOOST_TRIGGER_MIN_CENTIKG) {
+		centikg = ASSIST_EXT_BOOST_TRIGGER_MIN_CENTIKG;
+	}
+	if (centikg > ASSIST_EXT_BOOST_TRIGGER_MAX_CENTIKG) {
+		centikg = ASSIST_EXT_BOOST_TRIGGER_MAX_CENTIKG;
+	}
+	return (uint16_t)(((centikg + ASSIST_EXT_BOOST_TRIGGER_WIRE_STEP_CENTIKG / 2U) /
+		ASSIST_EXT_BOOST_TRIGGER_WIRE_STEP_CENTIKG) *
+		ASSIST_EXT_BOOST_TRIGGER_WIRE_STEP_CENTIKG);
+}
+
+static uint16_t valid_ext_boost_duration_ms(uint16_t duration_ms)
+{
+	return (duration_ms > ASSIST_EXT_BOOST_DURATION_MAX_MS) ?
+		ASSIST_EXT_BOOST_DURATION_MAX_MS : duration_ms;
+}
+
 uint16_t assist_modes_serialize_bank(uint8_t bank_index, uint8_t *buffer)
 {
 	if (bank_index >= ASSIST_BANK_COUNT || buffer == 0) {
@@ -1131,17 +1272,24 @@ uint16_t assist_modes_serialize_bank(uint8_t bank_index, uint8_t *buffer)
 		put_u16(&record[29], cfg->release_ms);
 		put_u16(&record[31], cfg->power_rise_filter_ms);
 		put_u16(&record[33], cfg->power_fall_filter_ms);
-		/* FW-077: both public start loads use 0.1 kg precision. Keep the
-		 * removed rise-detector bytes zero so the v7 record remains 46 B. */
+		/* FW-077: both public start loads use 0.1 kg precision. */
 		record[35] = centikg_to_wire_decikg(
 			cfg->riding_start_load_centikg,
 			ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG);
-		record[36] = 0;
-		record[37] = 0;
+		/* FW-084: the two bytes FW-077 reserved. Only a v8 reader may interpret
+		 * them — v6/v7 gave them a different meaning. Byte 36 is 0.5 kg per unit,
+		 * NOT the 0.1 kg of the other kg fields: that is what buys the full 60 kg
+		 * range out of one byte, at one exact decimal place. 2 = 1.0 kg, 120 = 60.0 kg. */
+		record[36] = (uint8_t)(valid_ext_boost_trigger_centikg(
+			cfg->extended_boost.trigger_load_centikg) /
+			ASSIST_EXT_BOOST_TRIGGER_WIRE_STEP_CENTIKG);
+		record[37] = cfg->extended_boost.strength_pct;
 		put_u16(&record[38], cfg->iq_rise_slow_ms);          //FW-069
 		put_u16(&record[40], cfg->iq_rise_fast_ms);
 		put_u16(&record[42], cfg->iq_fall_slow_ms);
 		put_u16(&record[44], cfg->iq_fall_fast_ms);
+		put_u16(&record[46], valid_ext_boost_duration_ms(   //FW-084
+			cfg->extended_boost.duration_ms));
 		record += BANK_RECORD_LEN;
 	}
 	uint16_t crc_at = BANK_BLOB_HEADER_LEN +
@@ -1183,13 +1331,17 @@ bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length)
 		header_len = BANK_BLOB_HEADER_LEN_V3;
 	} else if (version == BANK_BLOB_VERSION_V5 ||
 		version == BANK_BLOB_VERSION_V6 ||
-		version == BANK_BLOB_VERSION_V7) { //FW-077 keeps the v6 header/stride
+		version == BANK_BLOB_VERSION_V7 || //FW-077 keeps the v6 header/stride
+		version == BANK_BLOB_VERSION_V8) { //FW-084 grows only the record
 		header_len = BANK_BLOB_HEADER_LEN;
 	} else {
 		return false;
 	}
 
-	if (version == BANK_BLOB_VERSION_V7 && record_len != BANK_RECORD_LEN) {
+	if (version == BANK_BLOB_VERSION_V7 && record_len != BANK_RECORD_LEN_V7) {
+		return false;
+	}
+	if (version == BANK_BLOB_VERSION_V8 && record_len != BANK_RECORD_LEN_V8) {
 		return false;
 	}
 	expected_len = header_len + (uint16_t)ASSIST_LEVEL_COUNT * record_len + 2U;
@@ -1294,7 +1446,7 @@ bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length)
 		 * that never had them, so they take the compiled default of this level instead of
 		 * whatever happens to sit past the end of the record.
 		 */
-		if (record_len >= BANK_RECORD_LEN) {
+		if (record_len >= BANK_RECORD_LEN_V7) {
 			if (version >= BANK_BLOB_VERSION_V7) {
 				cfg->riding_start_load_centikg = clamp_u16(
 					(uint16_t)record[35] * ASSIST_START_LOAD_WIRE_STEP_CENTIKG,
@@ -1332,9 +1484,39 @@ bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length)
 			cfg->iq_fall_slow_ms = fallback->iq_fall_slow_ms;
 			cfg->iq_fall_fast_ms = fallback->iq_fall_fast_ms;
 		}
+		/*
+		 * FW-084: bytes 36..37 are Extended Boost ONLY from v8 on — in v6/v7 they held
+		 * a different, since removed meaning, so reading them from an older blob would
+		 * turn a stale rise-detector value into a live boost setting.
+		 *
+		 * Migration is deliberately not "keep what was there": every older profile
+		 * comes back with the function OFF, and the rider switches it on knowingly.
+		 */
+		if (version >= BANK_BLOB_VERSION_V8 && record_len >= BANK_RECORD_LEN_V8) {
+			cfg->extended_boost.trigger_load_centikg =
+				valid_ext_boost_trigger_centikg((uint16_t)(record[36] *
+					ASSIST_EXT_BOOST_TRIGGER_WIRE_STEP_CENTIKG));
+			cfg->extended_boost.strength_pct = record[37];
+			cfg->extended_boost.duration_ms =
+				valid_ext_boost_duration_ms(get_u16(&record[46]));
+		} else {
+			cfg->extended_boost.trigger_load_centikg =
+				ASSIST_EXT_BOOST_TRIGGER_DEFAULT_CENTIKG;
+			cfg->extended_boost.strength_pct =
+				ASSIST_EXT_BOOST_STRENGTH_DEFAULT_PCT;
+			cfg->extended_boost.duration_ms = 0;
+		}
 		record += record_len;
 	}
 	assist_modes_reset();
+	/*
+	 * FW-084: an Extended Boost arming belongs to the trigger/strength/duration it was made
+	 * under. A bank write can replace all three without changing the bank or level INDEX, so
+	 * the module's own change detection would not see it — and a push confirmed under the
+	 * old settings could then fire with the new ones. Reset after every accepted write; a
+	 * rider tuning at a standstill loses nothing, and one confirmed push is 30 ms of work.
+	 */
+	assist_extended_boost_reset(ASSIST_EXT_BOOST_CANCEL_CONFIG_CHANGED);
 	return true;
 }
 

@@ -225,7 +225,7 @@ uint16_t uint16_cadence_filtered=0;
 uint8_t pas_qstate=0xFF;     //last quadrature state (0..3), 0xFF=uninit
 int8_t pas_fwd_steps=0;      //net forward steps toward one magnet pulse (PAS_STEPS_PER_PULSE)
 uint16_t pas_cycle_ticks=0;  //ticks since last forward magnet pulse (for cadence)
-uint8_t cadence_seeded=0;    //1 while MS.cadence holds the START_CADENCE_SEED value (no real measurement yet)
+uint8_t start_phase=0;       //FW-087: 1 = pedalling has begun but no cadence measured yet (was cadence_seeded)
 uint16_t pas_idle_ticks=0;   //ticks since last quadrature transition (for stop detection)
 uint16_t pas_last_period_ticks=PAS_STOP_TICKS; //ticks between the two most recent forward transitions -> adaptive stop-timeout basis
 uint16_t pas_stop_timeout=PAS_STOP_TICKS; //this tick's adaptive stop threshold, clamp(2*pas_last_period_ticks, PAS_STOP_TICKS, PAS_STOP_TICKS_MAX)
@@ -332,6 +332,8 @@ const q31_t tics_lower_limit = WHEEL_CIRCUMFERENCE*5*3600/(6*GEAR_RATIO*SPEEDLIM
 const q31_t tics_higher_limit = WHEEL_CIRCUMFERENCE*5*3600/(6*GEAR_RATIO*(SPEEDLIMIT+2)*10);
 uint8_t i = 0;
 uint16_t p = 0;
+/* Legacy overrun (inactive in Ride Core) — see EXTENDED_BOOST_ENABLE in config.h. Nothing to
+ * do with FW-084 Extended Boost, which owns its own module and state. */
 uint16_t Overrun_strength = 0;
 uint16_t Overrun_counter = 0;
 uint8_t Overrun_flag = 0;
@@ -800,7 +802,10 @@ int main(void)
 				}
 
 				//--- Auto-off after inactivity: reset counter on any rider/comms activity, else count up.
-				if(MS.Speedx100>0 || MS.cadence>0 || MS.i_q_setpoint>0 || MS.brake_active_flag || adc_value[5]<3300){
+				//FW-087: start_phase counts as activity. It used to be covered implicitly by the
+				//fake 1 rpm sitting in MS.cadence; pedalling that has begun but not yet produced a
+				//cadence reading must not look like inactivity to the auto-off timer.
+				if(MS.Speedx100>0 || MS.cadence>0 || start_phase || MS.i_q_setpoint>0 || MS.brake_active_flag || adc_value[5]<3300){
 					idle_ticks_slow=0;
 				}
 				else if(idle_ticks_slow < 0xFFFFFFFF){
@@ -1672,26 +1677,60 @@ void reg_ADC_processing(void)
 				pas_last_period_ticks=pas_idle_ticks; //gap since the previous forward transition -> adaptive stop-timeout basis
 				pas_idle_ticks=0;
 				pas_fwd_accum++;            //FW-027 diag: free-running forward-step counter (EMI test)
+				//FW-086: first forward step after a stop (or after a reverse step) begins a NEW
+				//cadence interval. pas_cycle_ticks is reset ONLY when a cadence pulse fires, and
+				//the stop branch below never touched it, so it kept counting through the whole
+				//standstill and saturated at 64000. The next pulse then computed
+				//10000/64000 = 0 rpm and cleared the start phase with that zero - which cut assist
+				//(prepare_assist_input rejects cadence 0) AND prematurely enabled the power-derived
+				//Iq ceiling that assist_modes.c:695 deliberately bypasses during launch. Assist only
+				//recovered on the SECOND pulse, i.e. after 30 deg of crank instead of 15 deg.
+				//THIS step must be the interval's ORIGIN, not its first count: if it were counted,
+				//the pulse would fire one step early and span only PAS_STEPS_PER_PULSE-1 gaps,
+				//reading 4/3 too high. So the step counter is held at 0 for this one step (see the
+				//short-circuit at the pulse test below) and the pulse lands a full interval later.
+				uint8_t cadence_interval_restart = (fwd_run==0);
+				if(cadence_interval_restart){ pas_cycle_ticks=0; pas_fwd_steps=0; }
 				if(fwd_run<250)fwd_run++;   //consecutive forward steps (jiggle-proof engage)
 				if(Backwards_counter)Backwards_counter--;
 				// torque EMA @ 3.75deg (96 updates/rev) - full quadrature resolution so all algorithms see torque every step, not only every 15deg
 				torque_cumulated-=torque_cumulated>>MS.TQfilter;
 				if(MS.torque_on_crank>750) torque_cumulated+=(MS.torque_on_crank-750);
 				MS.torque_filtered=(torque_cumulated>>MS.TQfilter);
+				//FW-085: the RUN estimator advances HERE, on the crank step, not in the 4 kHz
+				//control loop. That is what makes its window a fixed slice of the pedal stroke
+				//at every cadence - the whole point of the card. Same place, same cadence-proof
+				//reasoning as the torque EMA directly above.
+				torque_input_run_filter_step();
 				if(MS.torque_filtered>0) torque_counter=0; // cadence-gate: hold motor engaged while pedalling with any torque
-#if START_CADENCE_SEED_ENABLE
-				if(MS.cadence==0 && fwd_run>=START_CADENCE_SEED_STEPS && MS.torque_on_crank>(750+TQ_GATE_MIN)){
-					MS.cadence=START_CADENCE_SEED_RPM;
-					cadence_seeded=1;
-					uint16_cadence_filtered=(uint16_t)START_CADENCE_SEED_RPM<<3;
-					MS.p_human=(uint16_t)((float)(MS.cadence*MS.torque_filtered)*0.00342);
+#if START_PHASE_ENABLE
+				//FW-087: declare the start phase, and ONLY that. This used to write a fake 1 rpm
+				//into MS.cadence (plus the filtered cadence and p_human) so the control path would
+				//not read "no cadence" as "not pedalling". No assist calculation ever read that 1 -
+				//every consumer substitutes 0 while the flag is up - so it bought nothing except a
+				//second meaning for MS.cadence, a fake 1 on the HMI, and a launch protection that
+				//collapsed whenever something cleared the flag (the FW-086 defect).
+				//FW-089: crank movement alone declares the start phase. It used to also demand
+				//MS.torque_on_crank > 750+TQ_GATE_MIN - a raw-ADC threshold sitting 29 counts above
+				//the 740 zero, i.e. ~1.19 kg on the default curve and ~1.53 kg after a user
+				//calibration. The rider's OWN configured start load is 0.70 kg standing / 0.30 kg
+				//rolling, so anything in between cleared the threshold the rider set and was still
+				//refused by a constant they cannot see and that moves with sensor calibration.
+				//Pressure is not lost as a condition - it moved to where it belongs: the kg
+				//threshold in ride_control, which still has to be met before the latch arms and
+				//before a single milliamp flows. Crank jiggle stays blocked by fwd_run, which any
+				//reverse step resets.
+				if(MS.cadence==0 && !start_phase && fwd_run>=START_PHASE_STEPS){
+					start_phase=1;
 				}
 #endif
-				if(++pas_fwd_steps>=PAS_STEPS_PER_PULSE){ //one cadence pulse every PAS_STEPS_PER_PULSE forward transitions (see config.h)
+				//FW-086: the short-circuit keeps pas_fwd_steps at 0 on the restart step, so the
+				//interval that follows spans a full PAS_STEPS_PER_PULSE and reads a true cadence.
+				if(!cadence_interval_restart && ++pas_fwd_steps>=PAS_STEPS_PER_PULSE){ //one cadence pulse every PAS_STEPS_PER_PULSE forward transitions (see config.h)
 					pas_fwd_steps=0;
 					if(pas_cycle_ticks>70){
 						MS.cadence=10000/pas_cycle_ticks;
-						cadence_seeded=0;               //first real measurement replaces the seed
+						start_phase=0;                  //FW-087: a real measurement ends the start phase
 						uint16_cadence_filtered-=uint16_cadence_filtered>>3;
 						uint16_cadence_filtered+=MS.cadence;
 						MS.p_human=(uint16_t)((float)(MS.cadence*MS.torque_filtered)*0.00342);
@@ -1720,8 +1759,12 @@ void reg_ADC_processing(void)
 			else if(stop_timeout_calc>PAS_STOP_TICKS_MAX) stop_timeout_calc=PAS_STOP_TICKS_MAX;
 			pas_stop_timeout = (uint16_t)stop_timeout_calc;
 		}
-		if(pas_idle_ticks>pas_stop_timeout){ MS.cadence=0; cadence_seeded=0; uint16_cadence_filtered=0; pas_fwd_steps=0; fwd_run=0; } //stop
-		forward_pedaling = (MS.cadence>0 && Backwards_counter<4 && pas_idle_ticks<=pas_stop_timeout);
+		if(pas_idle_ticks>pas_stop_timeout){ MS.cadence=0; start_phase=0; uint16_cadence_filtered=0; pas_fwd_steps=0; fwd_run=0; } //stop
+		//FW-087: the start phase counts as forward pedalling. The fake 1 rpm used to carry this
+		//implicitly through MS.cadence>0; without saying so explicitly, dropping the fake would
+		//close the assist gate a SECOND way, because forward_pedaling feeds pedaling_active
+		//(ride_core_pedaling below) which assist_modes checks alongside the cadence itself.
+		forward_pedaling = ((MS.cadence>0 || start_phase) && Backwards_counter<4 && pas_idle_ticks<=pas_stop_timeout);
 	}
 	//FW-061: latch "the wheel turned at some point since pedalling stopped". Sampling
 	//the speed at the END of a coast misclassifies a coast that finishes at a
@@ -1749,7 +1792,7 @@ void reg_ADC_processing(void)
 	//--- cyclic offset re-zero on coast (pedals idle >= TQ_RECAL_IDLE_TICKS): owned by torque_input ---
 	torque_input_coast_update(MS.torque_on_crank, pas_idle_ticks>TQ_RECAL_IDLE_TICKS && tq_fault_ticks==0 && MS.i_q_setpoint==0,
 		coast_wheel_moved!=0); //FW-058/FW-061: latched over the episode, not sampled at its end
-	torque_input_set_run_filter_ms(tuning_config_assist_torque_run_filter_ms()); //FW-033: RUN estimator time constant (Canable)
+	torque_input_set_run_window_deg(tuning_config_assist_torque_run_window_deg()); //FW-085: RUN estimator window in crank degrees (Canable)
 	torque_input_update(torque_raw_mv, MS.torque_on_crank, torque_fault==0);
 	//Publish one coherent, read-only rider snapshot. Legacy calculations below still use the
 	//same MS/globals directly; switching consumers is a separate, testable refactor step.
@@ -1776,7 +1819,7 @@ void reg_ADC_processing(void)
 			.pedaling_active = ride_core_pedaling,
 			.crank_forward_steps = fwd_run, //FW-083: raw step count for ride_control's rolling-start reduction
 			.crank_direction_ok = forward_pedaling != 0, //FW-083: direction half of ride_core_pedaling, without the step count
-			.cadence_seeded = cadence_seeded != 0,
+			.start_phase = start_phase != 0,
 			.torque_sensor_valid = torque_fault == 0 &&
 				!torque_input_calibration_active(),
 			.pas_sensor_valid = pas_qstate != 0xFF
@@ -2418,7 +2461,7 @@ void print_debug_on_CAN(void){
 	uint8_t dbg_flags = (forward_pedaling?0x01:0)
 	                  | ((Backwards_counter>=4)?0x02:0)
 	                  | (ui_8_PWM_ON_Flag?0x04:0)
-	                  | (cadence_seeded?0x08:0)
+	                  | (start_phase?0x08:0)
 	                  | ((dbg_mo && dbg_mo->assist_without_rotation_active)?0x10:0);
 	transmit_message.tx_sfid = 0x00;
 	transmit_message.tx_efid = 0x00010203; //ID for debug message
@@ -3163,7 +3206,9 @@ uint16_t legacy_assist_calculate_monolith(void){
 						//throttle override
 					if(mapped_throttle>MS.i_q_setpoint_temp)MS.i_q_setpoint_temp=mapped_throttle;
 
-					//apply Extended Boost (holds power after pedal stops -> "power drag-on". Gated by EXTENDED_BOOST_ENABLE; default OFF for smooth power-down)
+					//apply LEGACY OVERRUN (inactive in Ride Core): holds power after the pedal stops -> "power drag-on".
+					//Gated by EXTENDED_BOOST_ENABLE, default OFF. This is NOT FW-084 Extended Boost — that one is a
+					//separate ride-core module (assist_extended_boost.c) and never runs through here. See config.h.
 					if(EXTENDED_BOOST_ENABLE && Overrun_counter<(MP.Override_Duration*MS.ext_boost_duration)/100&&Backwards_counter<4){
 						MS.i_q_setpoint_temp=(Overrun_strength*MS.ext_boost_strength)/100;
 						if(MS.i_q_setpoint_temp>MP.phase_current_max)MS.i_q_setpoint_temp = MP.phase_current_max;

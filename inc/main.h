@@ -174,7 +174,7 @@ typedef struct
 	// version bump, not another change of MotorParams_t — every size change here invalidates the
 	// whole stored record (FW-023 length check) and resets ALL settings to defaults.
 	uint16_t       	bank_store_magic;               // 0xB16B = bank_store holds valid serialized banks
-	uint8_t       	bank_store[2][256];             // serialized bank blobs (wire format v7, 245 B used)
+	uint8_t       	bank_store[2][256];             // serialized bank blobs (wire format v8, 255 B used — full)
 
 	//--- FW-010: global ride-feel tuning storage (appended at end) ---
 	uint16_t       	tuning_store_magic;             // 0x7501 = tuning_store holds valid values
