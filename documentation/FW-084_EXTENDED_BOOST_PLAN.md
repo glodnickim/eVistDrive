@@ -2,8 +2,13 @@
 
 - **Data:** 2026-08-04
 - **Status:** **IMPLEMENTED — BENCH/ROAD VALIDATION PENDING** (2026-08-06). Domyślnie
-  WYŁĄCZONE (`duration = 0`). Po audycie z 2026-08-06 naprawione oba P0 i wszystkie P1/P2;
-  nie wgrane i nie przetestowane na rowerze — patrz sekcja 16.
+  WYŁĄCZONE (`duration = 0`). Po audycie z 2026-08-06 naprawione oba P0 i wszystkie P1/P2.
+- **NIC NIE JEST POTWIERDZONE PRZEZ WŁAŚCICIELA.** Build z tym kodem (0.0297) był wgrany i
+  przejechany, ale Extended Boost był w nim **wyłączony** (`duration = 0`), więc ta jazda
+  **nie jest** żadnym potwierdzeniem tej funkcji — nie wykonała ani jednego taktu ACTIVE.
+  Zacommitowanie i zmergowanie kodu też nie jest akceptacją: kod leży w `master` w stanie
+  nieaktywnym. Funkcja pozostaje nieprzetestowana do czasu testu z kołem uniesionym,
+  obciążeniowego i terenowego — patrz sekcja 16.5.
 - **Nazwa:** funkcja nazywa się **Extended Boost**. Nazwy `Overrun`/`Override` należą
   wyłącznie do nieaktywnego mechanizmu Legacy (`Legacy overrun (inactive in Ride Core)`).
 - **Cel:** świadome podtrzymanie napędu po zatrzymaniu korb, przeznaczone do pokonywania
@@ -731,6 +736,12 @@ Audyt (`FW-084_AUDIT_DEVELOPER_HANDOFF.md`) znalazł dwa błędy krytyczne. Oba 
    różne jednostki nie dzielą jednej ramki.
 
 ### 16.4. Znane ograniczenia weryfikacji
+
+**Właściciel nie potwierdził niczego w tej karcie (stan na 2026-08-06).** Weryfikacja
+ogranicza się do: testów hostowych, kompilacji obu wariantów firmware i przeglądu kodu po
+audycie. Jazda na 0.0297 odbyła się z `duration = 0`, czyli z funkcją wyłączoną — potwierdza
+wyłącznie to, że jej obecność w kodzie **niczego nie zepsuła** przy wyłączonym ustawieniu.
+Nie mówi nic o zachowaniu samego boostu.
 
 - **Testy hostowe w C nie zostały uruchomione** na tej maszynie: nie ma kompilatora
   hostowego (tylko `arm-none-eabi-gcc`). Runner kompiluje wtedy harness krzyżowo i kończy się
