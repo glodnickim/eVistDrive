@@ -322,10 +322,14 @@ uint16_t pwm_cutoff_st[3]={0,0,0}; // snapshot switchtime na starcie okna
  * FW-093: power stage DRIVE / COAST. THREE DIFFERENT THINGS, kept in three different
  * variables on purpose, because the old code folded them into one counter:
  *
- *   ZERO TORQUE   MS.i_q_setpoint == 0. The control path is asking for no torque. It does
- *                 NOT mean the motor is free: while the bridge is enabled the FOC current
- *                 controller keeps regulating the MEASURED current to zero, and on a turning
- *                 rotor that regulation is felt as electrical damping / braking.
+ *   ZERO TORQUE   MS.i_q_setpoint == 0 and MS.i_d_setpoint == 0 — no current is being asked
+ *                 for on either axis. It does NOT mean the motor is free: while the bridge is
+ *                 enabled the FOC current controller keeps regulating the MEASURED current to
+ *                 zero, and on a turning rotor that regulation is felt as electrical damping.
+ *                 That regulation NEEDS its PI integral to work (it has to synthesize the
+ *                 back-EMF to hold zero current), which is why no zero-target integral reset
+ *                 may run while the bridge still drives — see the block after
+ *                 ride_control_update() in reg_ADC_processing.
  *   COAST / Hi-Z  TIMER0 primary output (MOE) is off, the half bridges are released. No phase
  *                 is driven and no current can be commanded. Only here does the motor really
  *                 free-wheel on its own inertia.
@@ -881,7 +885,14 @@ int main(void)
             //Torque, Walk Assist, Power/Power Curve, throttle and Extended Boost all end up
             //in the same MS.i_q_setpoint, so the power stage is switched here and nowhere
             //else. No module implements its own MOSFET shutdown.
-            if(MS.i_q_setpoint){
+            //
+            //The test is on the WHOLE current command, not on the q axis alone: motor_core
+            //carries iq_target AND id_target, and d-axis current is just as much current in
+            //the windings as q-axis current is. Today only the position-calibration service
+            //mode asks for i_d (and it owns the bridge itself), so this changes nothing yet —
+            //but a future field-weakening or d-axis injection must not be able to request
+            //current from a released bridge.
+            if(MS.i_q_setpoint || MS.i_d_setpoint){
             	//A torque request cancels a pending coast IMMEDIATELY. The bridge is never
             	//released while torque is being asked for.
             	pwm_zero_current_ticks=0;
@@ -897,9 +908,10 @@ int main(void)
             	}
             }
             else if(ui_8_PWM_ON_Flag){
-            	//ZERO TORQUE, bridge still driving: the FOC is now actively holding the
-            	//measured current at zero, which damps a coasting rotor. Give it only as long
-            	//as the REAL current needs to decay, then release the half bridges.
+            	//ZERO CURRENT REQUEST (neither axis), bridge still driving: the FOC is now
+            	//actively holding the measured current at zero, which damps a coasting rotor.
+            	//Give it only as long as the REAL current needs to decay, then release the
+            	//half bridges.
             	if(pwm_stage!=PWM_STAGE_ZERO_CURRENT_WAIT){
             		pwm_stage=PWM_STAGE_ZERO_CURRENT_WAIT;
             		pwm_zero_current_ticks=0;
@@ -2090,15 +2102,35 @@ void reg_ADC_processing(void)
             .throttle_iq = (int32_t)map(adc_value[1], MP.throttle_offset, MP.throttle_max, 0, MP.phase_current_max)
         };
         ride_control_update(&ride_input);
-        //FW-028: the ride core bypasses the legacy monolith's zero-target PI cleanup.
-        //When the final command is zero, drop stale controller integral immediately so
-        //the bridge cannot keep making torque after the assist target has disappeared.
-        //FW-037: safety cuts are no longer reset here — they ramp down (integral clears when the
-        //setpoint ramp reaches 0), so brake/backward/etc. fade smoothly. FW-028 zero-target reset stays.
-        if(MS.i_q_setpoint==0){
-			PI_iq.integral_part=0;
-			PI_id.integral_part=0;
-        }
+        /*
+         * FW-093 removed the FW-028 zero-target integral reset that used to live here.
+         *
+         * FW-028 wanted "a zero request must not keep making torque" and got it by wiping
+         * the current regulator's integral on every 4 kHz tick while the target was zero.
+         * That is the wrong instrument, and with FW-093 it actively breaks the release:
+         *
+         *   - The FOC runs at 16 kHz, so the reset landed every 4th cycle. With
+         *     gain_i = 0.01 against gain_p = 1.5, the integral could only ever reach ~2.6 %
+         *     of the proportional term before being wiped: the current loop was
+         *     PROPORTIONAL-ONLY whenever the target was zero.
+         *   - Holding i_q at zero on a spinning rotor requires u_q = back-EMF, and a
+         *     proportional-only loop cannot produce a large output at zero error. So u_q
+         *     settled well below the back-EMF and a real braking current kept flowing —
+         *     this, not merely limited bandwidth, is what the rider felt as the motor
+         *     being held after the assist ended.
+         *   - It also defeats FW-093 directly: the measured current could never enter the
+         *     coast window, so every release would fall through to the 50 ms ceiling, and
+         *     coast_u_q_latched would be captured while current was still flowing — making
+         *     the back-EMF pre-load for the next bridge-on wrong as well.
+         *
+         * The guarantee FW-028 asked for is now provided by the power stage itself: a zero
+         * request releases the half bridges within a few milliseconds, and both regulators
+         * are zeroed there (power_stage_enter_coast). A bridge that is off cannot make
+         * torque, whatever the integral holds — that is strictly stronger than wiping it.
+         * The integral is left alone while the bridge still drives, because it IS what lets
+         * the loop null the current. FW-037 (safety cuts ramp instead of snapping) and the
+         * overcurrent cut in FOC.c are unaffected.
+         */
         //FW-037: the old hard "safety_cut -> immediate neutral PWM + bridge DISABLE" path was
         //removed. Brake / backward / overtemp / torque-fault now fade via the Iq release ramp
         //(ride_control forces iq_target=0 + 200 ms release) and the normal soft cutoff after the
@@ -2139,10 +2171,10 @@ void reg_ADC_processing(void)
 			uint16_cadence_filtered=0;
     	}
 		torque_cumulated=0;
-		if (!MS.i_q_setpoint){//reset integral part, if no power from throttle signal is wanted
-			PI_iq.integral_part=0;
-			PI_id.integral_part=0;
-		}
+		//FW-093: the second zero-target integral reset is gone for the same reason as the one
+		//after ride_control_update — see the block comment there. Wiping the integral at the
+		//control rate leaves the current loop proportional-only exactly when it has to null
+		//the current against the back-EMF. The bridge release owns "no torque" now.
     }
 
 	reg_ADC_flag=0;
@@ -3519,11 +3551,12 @@ uint16_t legacy_assist_calculate_monolith(void){
 					}
 
 				}
-				if(!MS.i_q_setpoint_temp&&PI_iq.integral_part){
-					PI_iq.integral_part=0;
-					PI_id.integral_part=0;
-				}
-
+				//FW-093: the monolith's own zero-target integral reset is gone too. This path
+				//still runs for Walk Assist, and a WA speed pause hands back zero while the
+				//motor is turning — exactly the case where the current loop needs its integral
+				//to hold the back-EMF and null the current before the bridge is released. The
+				//deliberate reset in the calibration-complete branch above stays: there the
+				//bridge is switched off in the same breath.
 
 	    		return MS.i_q_setpoint_temp;
 

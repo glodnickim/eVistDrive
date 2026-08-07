@@ -62,6 +62,17 @@ local (untracked) notes.
   with the back-EMF measured as the coast began, scaled to the speed assist resumes at, and
   the outputs are enabled only once the first real switching pattern has been computed.
   Falling back to the previous zero start is still what happens from a standstill.
+- A second cause of the same symptom was removed with it: the current regulator's integral
+  term was being wiped on every control tick while the target was zero. The regulator runs
+  four times faster than that, and with the shipped gains the integral could only ever reach
+  about 3 % of the proportional term before being cleared — so at zero target the current
+  loop was effectively proportional-only. Holding zero current on a turning rotor requires
+  the loop to produce the back-EMF at zero error, which a proportional-only loop cannot do,
+  so a real braking current kept flowing. The integral is now left to work while the bridge
+  still drives; "a zero request makes no torque" is guaranteed by releasing the bridge
+  instead, which is stronger, and both regulators are cleared as part of that release.
+- Whether the bridge may drive is decided on the whole current command, not on the torque
+  axis alone, so a future d-axis use cannot request current from a released bridge.
 - The current release ramp, the bumpless bridge-on, Hall angle tracking and every safety
   shutdown are unchanged. Overcurrent, self power-off and position calibration keep their own
   immediate, unconditional cuts: this covers ordinary release only.

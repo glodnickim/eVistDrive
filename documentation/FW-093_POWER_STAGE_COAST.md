@@ -1,8 +1,10 @@
 # FW-093 — Iq = 0 ma znaczyć prawdziwy wybieg (Hi-Z), a nie tłumienie silnika
 
 - **Data:** 2026-08-07
-- **Status:** WDROŻONE w kodzie, build **0.0298**. Testy hostowe zielone.
-  **NIEPRZETESTOWANE NA ROWERZE.** Karta wymaga akceptacji przed jazdą.
+- **Status:** WDROŻONE w kodzie, build **0.0299** (poprawka po przeglądzie 0.0298).
+  Testy hostowe zielone. **NIEPRZETESTOWANE NA ROWERZE.** Karta wymaga akceptacji przed jazdą.
+- **Historia:** 0.0298 miał wdrożoną architekturę, ale kasowanie części całkującej PI
+  (§2b) czyniło ją w praktyce nieskuteczną przy prędkości. Naprawione w 0.0299.
 - **Cel:** po puszczeniu Walk Assist albo po zakończeniu wspomagania Torque silnik ma
   natychmiast przejść w rzeczywisty swobodny wybieg — bez wyczuwalnego oporu
   elektrycznego i bez twardego dociągnięcia przekładni na końcu.
@@ -71,6 +73,56 @@ Czyli dokładnie jak podejrzewałeś: **coast_release ustawiał tylko zadanie mo
 nigdy nie dotykał stopnia mocy.** „Coast" był nazwą bez pokrycia. Po tej karcie ta sama
 ścieżka prowadzi do prawdziwego Hi-Z, bo zerowe zadanie momentu **z definicji** je
 uruchamia — dla wszystkich źródeł momentu naraz.
+
+## 2b. Druga przyczyna, znaleziona w przeglądzie 0.0298 — kasowanie całki PI
+
+Pierwsza wersja tej karty tłumaczyła opór „ograniczoną szybkością regulatora". **To było
+zbyt łagodne.** Przegląd wskazał konflikt, który okazał się drugą, samodzielną przyczyną.
+
+W `reg_ADC_processing()` (i w dwóch innych miejscach) stał reset z FW-028:
+
+```c
+if(MS.i_q_setpoint==0){ PI_iq.integral_part=0; PI_id.integral_part=0; }
+```
+
+Rachunek, który to przesądza:
+
+- FOC liczy w **16 kHz**, ten reset wykonywał się w **4 kHz** → całka przeżywała
+  **4 cykle**.
+- `I_FACTOR_I_Q = 0,01` wobec `P_FACTOR_I_Q = 1,5` → człon całkujący mógł urosnąć
+  najwyżej do `4 × 0,01 / 1,5` = **2,6 %** członu proporcjonalnego.
+- Czyli przy zerowym zadaniu **regulator prądu był praktycznie czysto
+  proporcjonalny**.
+
+A żeby utrzymać `i_q = 0` na kręcącym się wirniku, trzeba wytworzyć `u_q = SEM` — czyli
+**duże wyjście przy zerowym uchybie**. Regulator P z definicji tego nie potrafi. Ustawia
+się w kompromisie znacznie poniżej SEM, a różnica to płynący, **utrzymujący się prąd
+hamujący**. To jest ten opór, który czuć — nie „powolne dochodzenie do zera", tylko
+regulator strukturalnie niezdolny do wyzerowania prądu.
+
+**Konsekwencja dla samego FW-093 była poważniejsza:** okno `|i_q| ≤ 20` nigdy nie
+zostałoby osiągnięte przy prędkości, więc **każde zwolnienie wychodziłoby przez
+bezpiecznik 50 ms**, a `coast_u_q_latched` byłby zapisywany przy płynącym prądzie — czyli
+seed SEM przy powrocie DRIVE też byłby błędny. Nowa architektura stała na regulatorze,
+który nie mógł spełnić jej warunku wejścia.
+
+**Poprawka:** usunięte wszystkie trzy resety zależne wyłącznie od zerowego zadania
+(`reg_ADC_processing` ×2 i `legacy_assist_calculate_monolith`, ta ostatnia dotyczy Walk
+Assist). Całka pracuje normalnie, dopóki mostek steruje — bo to **ona** pozwala wyzerować
+prąd. Gwarancja z FW-028 („zerowe żądanie nie może dalej robić momentu") jest teraz
+realizowana mocniej: mostek jest **zwalniany** w kilka ms, a oba regulatory są zerowane
+w `power_stage_enter_coast()` — **po** zapisaniu `coast_u_q_latched`. Wyłączony mostek nie
+zrobi momentu niezależnie od tego, co trzyma całka. Nadprąd, samowyłączenie i kalibracja
+zachowują własne natychmiastowe resety.
+
+Okno ryzyka jest ograniczone: zadanie zerowe + mostek aktywny trwa najwyżej 50 ms.
+
+## 2c. Warunek DRIVE obejmuje obie osie
+
+Było `if(MS.i_q_setpoint)`, jest `if(MS.i_q_setpoint || MS.i_d_setpoint)`. `motor_core`
+przenosi **oba** żądania, a prąd osi D to tak samo prąd w uzwojeniach. Dziś o `i_d` prosi
+tylko kalibracja pozycji, która i tak sama trzyma mostek, więc **zachowanie się nie
+zmienia** — ale przyszłe osłabianie pola nie mogłoby prosić o prąd ze zwolnionego mostka.
 
 ### Czego NIE potwierdziłem
 
@@ -170,6 +222,30 @@ w ruchu. Bez tego karta wprowadziłaby nowy błąd zamiast usunąć stary:
 Wszystkie w `inc/config.h`, jako stałe kompilacji. **Świadomie nie wystawiam ich do
 Canable** — to nie są parametry jazdy, tylko własności elektryczne stopnia mocy.
 
+### Próg 20 (1,9 A) jest wartością WSTĘPNĄ — do ustawienia z pomiaru
+
+Nie twierdzę, że 1,9 A fazowego jest mechanicznie nieodczuwalne — przed przekładnią
+redukcyjną może być. Ale **nie obniżam go teraz arbitralnie** (np. na 5), bo zaszyte
+offsety zera ADC wskazują na szum/błąd rzędu ~10 zliczeń i za niski próg tylko przerzuciłby
+każde zwolnienie na bezpiecznik 50 ms.
+
+Kolejność jest taka:
+
+1. Wgraj z diagnostyką, zbierz log ramki **0x00010207**.
+2. Odczytaj rzeczywiste `Iq`/`Id` **w chwili wejścia w COAST** (bajty [4..6]) z kilkunastu
+   zwolnień, przy różnych prędkościach.
+3. Ustaw próg na **zmierzony szczyt szumu + zapas**, a nie na założenie.
+
+Po poprawce z §2b regulator faktycznie potrafi zejść do zera, więc zmierzone wartości
+powinny być wyraźnie niższe niż 20 — dopiero one powiedzą, ile naprawdę można zejść.
+
+### Bezpiecznik 50 ms to sytuacja awaryjna, nie tryb pracy
+
+Bit **b4** w ramce 0x00010207 odróżnia wejście w COAST przez bezpiecznik od wejścia przez
+zmierzone zero. **Podczas normalnego Torque i WA ten bit ma być zawsze 0.** Jeżeli
+zobaczysz choć jedno wejście przez timeout — nie stroić progu „na oko", tylko sprawdzić
+regulator prądu i offsety ADC, bo to znaczy, że prąd nie schodzi do zera.
+
 ---
 
 ## 5. Analiza bezpieczeństwa
@@ -216,7 +292,13 @@ to inne repo).
 
 ## 7. Plan testów na rowerze
 
-Wszystkie na **0.0298**. Punkt bazowy do powrotu: **0.0297**.
+Wszystkie na **0.0299**. Punkt bazowy do powrotu: **0.0297**.
+
+### Test 0 — log przed dotykaniem progów (zrobić PIERWSZY)
+Wgraj wariant z diagnostyką, zbierz ramkę **0x00010207** przy kilkunastu zwolnieniach.
+**Oczekiwane:** sekwencja `DRIVE → ZERO_CURRENT_WAIT → COAST`, **b4 = 0 za każdym razem**,
+oraz małe `Iq`/`Id` w chwili wejścia w COAST. Dopiero te liczby są podstawą do strojenia
+`POWER_STAGE_COAST_CURRENT`.
 
 ### Test 1 — Torque
 1. Jedź na wspomaganiu Torque, dowolny poziom.
@@ -269,6 +351,7 @@ oraz co się dzieje, gdy rowerzysta puści rower. **Odłożone, do zrobienia pó
 
 ## 9. Kryteria odbioru
 
+- [ ] Test 0 — w logu `DRIVE → ZERO_CURRENT_WAIT → COAST`, **b4 = 0 zawsze**.
 - [ ] Test 2 (WA, obrót do tyłu) — brak wyczuwalnego oporu elektrycznego.
 - [ ] Test 3 — klik przekładni zniknął lub wyraźnie zmalał.
 - [ ] Test 4 — powrót wspomagania w trakcie wybiegu bez szarpnięcia i bez hamowania.

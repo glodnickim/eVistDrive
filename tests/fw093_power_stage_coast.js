@@ -56,8 +56,8 @@ class PowerStage {
         this.halfRotation = hallEvent ? 0 : this.halfRotation + 1;
     }
     // the main-loop block
-    update({ iqSetpoint = 0 }) {
-        if (iqSetpoint) {
+    update({ iqSetpoint = 0, idSetpoint = 0 }) {
+        if (iqSetpoint || idSetpoint) {
             this.zeroCurrentTicks = 0;
             this.zeroWaitTicks = 0;
             if (this.stage !== DRIVE) this.stage = DRIVE;
@@ -165,31 +165,71 @@ const WAIT_CEILING = MAX_WAIT_TICKS + 1;
         `7. a decaying current releases on measurement after ${t} ticks, well inside the ceiling`);
 }
 
-// 8. Structural: the three concepts must stay three separate things in the source.
+// 8. A d-axis request is a current request too: motor_core carries iq_target AND id_target,
+//    and current on the d axis is current in the windings. A bridge must never be released
+//    while either axis is asking for it.
+{
+    const ps = new PowerStage();
+    ps.update({ iqSetpoint: 0, idSetpoint: 200 });
+    check(ps.moe === true && ps.stage === DRIVE, '8. a d-axis-only request drives the bridge');
+    for (let t = 0; t < 500; t++) {
+        ps.step({ iqSetpoint: 0, idSetpoint: 200, iq: 0, id: 0, hallEvent: true });
+        if (!ps.moe) break;
+    }
+    check(ps.moe === true, '8. and it is never released while that request stands');
+}
+
+// 9. The current loop must keep its integral while the bridge still drives. Wiping it at the
+//    control rate leaves a proportional-only loop, and a proportional-only loop cannot
+//    synthesize the back-EMF needed to hold zero current on a spinning rotor — so the
+//    measured current never enters the coast window and the latched u_q is not the back-EMF.
+{
+    const P_GAIN = Number(fs.readFileSync(P('inc', 'config.h'), 'utf8').match(/#define\s+P_FACTOR_I_Q\s+([\d.]+)/)[1]);
+    const I_GAIN = Number(fs.readFileSync(P('inc', 'config.h'), 'utf8').match(/#define\s+I_FACTOR_I_Q\s+([\d.]+)/)[1]);
+    // FOC runs at 16 kHz, the reset ran at 4 kHz -> at most 4 accumulations survived
+    const survivingShare = (4 * I_GAIN) / P_GAIN;
+    check(survivingShare < 0.05,
+        `9. a 4 kHz reset left the integral at only ${(survivingShare * 100).toFixed(1)} % of the P term`);
+    // and the resets themselves must be gone from the driving path
+    const afterRide = main.match(/ride_control_update\(&ride_input\);[\s\S]{0,2600}/)[0];
+    check(!/if\(MS\.i_q_setpoint==0\)\{\s*\n\s*PI_iq\.integral_part=0/.test(afterRide),
+        '9. the FW-028 zero-target integral reset no longer runs while the bridge drives');
+    check(!/if \(!MS\.i_q_setpoint\)\{[\s\S]{0,80}PI_iq\.integral_part=0/.test(main),
+        '9. neither does the second one in the 1 s-without-torque cleanup');
+    check(!/if\(!MS\.i_q_setpoint_temp&&PI_iq\.integral_part\)/.test(main),
+        '9. nor the monolith one that Walk Assist runs through');
+    // the ONLY zero-request reset left must be the one that accompanies a bridge release
+    const coastBody9 = main.match(/void power_stage_enter_coast\(void\)\s*\n\{[\s\S]*?\n\}/)[0];
+    check(/PI_iq\.integral_part=0/.test(coastBody9) &&
+          coastBody9.indexOf('coast_u_q_latched') < coastBody9.indexOf('PI_iq.integral_part=0'),
+        '9. coast entry latches u_q FIRST and only then clears the regulators');
+}
+
+// 10. Structural: the three concepts must stay three separate things in the source.
 {
     check(/POWER_STAGE_COAST_CURRENT/.test(main) && /POWER_STAGE_COAST_STABLE_TICKS/.test(main),
-        '8. the coast decision is made on the measured current');
+        '10. the coast decision is made on the measured current');
     check(/void power_stage_enter_coast\(void\)/.test(main) && /void power_stage_enter_drive\(void\)/.test(main),
-        '8. DRIVE and COAST are one shared path, not per-module shutdowns');
+        '10. DRIVE and COAST are one shared path, not per-module shutdowns');
     // the release condition must not mention the rotor-stopped counter at all
     const releaseBlock = main.match(/else if\(ui_8_PWM_ON_Flag\)\{[\s\S]*?\n            \}/);
-    check(releaseBlock !== null, '8. the zero-torque release block is present');
+    check(releaseBlock !== null, '10. the zero-torque release block is present');
     check(releaseBlock && !/uint16_half_rotation_counter/.test(releaseBlock[0]),
-        '8. and it does NOT consult the rotor-stopped counter');
+        '10. and it does NOT consult the rotor-stopped counter');
     // the DEFINITION, not the prototype near the top of the file
     const coastBody = main.match(/void power_stage_enter_coast\(void\)\s*\n\{[\s\S]*?\n\}/)[0];
     check(/timer_primary_output_config\(TIMER0,DISABLE\)/.test(coastBody),
-        '8. entering coast really clears MOE (Hi-Z), not just the Iq target');
+        '10. entering coast really clears MOE (Hi-Z), not just the Iq target');
     // the coast path must not run through the _T/2 soft-cutoff window
     check(!/pwm_cutoff_active=1/.test(coastBody),
-        '8. the coast path does not arm the 50 % PWM fade (that vector is a brake, not Hi-Z)');
+        '10. the coast path does not arm the 50 % PWM fade (that vector is a brake, not Hi-Z)');
     const driveBody = main.match(/void power_stage_enter_drive\(void\)\s*\n\{[\s\S]*?\n\}/)[0];
     check(/pwm_enable_request=1/.test(driveBody) && !/timer_primary_output_config\(TIMER0,ENABLE\)/.test(driveBody),
-        '8. MOE-on is handed to the FOC ISR, so the first driven period is not the neutral vector');
+        '10. MOE-on is handed to the FOC ISR, so the first driven period is not the neutral vector');
     check(/coast_u_q_latched/.test(coastBody) && /coast_u_q_latched/.test(driveBody),
-        '8. the back-EMF is latched at coast entry and pre-loaded at the next bridge-on');
+        '10. the back-EMF is latched at coast entry and pre-loaded at the next bridge-on');
     check(/FW-093/.test(dyn),
-        '8. FW-048 coast_release points at the power-stage owner instead of implying one');
+        '10. FW-048 coast_release points at the power-stage owner instead of implying one');
 }
 
 console.log(failures === 0 ? '\nAll FW-093 checks passed.' : `\n${failures} FW-093 check(s) FAILED.`);
