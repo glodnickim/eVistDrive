@@ -157,6 +157,14 @@ void FOC_calculation(int16_t int16_i_as, int16_t int16_i_bs, q31_t q31_teta, int
 	//temp6=__HAL_TIM_GET_COUNTER(&htim1);
 
 }
+//FW-093: see FOC.h. Only the two current EMAs are touched; nothing else in the FOC state
+//depends on history that survives a Hi-Z window (the angle comes from the Hall ISR).
+void FOC_reset_current_filter(void)
+{
+	q31_i_q_fil = 0;
+	q31_i_d_fil = 0;
+}
+
 //PI Control for quadrature current iq (torque)
 q31_t PI_control (PI_control_t* PI_c)
 {

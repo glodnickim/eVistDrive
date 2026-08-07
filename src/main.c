@@ -166,6 +166,12 @@ void Speed_processing(void);
 uint16_t map_rezi(int32_t actual_value, int32_t actual_time, int32_t timeout, int32_t decay_base);
 uint16_t legacy_assist_calculate_monolith(void);
 int16_t T_NTC(uint16_t ADC);
+//FW-093: the two halves of the shared DRIVE <-> COAST path (see the state comment below).
+void power_stage_enter_drive(void);
+void power_stage_enter_coast(void);
+#if CAN_DIAGNOSTICS_ENABLE
+void send_power_stage_diag(uint8_t stage);
+#endif
 float u32_to_deg=0.00000008381903171539;
 uint16_t slow_loop_counter=0;
 #if CAN_DIAGNOSTICS_ENABLE
@@ -311,6 +317,39 @@ uint8_t ui_8_PWM_ON_Flag=0;
 uint8_t  pwm_cutoff_active=0;    // trwa miekkie zwolnienie stopnia mocy przed DISABLE
 uint16_t pwm_cutoff_tick=0;      // licznik cykli okna zwolnienia
 uint16_t pwm_cutoff_st[3]={0,0,0}; // snapshot switchtime na starcie okna
+
+/*==========================================================================================
+ * FW-093: power stage DRIVE / COAST. THREE DIFFERENT THINGS, kept in three different
+ * variables on purpose, because the old code folded them into one counter:
+ *
+ *   ZERO TORQUE   MS.i_q_setpoint == 0. The control path is asking for no torque. It does
+ *                 NOT mean the motor is free: while the bridge is enabled the FOC current
+ *                 controller keeps regulating the MEASURED current to zero, and on a turning
+ *                 rotor that regulation is felt as electrical damping / braking.
+ *   COAST / Hi-Z  TIMER0 primary output (MOE) is off, the half bridges are released. No phase
+ *                 is driven and no current can be commanded. Only here does the motor really
+ *                 free-wheel on its own inertia.
+ *   ROTOR STOPPED uint16_half_rotation_counter has aged past POWER_STAGE_STOP_TICKS: no Hall
+ *                 half-rotation for ~3 s. That is a statement about the MOTOR. It keeps that
+ *                 job (the stalled-bridge fallback in the main loop) but no longer decides
+ *                 when zero torque may become Hi-Z — the Hall ISR resets it on every half
+ *                 rotation, so for as long as the motor turned it held the bridge driving.
+ *
+ * This is a FAULT-FREE release path only. Overcurrent (FOC.c), self power-off and the
+ * position-calibration service mode keep their own immediate, unconditional bridge cuts.
+ *========================================================================================*/
+typedef enum {
+	PWM_STAGE_COAST = 0,             // MOE off: half bridges released, true Hi-Z
+	PWM_STAGE_DRIVE = 1,             // MOE on: FOC owns the phases
+	PWM_STAGE_ZERO_CURRENT_WAIT = 2  // torque request gone, letting the REAL current decay
+} pwm_stage_t;
+pwm_stage_t pwm_stage=PWM_STAGE_COAST;
+uint16_t pwm_zero_current_ticks=0;   // @4 kHz: dwell of |i_q|,|i_d| inside the coast window
+uint16_t pwm_zero_wait_ticks=0;      // @4 kHz: total wait since the torque request vanished
+uint8_t  pwm_enable_request=0;       // hand MOE-on to the FOC ISR (see ADC0_1_IRQHandler)
+int32_t  coast_u_q_latched=0;        // u_q at coast entry = the back-EMF at coast_erps_latched
+uint16_t coast_erps_latched=0;       // motor speed that back-EMF belongs to
+int8_t   coast_dir_latched=0;        // rotor direction it belongs to (sign of the back-EMF)
 int32_t q31_angle_per_tic=0;
 //Rotor angle scaled from degree to q31 for arm_math. -180Ã‚Â°-->-2^31, 0Ã‚Â°-->0, +180Ã‚Â°-->+2^31
 const int32_t deg_30 = 357913941;
@@ -838,28 +877,53 @@ int main(void)
 
             }//end slow loop
 
+            //===== FW-093: shared DRIVE <-> COAST path for EVERY torque source ==========
+            //Torque, Walk Assist, Power/Power Curve, throttle and Extended Boost all end up
+            //in the same MS.i_q_setpoint, so the power stage is switched here and nowhere
+            //else. No module implements its own MOSFET shutdown.
             if(MS.i_q_setpoint){
+            	//A torque request cancels a pending coast IMMEDIATELY. The bridge is never
+            	//released while torque is being asked for.
+            	pwm_zero_current_ticks=0;
+            	pwm_zero_wait_ticks=0;
+            	if(pwm_stage!=PWM_STAGE_DRIVE){
+            		pwm_stage=PWM_STAGE_DRIVE;
+#if CAN_DIAGNOSTICS_ENABLE
+            		send_power_stage_diag(PWM_STAGE_DRIVE);
+#endif
+            	}
             	if(!ui_8_PWM_ON_Flag){
-            		pwm_cutoff_active=0;        //przerwij ewentualne miekkie zwolnienie - wracamy do FOC
-            		get_standstill_position();
-            		//FW-035: bumpless enable. PI_control slews PI.out by max_step, so a stale
-            		//.out from before the bridge was disabled would kick the gearbox on the first
-            		//FOC cycle after re-enable. Start every bridge-on from a clean neutral state:
-            		//zero both regulators and phase voltages, force 50/50 PWM, THEN enable. FOC then
-            		//ramps up through the existing Iq ramp. (FW-028 already zeroed integral_part.)
-            		PI_iq.integral_part=0; PI_iq.out=0;
-            		PI_id.integral_part=0; PI_id.out=0;
-            		MS.u_q=0; MS.u_d=0; MS.u_abs=0;
-            		switchtime[0]=_T>>1; switchtime[1]=_T>>1; switchtime[2]=_T>>1;
-            		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,_T>>1);
-            		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,_T>>1);
-            		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,_T>>1);
-					timer_primary_output_config(TIMER0,ENABLE);
-					uint16_half_rotation_counter=0;
-					ui_8_PWM_ON_Flag=1;
+            		power_stage_enter_drive();
+            	}
+            }
+            else if(ui_8_PWM_ON_Flag){
+            	//ZERO TORQUE, bridge still driving: the FOC is now actively holding the
+            	//measured current at zero, which damps a coasting rotor. Give it only as long
+            	//as the REAL current needs to decay, then release the half bridges.
+            	if(pwm_stage!=PWM_STAGE_ZERO_CURRENT_WAIT){
+            		pwm_stage=PWM_STAGE_ZERO_CURRENT_WAIT;
+            		pwm_zero_current_ticks=0;
+            		pwm_zero_wait_ticks=0;
+#if CAN_DIAGNOSTICS_ENABLE
+            		send_power_stage_diag(PWM_STAGE_ZERO_CURRENT_WAIT);
+#endif
+            	}
+            	//Both counters are clocked at the 4 kHz control tick in reg_ADC_processing,
+            	//not here — the main loop runs faster than the control tick, so counting in
+            	//it would not be milliseconds.
+            	if(pwm_zero_current_ticks>=POWER_STAGE_COAST_STABLE_TICKS ||
+            	   pwm_zero_wait_ticks>=POWER_STAGE_COAST_MAX_WAIT_TICKS){
+            		power_stage_enter_coast();
             	}
             }
 #if SOFT_CUTOFF_ENABLE
+            //ROTOR STOPPED fallback. FW-093 left this in place but it is no longer the normal
+            //way out of driving: a normal release now reaches Hi-Z within a few ms above, long
+            //before this ~3 s timer expires. What is left for it is the case it was always
+            //meant for — the bridge is driving into a rotor that is NOT turning (stall). The
+            //_T/2 interpolation below is safe there precisely because nothing is turning: on a
+            //spinning rotor _T/2 on all three phases is the zero voltage vector, i.e. a brake,
+            //which is exactly why the coast path above must never go through it.
             //miekkie zwolnienie: zjedz napiecia faz do neutral (_T/2) przez SOFT_CUTOFF_TICKS cykli, dopiero potem DISABLE
             if(uint16_half_rotation_counter>POWER_STAGE_STOP_TICKS && ui_8_PWM_ON_Flag && !pwm_cutoff_active){
             	ui_8_PWM_ON_Flag=0;            //stop nadpisywania switchtime przez FOC; mostek zostaje ENABLE
@@ -880,6 +944,8 @@ int main(void)
             		PI_iq.integral_part=0;
             		PI_id.integral_part=0;
             		pwm_cutoff_active=0;
+            		pwm_enable_request=0;        //FW-093: nothing pending may re-arm MOE
+            		pwm_stage=PWM_STAGE_COAST;   //FW-093: the bridge really is released now
             	}else{
             		int32_t neutral=_T>>1;
             		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,(uint16_t)(pwm_cutoff_st[0]+(neutral-(int32_t)pwm_cutoff_st[0])*pwm_cutoff_tick/SOFT_CUTOFF_TICKS));
@@ -898,6 +964,8 @@ int main(void)
 					i8_recent_rotor_direction=0;
 					PI_iq.integral_part=0;
 					PI_id.integral_part=0;
+					pwm_enable_request=0;        //FW-093: nothing pending may re-arm MOE
+					pwm_stage=PWM_STAGE_COAST;   //FW-093: the bridge really is released now
 
             	}
             }//end half rotation counter
@@ -1841,6 +1909,15 @@ void reg_ADC_processing(void)
     if(Speed_counter<64000)Speed_counter++;
     if(uint16_half_rotation_counter<64000)uint16_half_rotation_counter++;
     if(pwm_cutoff_active && pwm_cutoff_tick<SOFT_CUTOFF_TICKS)pwm_cutoff_tick++; //taktowanie okna miekkiego zwolnienia @4kHz
+    //FW-093 @4 kHz: how long the MEASURED current has stayed inside the coast window, and how
+    //long we have been waiting in total. Clocked here with the other tick counters so both are
+    //real milliseconds; the main loop runs faster than the control tick and only reads them.
+    //Free-running: the power-stage state machine resets them on every DRIVE entry and on
+    //entering the wait, and ignores them in every other state.
+    if(iabs(MS.i_q)<=POWER_STAGE_COAST_CURRENT && iabs(MS.i_d)<=POWER_STAGE_COAST_CURRENT){
+        if(pwm_zero_current_ticks<64000)pwm_zero_current_ticks++;
+    }else pwm_zero_current_ticks=0;
+    if(pwm_zero_wait_ticks<64000)pwm_zero_wait_ticks++;
     if(ui16_erps_counter<64000)ui16_erps_counter++;
     if(Overrun_counter<64000)Overrun_counter++;
 
@@ -2150,6 +2227,11 @@ void autodetect(void) {
 	pwm_cutoff_active=0;
 	pwm_cutoff_tick=0;
 	uint16_half_rotation_counter=0;
+	//FW-093: the service mode owns the bridge outright - it enables MOE itself and blocks the
+	//main loop for the whole open-loop sweep, so the normal DRIVE/COAST machine never runs
+	//here. Declare DRIVE anyway so the two never disagree about who has the bridge.
+	pwm_enable_request=0;
+	pwm_stage=PWM_STAGE_DRIVE;
 	timer_primary_output_config(TIMER0,ENABLE);
 	ui_8_PWM_ON_Flag=1;
 	MS.hall_angle_detect_flag = 0; //set uq to contstant value in FOC.c for open loop control
@@ -2260,6 +2342,8 @@ void autodetect(void) {
 	ui_8_PWM_ON_Flag=0;
 	pwm_cutoff_active=0;
 	pwm_cutoff_tick=0;
+	pwm_enable_request=0;       //FW-093
+	pwm_stage=PWM_STAGE_COAST;  //FW-093: bridge is off, say so
 	uint16_half_rotation_counter=0;
 
     MS.i_d = 0;
@@ -2379,6 +2463,15 @@ void ADC0_1_IRQHandler(void)
 		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,switchtime[1]);
 		timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,switchtime[2]);
 
+		//FW-093: COAST -> DRIVE completes here, not in the main loop. The switchtimes above
+		//are the first ones computed from the pre-loaded back-EMF, so switching MOE on now
+		//means the bridge starts driving the correct vector straight away. Enabling it in the
+		//main loop instead would leave up to one PWM period (62.5 us) of the neutral _T/2
+		//vector applied to a spinning rotor — a short circuit across the windings.
+		if(pwm_enable_request){
+			pwm_enable_request=0;
+			timer_primary_output_config(TIMER0,ENABLE);
+		}
     }
     __enable_irq();
 
@@ -2445,6 +2538,51 @@ uint8_t interpolate_assistfactor(void){
 }
 
 #if CAN_DIAGNOSTICS_ENABLE
+/*
+ * FW-093 diag (ID 0x00010207): power-stage transitions ONLY. Sent on the edge, never in the
+ * control loop — the whole point is to see DRIVE -> ZERO_CURRENT_WAIT -> COAST and
+ * COAST -> DRIVE with the numbers that produced them, without a 4 kHz stream to wade through.
+ *   [0]    stage: 0 = COAST (Hi-Z), 1 = DRIVE, 2 = ZERO_CURRENT_WAIT
+ *   [1]    flags: b0 PWM/FOC on, b1 rotor turning (Hall edge age), b2 walk assist,
+ *                 b3 brake, b4 entered COAST on the max-wait timeout instead of on
+ *                 a measured zero current
+ *   [2..3] Iq target (MS.i_q_setpoint, native counts, 1 = 95 mA phase)
+ *   [4..5] actual Iq (signed, same counts)
+ *   [6]    actual Id (signed, clamped to +/-127 counts = +/-12 A)
+ *   [7]    motor ERPS, capped at 255
+ */
+void send_power_stage_diag(uint8_t stage){
+	int32_t ps_iq_set = MS.i_q_setpoint; if(ps_iq_set<0)ps_iq_set=0; if(ps_iq_set>65535)ps_iq_set=65535;
+	int32_t ps_iq = MS.i_q; if(ps_iq<-32768)ps_iq=-32768; if(ps_iq>32767)ps_iq=32767;
+	int32_t ps_id = MS.i_d; if(ps_id<-127)ps_id=-127; if(ps_id>127)ps_id=127;
+	uint16_t ps_erps = ui16_erps; if(ps_erps>255)ps_erps=255;
+	uint8_t ps_flags = (ui_8_PWM_ON_Flag?0x01:0)
+	                 | ((ui16_erps_counter<ROTOR_MOVING_HALL_AGE_TICKS)?0x02:0)
+	                 | ((MS.pushassist_flag!=RESET)?0x04:0)
+	                 | (MS.brake_active_flag?0x08:0)
+	                 | ((stage==PWM_STAGE_COAST &&
+	                     pwm_zero_current_ticks<POWER_STAGE_COAST_STABLE_TICKS)?0x10:0);
+	transmit_message.tx_sfid = 0x00;
+	transmit_message.tx_efid = 0x00010207;
+	transmit_message.tx_ft = CAN_FT_DATA;
+	transmit_message.tx_ff = CAN_FF_EXTENDED;
+	transmit_message.tx_dlen = 8;
+	transmit_message.tx_data[0] = stage;
+	transmit_message.tx_data[1] = ps_flags;
+	transmit_message.tx_data[2] = (ps_iq_set>>8)&0xFF;
+	transmit_message.tx_data[3] = (ps_iq_set)&0xFF;
+	transmit_message.tx_data[4] = ((uint16_t)ps_iq>>8)&0xFF;
+	transmit_message.tx_data[5] = ((uint16_t)ps_iq)&0xFF;
+	transmit_message.tx_data[6] = (uint8_t)(int8_t)ps_id;
+	transmit_message.tx_data[7] = (uint8_t)ps_erps;
+
+	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
+	timeout = 0xFFFF;
+	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
+		timeout--;
+		}
+}
+
 void print_debug_on_CAN(void){
 
 
@@ -2574,6 +2712,118 @@ int16_t T_NTC(uint16_t ADC) // ADC 12 Bit, 10k NTC, RÃ¼ckgabewert in Â°C
 
 }
 
+/*
+ * FW-093: COAST -> DRIVE. Everything that has to be true before the half bridges are
+ * allowed to push current again, in one place, for every torque source.
+ *
+ * The hard part is that the rotor may still be spinning fast when this runs: after a
+ * release the bridge goes Hi-Z within a few ms, and the rider can ask for torque again at
+ * any moment during the coast. Enabling with u = 0 into a spinning motor applies the ZERO
+ * VOLTAGE VECTOR against the full back-EMF, and the current controller needs ~8 ms
+ * (max_step 15 per 16 kHz cycle over the _U_MAX span) to climb out of that — several
+ * milliseconds of hard regenerative braking. So the regulator is pre-loaded with the
+ * back-EMF instead of with zero.
+ */
+void power_stage_enter_drive(void)
+{
+	pwm_cutoff_active=0;   //przerwij ewentualne miekkie zwolnienie - wracamy do FOC
+	pwm_cutoff_tick=0;
+
+	//ROTOR STOPPED vs ROTOR TURNING — a question about the motor, asked with the age of the
+	//last Hall edge and nothing else. Stopped: the interpolated angle has drifted and must be
+	//re-anchored from the raw Hall state (get_standstill_position blocks for 25 ms, which is
+	//harmless at a standstill). Turning: the Hall ISR is already tracking the angle, so
+	//re-anchoring would only add dead time between the rider's request and the assist.
+	uint8_t rotor_moving = (ui16_erps_counter < ROTOR_MOVING_HALL_AGE_TICKS);
+	if(!rotor_moving) get_standstill_position();
+
+	//FW-035: bumpless enable. PI_control slews PI.out by max_step, so a stale .out from
+	//before the bridge was disabled would kick the gearbox on the first FOC cycle after
+	//re-enable. Start every bridge-on from a clean neutral state. (FW-028 already zeroed
+	//integral_part.)
+	PI_iq.integral_part=0; PI_iq.out=0;
+	PI_id.integral_part=0; PI_id.out=0;
+	MS.u_q=0; MS.u_d=0; MS.u_abs=0;
+
+	//FW-093 back-EMF pre-load. At coast entry the measured current was ~0 by construction,
+	//and with i_q = i_d = 0 the stator equation leaves u_q = back-EMF, u_d = 0 — so the
+	//latched u_q IS the back-EMF at coast_erps_latched. Back-EMF is proportional to speed,
+	//so scale it to the speed we are re-entering at and hand that to the regulator as its
+	//starting point. Result: the first driven PWM period already sits at the voltage that
+	//produces ~zero current, and the Iq ramp then adds torque from there.
+	//Guards: only with a live angle (moving rotor), only with a usable latch, and only while
+	//the rotor still turns the same way — a reversed rotor has a reversed back-EMF, and
+	//seeding the old sign would brake instead of coast. Anything unclear falls back to the
+	//plain zero start, which is exactly right at a standstill (back-EMF = 0).
+	if(rotor_moving && coast_erps_latched>0 && coast_dir_latched!=0 &&
+	   i8_recent_rotor_direction==coast_dir_latched){
+		uint16_t erps_now = ui16_erps;
+		//Never seed MORE than the back-EMF actually measured: during a coast the motor only
+		//slows down, so a higher reading is a stale/incorrect one, and over-seeding would
+		//push current INTO the motor.
+		if(erps_now>coast_erps_latched) erps_now=coast_erps_latched;
+		int32_t seed = (coast_u_q_latched*(int32_t)erps_now)/(int32_t)coast_erps_latched;
+		if(seed>_U_MAX) seed=_U_MAX;
+		if(seed<-_U_MAX) seed=-_U_MAX;
+		PI_iq.out=seed;
+		PI_iq.integral_part=(float)seed;
+		MS.u_q=seed;
+		MS.u_abs=iabs(seed);
+	}
+
+	switchtime[0]=_T>>1; switchtime[1]=_T>>1; switchtime[2]=_T>>1;
+	timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,_T>>1);
+	timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,_T>>1);
+	timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,_T>>1);
+	uint16_half_rotation_counter=0;
+	//MOE is NOT switched on here. The request is handed to the FOC ISR, which turns it on
+	//immediately after it has written the first real switchtime set — so the bridge never
+	//drives a single period of the neutral _T/2 vector, which against a spinning rotor would
+	//be a short brake pulse. Order matters: arm the request BEFORE the flag, so the ISR can
+	//never see "FOC enabled, request not yet armed" and drive a period undriven-neutral.
+	pwm_enable_request=1;
+	ui_8_PWM_ON_Flag=1;
+}
+
+/*
+ * FW-093: DRIVE -> COAST. Called only once the MEASURED current has actually decayed, so
+ * this is not a current chop: there is (almost) nothing left to commutate into the body
+ * diodes. This is the ONLY place where a normal, fault-free release releases the bridge.
+ */
+void power_stage_enter_coast(void)
+{
+	//Latch the back-EMF BEFORE clearing the voltages — see power_stage_enter_drive().
+	coast_u_q_latched=MS.u_q;
+	coast_erps_latched=ui16_erps;
+	coast_dir_latched=i8_recent_rotor_direction;
+
+	ui_8_PWM_ON_Flag=0;      //stop FOC writing switchtime
+	pwm_enable_request=0;
+	pwm_cutoff_active=0;     //no _T/2 fade-out window: on a turning rotor the neutral vector
+	pwm_cutoff_tick=0;       //is the zero voltage vector, i.e. a brake, not a coast
+	//The CCRs are parked at neutral for the NEXT bridge-on, not to drive anything now: MOE
+	//goes off in the same breath, one instruction later.
+	timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,_T>>1);
+	timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,_T>>1);
+	timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,_T>>1);
+	timer_primary_output_config(TIMER0,DISABLE);   //<-- the actual Hi-Z
+
+	PI_iq.integral_part=0; PI_iq.out=0;
+	PI_id.integral_part=0; PI_id.out=0;
+	MS.u_q=0; MS.u_d=0; MS.u_abs=0;
+	//No current can flow now, so say so: the FOC no longer runs and would otherwise leave a
+	//stale reading in MS.i_q for the diagnostics, the Walk Assist controller and the PI.
+	FOC_reset_current_filter();
+	MS.i_q=0; MS.i_d=0;
+	//i8_recent_rotor_direction is deliberately NOT cleared (the rotor-stopped path does clear
+	//it): the rotor is still turning and the Hall ISR needs it to interpolate the angle, so
+	//that a re-enable during the coast starts from a correct electrical position.
+	pwm_stage=PWM_STAGE_COAST;
+#if CAN_DIAGNOSTICS_ENABLE
+	send_power_stage_diag(PWM_STAGE_COAST);
+#endif
+}
+
 void get_standstill_position(){
 
 	  delay_1ms(25);
@@ -2690,6 +2940,11 @@ uint8_t soc_state_load(void){
 // Shared by the on/off button, auto-off (inactivity) and the comms watchdog.
 void power_off_controller(void){
 	if(!shutdown_saved){ soc_state_save(); shutdown_saved=1; } //persist SOC before power down
+	//FW-093: this is a shutdown, not a torque release - it stays immediate and unconditional.
+	//Clearing the request/flag makes sure no pending COAST->DRIVE hand-off can re-arm MOE.
+	ui_8_PWM_ON_Flag=0;
+	pwm_enable_request=0;
+	pwm_stage=PWM_STAGE_COAST;
 	timer_primary_output_config(TIMER0,DISABLE); //stop PWM output
 	GPIO_BC(GPIOB) = GPIO_PIN_4; //DC/DC enable off (self power-off)
 	GPIO_BC(GPIOB) = GPIO_PIN_5; //Display off
@@ -3255,6 +3510,8 @@ uint16_t legacy_assist_calculate_monolith(void){
 							ui_8_PWM_ON_Flag=0;
 							pwm_cutoff_active=0;
 							pwm_cutoff_tick=0;
+							pwm_enable_request=0;       //FW-093
+							pwm_stage=PWM_STAGE_COAST;  //FW-093: bridge is off, say so
 							uint16_half_rotation_counter=0;
 							write_virtual_eeprom();
 							MS.hall_angle_detect_flag=1;

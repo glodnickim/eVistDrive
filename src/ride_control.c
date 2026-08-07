@@ -83,6 +83,11 @@ static int32_t assist_hold_ticks;
  * around 5.5 erps (SIXSTEPTHRESHOLD), and that formula does not line up with the interpolated
  * one — the angle steps. Stop driving a bit above that point so no current is flowing when it
  * happens. Only ever applied while releasing; a start needs current down here.
+ *
+ * FW-093: this threshold is about the ANGLE formula, not about the power stage. It is not
+ * what decides when the bridge is released — every zero Iq target now leads to a real Hi-Z a
+ * few ms later, at any speed (main.c, power_stage_enter_coast). Below this speed the fade is
+ * simply cut short so the last bit of current is gone before the angle steps.
  */
 #define RIDE_COAST_RELEASE_ERPS 10
 

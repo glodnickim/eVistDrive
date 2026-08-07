@@ -257,7 +257,44 @@
 #define SOFT_CUTOFF_TICKS   40
 // Test diagnostyczny kliku: bazowo 4000 ~= 1 s, 12000 ~= 3 s.
 // Jesli klik przesunie sie o 2 s, jego zrodlem jest koncowe wylaczenie mostka.
+// FW-093: this is the ROTOR-STOPPED fallback only. It no longer decides when zero torque
+// may become Hi-Z — see POWER_STAGE_COAST_* below.
 #define POWER_STAGE_STOP_TICKS 12000
+
+// --- FW-093: DRIVE -> COAST (true Hi-Z) after the torque request disappears -------------
+//
+// ZERO TORQUE IS NOT COAST. With MS.i_q_setpoint == 0 the FOC current controller is still
+// running: it keeps regulating the MEASURED i_q/i_d to zero, and on a turning rotor that
+// regulation behaves like electrical damping (and pulls the gearbox into its last position
+// at the very end -> the "klik"). Only clearing TIMER0 MOE really releases the half bridges;
+// a switchtime of _T/2 on all three phases is the ZERO VOLTAGE VECTOR, i.e. a brake, not Hi-Z.
+//
+// UNITS. MS.i_q / MS.i_d are the Park-transformed phase currents in the SAME native EBICS
+// counts as MS.i_q_setpoint — runPIcontrol() compares them directly. 1 count = CAL_I = 95 mA
+// of phase current (battery mA = i_q * CAL_I * u_abs >> 11, and u_abs = 2048 is duty 1.0
+// where battery current equals phase current), so PH_CURRENT_MAX = 700 counts = 66.5 A.
+// FOC.c filters both with an EMA (>>3, ~0.5 ms at the 16 kHz FOC rate) before publishing them.
+//
+// Threshold: the binding noise source is not the ADC resolution but the hardcoded
+// inserted-channel zero offsets (2012/2020/2028 in adc_config), which can be off by ~10
+// counts. 20 counts = 1.9 A = 2.9 % of the ceiling: safely above that residual, and far
+// below anything the rider can feel. Raising it releases the bridge sooner but leaves a
+// slightly larger current to decay through the body diodes; lowering it below ~12 risks
+// never satisfying the window, in which case the max-wait below takes over.
+#define POWER_STAGE_COAST_CURRENT 20
+// Both currents must stay inside the window this long before the bridge is released.
+// 24 ticks @4 kHz = 6 ms — long enough that a single noisy sample cannot trigger it,
+// short enough that the rider cannot feel the delay.
+#define POWER_STAGE_COAST_STABLE_TICKS 24
+// Hard ceiling on the wait. The closed-loop current decay after the setpoint reaches zero
+// takes at most ~8 ms (PI max_step 15 per 16 kHz cycle over the full _U_MAX span), so this
+// only ever fires if the current reading is unusable. 200 ticks @4 kHz = 50 ms: an
+// unreadable current must never leave the bridge actively damping a coasting rotor.
+#define POWER_STAGE_COAST_MAX_WAIT_TICKS 200
+// "The rotor is turning" for the bridge-on path: age of the last Hall edge, @4 kHz.
+// 1000 ticks = 250 ms, i.e. below ~0.7 erps the angle is treated as unknown and re-anchored
+// from the raw Hall state. This is a statement about the MOTOR only — it never gates coast.
+#define ROTOR_MOVING_HALL_AGE_TICKS 1000
 
 // --- Torque->power upper span (#4): map(torque_on_crank, TQO_threshold, TQ_FULL_SCALE_MV, 0, current). ---
 // 3300 = old (hard pressure barely reaches full assist). 2000 = pressure-linear / "naciskowe" (Bosch-like):
