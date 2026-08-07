@@ -39,6 +39,35 @@ local (untracked) notes.
 - Ride diagnostics 0x6029 extended to v5 with the boost state, latest peak load, computed
   current, remaining time and the reason the last one was cancelled.
 
+### Releasing assist now really lets the motor coast — FW-093
+- Zero torque was not a coast. Once the assist target reached zero the half bridges stayed
+  enabled and the FOC went on regulating the *measured* current to zero, which on a turning
+  rotor behaves as electrical damping — and pulls the gearbox into its last position at the
+  very end. The bridge was released only after about three seconds without rotor movement,
+  and the Hall interrupt resets that timer on every half rotation, so for as long as the
+  motor turned the bridge never let go. Releasing Walk Assist and then turning the motor
+  backwards by hand was where it was easiest to feel.
+- The power stage now has an explicit DRIVE / COAST state shared by every torque source —
+  Torque, Walk Assist, Power and Power Curve, throttle and Extended Boost — because they all
+  end in the same current target. When that target reaches zero the controller waits only for
+  the real current to decay (about 6 ms, with a 50 ms ceiling) and then switches the bridge
+  off for a true high-impedance coast. No module switches the MOSFETs by itself.
+- "No torque requested", "the bridge is released" and "the rotor has stopped" are three
+  separate states in the code now. The rotor-stopped timer keeps its own job — cutting a
+  bridge that is driving into a motor that will not turn — but no longer decides when zero
+  torque may become a coast.
+- Re-engaging while the motor is still spinning is handled explicitly. Switching the bridge
+  on with zero applied voltage would put the full back-EMF across a shorted winding for
+  several milliseconds of hard regenerative braking, so the current regulator is pre-loaded
+  with the back-EMF measured as the coast began, scaled to the speed assist resumes at, and
+  the outputs are enabled only once the first real switching pattern has been computed.
+  Falling back to the previous zero start is still what happens from a standstill.
+- The current release ramp, the bumpless bridge-on, Hall angle tracking and every safety
+  shutdown are unchanged. Overcurrent, self power-off and position calibration keep their own
+  immediate, unconditional cuts: this covers ordinary release only.
+- Diagnostics frame 0x00010207 reports each power-stage transition — sent on the change, not
+  in the control loop.
+
 ### Smooth Start no longer mistakes coasting for a standstill — FW-092
 - The standstill test looked only at cadence and motor speed. On a mid-drive the freewheel
   lets the motor stand still while the bike rolls, so ordinary coasting satisfied it and every
