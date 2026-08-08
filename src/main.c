@@ -2689,6 +2689,78 @@ void print_debug_on_CAN(void){
 		timeout--;
 		}
 
+	/*
+	 * FW-096 diag (ID 0x00010208): WHO ZEROED THE CURRENT.
+	 *
+	 * "MS.i_q_setpoint is 0" says nothing about why, which is what turned a regression hunt
+	 * into guesswork. This frame names the gate. Diagnostics-only; it changes no decision.
+	 *
+	 *   Data1 hi = safety causes, each one an INDEPENDENT reading (not the aggregate):
+	 *              0x01 brake      0x02 backward pedalling   0x04 critical overtemp
+	 *              0x08 torque fault (Error 25)              0x10 torque load calibration
+	 *              0x20 walk active                          0x40 PWM/bridge on
+	 *              0x80 assist level 0
+	 *   Data1 lo = ride_control stage flags, see RIDE_DBG_* in ride_control.h
+	 *   Data2    = assist level index | cadence rpm
+	 *   Data3    = mode iq_request  (what the assist pipeline asked for, before limits)
+	 *   Data4    = MS.i_q_setpoint  (what actually reached the motor)
+	 */
+	uint8_t why_safety = (MS.brake_active_flag?0x01:0)
+	                   | ((Backwards_counter>=4)?0x02:0)
+	                   | ((overtemp_stage>=2)?0x04:0)
+	                   | (torque_fault?0x08:0)
+	                   | (torque_input_calibration_active()?0x10:0)
+	                   | ((MS.pushassist_flag!=RESET)?0x20:0)
+	                   | (ui_8_PWM_ON_Flag?0x40:0)
+	                   | ((level_to_array_element[MS.assist_level]==0)?0x80:0);
+	const assist_mode_output_t* why_mo = assist_modes_get_last_output();
+	int32_t why_req = why_mo ? why_mo->iq_request : 0;
+	if(why_req<0)why_req=0; if(why_req>65535)why_req=65535;
+	int32_t why_set = MS.i_q_setpoint; if(why_set<0)why_set=0; if(why_set>65535)why_set=65535;
+	transmit_message.tx_efid = 0x00010208;
+	transmit_message.tx_data[0] = why_safety;
+	transmit_message.tx_data[1] = ride_control_get_debug_flags();
+	transmit_message.tx_data[2] = level_to_array_element[MS.assist_level];
+	transmit_message.tx_data[3] = MS.cadence;
+	transmit_message.tx_data[4] = (why_req>>8)&0xFF;
+	transmit_message.tx_data[5] = (why_req)&0xFF;
+	transmit_message.tx_data[6] = (why_set>>8)&0xFF;
+	transmit_message.tx_data[7] = (why_set)&0xFF;
+	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
+	timeout = 0xFFFF;
+	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
+		timeout--;
+		}
+
+	/*
+	 * FW-096 diag (ID 0x00010209): the two things that silently zero BOTH assist and Walk
+	 * without raising any HMI error.
+	 *
+	 *   Data1 = voltage_raw_filtered   the live pack reading the limiter sees
+	 *   Data2 = MP.voltage_min         its cut-off. If Data1 <= Data2 the shared undervoltage
+	 *                                  limiter maps every request to 0, on both paths.
+	 *   Data3 = ride_core_iq_limit_scaled   assist ceiling after limp mode
+	 *   Data4 = phase_current_max_scaled    per-level ceiling after limp mode
+	 *                                  Either at 0 means no current can be asked for at all.
+	 */
+	int32_t why_vraw = voltage_raw_filtered; if(why_vraw<0)why_vraw=0; if(why_vraw>65535)why_vraw=65535;
+	int32_t why_vmin = MP.voltage_min; if(why_vmin<0)why_vmin=0; if(why_vmin>65535)why_vmin=65535;
+	int32_t why_rcl = ride_core_iq_limit_scaled; if(why_rcl<0)why_rcl=0; if(why_rcl>65535)why_rcl=65535;
+	int32_t why_pcm = phase_current_max_scaled; if(why_pcm<0)why_pcm=0; if(why_pcm>65535)why_pcm=65535;
+	transmit_message.tx_efid = 0x00010209;
+	transmit_message.tx_data[0] = (why_vraw>>8)&0xFF;
+	transmit_message.tx_data[1] = (why_vraw)&0xFF;
+	transmit_message.tx_data[2] = (why_vmin>>8)&0xFF;
+	transmit_message.tx_data[3] = (why_vmin)&0xFF;
+	transmit_message.tx_data[4] = (why_rcl>>8)&0xFF;
+	transmit_message.tx_data[5] = (why_rcl)&0xFF;
+	transmit_message.tx_data[6] = (why_pcm>>8)&0xFF;
+	transmit_message.tx_data[7] = (why_pcm)&0xFF;
+	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
+	timeout = 0xFFFF;
+	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
+		timeout--;
+		}
 }
 #endif
 

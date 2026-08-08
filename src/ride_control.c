@@ -116,6 +116,14 @@ static bool preload_active;
 static int32_t preload_ticks;
 static bool walk_was_active;
 
+/* FW-096: see ride_control.h. Written only, never read by any decision. */
+static uint8_t debug_flags;
+
+uint8_t ride_control_get_debug_flags(void)
+{
+	return debug_flags;
+}
+
 void ride_control_init(void)
 {
 	assist_latched = false;
@@ -149,6 +157,7 @@ void ride_control_update(const ride_control_input_t *input)
 	 * torque-sensor fault and load calibration.
 	 */
 	const bool hard_cut = input->safety_cut;
+	debug_flags = hard_cut ? RIDE_DBG_HARD_CUT : 0;   //FW-096
 
 	/*
 	 * Position-sensor calibration is a controller service mode, not an assist mode. It owns Iq
@@ -159,6 +168,7 @@ void ride_control_update(const ride_control_input_t *input)
 	if (input->position_calibration_active) {
 		//FW-084: this path never reaches the Extended Boost block below, so clear it here
 		//or an arming survives the whole service mode and fires on the way out.
+		debug_flags |= RIDE_DBG_CALIBRATION;   //FW-096
 		assist_extended_boost_reset(ASSIST_EXT_BOOST_CANCEL_CALIBRATION);
 		int32_t calibration_iq = hall_calibration_iq_request();
 		motor_command_t calibration_command = {
@@ -196,6 +206,7 @@ void ride_control_update(const ride_control_input_t *input)
 		 * element sits behind its speed controller.
 		 */
 		assist_extended_boost_reset(ASSIST_EXT_BOOST_CANCEL_WALK);   //FW-084
+		debug_flags |= RIDE_DBG_WALK;   //FW-096
 		iq_target = walk_assist_iq_request();
 	} else {
 		const rider_input_t *rider = rider_input_get();
@@ -210,6 +221,7 @@ void ride_control_update(const ride_control_input_t *input)
 			&mode_output);
 		dynamics_iq_scale = input->ride_core_iq_limit;
 		iq_target = supported ? mode_output.iq_request : 0;
+		if (!supported) debug_flags |= RIDE_DBG_MODE_UNSUPPORTED;   //FW-096
 		profile_pedaling_active =
 			rider->pedaling_active || mode_output.assist_without_rotation_active;
 		profile_release_ms = level->release_ms;
@@ -236,6 +248,7 @@ void ride_control_update(const ride_control_input_t *input)
 			// FW-034: assist level 0 = fully off. The latch must never arm or apply its
 			// current floor there, otherwise the floor keeps the motor pulling at level 0.
 			bool assist_off = (input->assist_level_index == 0);
+			if (assist_off) debug_flags |= RIDE_DBG_LEVEL_ZERO;   //FW-096
 			// FW-083: crank_ok, required_steps computed below (after bike_rolling).
 			// Moved out of pedaling_active so only the step count can be relaxed.
 			// Direction is still required in full; only the step count eases.
@@ -441,7 +454,9 @@ void ride_control_update(const ride_control_input_t *input)
 		 * to a rider who is demonstrably pedalling, for a reason that had stopped being
 		 * true. The legal speed limit still applies through the normal pedal taper.
 		 */
+		if (!assist_latched) debug_flags |= RIDE_DBG_NOT_LATCHED;   //FW-096
 		int32_t pedal_iq = assist_limits_apply(iq_target, &limits_input);
+		if (iq_target > 0 && pedal_iq == 0) debug_flags |= RIDE_DBG_LIMITER_ZEROED;   //FW-096
 
 		int32_t throttle_iq = 0;
 		if (!hard_cut && input->throttle_iq > 0) {
@@ -500,6 +515,7 @@ void ride_control_update(const ride_control_input_t *input)
 		 */
 		if (iq_target == 0 && rider->motor_erps < RIDE_COAST_RELEASE_ERPS) {
 			coast_release = true;
+			debug_flags |= RIDE_DBG_COAST_RELEASE;   //FW-096
 		}
 	}
 	assist_dynamics_input_t dynamics_input = {

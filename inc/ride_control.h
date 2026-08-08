@@ -34,6 +34,24 @@ typedef struct {
 	int32_t throttle_iq;   // FW-030: throttle current (mapped from ADC in main.c); floor on ride-core output
 } ride_control_input_t;
 
+/*
+ * FW-096 diagnostics: WHY is the current zero?
+ *
+ * Pure observation — nothing here changes a decision, it only records which gate the pipeline
+ * went through on the last tick. Added because "MS.i_q_setpoint is 0" on its own says nothing
+ * about who zeroed it, which turned a regression hunt into guesswork.
+ */
+#define RIDE_DBG_WALK             0x01  /* Walk Assist owns Iq this tick */
+#define RIDE_DBG_CALIBRATION      0x02  /* position calibration owns Iq this tick */
+#define RIDE_DBG_HARD_CUT         0x04  /* brake / reverse / overtemp / torque fault / cal */
+#define RIDE_DBG_LEVEL_ZERO       0x08  /* assist level 0 */
+#define RIDE_DBG_NOT_LATCHED      0x10  /* ride latch not armed -> assist target forced 0 */
+#define RIDE_DBG_MODE_UNSUPPORTED 0x20  /* assist_modes_calculate() reported unsupported */
+#define RIDE_DBG_LIMITER_ZEROED   0x40  /* a non-zero demand was taken to 0 by assist_limits */
+#define RIDE_DBG_COAST_RELEASE    0x80  /* FW-048 coast-out cut the tail */
+
+uint8_t ride_control_get_debug_flags(void);
+
 void ride_control_init(void);
 void ride_control_update(const ride_control_input_t *input);
 
