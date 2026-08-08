@@ -872,14 +872,14 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 				dg[41]=pack_mv&0xFF; dg[42]=(pack_mv>>8)&0xFF;                                     //pack voltage [mV]
 				dg[43]=rin->cadence_rpm;                                                           //current cadence (not peak-held)
 				dg[44]=assist_modes_get_cadence_comp_enabled()?0x01:0;                             //bank setting, so the log shows on/off
-				//FW-084: without these five fields a log cannot tell "never armed" from
-				//"armed, waiting for PAS STOP" from "a limit trimmed it" from "timer done".
+				//FW-084/095: without these five fields a log cannot tell "never qualified"
+				//from "a limit trimmed it" from "timer done" from "the rider stopped".
+				//Bits 0x02 and 0x08 kept at their positions but never set since FW-095: the
+				//waiting-for-PAS-STOP state and its stale-arming flag no longer exist.
 				assist_extended_boost_diag_t eb; assist_extended_boost_get_diag(&eb);
 				int32_t eb_iq=eb.boost_iq; if(eb_iq<0)eb_iq=0; if(eb_iq>65535)eb_iq=65535;
 				dg[45]=(uint8_t)((eb.state==ASSIST_EXT_BOOST_QUALIFY?0x01:0) |
-				                 (eb.state==ASSIST_EXT_BOOST_ARMED?0x02:0) |
-				                 (eb.state==ASSIST_EXT_BOOST_ACTIVE?0x04:0) |
-				                 (eb.arm_expired?0x08:0));
+				                 (eb.state==ASSIST_EXT_BOOST_ACTIVE?0x04:0));
 				dg[46]=eb.peak_load_centikg&0xFF; dg[47]=(eb.peak_load_centikg>>8)&0xFF; //latest/active peak pedal load [centikg]
 				dg[48]=eb_iq&0xFF; dg[49]=(eb_iq>>8)&0xFF;                               //boost current BEFORE the shared limits
 				dg[50]=eb.remaining_ms&0xFF; dg[51]=(eb.remaining_ms>>8)&0xFF;           //ACTIVE time left [ms]

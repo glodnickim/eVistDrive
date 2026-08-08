@@ -200,6 +200,24 @@ _Static_assert(FMC_OFFSET_FOOTER + sizeof(param_footer_t) <= (FMC_WRITE_END_ADDR
 	"MotorParams_t + record footer no longer fit the virtual EEPROM page");
 _Static_assert(sizeof(param_footer_t) == 16, "param_footer_t must stay 4 words with crc last");
 /*
+ * FW-095: the whole stored record, pinned.
+ *
+ * The FW-023 validity check includes the record LENGTH, so sizeof(MotorParams_t) is part of
+ * the persistent format. Change it by a single byte — add a field, remove one of the orphaned
+ * ones listed in main.h, reorder anything — and every record already written to a bike fails
+ * validation on the next boot. The controller then lays down defaults and the rider silently
+ * loses every setting: both profile banks, the ride-feel tuning, the torque calibration, the
+ * wheel code, the full-charge voltage.
+ *
+ * That is why the dead Legacy parameters are still in the struct. The comment in main.h says
+ * so; this assertion is what actually enforces it.
+ *
+ * If you are changing the persistent format ON PURPOSE, this line is the checklist: bump the
+ * record version, write the migration, and only then update the number here.
+ */
+_Static_assert(sizeof(MotorParams_t) == 724,
+	"persistent record size changed: every stored setting on every bike would reset");
+/*
  * FW-076: the wheel-diameter code took over the four bytes the ride-engine choice used
  * before FW-030 removed engine selection. It has to stay EXACTLY four bytes in exactly that
  * place: any change to sizeof(MotorParams_t) fails the FW-023 length check on the stored

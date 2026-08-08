@@ -57,10 +57,31 @@ static int32_t assist_hold_ticks;
  */
 #define RIDE_START_REDUCTION_MIN_SPEED_X100 100
 
-// FW-037: soft-stop release time for safety cuts (brake / backward / overtemp / torque
-// fault / torque-cal). Fades assist to 0 over this ramp instead of a hard bridge cut.
-// (Renumbered from FW-036 to avoid clashing with the speed-glitch card FW-036.)
-#define RIDE_SAFETY_RELEASE_MS 200
+/*
+ * HARD CUT RAMP — not a ride-feel setting, and never the level's release_ms.
+ *
+ * input->safety_cut means "further drive is not permitted": brake, backward pedalling,
+ * critical overtemperature, torque-sensor fault, or a running load calibration. All of them
+ * force iq_target = 0 immediately. This constant only bounds how fast the CURRENT REFERENCE is
+ * allowed to reach zero from wherever it was.
+ *
+ * Why it is a ramp at all, and not a single-tick snap to zero (FW-037): the FOC current loop
+ * runs at 16 kHz behind this, and stepping its reference from full current to zero produced a
+ * torque step the drivetrain took up as an audible clunk through the gearbox. 200 ms is the
+ * bounded compromise that removed it.
+ *
+ * Why that is safe rather than "drive continuing after a brake": FW-093 means a zero Iq target
+ * releases the half bridges within a few milliseconds of the measured current reaching zero,
+ * so this ramp ends in a real Hi-Z coast, not in continued regulation. During the ramp the
+ * commanded current is monotonically falling and can never rise.
+ *
+ * The one thing that must stay true: this value is a fixed, short, firmware-owned bound. It
+ * must never be sourced from level->release_ms, which the rider can set to 3000 ms for ride
+ * feel. The assertion below is what stops that happening by accident.
+ */
+#define RIDE_HARD_CUT_RAMP_MS 200
+_Static_assert(RIDE_HARD_CUT_RAMP_MS <= 250,
+	"the hard-cut ramp is a safety bound, not a comfort setting");
 
 /*
  * FW-041: gear preload. Starting from standstill the drivetrain has backlash and
@@ -120,6 +141,14 @@ void ride_control_update(const ride_control_input_t *input)
 	}
 	bool walk_release_cut = walk_was_active && !input->walk_active;
 	walk_was_active = input->walk_active;
+
+	/*
+	 * FW-095: one name for "drive is not permitted", used everywhere below instead of reading
+	 * input->safety_cut at each site. See RIDE_HARD_CUT_RAMP_MS for what it does and does not
+	 * mean. Assembled by the caller from brake, backward pedalling, critical overtemperature,
+	 * torque-sensor fault and load calibration.
+	 */
+	const bool hard_cut = input->safety_cut;
 
 	/*
 	 * Position-sensor calibration is a controller service mode, not an assist mode. It owns Iq
@@ -222,12 +251,12 @@ void ride_control_update(const ride_control_input_t *input)
 					(standstill_steps > 0 ? standstill_steps - 1 : 0) : standstill_steps;
 				bool crank_moving_enough = rider->crank_direction_ok &&
 					rider->crank_forward_steps >= required_steps;
-				bool crank_ok = !input->safety_cut && !assist_off && crank_moving_enough;
+				bool crank_ok = !hard_cut && !assist_off && crank_moving_enough;
 			uint16_t engage_threshold_centikg = standstill_threshold_centikg;
 			if (crank_ok && bike_rolling) {
 				engage_threshold_centikg = level->riding_start_load_centikg;
 			}
-			if (input->safety_cut || !crank_moving_enough || assist_off) {
+			if (hard_cut || !crank_moving_enough || assist_off) {
 				// Brake / backward / fault, cranks stopped, or level 0 -> disarm immediately.
 				assist_latched = false;
 				assist_hold_ticks = 0;
@@ -269,7 +298,6 @@ void ride_control_update(const ride_control_input_t *input)
 			}
 		}
 
-		bool boost_active = false;   //FW-084: decides the limiter source explicitly, below
 		/*
 		 * FW-084: Extended Boost. It acts on the PEDAL-ONLY target, while iq_target still
 		 * holds exactly that — before the throttle floor is merged in below. Putting it
@@ -292,7 +320,7 @@ void ride_control_update(const ride_control_input_t *input)
 				.motion_valid =
 					input->speed_x100 >= EXT_BOOST_MIN_SPEED_X100 &&
 					rider->motor_erps >= EXT_BOOST_MIN_MOTOR_ERPS,
-				.safety_cut = input->safety_cut,
+				.safety_cut = hard_cut,
 				.walk_active = false,                    /* not this branch */
 				.position_calibration_active = false,    /* returned above */
 				.torque_sensor_valid = rider->torque_sensor_valid,
@@ -308,6 +336,13 @@ void ride_control_update(const ride_control_input_t *input)
 				&boost_input,
 				&level->extended_boost,
 				&boost_output);
+			/*
+			 * FW-095: nothing here touches profile_pedaling_active. The removed
+			 * profile_hold_active output used to force it true for the duration of a
+			 * boost, which suppressed the release fade for a rider whose cranks had
+			 * stopped. The boost can no longer outlive real pedalling, so there is
+			 * nothing to suppress — and faking the flag is forbidden regardless.
+			 */
 			if (boost_output.active) {
 				/*
 				 * The boost REPLACES the mode's result, and the level's own
@@ -323,19 +358,29 @@ void ride_control_update(const ride_control_input_t *input)
 					input->ride_core_iq_limit);
 				iq_target = (boost_output.iq_target > profile_ceiling) ?
 					profile_ceiling : boost_output.iq_target;
-				boost_active = true;
-			}
-			if (boost_output.profile_hold_active) {
-				/* Hold the profile "pedalling" while the boost runs, so the single
-				 * release ramp starts ONCE, when the boost timer ends — not now. */
-				profile_pedaling_active = true;
 			}
 		}
 
-		if (input->safety_cut) {   // FW-037: fade assist/throttle out via release ramp; only overcurrent hard-cuts (FOC.c)
+		/*
+		 * HARD CUT. Kept as its own block, above both limiter calls, so nothing below can
+		 * re-raise a demand it has zeroed. It is deliberately NOT the same mechanism as the
+		 * normal end of assist:
+		 *
+		 *   normal release   rider eases off or stops pedalling -> the mode's own result
+		 *                    falls, and the fade uses the LEVEL'S release_ms (ride feel,
+		 *                    rider-configurable up to 3000 ms).
+		 *   hard cut (here)  drive is not permitted -> demand forced to 0 and the fade is
+		 *                    clamped to the firmware-owned RIDE_HARD_CUT_RAMP_MS, whatever
+		 *                    the level says. The latch is dropped so nothing re-arms, and
+		 *                    the throttle path below is skipped entirely.
+		 *
+		 * Only a real motor fault (overcurrent) bypasses even this and kills the bridge
+		 * outright, in FOC.c.
+		 */
+		if (hard_cut) {
 			iq_target = 0;
 			profile_pedaling_active = false;
-			profile_release_ms = RIDE_SAFETY_RELEASE_MS;
+			profile_release_ms = RIDE_HARD_CUT_RAMP_MS;
 			assist_latched = false;
 			assist_hold_ticks = 0;
 		}
@@ -384,29 +429,22 @@ void ride_control_update(const ride_control_input_t *input)
 			ASSIST_LIMIT_SOURCE_PEDAL_CONFIRMED :
 			ASSIST_LIMIT_SOURCE_NON_PEDAL;
 		/*
-		 * FW-084 — DECIDED POLICY, not a side effect: while Extended Boost is running the
-		 * request is classified NON_PEDAL.
+		 * FW-095: Extended Boost no longer overrides this classification.
 		 *
-		 * The cranks are stopped, so nothing is confirming pedalling in that moment; in
-		 * legal mode this means the boost tapers from 5 km/h and is zero from 7 km/h. That
-		 * is the conservative reading of a feature that keeps the motor pulling with the
-		 * cranks stationary, and it is what the rider is told in the Canable help text.
+		 * FW-084 forced NON_PEDAL while a boost ran, and the reason it gave was correct for
+		 * what that feature did: the cranks were stopped, so nothing was confirming
+		 * pedalling. That is no longer true of any tick a boost can run in — the boost now
+		 * requires the latch AND live forward pedalling, and ends the moment either stops.
 		 *
-		 * It is written out here rather than left to fall out of assist_latched == false on
-		 * the PAS STOP edge: the latch dropping in that same tick made the classification an
-		 * accident of ordering, which the next change to the latch could silently reverse.
-		 *
-		 * The alternative — earlier confirmed pedalling authorizing PEDAL_CONFIRMED for the
-		 * duration of ACTIVE — is a product/legal decision, not a code cleanup. It must not
-		 * be introduced by deleting these three lines.
+		 * So the honest classification is the same one ordinary pedal assist gets, from the
+		 * same latch. Keeping the override would have applied the 5-7 km/h non-pedal taper
+		 * to a rider who is demonstrably pedalling, for a reason that had stopped being
+		 * true. The legal speed limit still applies through the normal pedal taper.
 		 */
-		if (boost_active) {
-			limits_input.source = ASSIST_LIMIT_SOURCE_NON_PEDAL;
-		}
 		int32_t pedal_iq = assist_limits_apply(iq_target, &limits_input);
 
 		int32_t throttle_iq = 0;
-		if (!input->safety_cut && input->throttle_iq > 0) {
+		if (!hard_cut && input->throttle_iq > 0) {
 			limits_input.source = ASSIST_LIMIT_SOURCE_NON_PEDAL;
 			throttle_iq = assist_limits_apply(input->throttle_iq, &limits_input);
 		}
@@ -424,7 +462,7 @@ void ride_control_update(const ride_control_input_t *input)
 			 * start-step count above uses. assist_start holds no threshold of its own. */
 			.bike_rolling =
 				input->speed_x100 >= RIDE_START_REDUCTION_MIN_SPEED_X100,
-			.safety_cut = input->safety_cut
+			.safety_cut = hard_cut
 		};
 		iq_target = assist_start_apply_smooth(
 			&smooth_input,
@@ -433,7 +471,7 @@ void ride_control_update(const ride_control_input_t *input)
 
 		// FW-041: gear preload — cap the target while the rotor is still standing, so the
 		// ramp takes up backlash quietly instead of breaking away in one slap.
-		if (input->safety_cut || iq_target <= 0) {
+		if (hard_cut || iq_target <= 0) {
 			preload_active = false;          // no demand / cut -> arm for the next fresh start
 			preload_ticks = 0;
 		} else if (rider->motor_erps > PRELOAD_ERPS_MOVING) {
@@ -471,7 +509,7 @@ void ride_control_update(const ride_control_input_t *input)
 		.phase_current_max = input->phase_current_max,
 		.walk_active = input->walk_active,
 		.immediate_cut = walk_release_cut,
-		.safety_cut = input->safety_cut,
+		.safety_cut = hard_cut,
 		.profile_pedaling_active = profile_pedaling_active,
 		.profile_release_ms = profile_release_ms,
 		.ramp_up_slow_ms = ramp_up_slow_ms,       //FW-069: per level

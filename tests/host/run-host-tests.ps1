@@ -1,4 +1,4 @@
-# FW-084 host tests — compile and run the SHIPPED C module on this PC.
+# FW-095 host tests — compile and run the SHIPPED C module on this PC.
 #
 #   powershell -File tests/host/run-host-tests.ps1
 #
@@ -28,10 +28,10 @@ function Invoke-Native {
 }
 
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$harness = Join-Path $PSScriptRoot 'fw084_extended_boost_host.c'
+$harness = Join-Path $PSScriptRoot 'fw095_extended_boost_host.c'
 $module = Join-Path $root 'src\assist_extended_boost.c'
 $inc = Join-Path $root 'inc'
-$out = Join-Path $env:TEMP 'fw084_host_tests.exe'
+$out = Join-Path $env:TEMP 'fw095_host_tests.exe'
 
 function Find-HostCompiler {
     foreach ($name in @('gcc.exe', 'clang.exe', 'cc.exe')) {
@@ -67,28 +67,28 @@ if ($host_cc) {
                 '/nologo', '/W4', '/WX', "/I$inc", "/Fe:$out", $harness, $module)
         } finally { Pop-Location }
     }
-    if ($built -ne 0) { throw 'FW-084 host harness failed to build' }
+    if ($built -ne 0) { throw 'FW-095 host harness failed to build' }
     $code = Invoke-Native $out @()
     Remove-Item $out -ErrorAction SilentlyContinue
-    if ($code -ne 0) { throw "FW-084 host tests FAILED" }
-    Write-Host 'FW-084 host tests: PASS'
+    if ($code -ne 0) { throw "FW-095 host tests FAILED" }
+    Write-Host 'FW-095 host tests: PASS'
     exit 0
 }
 
 $cross = Find-CrossCompiler
 if (-not $cross) {
-    Write-Warning 'No C compiler found at all. FW-084 host tests were NOT run.'
+    Write-Warning 'No C compiler found at all. FW-095 host tests were NOT run.'
     exit 2
 }
 
-Write-Warning 'No host C compiler on this machine — the FW-084 host tests were NOT RUN.'
+Write-Warning 'No host C compiler on this machine — the FW-095 host tests were NOT RUN.'
 Write-Host "Falling back to a cross compile + link with $cross (syntax and linkage only)."
-$elf = Join-Path $env:TEMP 'fw084_host_tests.elf'
+$elf = Join-Path $env:TEMP 'fw095_host_tests.elf'
 $built = Invoke-Native $cross @(
     '-std=c11', '-Wall', '-Wextra', '-Werror', "-I$inc", '-mcpu=cortex-m4', '-mthumb',
     '--specs=nosys.specs', '--specs=nano.specs', '-o', $elf, $harness, $module) -Quiet
-if ($built -ne 0) { throw 'FW-084 host harness does not compile' }
+if ($built -ne 0) { throw 'FW-095 host harness does not compile' }
 Remove-Item $elf -ErrorAction SilentlyContinue
-Write-Host 'FW-084 host harness: COMPILES AND LINKS (behaviour NOT verified — SKIPPED).'
+Write-Host 'FW-095 host harness: COMPILES AND LINKS (behaviour NOT verified — SKIPPED).'
 Write-Host 'Install MinGW-w64, LLVM or MSVC to actually run these tests.'
 exit 2

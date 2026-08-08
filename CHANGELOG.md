@@ -6,6 +6,36 @@ local (untracked) notes.
 
 ## [Unreleased]
 
+### Extended Boost may no longer outlive real pedalling — FW-095
+- Extended Boost used to be motor overrun after the cranks stop: a firm push armed it, the
+  EDGE of pedalling stopping started it, and it then held motor current for up to a second
+  with the cranks stationary — while raising the profile's "pedalling" flag so the release
+  fade would not run. On a bike with no dependable brake-sensor input there was no independent
+  way to stop that. It was off by default and had never been confirmed on the bike, so it has
+  been changed rather than tuned.
+- It now does the opposite. A hard push, held for 30 ms while the rider is genuinely still
+  pedalling forward and the ride latch is armed, starts the boost immediately; it runs for the
+  configured time and ends on whichever comes first — the timer, or real forward pedalling
+  stopping. The pedalling-stopped cancel is unconditional and acts in the same control tick.
+  Nothing in the firmware may claim pedalling that is not happening any more: the flag the
+  module used to raise for this is gone from the code.
+- One push gives one boost. Leaning on the pedal cannot chain one boost into the next — the
+  load has to fall back below the trigger before another may start.
+- Duration stays 0–1000 ms in real milliseconds, and stays off by default. The range was
+  deliberately not widened in the same step as the semantics change, so the first bike test
+  cannot be ambiguous about which one caused what.
+- Consequence to be aware of: while a boost runs the request is no longer forced to the
+  no-pedalling speed classification. That override existed because the cranks were stopped,
+  which is no longer true of any tick a boost can run in, so in legal mode the boost now
+  follows the normal pedalling speed limit instead of the 5–7 km/h taper.
+- Separately, the hard cut is now structural rather than incidental. Brake, backward
+  pedalling, critical overtemperature, a torque-sensor fault and a running load calibration
+  force the demand to zero and fade it over a fixed, firmware-owned 200 ms bound that an
+  assertion keeps short — never over the rider-configurable per-level release time, which
+  continues to serve the normal end of assist. Only overcurrent still kills the bridge outright.
+- The persistent record size is now pinned by an assertion, so the layout that keeps every
+  stored setting alive cannot be changed by accident.
+
 ### One ride engine: the pre-ride-core assist path is gone — FW-094
 - Engine selection had been removed in FW-030, but the old assist monolith itself was still
   running: Walk Assist and phase 2 of position calibration called it on every control tick. It
