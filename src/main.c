@@ -270,6 +270,21 @@ uint32_t metric_iq_zero_ticks=0;  //...of which the motor was given no current a
 //...and why. Not a pure reverse-latch measure on its own: the ordinary start delay counts too.
 uint32_t metric_zero_backward=0;   //backward latch was up
 uint32_t metric_zero_notlatched=0; //ride latch not armed yet (start conditions, incl. fwd_run)
+/*
+ * FW-099 gap measurement, at the 4 kHz control tick.
+ *
+ * The question this card asks — does one fewer PAS step of penalty show up as ~26 ms — cannot
+ * be answered from the 40 ms diagnostic frames: the expected effect is smaller than the
+ * sampling grid. So the interruption is timed where it happens.
+ *
+ * Armed only when a reverse step actually TAKES DRIVE AWAY (current was flowing at that
+ * moment), so this measures interruptions the rider feels, not moments that were already idle.
+ */
+uint8_t  gap_armed=0;
+uint32_t gap_ticks=0;
+uint16_t gap_count=0, gap_min=0xFFFF, gap_max=0, gap_last=0;
+/* 0:<50ms 1:50-100 2:100-150 3:150-200 4:200-300 5:300-500 6:500-1000 7:>1000, saturating */
+uint8_t  gap_hist[8]={0,0,0,0,0,0,0,0};
 uint8_t ui8_overflow_flag=0;
 uint8_t ui8_SPEED_control_flag=0;
 uint8_t ui8_walk_btn_counter=0;
@@ -1797,6 +1812,8 @@ void reg_ADC_processing(void)
 				 * either side. Any forward step resets the run (see the forward branch), so
 				 * dithering can never accumulate its way to the threshold.
 				 */
+				//FW-099: start timing an interruption, but only if drive was actually lost.
+				if(!gap_armed && MS.i_q_setpoint>0){ gap_armed=1; gap_ticks=0; }
 				if(pas_rev_run<255) pas_rev_run++;
 				if(pas_rev_run>pas_rev_run_max) pas_rev_run_max=pas_rev_run;
 				if(pas_rev_run>=BACKWARD_CONFIRM_STEPS){
@@ -2077,6 +2094,27 @@ void reg_ADC_processing(void)
          * transition means the cranks are turning forward right now, whatever the control path
          * decided to do about it.
          */
+        /*
+         * FW-099: time the interruption at full control-loop resolution. The expected effect
+         * of this card is one PAS step (~26 ms at the measured 24 rpm), which is smaller than
+         * the 40 ms diagnostic frame period — so it has to be measured here, not off the log.
+         */
+        if(gap_armed){
+            gap_ticks++;
+            if(MS.i_q_setpoint>0 || gap_ticks>8000){   //resumed, or gave up after 2 s
+                uint32_t ms = gap_ticks/4;
+                if(MS.i_q_setpoint>0){
+                    gap_last = (ms>65535) ? 65535 : (uint16_t)ms;
+                    if(gap_last<gap_min) gap_min=gap_last;
+                    if(gap_last>gap_max) gap_max=gap_last;
+                    if(gap_count<65535) gap_count++;
+                    uint8_t b = (ms<50)?0 : (ms<100)?1 : (ms<150)?2 : (ms<200)?3 :
+                                (ms<300)?4 : (ms<500)?5 : (ms<1000)?6 : 7;
+                    if(gap_hist[b]<255) gap_hist[b]++;
+                }
+                gap_armed=0;
+            }
+        }
         if(fwd_run>0 && pas_idle_ticks<=pas_stop_timeout){
             metric_pedal_ticks++;
             /*
@@ -2799,6 +2837,40 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[5] = (metric_zero_notlatched>>16)&0xFF;
 	transmit_message.tx_data[6] = (metric_zero_notlatched>>8)&0xFF;
 	transmit_message.tx_data[7] = (metric_zero_notlatched)&0xFF;
+	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
+	timeout = 0xFFFF;
+	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
+		timeout--;
+		}
+
+	/*
+	 * FW-099 diag (ID 0x0001020E): how long drive was actually lost, timed at 4 kHz.
+	 *   Data1 = interruptions counted   Data2 = shortest [ms]
+	 *   Data3 = longest [ms]            Data4 = most recent [ms]
+	 */
+	transmit_message.tx_efid = 0x0001020E;
+	transmit_message.tx_data[0] = (gap_count>>8)&0xFF;
+	transmit_message.tx_data[1] = (gap_count)&0xFF;
+	transmit_message.tx_data[2] = (gap_min==0xFFFF)?0xFF:((gap_min>>8)&0xFF);
+	transmit_message.tx_data[3] = (gap_min==0xFFFF)?0xFF:((gap_min)&0xFF);
+	transmit_message.tx_data[4] = (gap_max>>8)&0xFF;
+	transmit_message.tx_data[5] = (gap_max)&0xFF;
+	transmit_message.tx_data[6] = (gap_last>>8)&0xFF;
+	transmit_message.tx_data[7] = (gap_last)&0xFF;
+	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
+	timeout = 0xFFFF;
+	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
+		timeout--;
+		}
+
+	/*
+	 * FW-099 diag (ID 0x0001020F): the DISTRIBUTION, one byte per bucket. The mean would hide
+	 * exactly what matters here — a median that moves by one PAS step while 400-500 ms tails
+	 * stay put means something other than the counter is adding the delay.
+	 *   <50 | 50-100 | 100-150 | 150-200 | 200-300 | 300-500 | 500-1000 | >1000  [ms]
+	 */
+	transmit_message.tx_efid = 0x0001020F;
+	for(uint8_t gi=0; gi<8; gi++) transmit_message.tx_data[gi]=gap_hist[gi];
 	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
 	timeout = 0xFFFF;
 	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
