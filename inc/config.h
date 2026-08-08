@@ -367,6 +367,30 @@
 // so the backward hold clears at roughly the same forward-step count as the fwd_run re-engage (START_MIN_STEPS).
 #define BACKWARD_LATCH_COUNT 8
 
+// FW-098: how many CONSECUTIVE reverse quadrature steps must be seen before the long latch
+// above is applied. One step is not enough on its own.
+//
+// Measured on the bike (0.0304, log 14:59): the sensor is not lying. Reverse steps arrive with
+// gaps of 35-285 control ticks — real movement, not contact bounce — and they form a complete
+// reverse quadrature cycle. What they are is the crank rocking back a fraction of a degree in
+// the dead spot at low cadence. Physiological, not a decision to backpedal.
+//
+// The old code could not tell the two apart: one step latched the counter to 8, which needs
+// five forward steps (18.75 deg of crank) to bleed below the cut threshold, and at 16-52 rpm
+// the next micro-reversal arrived first. Result: the latch stood at 8 for 12.8 % of frames and
+// the cut was active for 18 of 39 seconds of genuine forward pedalling.
+//
+// Run lengths in that log: 46x one step, 22x two, 6x three, 6x four, 1x six. Deliberate
+// backpedalling produces an unbroken run, so a threshold of 3 keeps it — it fires 7.5 deg of
+// crank later than before (2 extra steps at 3.75 deg each) — while the isolated one- and
+// two-step rocking no longer triggers the long penalty.
+//
+// SAFETY, and the reason this is not simply "ignore the first two steps": every reverse step
+// still clears fwd_run in the decoder, which drops the ride latch and removes assist
+// immediately. The motor cannot help during real backward movement. This constant only governs
+// the LONG penalty, never whether assist is cut.
+#define BACKWARD_CONFIRM_STEPS 3
+
 //---------------------------------------------------------------------
 // Auto-off (self power-off after inactivity) + comms watchdog (CAN loss from HMI).
 // Slow loop runs every 40 ms, so all *_TICKS below are counted in 40 ms units.

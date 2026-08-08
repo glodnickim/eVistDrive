@@ -256,6 +256,17 @@ uint16_t pas_rev_last_period=0;   //the last genuine forward-step gap, for scale
 uint8_t  pas_rev_last_cadence=0;
 uint8_t  pas_rev_last_fwdrun=0;   //forward-step run that this reverse step destroyed
 uint16_t pas_rev_min_gap=0xFFFF;  //smallest gap ever seen at a reverse step
+//FW-098: consecutive-reverse-step run, and the two counters that separate "a reverse step was
+//seen" from "the long penalty actually fired".
+uint8_t  pas_rev_run=0;           //current unbroken run of reverse steps (any forward step clears it)
+uint8_t  pas_rev_run_max=0;       //longest run seen this session
+uint16_t pas_rev_latches=0;       //times BACKWARD_CONFIRM_STEPS was reached
+/*
+ * FW-098 SUCCESS METRIC. The counter dropping is not the point — the point is how much of the
+ * time the rider is pedalling forward and getting nothing. Counted in the 4 kHz control tick.
+ */
+uint32_t metric_pedal_ticks=0;    //ticks with the cranks turning forward
+uint32_t metric_iq_zero_ticks=0;  //...of which the motor was given no current at all
 uint8_t ui8_overflow_flag=0;
 uint8_t ui8_SPEED_control_flag=0;
 uint8_t ui8_walk_btn_counter=0;
@@ -1690,6 +1701,7 @@ void reg_ADC_processing(void)
 				uint8_t cadence_interval_restart = (fwd_run==0);
 				if(cadence_interval_restart){ pas_cycle_ticks=0; pas_fwd_steps=0; }
 				if(fwd_run<250)fwd_run++;   //consecutive forward steps (jiggle-proof engage)
+				pas_rev_run=0;              //FW-098: a forward step breaks the reverse run
 				if(Backwards_counter)Backwards_counter--;
 				// torque EMA @ 3.75deg (96 updates/rev) - full quadrature resolution so all algorithms see torque every step, not only every 15deg
 				torque_cumulated-=torque_cumulated>>MS.TQfilter;
@@ -1758,12 +1770,36 @@ void reg_ADC_processing(void)
 				if(pas_idle_ticks<pas_rev_min_gap) pas_rev_min_gap=pas_idle_ticks;
 				pas_idle_ticks=0;
 				pas_fwd_steps=0;
-				fwd_run=0;                  //any reverse step cancels the forward run -> rejects back/forth crank jiggle
-				//FW-024: latch backward high on the FIRST reverse step. The old net +1 (vs forward's -1) let crank
-				//jitter during backpedalling keep cancelling the count, so it never reached the >=4 cut threshold
-				//(measured: 28 s of backpedalling, Backwards_counter never hit 4). Latching makes >=4 -> safety_cut
-				//fire on a single clean reverse step; forward steps above bleed it down for a hysteretic re-engage.
-				Backwards_counter=BACKWARD_LATCH_COUNT;
+				/*
+				 * UNCHANGED, and deliberately so: every reverse step clears the forward run.
+				 * ride_core_pedaling needs fwd_run >= tuning_config_start_steps(), so this
+				 * alone drops the ride latch and removes assist in the same tick. The motor
+				 * cannot help while the crank is actually moving backwards — that guarantee
+				 * does not depend on anything below.
+				 */
+				fwd_run=0;
+				/*
+				 * FW-098: the LONG penalty now needs confirmation.
+				 *
+				 * FW-024 latched on the FIRST reverse step, because with the old net +1/-1
+				 * counting crank jitter during real backpedalling kept cancelling the count
+				 * and it never reached the >=4 cut threshold (measured: 28 s of backpedalling,
+				 * never hit 4). Latching fixed that, but it cannot tell deliberate
+				 * backpedalling from the crank rocking back in the dead spot — and the bike
+				 * log showed the latter is common at 16-52 rpm and left the counter pinned at
+				 * 8 for a large part of the ride.
+				 *
+				 * A run of consecutive reverse steps separates them: real backpedalling is an
+				 * unbroken run, dead-spot rocking is one or two steps with forward steps
+				 * either side. Any forward step resets the run (see the forward branch), so
+				 * dithering can never accumulate its way to the threshold.
+				 */
+				if(pas_rev_run<255) pas_rev_run++;
+				if(pas_rev_run>pas_rev_run_max) pas_rev_run_max=pas_rev_run;
+				if(pas_rev_run>=BACKWARD_CONFIRM_STEPS){
+					Backwards_counter=BACKWARD_LATCH_COUNT;
+					pas_rev_latches++;   //FW-098 diag: how often the long penalty really fired
+				}
 			}
 		}
 		//FW-0xx: adaptive stop timeout - 2x the last real forward-transition gap, clamped to
@@ -2028,6 +2064,20 @@ void reg_ADC_processing(void)
             .throttle_iq = (int32_t)map(adc_value[1], MP.throttle_offset, MP.throttle_max, 0, MP.phase_current_max)
         };
         ride_control_update(&ride_input);
+        /*
+         * FW-098 success metric, measured AFTER the whole pipeline has run so it counts what
+         * actually reached the motor, not what was requested.
+         *
+         * "Pedalling forward" is taken from the raw quadrature run, not from the ride latch or
+         * forward_pedaling — both of those are downstream of the very cut being measured, so
+         * using them would hide the defect inside its own metric. fwd_run > 0 with a recent
+         * transition means the cranks are turning forward right now, whatever the control path
+         * decided to do about it.
+         */
+        if(fwd_run>0 && pas_idle_ticks<=pas_stop_timeout){
+            metric_pedal_ticks++;
+            if(MS.i_q_setpoint==0) metric_iq_zero_ticks++;
+        }
         //FW-028: the ride core bypasses the legacy monolith's zero-target PI cleanup.
         //When the final command is zero, drop stale controller integral immediately so
         //the bridge cannot keep making torque after the assist target has disappeared.
@@ -2659,16 +2709,45 @@ void print_debug_on_CAN(void){
 		timeout--;
 		}
 
-	/* Event counter in its own frame so a lost 0x20A cannot hide that events happened. */
+	/*
+	 * Counters in their own frame so a lost 0x20A cannot hide that events happened.
+	 * FW-098 split the two numbers that used to be one: how many reverse STEPS were seen,
+	 * and how many of them actually fired the long penalty.
+	 */
 	transmit_message.tx_efid = 0x0001020B;
 	transmit_message.tx_data[0] = (pas_rev_events>>8)&0xFF;
 	transmit_message.tx_data[1] = (pas_rev_events)&0xFF;
-	transmit_message.tx_data[2] = (pas_fwd_accum>>8)&0xFF;
-	transmit_message.tx_data[3] = (pas_fwd_accum)&0xFF;
+	transmit_message.tx_data[2] = (pas_rev_latches>>8)&0xFF;
+	transmit_message.tx_data[3] = (pas_rev_latches)&0xFF;
 	transmit_message.tx_data[4] = (uint8_t)(Backwards_counter);
 	transmit_message.tx_data[5] = fwd_run;
-	transmit_message.tx_data[6] = (pas_idle_ticks>>8)&0xFF;
-	transmit_message.tx_data[7] = (pas_idle_ticks)&0xFF;
+	transmit_message.tx_data[6] = pas_rev_run;
+	transmit_message.tx_data[7] = pas_rev_run_max;
+	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
+	timeout = 0xFFFF;
+	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
+		timeout--;
+		}
+
+	/*
+	 * FW-098 diag (ID 0x0001020C): THE metric this card is judged by.
+	 *
+	 *   Data1..2 = control ticks with the cranks turning forward   (u32, big-endian)
+	 *   Data3..4 = ...of which the motor was given no current      (u32, big-endian)
+	 *
+	 * The ratio is the fraction of pedalling time the rider gets nothing. Backwards_counter
+	 * falling is not success on its own — a shorter penalty that still lands on every stroke
+	 * would look good on the counter and feel identical on the bike.
+	 */
+	transmit_message.tx_efid = 0x0001020C;
+	transmit_message.tx_data[0] = (metric_pedal_ticks>>24)&0xFF;
+	transmit_message.tx_data[1] = (metric_pedal_ticks>>16)&0xFF;
+	transmit_message.tx_data[2] = (metric_pedal_ticks>>8)&0xFF;
+	transmit_message.tx_data[3] = (metric_pedal_ticks)&0xFF;
+	transmit_message.tx_data[4] = (metric_iq_zero_ticks>>24)&0xFF;
+	transmit_message.tx_data[5] = (metric_iq_zero_ticks>>16)&0xFF;
+	transmit_message.tx_data[6] = (metric_iq_zero_ticks>>8)&0xFF;
+	transmit_message.tx_data[7] = (metric_iq_zero_ticks)&0xFF;
 	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
 	timeout = 0xFFFF;
 	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
