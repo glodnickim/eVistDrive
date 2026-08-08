@@ -119,6 +119,17 @@ static bool walk_was_active;
 /* FW-096: see ride_control.h. Written only, never read by any decision. */
 static uint8_t debug_flags;
 
+/*
+ * FW-100: the last normal, LIMITED Iq request made while the rider was pedalling — captured
+ * after the shared limiter, so the level ceiling, undervoltage, temperature and speed limits
+ * are already in it. This is the whole of Extended Boost's current: when the cranks stop, the
+ * boost holds THIS value (times strength_pct) instead of deriving anything from pedal load.
+ *
+ * Captured only while pedalling and only when a boost is not already running, so a boost can
+ * never feed its own value back in and hold itself up.
+ */
+static int32_t last_pedal_iq_while_pedaling;
+
 uint8_t ride_control_get_debug_flags(void)
 {
 	return debug_flags;
@@ -312,14 +323,15 @@ void ride_control_update(const ride_control_input_t *input)
 		}
 
 		/*
-		 * FW-084: Extended Boost. It acts on the PEDAL-ONLY target, while iq_target still
-		 * holds exactly that — before the throttle floor is merged in below. Putting it
-		 * here is what makes "the boost can never copy throttle current" structural
-		 * rather than a rule someone has to remember.
+		 * Extended Boost. It acts on the PEDAL-ONLY target, while iq_target still holds
+		 * exactly that — before the throttle floor is merged in below. Putting it here is
+		 * what makes "the boost can never copy throttle current" structural rather than a
+		 * rule someone has to remember.
 		 *
-		 * It also sits BEFORE safety_cut and both limiter calls, so brake, reverse,
+		 * It also sits BEFORE the hard cut and both limiter calls, so brake, reverse,
 		 * speed, power, voltage and temperature all still have the last word.
 		 */
+		bool boost_active = false;   //FW-100: decides the limiter source explicitly, below
 		{
 			assist_extended_boost_input_t boost_input = {
 				/* The RAW pedalling state, not profile_pedaling_active: the latter
@@ -342,7 +354,9 @@ void ride_control_update(const ride_control_input_t *input)
 				.bank_index = assist_modes_get_active_bank(),
 				.level_index = input->assist_level_index,
 				.pedal_load_centikg = rider->torque_load_centikg,
-				.ride_core_iq_limit = input->ride_core_iq_limit
+				.ride_core_iq_limit = input->ride_core_iq_limit,
+				//FW-100: the boost's entire current. Captured after the limiter below.
+				.last_pedal_iq = last_pedal_iq_while_pedaling
 			};
 			assist_extended_boost_output_t boost_output;
 			assist_extended_boost_update(
@@ -350,11 +364,17 @@ void ride_control_update(const ride_control_input_t *input)
 				&level->extended_boost,
 				&boost_output);
 			/*
-			 * FW-095: nothing here touches profile_pedaling_active. The removed
-			 * profile_hold_active output used to force it true for the duration of a
-			 * boost, which suppressed the release fade for a rider whose cranks had
-			 * stopped. The boost can no longer outlive real pedalling, so there is
-			 * nothing to suppress — and faking the flag is forbidden regardless.
+			 * FW-100: nothing here touches profile_pedaling_active, even though the
+			 * boost now runs with the cranks stopped.
+			 *
+			 * FW-084 raised a "hold" flag here so the release fade would not start
+			 * during the boost. Checked and not needed: assist_dynamics only starts
+			 * that fade when iq_target == 0, and throughout a boost the target is the
+			 * held current. When the boost ends the target drops to the mode's result
+			 * (or 0) and the fade begins then — which is exactly the intent.
+			 *
+			 * So the rule from the original brief stands: nothing fakes the pedalling
+			 * state. What the sensor says is what the rest of the firmware sees.
 			 */
 			if (boost_output.active) {
 				/*
@@ -371,6 +391,7 @@ void ride_control_update(const ride_control_input_t *input)
 					input->ride_core_iq_limit);
 				iq_target = (boost_output.iq_target > profile_ceiling) ?
 					profile_ceiling : boost_output.iq_target;
+				boost_active = true;
 			}
 		}
 
@@ -442,20 +463,35 @@ void ride_control_update(const ride_control_input_t *input)
 			ASSIST_LIMIT_SOURCE_PEDAL_CONFIRMED :
 			ASSIST_LIMIT_SOURCE_NON_PEDAL;
 		/*
-		 * FW-095: Extended Boost no longer overrides this classification.
+		 * FW-100 — OWNER DECISION, written out so it cannot be "corrected" by someone
+		 * reading only the safety argument.
 		 *
-		 * FW-084 forced NON_PEDAL while a boost ran, and the reason it gave was correct for
-		 * what that feature did: the cranks were stopped, so nothing was confirming
-		 * pedalling. That is no longer true of any tick a boost can run in — the boost now
-		 * requires the latch AND live forward pedalling, and ends the moment either stops.
+		 * An active Extended Boost is classified PEDAL_CONFIRMED, so in legal mode it follows
+		 * the rider's 25 km/h pedalling limit rather than the 5-7 km/h no-pedalling taper.
 		 *
-		 * So the honest classification is the same one ordinary pedal assist gets, from the
-		 * same latch. Keeping the override would have applied the 5-7 km/h non-pedal taper
-		 * to a rider who is demonstrably pedalling, for a reason that had stopped being
-		 * true. The legal speed limit still applies through the normal pedal taper.
+		 * The cranks ARE stationary while it runs, so under EPAC this belongs in the
+		 * no-pedalling category, which is capped far lower. FW-084 classified it that way for
+		 * exactly that reason. The owner has decided otherwise for his own bike, knowing
+		 * this. It is a product decision, not a code detail: do not change it back as a
+		 * cleanup, and do not let it drift by accident if the latch logic is reworked.
+		 *
+		 * Everything else still applies to the boost: the level's ceiling, undervoltage,
+		 * controller temperature, and every cancel in the module.
 		 */
+		if (boost_active) {
+			limits_input.source = ASSIST_LIMIT_SOURCE_PEDAL_CONFIRMED;
+		}
 		if (!assist_latched) debug_flags |= RIDE_DBG_NOT_LATCHED;   //FW-096
 		int32_t pedal_iq = assist_limits_apply(iq_target, &limits_input);
+		/*
+		 * FW-100: remember what normal pedalling was getting. This is the boost's entire
+		 * current when the cranks stop. Captured AFTER the limiter so it carries the level
+		 * ceiling and every shared limit, and only while a boost is NOT running, so a boost
+		 * can never feed its own output back in and sustain itself.
+		 */
+		if (rider->pedaling_active && !boost_active) {
+			last_pedal_iq_while_pedaling = pedal_iq;
+		}
 		if (iq_target > 0 && pedal_iq == 0) debug_flags |= RIDE_DBG_LIMITER_ZEROED;   //FW-096
 
 		int32_t throttle_iq = 0;

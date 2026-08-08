@@ -1,34 +1,30 @@
 #include "assist_extended_boost.h"
 
-#include "torque_input.h"
-
 /*
- * FW-084: see the header for what this is and what it deliberately is not.
+ * FW-100: see the header for what this is, what it deliberately is not, and the accepted risk.
  *
- * The module owns NO global state of its own beyond the state machine below, takes its
- * whole world through assist_extended_boost_input_t and never touches MS/MP — so the same
- * code can be exercised at 4 kHz on a PC (tests/fw084_extended_boost.js).
+ * The module owns NO global state beyond the machine below, takes its whole world through
+ * assist_extended_boost_input_t and never touches MS/MP — so the same code can be exercised at
+ * 4 kHz on a PC (tests/fw100_extended_boost.js, tests/host/fw100_extended_boost_host.c).
  */
 
 #define EXT_BOOST_CONFIRM_TICKS \
 	(EXT_BOOST_CONFIRM_MS * EXT_BOOST_CONTROL_TICKS_PER_MS)
+#define EXT_BOOST_ARM_TIMEOUT_TICKS \
+	(EXT_BOOST_ARM_TIMEOUT_MS * EXT_BOOST_CONTROL_TICKS_PER_MS)
 
 static assist_extended_boost_state_t state;
-/* Peak of the window currently being qualified, and the peak the running boost was computed
- * from. Kept separate so a later spike cannot silently change the current of a boost that is
- * already paying out. */
+/* Peak of the window being qualified. Diagnostics only under FW-100 — the boost current comes
+ * from the last pedal request, not from the load — but a log that cannot see how hard the push
+ * was cannot explain why an arming did or did not happen. */
 static uint16_t candidate_peak_centikg;
-static uint16_t fired_peak_centikg;
+static uint16_t armed_peak_centikg;
 static uint16_t confirm_ticks;
+static uint32_t arm_idle_ticks;
 static uint32_t active_ticks_left;
 static bool window_open;
-/*
- * Set when a boost ends while the rider is STILL leaning on the pedal. Without it, a push held
- * above the trigger would satisfy the confirm test again on the very next tick and restart the
- * boost for ever — the duration would bound nothing. Cleared only when the load falls back
- * below the trigger by the hysteresis, i.e. when the push genuinely ends.
- */
-static bool rearm_blocked;
+static bool previous_pedaling_active;
+static bool arm_expired;
 static int32_t boost_iq;
 static uint8_t last_cancel_reason;
 static uint8_t last_bank_index;
@@ -39,8 +35,9 @@ static void clear_state(void)
 {
 	state = ASSIST_EXT_BOOST_IDLE;
 	candidate_peak_centikg = 0;
-	fired_peak_centikg = 0;
+	armed_peak_centikg = 0;
 	confirm_ticks = 0;
+	arm_idle_ticks = 0;
 	active_ticks_left = 0;
 	window_open = false;
 	boost_iq = 0;
@@ -49,7 +46,8 @@ static void clear_state(void)
 void assist_extended_boost_init(void)
 {
 	clear_state();
-	rearm_blocked = false;
+	previous_pedaling_active = false;
+	arm_expired = false;
 	last_cancel_reason = ASSIST_EXT_BOOST_CANCEL_NONE;
 	last_bank_index = 0;
 	last_level_index = 0;
@@ -82,40 +80,32 @@ static uint16_t valid_duration_ms(uint16_t configured)
 }
 
 /*
- * Linear map of the part of the pedal load that sits ABOVE the trigger, onto the current
- * limit of the active level. Touching the threshold arms the function but yields almost no
- * current; a harder push yields more. strength_pct may raise the result above the load map,
- * never above the level's own limit — and every shared limit still runs after this.
+ * FW-100: the boost current is simply what the rider already had.
  *
- * The trigger may be set to full scale, which makes span zero. The early return below
- * covers it: peak is clamped to full scale first, so peak <= trigger holds and the function
- * is out before the division. Do not reorder those two.
+ * There is no map from pedal load any more. The load decides WHETHER the function arms; the
+ * last normal limited Iq request decides HOW MUCH. That request has already been through the
+ * level's ceiling and every shared limit, so it cannot exceed what the level allows — and
+ * strength_pct at 100 gives exact continuity: the current does not change at the moment the
+ * cranks stop, it simply stops falling.
+ *
+ * Above 100 % the result is clamped to the level's own limit, which ride_control re-applies
+ * anyway; the clamp here keeps the diagnostic value honest.
  */
 static int32_t compute_boost_iq(
-	uint16_t peak_centikg,
-	uint16_t trigger_centikg,
+	int32_t last_pedal_iq,
 	uint8_t strength_pct,
 	int32_t iq_limit)
 {
-	if (iq_limit <= 0 || strength_pct == 0) {
+	if (last_pedal_iq <= 0 || strength_pct == 0) {
 		return 0;
 	}
-	uint32_t peak = (peak_centikg > TORQUE_PUBLIC_FULL_SCALE_CENTIKG) ?
-		TORQUE_PUBLIC_FULL_SCALE_CENTIKG : peak_centikg;
-	if (peak <= trigger_centikg) {
-		/* Also the zero-span guard: a trigger at full scale can never be exceeded. */
-		return 0;
+	/* strength_pct <= 255 and last_pedal_iq <= 32767, so the product is far below the
+	 * signed 32-bit ceiling. */
+	int32_t scaled = ((last_pedal_iq * (int32_t)strength_pct) + 50) / 100;
+	if (iq_limit > 0 && scaled > iq_limit) {
+		scaled = iq_limit;
 	}
-	uint32_t span = (uint32_t)TORQUE_PUBLIC_FULL_SCALE_CENTIKG - trigger_centikg;
-	uint32_t above = peak - trigger_centikg;
-	/* 32-bit intermediates throughout: iq_limit <= 32767 and above <= 6000, so the
-	 * product stays two orders of magnitude below the signed 32-bit ceiling. */
-	uint32_t base_iq = ((uint32_t)iq_limit * above + span / 2U) / span;
-	uint32_t scaled = (base_iq * strength_pct + 50U) / 100U;
-	if (scaled > (uint32_t)iq_limit) {
-		scaled = (uint32_t)iq_limit;
-	}
-	return (int32_t)scaled;
+	return scaled;
 }
 
 /*
@@ -123,11 +113,10 @@ static int32_t compute_boost_iq(
  * keeps its own peak, and closes half a kilogram below — the hysteresis stabilizes the END of
  * a push and never moves the threshold the rider set.
  *
- * Returns true on the tick the window becomes confirmed, i.e. the tick a boost may start.
- * FW-095: confirmation IS the start. There is no waiting state in between, because the thing
- * it used to wait for was the rider stopping pedalling.
+ * A later, WEAKER confirmed window replaces an earlier stronger one on purpose: what the rider
+ * just did is what should count.
  */
-static bool qualify_push(
+static void qualify_and_arm(
 	const assist_extended_boost_input_t *input,
 	uint16_t trigger_centikg)
 {
@@ -139,6 +128,7 @@ static bool qualify_push(
 			window_open = true;
 			confirm_ticks = 0;
 			candidate_peak_centikg = 0;
+			arm_expired = false;
 			if (state == ASSIST_EXT_BOOST_IDLE) {
 				state = ASSIST_EXT_BOOST_QUALIFY;
 			}
@@ -146,33 +136,43 @@ static bool qualify_push(
 		if (load > candidate_peak_centikg) {
 			candidate_peak_centikg = load;
 		}
-		if (rearm_blocked) {
-			/* This push already paid out. Track its peak so the diagnostics stay
-			 * honest, but do not let it start another boost. */
-			return false;
-		}
 		if (confirm_ticks < EXT_BOOST_CONFIRM_TICKS) {
 			confirm_ticks++;
 		}
-		return confirm_ticks >= EXT_BOOST_CONFIRM_TICKS;
+		if (confirm_ticks >= EXT_BOOST_CONFIRM_TICKS) {
+			/* Confirmed: this window owns the arming and keeps updating its peak for
+			 * as long as it lasts. The boost still waits for the cranks to stop. */
+			armed_peak_centikg = candidate_peak_centikg;
+			state = ASSIST_EXT_BOOST_ARMED;
+			arm_idle_ticks = 0;
+		}
+		return;
 	}
 
-	/*
-	 * Below the threshold, or no longer entitled to qualify. Closing the window is also what
-	 * clears rearm_blocked: the rider has to ease off and push again to get another boost.
-	 */
-	bool closed = !may_qualify ||
-		(load + EXT_BOOST_RELEASE_HYST_CENTIKG) < trigger_centikg;
-	if (closed) {
-		window_open = false;
-		confirm_ticks = 0;
-		candidate_peak_centikg = 0;
-		rearm_blocked = false;
-		if (state == ASSIST_EXT_BOOST_QUALIFY) {
-			state = ASSIST_EXT_BOOST_IDLE;
+	if (window_open) {
+		bool ended = !may_qualify ||
+			(load + EXT_BOOST_RELEASE_HYST_CENTIKG) < trigger_centikg;
+		if (ended) {
+			window_open = false;
+			confirm_ticks = 0;
+			candidate_peak_centikg = 0;
+			/* An unconfirmed window leaves nothing behind; a confirmed one stays armed
+			 * until the cranks stop or it goes stale below. */
+			if (state == ASSIST_EXT_BOOST_QUALIFY) {
+				state = ASSIST_EXT_BOOST_IDLE;
+			}
+		}
+		return;
+	}
+
+	if (state == ASSIST_EXT_BOOST_ARMED) {
+		/* Still pedalling, no qualifying load: the arming ages out so a hard push cannot
+		 * be cashed in a long time later, when the rider has forgotten about it. */
+		if (++arm_idle_ticks >= EXT_BOOST_ARM_TIMEOUT_TICKS) {
+			arm_expired = true;
+			assist_extended_boost_reset(ASSIST_EXT_BOOST_CANCEL_ARM_TIMEOUT);
 		}
 	}
-	return false;
 }
 
 void assist_extended_boost_update(
@@ -217,28 +217,17 @@ void assist_extended_boost_update(
 		cancel = ASSIST_EXT_BOOST_CANCEL_LEVEL_OR_BANK_CHANGE;
 	} else if (state == ASSIST_EXT_BOOST_ACTIVE && !input->motion_valid) {
 		cancel = ASSIST_EXT_BOOST_CANCEL_MOTION_LOST;
-	} else if (!input->pedaling_active) {
+	} else if (state == ASSIST_EXT_BOOST_ACTIVE && input->pedaling_active) {
 		/*
-		 * THE SAFETY RULE OF THIS MODULE (FW-095).
+		 * The rider is driving again, so the boost hands over AT ONCE — as a state. The
+		 * torque does not step: ride_control simply stops substituting, iq_target reverts to
+		 * what the assist mode asks for, and assist_dynamics carries the current there on the
+		 * ordinary ramp. Deliberately not max(boost, normal), which would lay two sources of
+		 * torque on top of each other.
 		 *
-		 * Real forward pedalling has stopped, so the boost stops — in this tick, before
-		 * anything below can look at the state, and whatever the timer still holds. The
-		 * module reports zero from here on and ride_control's ordinary release fade owns
-		 * the way down, exactly as it would without this feature.
-		 *
-		 * This is unconditional on purpose. It is not "unless the timer is nearly done",
-		 * not "unless the load is still high", and it must never become either: the M820
-		 * has no brake-sensor input we can rely on, so anything that kept the motor
-		 * pulling here would be motor overrun with no independent way to stop it.
-		 *
-		 * The predecessor (FW-084) did the exact opposite — this edge was what STARTED
-		 * its boost. See the header.
+		 * No leftover arming, no half-finished timer: the next boost needs a fresh push.
 		 */
-		cancel = ASSIST_EXT_BOOST_CANCEL_PEDALING_STOPPED;
-	} else if (!input->pedal_assist_latched) {
-		/* The latch is the proof that assist started legally. Losing it mid-boost means
-		 * the start conditions no longer hold, so neither does the boost. */
-		cancel = ASSIST_EXT_BOOST_CANCEL_PEDALING_STOPPED;
+		cancel = ASSIST_EXT_BOOST_CANCEL_PEDALING_RESUMED;
 	}
 
 	last_bank_index = input->bank_index;
@@ -246,63 +235,57 @@ void assist_extended_boost_update(
 	have_context = true;
 
 	if (cancel != ASSIST_EXT_BOOST_CANCEL_NONE) {
-		/*
-		 * ONE PUSH, ONE BOOST — including when something cuts the boost short.
-		 *
-		 * A boost that reached ACTIVE has already paid out, so it blocks re-arming whatever
-		 * ended it. The case that made this necessary: the rider stops the cranks with full
-		 * weight still on the pedal. PAS STOP correctly cancels the boost, but the push
-		 * itself never ended — so on resuming the cranks the same unbroken press would
-		 * confirm a fresh window 30 ms later and hand out a second boost. Not a post-PAS
-		 * safety hole (the second boost still needs live pedalling), but it contradicts what
-		 * the rider is told, and it lets one press pay out repeatedly across a stop-start.
-		 *
-		 * A cancel during QUALIFY blocks nothing: that push never produced any current.
-		 *
-		 * The block is cleared in exactly one place — qualify_push(), when the load finally
-		 * drops EXT_BOOST_RELEASE_HYST_CENTIKG below the trigger.
-		 */
-		bool blocked = rearm_blocked || (state == ASSIST_EXT_BOOST_ACTIVE);
 		assist_extended_boost_reset(cancel);
-		rearm_blocked = blocked;
+		previous_pedaling_active = input->pedaling_active;
 		return;
 	}
 
 	if (state != ASSIST_EXT_BOOST_ACTIVE) {
+		qualify_and_arm(input, trigger_centikg);
+
 		/*
-		 * Confirmation starts the boost immediately, while the rider is pushing and still
-		 * pedalling. motion_valid is required here and re-checked every tick above.
+		 * The boost starts on the EDGE of pedalling stopping, never on a level, and only
+		 * from a previously confirmed arming.
+		 *
+		 * pedal_assist_latched is deliberately NOT required here: ride_control drops the
+		 * latch in the very same tick as PAS STOP, so demanding it on this edge would
+		 * cancel every correct arming. The earlier legal start is already proven by the
+		 * state the module is in.
 		 */
-		if (qualify_push(input, trigger_centikg) && input->motion_valid) {
+		bool pedal_stop_edge = previous_pedaling_active && !input->pedaling_active;
+		if (state == ASSIST_EXT_BOOST_ARMED && pedal_stop_edge && input->motion_valid) {
+			/*
+			 * FW-100: the current comes from what the rider was already getting, not
+			 * from the pedal load. last_pedal_iq is the last normal LIMITED request made
+			 * while pedalling was active — see ride_control.c for where it is captured.
+			 */
 			int32_t candidate = compute_boost_iq(
-				candidate_peak_centikg,
-				trigger_centikg,
+				input->last_pedal_iq,
 				config->strength_pct,
 				input->ride_core_iq_limit);
 			if (candidate > 0) {
 				boost_iq = candidate;
-				fired_peak_centikg = candidate_peak_centikg;
 				active_ticks_left =
 					(uint32_t)duration_ms * EXT_BOOST_CONTROL_TICKS_PER_MS;
 				state = ASSIST_EXT_BOOST_ACTIVE;
+				window_open = false;
+				confirm_ticks = 0;
+				candidate_peak_centikg = 0;
 			} else {
-				/* Nothing to give: leave the mode's own result alone. */
-				rearm_blocked = true;
+				/* Nothing was flowing, so there is nothing to hold: hand target 0 to
+				 * the ordinary release. */
+				clear_state();
 			}
 		}
 	}
 
 	if (state == ASSIST_EXT_BOOST_ACTIVE) {
 		if (active_ticks_left == 0) {
-			/* Ran its full time with the rider still pedalling. Same rule as an
-			 * interrupted boost above: no restart until this push ends. The reset
-			 * clears the flag, so it is set after, not before. */
 			assist_extended_boost_reset(ASSIST_EXT_BOOST_CANCEL_COMPLETED);
-			rearm_blocked = true;
 		} else {
 			/*
-			 * The timer runs on ticks alone. A shared limit trimming the result
-			 * does not pause it, and no PAS/Hall/speed pulse may extend it.
+			 * The timer runs on ticks alone. A shared limit trimming the result does not
+			 * pause it, and no PAS/Hall/speed pulse may extend it.
 			 */
 			active_ticks_left--;
 			if (output != 0) {
@@ -311,6 +294,7 @@ void assist_extended_boost_update(
 			}
 		}
 	}
+	previous_pedaling_active = input->pedaling_active;
 }
 
 void assist_extended_boost_get_diag(assist_extended_boost_diag_t *diag)
@@ -319,11 +303,8 @@ void assist_extended_boost_get_diag(assist_extended_boost_diag_t *diag)
 		return;
 	}
 	diag->state = (uint8_t)state;
-	/* FW-095: no pending arming can exist any more, so this can never be true. Kept in the
-	 * struct because it is byte 53 of the 0x6029 block the app decodes. */
-	diag->arm_expired = false;
-	diag->peak_load_centikg = (state == ASSIST_EXT_BOOST_ACTIVE) ?
-		fired_peak_centikg : candidate_peak_centikg;
+	diag->arm_expired = arm_expired;
+	diag->peak_load_centikg = armed_peak_centikg;
 	diag->boost_iq = (state == ASSIST_EXT_BOOST_ACTIVE) ? boost_iq : 0;
 	/* Round UP: truncating showed 199 ms at the start of a 200 ms boost and 0 ms for the
 	 * last three ticks of one that was still ACTIVE — which reads as a finished boost still

@@ -111,7 +111,10 @@ function ride({ hidden, loadCentikg, steps, rolling, threshCentikg }) {
 {
     const jiggle = ride({ hidden: false, loadCentikg: 80, steps: 0, rolling: false, threshCentikg: STAND_CENTIKG });
     check(jiggle.iq === 0, '5. a reset step count cannot start assist even with load');
-    check(/fwd_run=0;\s*\/\/any reverse step cancels the forward run/.test(main),
+    // Matched on the CODE, not on a comment that happened to sit on the same line: FW-098
+    // moved that comment into a block above and this check failed while the behaviour was
+    // untouched. What matters is that the backward-step branch still clears fwd_run.
+    check(/else if\(st<0\)\{[\s\S]{0,1600}?fwd_run=0;/.test(main),
         '5. main.c still resets fwd_run on a reverse step');
 }
 

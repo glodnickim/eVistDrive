@@ -5,47 +5,50 @@
 #include <stdint.h>
 
 /*
- * FW-095: Extended Boost — extra current DURING a hard pedal push, while the rider is
- * genuinely still pedalling forward.
+ * FW-100: Extended Boost — a deliberate drive hold AFTER the cranks stop.
  *
- * SAFETY SEMANTICS. This function may never keep the motor pulling after real forward
- * pedalling has stopped, and it may never claim that pedalling is happening when it is not.
- * The M820 has no independent brake-sensor input we can rely on, so a genuine PAS STOP is
- * treated conservatively: it ENDS the boost in the same control tick.
+ * The rider arms it with a firm push. When pedalling then stops, the motor keeps pulling for a
+ * configured time at the current the rider was ALREADY GETTING, and only then does the ordinary
+ * release ramp take over. It exists for steps, rocks and short breaks in pedalling on a
+ * technical climb.
  *
- *   - It does NOT set, hold or fake pedaling_active. The rider-input state always reports
- *     what the sensor actually says.
- *   - It does NOT extend the release ramp and is not a release ramp.
- *   - It is not armed by a button, a wheel or motor Hall pulse, or dTorque/dt alone.
- *   - It never copies throttle or Walk Assist current.
- *   - It is off by default (duration 0).
+ *   Arming    pedal load >= the configured trigger, held for EXT_BOOST_CONFIRM_MS, while
+ *             pedaling_active and the ride latch are both true and the bike is moving. The
+ *             trigger ONLY ARMS — it has no influence on how much current the boost gives.
+ *             An arming goes stale after EXT_BOOST_ARM_TIMEOUT_MS so a hard push cannot be
+ *             replayed many seconds later.
+ *   Start     the EDGE of pedalling stopping. Never a level, never a button, never a wheel or
+ *             motor Hall pulse, never dTorque/dt on its own.
+ *   Current   the LAST NORMAL, LIMITED Iq REQUEST while pedalling was active, scaled by
+ *             strength_pct. Not an average, not the trigger, not a peak the module waited for
+ *             — simply "keep giving me what I had a moment ago". The level's own ceiling and
+ *             every shared limit still apply afterwards.
+ *   Ends      timer, pedalling resumed, or any cancel: brake/hard cut, crank reverse, sensor
+ *             fault, walk, calibration, assist level 0, level or bank change, a bank write, or
+ *             the bike no longer moving.
  *
- * FW-084 (superseded) did the opposite: it armed on a push and then STARTED on the edge of
- * pedalling stopping, holding torque for up to a second with the cranks stationary, while
- * raising the profile's "pedalling" flag to suppress the release fade. That is post-PAS motor
- * overrun. It was never confirmed on the bike and has been removed rather than tuned. If such
- * a feature is ever wanted it must be a separate, explicitly reasoned safety function with its
- * own conditions — not a ride-feel setting.
+ * Resuming pedalling ends the boost IMMEDIATELY as a state, but not as a torque step: the
+ * target simply reverts to what the assist mode asks for and assist_dynamics carries the
+ * current there smoothly. Deliberately NOT max(boost, normal) — that would lay two sources of
+ * torque on top of each other.
  *
- * How it behaves now: a hard push TRIGGERS a TIMED boost, which then continues for as long as
- * forward pedalling remains active.
+ * ==========================================================================================
+ * ACCEPTED RISK — READ BEFORE CHANGING ANYTHING HERE
  *
- *   Trigger   load held above the configured threshold for EXT_BOOST_CONFIRM_MS, while
- *             pedaling_active and the ride latch are both true and the bike is moving.
- *   Running   the boost current is fixed at the trigger instant, from the peak of that push.
- *             BE PRECISE ABOUT WHAT IS RE-CHECKED WHILE IT RUNS: pedaling_active, the ride
- *             latch, motion, safety cut, crank reverse, sensor validity, level and bank — all
- *             every 4 kHz tick. The PEDAL LOAD IS NOT. Once triggered, easing off the pedal
- *             does not shorten the boost; only the timer or a cancel ends it. That is
- *             deliberate: a pedal stroke has dead spots, and re-testing the load would make
- *             the boost stutter at exactly the cadence it exists to help.
- *   Ends      on whichever comes first — the timer, pedaling_active going false, the latch
- *             dropping, or any other cancel condition.
+ * This feature drives the motor while the cranks are stationary, on a bike with no independent
+ * brake-sensor input. Within the boost window the only things that can stop it are the brake
+ * signal and the timer.
  *
- * ONE PUSH, ONE BOOST. A boost that reached ACTIVE blocks re-arming until the load falls
- * EXT_BOOST_RELEASE_HYST_CENTIKG below the trigger, whether it ran its full time or was cut
- * short. Otherwise a rider who stops the cranks without releasing the pedal would get a second
- * boost from the same unbroken press on resuming.
+ * FW-095 had removed exactly this behaviour, on an instruction that turned out to describe the
+ * hazard rather than forbid the feature. The owner has since asked for it back, knowing the
+ * above. That is his decision about his own bike, and it is recorded here so nobody
+ * "corrects" it later by reading only the safety argument.
+ *
+ * The same applies to the speed classification: an active boost is judged PEDAL_CONFIRMED, so
+ * in legal mode it follows the 25 km/h pedalling limit rather than the 5-7 km/h no-pedalling
+ * taper. Under EPAC, assist without pedalling belongs in the second category — this is an
+ * owner decision that goes beyond it, not an oversight in the firmware. See ride_control.c.
+ * ==========================================================================================
  */
 
 /* 4 kHz control loop, same as everywhere else in the ride core. */
@@ -53,10 +56,12 @@
 /* The load must be HELD this long above the threshold. A shorter spike is a single ADC
  * glitch, a chain slap or a pothole — never a rider decision. */
 #define EXT_BOOST_CONFIRM_MS 30U
-/* Ends the current qualifying window, and is also what re-arms the function after a boost has
- * run: the load must drop this far below the trigger before another boost may start.
- * Hysteresis only stabilizes the END of a push; it never moves the threshold the rider set. */
+/* Ends the current qualifying window. Hysteresis only stabilizes the END of a push; it never
+ * moves the threshold the rider configured. */
 #define EXT_BOOST_RELEASE_HYST_CENTIKG 50U /* 0.50 kg */
+/* An arming goes stale after this long without a qualifying load, so a very hard crank turn
+ * cannot be replayed many seconds later as a boost the rider has forgotten about. */
+#define EXT_BOOST_ARM_TIMEOUT_MS 1500U
 /* The bike has to be genuinely moving. Same "actually moving" bar the rest of the ride
  * core uses; motion is passed in as a ready flag (see motion_valid). */
 #define EXT_BOOST_MIN_SPEED_X100 100U /* 1.00 km/h */
@@ -76,41 +81,39 @@
  * 0.25 grid the UI had to show 20.00 and 8.25, which is both uglier and inconsistent. 0.5 kg
  * is 2.5 % of a 20 kg threshold — far finer than a rider can push repeatably.
  *
- * A trigger AT full scale is allowed and simply never fires: the peak is clamped to full
- * scale, so "peak > trigger" can never hold. The current formula returns 0 before it would
- * divide by a zero span; see compute_boost_iq().
+ * A trigger AT full scale is allowed and simply never arms, because the load can never exceed
+ * it. That is a usable "off" for one level without touching the duration.
  */
 #define ASSIST_EXT_BOOST_TRIGGER_MIN_CENTIKG 100U  /* 1.0 kg */
 #define ASSIST_EXT_BOOST_TRIGGER_MAX_CENTIKG 6000U /* 60.0 kg = TORQUE_PUBLIC_FULL_SCALE */
 #define ASSIST_EXT_BOOST_TRIGGER_WIRE_STEP_CENTIKG 50U /* 0.5 kg per wire unit */
-/* 20.0 kg: a shove the rider has to mean. The threshold only STARTS the function — the boost
- * current still comes from how far the push went above it — so a high default costs nothing
- * on an ordinary pedal stroke and keeps the feature from firing during normal riding. */
+/* 20.0 kg: a shove the rider has to mean. FW-100 — the threshold ONLY ARMS the function and has
+ * no influence whatsoever on how much current the boost gives, so a high default costs nothing
+ * except that ordinary pedalling does not arm it. */
 #define ASSIST_EXT_BOOST_TRIGGER_DEFAULT_CENTIKG 2000U /* 20.0 kg */
+/* Percent of the last normal limited Iq request. 100 = exactly what the rider already had. */
 #define ASSIST_EXT_BOOST_STRENGTH_DEFAULT_PCT 100U
 /*
  * Real milliseconds, not a percentage of anything — the removed Legacy overrun expressed its
  * duration as a percentage of Override_Duration, which is why nobody could say what a value
  * meant.
  *
- * FW-095 DECISION: the ceiling stays at 1000 ms. The semantics of this feature just changed
- * from "hold after the cranks stop" to "extra current while pedalling", and nothing has been
- * ridden yet. Widening the range in the same step would make the first bike test ambiguous —
- * a bad result could be the new semantics or the longer time. Raising it later is a one-line
- * change once the behaviour is confirmed. The boost can no longer outlive real pedalling, so
- * the ceiling is no longer what bounds the risk; it bounds how long one push may pay out.
+ * FW-100: 2000 ms, an owner decision. This is the one number that bounds how long the motor
+ * may drive with the cranks stationary, so it IS the risk ceiling — see the accepted-risk block
+ * at the top of this header. It fits the existing put_u16 wire field, so raising it changes no
+ * stored bank and invalidates no saved profile.
+ *
+ * Three places clamp against this constant and all of them follow it automatically: the module
+ * itself, and the bank serialize/deserialize in assist_modes.c. The app carries its own copy of
+ * the limit in profiles.js — that one has to be changed by hand.
  */
-#define ASSIST_EXT_BOOST_DURATION_MAX_MS 1000U
+#define ASSIST_EXT_BOOST_DURATION_MAX_MS 2000U
 
 typedef enum {
 	ASSIST_EXT_BOOST_IDLE = 0,
-	ASSIST_EXT_BOOST_QUALIFY,
-	/* WIRE VALUE ONLY, never entered since FW-095. It meant "a push was confirmed and the
-	 * boost is waiting for the cranks to stop" — the waiting state that made this a post-PAS
-	 * overrun. A confirmed push now goes straight to ACTIVE. Kept so the app's decoder for
-	 * byte 52 of 0x6029 keeps its numbering. */
-	ASSIST_EXT_BOOST_ARMED_RESERVED,
-	ASSIST_EXT_BOOST_ACTIVE
+	ASSIST_EXT_BOOST_QUALIFY,  /* a push is building towards confirmation */
+	ASSIST_EXT_BOOST_ARMED,    /* confirmed; waiting for the cranks to stop */
+	ASSIST_EXT_BOOST_ACTIVE    /* holding drive with the cranks stationary */
 } assist_extended_boost_state_t;
 
 /*
@@ -127,19 +130,19 @@ typedef enum {
 	ASSIST_EXT_BOOST_CANCEL_CALIBRATION = 6,
 	ASSIST_EXT_BOOST_CANCEL_LEVEL_OR_BANK_CHANGE = 7,
 	ASSIST_EXT_BOOST_CANCEL_MOTION_LOST = 8,
-	/* WIRE VALUES ONLY, never reported since FW-095. Both belonged to the removed
-	 * wait-for-PAS-STOP design: 9 fired when pedalling came back during a boost that had
-	 * started because pedalling ended, and 10 when such a pending arming went stale. */
-	ASSIST_EXT_BOOST_CANCEL_PEDALING_RESUMED_RESERVED = 9,
-	ASSIST_EXT_BOOST_CANCEL_ARM_TIMEOUT_RESERVED = 10,
+	/* Pedalling came back: the rider is driving again, so the boost hands over at once. */
+	ASSIST_EXT_BOOST_CANCEL_PEDALING_RESUMED = 9,
+	/* A confirmed arming waited too long for the cranks to stop and went stale. */
+	ASSIST_EXT_BOOST_CANCEL_ARM_TIMEOUT = 10,
 	ASSIST_EXT_BOOST_CANCEL_COMPLETED = 11,
 	/* A bank was written while the module held state. The index of the bank and level did
 	 * not change, so nothing else would have noticed — but the trigger, strength and
 	 * duration under which the arming was made no longer exist. */
 	ASSIST_EXT_BOOST_CANCEL_CONFIG_CHANGED = 12,
-	/* FW-095: real forward pedalling stopped. THE defining cancel of this feature — it is what
-	 * guarantees the boost can never become motor overrun past a PAS STOP. */
-	ASSIST_EXT_BOOST_CANCEL_PEDALING_STOPPED = 13
+	/* WIRE VALUE ONLY. FW-095 reported this when pedalling stopped, because there the boost
+	 * ran DURING pedalling. Under FW-100 pedalling stopping is what STARTS the boost, so this
+	 * can never be reported. The value stays taken so the app's decoder keeps its numbering. */
+	ASSIST_EXT_BOOST_CANCEL_PEDALING_STOPPED_RESERVED = 13
 } assist_extended_boost_cancel_t;
 
 typedef struct {
@@ -149,10 +152,18 @@ typedef struct {
 } assist_extended_boost_config_t;
 
 typedef struct {
-	/* THE RAW SENSOR STATE, straight from rider_input. The module reads it and never writes
-	 * it back, directly or through the caller: a boost may not make the system believe the
-	 * rider is pedalling. When this goes false the boost ends in the same tick. */
+	/* THE RAW SENSOR STATE, straight from rider_input. The module reads it and never writes it
+	 * back, directly or through the caller — the system's idea of "is the rider pedalling"
+	 * stays the sensor's. Its FALLING EDGE is what starts the boost. */
 	bool pedaling_active;
+	/*
+	 * FW-100: the last normal, LIMITED Iq request made while pedalling was active — the value
+	 * the rider was actually getting a moment ago. Captured by ride_control after the shared
+	 * limiter, so the level ceiling, undervoltage, temperature and speed limits are already in
+	 * it. This IS the boost current (times strength_pct); the module derives nothing from the
+	 * pedal load.
+	 */
+	int32_t last_pedal_iq;
 	/* The ride latch. It cannot arm without forward crank direction, the configured PAS
 	 * step count and the configured kg start threshold, so it IS the proof that assist
 	 * started legally — the module never re-derives that from raw sensors. */
