@@ -247,6 +247,15 @@ uint16_t pas_stop_timeout=PAS_STOP_TICKS; //this tick's adaptive stop threshold,
 uint8_t forward_pedaling=0;  //1 = cranks turning forward (cadence>0, not reverse, not stopped)
 uint8_t fwd_run=0;           //consecutive forward quadrature steps (reset on any backward step or stop) -> jiggle-proof engage gate
 volatile uint16_t pas_fwd_accum=0; //FW-027 diag: free-running count of forward quadrature steps (never reset, wraps at 65535). Log analysis diffs consecutive frames; nonzero delta while crank is stopped => phantom (EMI) transitions.
+//FW-097 MEASUREMENT ONLY: every reverse quadrature step, latched for the 0x0001020A frame.
+//No decision anywhere reads these. See the note at the backward-step branch in the decoder.
+uint16_t pas_rev_events=0;        //total reverse steps since boot
+uint8_t  pas_rev_last_trans=0;    //(previous qstate << 4) | new qstate
+uint16_t pas_rev_last_gap=0;      //pas_idle_ticks at the event: <4 = bounce, ~48 @52rpm = real
+uint16_t pas_rev_last_period=0;   //the last genuine forward-step gap, for scale
+uint8_t  pas_rev_last_cadence=0;
+uint8_t  pas_rev_last_fwdrun=0;   //forward-step run that this reverse step destroyed
+uint16_t pas_rev_min_gap=0xFFFF;  //smallest gap ever seen at a reverse step
 uint8_t ui8_overflow_flag=0;
 uint8_t ui8_SPEED_control_flag=0;
 uint8_t ui8_walk_btn_counter=0;
@@ -1660,6 +1669,7 @@ void reg_ADC_processing(void)
 		if(pas_qstate==0xFF){ pas_qstate=s; }
 		else if(s!=pas_qstate){
 			int8_t st = qd[(pas_qstate<<2)|s]*PAS_DIR_SIGN; //+1 = forward
+			uint8_t pas_qstate_prev=pas_qstate;   //FW-097 diag: which transition it was
 			pas_qstate=s;
 			if(st>0){            //forward step
 				pas_last_period_ticks=pas_idle_ticks; //gap since the previous forward transition -> adaptive stop-timeout basis
@@ -1727,6 +1737,25 @@ void reg_ADC_processing(void)
 					PAS_counter=0;
 				}
 			}else if(st<0){      //backward step
+				/*
+				 * FW-097 MEASUREMENT ONLY — nothing here changes a decision.
+				 *
+				 * A reverse step hard-cuts assist (FW-024 latches on the FIRST one), and the
+				 * bike log caught 43 of them while pedalling FORWARD at 16-52 rpm. The one
+				 * number that tells bounce from real backpedalling is the GAP since the
+				 * previous transition:
+				 *   ~48 ticks at 52 rpm  = a real, full quadrature step -> genuine reverse
+				 *   1-3 ticks (<1 ms)    = the same line toggling at its own edge -> bounce
+				 * The decoder polls two GPIOs at 4 kHz with no debounce and no hysteresis, so
+				 * one bounce yields 0->1->0: a forward step, then a REAL backward one.
+				 */
+				pas_rev_events++;
+				pas_rev_last_trans=(uint8_t)((pas_qstate_prev<<4)|s);
+				pas_rev_last_gap=pas_idle_ticks;
+				pas_rev_last_period=pas_last_period_ticks;
+				pas_rev_last_cadence=MS.cadence;
+				pas_rev_last_fwdrun=fwd_run;
+				if(pas_idle_ticks<pas_rev_min_gap) pas_rev_min_gap=pas_idle_ticks;
 				pas_idle_ticks=0;
 				pas_fwd_steps=0;
 				fwd_run=0;                  //any reverse step cancels the forward run -> rejects back/forth crank jiggle
@@ -2545,8 +2574,11 @@ void print_debug_on_CAN(void){
 	                   | ((level_to_array_element[MS.assist_level]==0)?0x80:0);
 	const assist_mode_output_t* why_mo = assist_modes_get_last_output();
 	int32_t why_req = why_mo ? why_mo->iq_request : 0;
-	if(why_req<0)why_req=0; if(why_req>65535)why_req=65535;
-	int32_t why_set = MS.i_q_setpoint; if(why_set<0)why_set=0; if(why_set>65535)why_set=65535;
+	if(why_req<0) why_req=0;
+	if(why_req>65535) why_req=65535;
+	int32_t why_set = MS.i_q_setpoint;
+	if(why_set<0) why_set=0;
+	if(why_set>65535) why_set=65535;
 	transmit_message.tx_efid = 0x00010208;
 	transmit_message.tx_data[0] = why_safety;
 	transmit_message.tx_data[1] = ride_control_get_debug_flags();
@@ -2586,6 +2618,57 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[5] = (why_rcl)&0xFF;
 	transmit_message.tx_data[6] = (why_pcm>>8)&0xFF;
 	transmit_message.tx_data[7] = (why_pcm)&0xFF;
+	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
+	timeout = 0xFFFF;
+	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
+		timeout--;
+		}
+
+	/*
+	 * FW-097 diag (ID 0x0001020A): WHY was a reverse step counted.
+	 *
+	 * A single reverse quadrature step hard-cuts assist, and the bike log caught 43 of them
+	 * while pedalling forward. This frame answers the only question that matters: was it a
+	 * real direction change, or the PAS line bouncing at its own edge?
+	 *
+	 *   Data1 hi = transition, (previous qstate << 4) | new qstate. One changed bit is a legal
+	 *              step; the decoder already ignores two-bit jumps, so a missed step is NOT
+	 *              what produces these.
+	 *   Data1 lo = forward-step run destroyed by it (fwd_run before the reset)
+	 *   Data2    = GAP: control ticks since the previous transition. THE decisive number.
+	 *              1-3 (<1 ms) = bounce on one line. ~48 @52 rpm = a genuine quadrature step.
+	 *   Data3    = the last genuine forward-step gap, so Data2 has a scale to be read against
+	 *   Data4 hi = cadence at the event, lo = smallest gap ever seen (clamped)
+	 *   Data5    = running total of reverse steps (diff between frames = new events)
+	 */
+	uint16_t rev_gap = pas_rev_last_gap;
+	uint16_t rev_per = pas_rev_last_period;
+	uint16_t rev_min = (pas_rev_min_gap>255) ? 255 : pas_rev_min_gap;
+	transmit_message.tx_efid = 0x0001020A;
+	transmit_message.tx_data[0] = pas_rev_last_trans;
+	transmit_message.tx_data[1] = pas_rev_last_fwdrun;
+	transmit_message.tx_data[2] = (rev_gap>>8)&0xFF;
+	transmit_message.tx_data[3] = (rev_gap)&0xFF;
+	transmit_message.tx_data[4] = (rev_per>>8)&0xFF;
+	transmit_message.tx_data[5] = (rev_per)&0xFF;
+	transmit_message.tx_data[6] = pas_rev_last_cadence;
+	transmit_message.tx_data[7] = (uint8_t)rev_min;
+	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
+	timeout = 0xFFFF;
+	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
+		timeout--;
+		}
+
+	/* Event counter in its own frame so a lost 0x20A cannot hide that events happened. */
+	transmit_message.tx_efid = 0x0001020B;
+	transmit_message.tx_data[0] = (pas_rev_events>>8)&0xFF;
+	transmit_message.tx_data[1] = (pas_rev_events)&0xFF;
+	transmit_message.tx_data[2] = (pas_fwd_accum>>8)&0xFF;
+	transmit_message.tx_data[3] = (pas_fwd_accum)&0xFF;
+	transmit_message.tx_data[4] = (uint8_t)(Backwards_counter);
+	transmit_message.tx_data[5] = fwd_run;
+	transmit_message.tx_data[6] = (pas_idle_ticks>>8)&0xFF;
+	transmit_message.tx_data[7] = (pas_idle_ticks)&0xFF;
 	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
 	timeout = 0xFFFF;
 	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
