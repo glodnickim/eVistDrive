@@ -146,7 +146,9 @@ class Boost {
         this.lastBank = input.bank; this.lastLevel = input.level; this.haveContext = true;
 
         if (cancel !== CANCEL.NONE) {
-            const blocked = this.rearmBlocked;
+            // A boost that reached ACTIVE has paid out, so it blocks re-arming whatever
+            // ended it — otherwise a stop-start under one unbroken push gives two boosts.
+            const blocked = this.rearmBlocked || this.state === ACTIVE;
             this.reset(cancel);
             this.rearmBlocked = blocked;
             return out;
@@ -276,6 +278,54 @@ const stopped = (load) => ({ ...riding(load), pedalingActive: false, latched: fa
         if (b.update(riding(HARD), cfg).active) restarted = true;
     }
     check(restarted, 'a fresh push after easing off does start a new boost');
+}
+
+// --- One push, one boost, ACROSS a stop-start with the pedal never released -------------
+//
+// The case that is easy to get wrong: PAS STOP cancels an ACTIVE boost correctly, but the
+// PUSH never ended. If the cancel does not block re-arming, resuming the cranks under that
+// same unbroken press confirms a fresh window 30 ms later and pays out a second boost.
+// Not a post-PAS safety hole — the second boost still needs live pedalling — but it breaks
+// "one push gives one boost", which is what the rider is told.
+{
+    const b = new Boost();
+    for (let t = 0; t < CONFIRM_TICKS; t++) b.update(riding(HARD), cfg);
+    check(b.state === ACTIVE, 'precondition: a boost is running');
+
+    // Cranks stop, full weight still on the pedal.
+    b.update(stopped(HARD), cfg);
+    check(b.cancelReason === CANCEL.PEDALING_STOPPED, 'precondition: cancelled by PAS STOP');
+    for (let t = 0; t < 40; t++) b.update(stopped(HARD), cfg);
+
+    // Pedalling resumes, load never having dropped below the trigger.
+    let secondBoost = false;
+    for (let t = 0; t < CONFIRM_TICKS * 3; t++) {
+        if (b.update(riding(HARD), cfg).active) secondBoost = true;
+    }
+    check(!secondBoost,
+        'a stop-start under one unbroken push does not pay out a second boost');
+
+    // Releasing the pedal is what re-arms it, exactly as the rider is told.
+    for (let t = 0; t < 8; t++) b.update(riding(TRIGGER - HYST - 1), cfg);
+    let afterRelease = false;
+    for (let t = 0; t < CONFIRM_TICKS + 4; t++) {
+        if (b.update(riding(HARD), cfg).active) afterRelease = true;
+    }
+    check(afterRelease, 'easing off and pushing again is what gives the next boost');
+}
+
+// --- What is and is not re-checked while the boost runs ---------------------------------
+{
+    // Easing off AFTER the trigger does not shorten the boost: the load is not re-tested.
+    const b = new Boost();
+    for (let t = 0; t < CONFIRM_TICKS; t++) b.update(riding(HARD), cfg);
+    let ran = 0;
+    for (let t = 0; t < DURATION * TICKS_PER_MS + 10; t++) {
+        if (!b.update(riding(0), cfg).active) break;   // pedalling, but no load at all
+        ran++;
+    }
+    check(ran === DURATION * TICKS_PER_MS - 1,
+        'easing off after the trigger does not cut the boost short');
 }
 
 // --- Off by default, and a spike is not a decision --------------------------------------

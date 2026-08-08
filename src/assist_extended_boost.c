@@ -246,9 +246,23 @@ void assist_extended_boost_update(
 	have_context = true;
 
 	if (cancel != ASSIST_EXT_BOOST_CANCEL_NONE) {
-		/* rearm_blocked survives a cancel on purpose. Otherwise a boost cut short while the
-		 * rider was still leaning on the pedal could restart the moment the cause cleared. */
-		bool blocked = rearm_blocked;
+		/*
+		 * ONE PUSH, ONE BOOST — including when something cuts the boost short.
+		 *
+		 * A boost that reached ACTIVE has already paid out, so it blocks re-arming whatever
+		 * ended it. The case that made this necessary: the rider stops the cranks with full
+		 * weight still on the pedal. PAS STOP correctly cancels the boost, but the push
+		 * itself never ended — so on resuming the cranks the same unbroken press would
+		 * confirm a fresh window 30 ms later and hand out a second boost. Not a post-PAS
+		 * safety hole (the second boost still needs live pedalling), but it contradicts what
+		 * the rider is told, and it lets one press pay out repeatedly across a stop-start.
+		 *
+		 * A cancel during QUALIFY blocks nothing: that push never produced any current.
+		 *
+		 * The block is cleared in exactly one place — qualify_push(), when the load finally
+		 * drops EXT_BOOST_RELEASE_HYST_CENTIKG below the trigger.
+		 */
+		bool blocked = rearm_blocked || (state == ASSIST_EXT_BOOST_ACTIVE);
 		assist_extended_boost_reset(cancel);
 		rearm_blocked = blocked;
 		return;
@@ -280,9 +294,9 @@ void assist_extended_boost_update(
 
 	if (state == ASSIST_EXT_BOOST_ACTIVE) {
 		if (active_ticks_left == 0) {
-			/* Ran its full time with the rider still pedalling. Block a restart until
-			 * this push ends, then hand the target back to the mode. */
-			rearm_blocked = true;
+			/* Ran its full time with the rider still pedalling. Same rule as an
+			 * interrupted boost above: no restart until this push ends. The reset
+			 * clears the flag, so it is set after, not before. */
 			assist_extended_boost_reset(ASSIST_EXT_BOOST_CANCEL_COMPLETED);
 			rearm_blocked = true;
 		} else {

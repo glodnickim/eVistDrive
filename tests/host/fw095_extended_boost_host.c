@@ -278,6 +278,72 @@ int main(void)
 		check(restarted, "a fresh push after easing off does start a new boost");
 	}
 
+	/* --- One push, one boost, ACROSS a stop-start with the pedal never released ------ */
+	{
+		/*
+		 * PAS STOP cancels an ACTIVE boost correctly, but the PUSH never ended. If that
+		 * cancel does not block re-arming, resuming the cranks under the same unbroken
+		 * press confirms a fresh window 30 ms later and pays out a second boost. Not a
+		 * post-PAS safety hole — the second one still needs live pedalling — but it
+		 * breaks the promise the rider is given.
+		 */
+		assist_extended_boost_init();
+		check(start_boost(&cfg) > 0, "precondition: a boost is running");
+
+		assist_extended_boost_input_t stop_full_load = cranks_stopped(HARD_PUSH);
+		tick(&stop_full_load, &cfg);
+		check(cancel_now() == ASSIST_EXT_BOOST_CANCEL_PEDALING_STOPPED,
+			"precondition: cancelled by PAS STOP");
+		for (int t = 0; t < 40; t++) {
+			tick(&stop_full_load, &cfg);
+		}
+
+		assist_extended_boost_input_t resumed = riding(HARD_PUSH);
+		int second = 0;
+		for (unsigned t = 0; t < CONFIRM_TICKS * 3U; t++) {
+			if (tick(&resumed, &cfg).active) {
+				second = 1;
+			}
+		}
+		check(!second,
+			"a stop-start under one unbroken push does not pay out a second boost");
+
+		assist_extended_boost_input_t released =
+			riding(TRIGGER - EXT_BOOST_RELEASE_HYST_CENTIKG - 1U);
+		for (int t = 0; t < 8; t++) {
+			tick(&released, &cfg);
+		}
+		int after_release = 0;
+		for (unsigned t = 0; t < CONFIRM_TICKS + 4U; t++) {
+			if (tick(&resumed, &cfg).active) {
+				after_release = 1;
+			}
+		}
+		check(after_release,
+			"easing off and pushing again is what gives the next boost");
+	}
+
+	/* --- What is and is not re-checked while the boost runs -------------------------- */
+	{
+		/*
+		 * The pedal load is NOT re-tested once the boost has been triggered. Deliberate: a
+		 * pedal stroke has dead spots, and re-testing would make the boost stutter at
+		 * exactly the cadence it exists to help.
+		 */
+		assist_extended_boost_init();
+		check(start_boost(&cfg) > 0, "precondition: a boost is running");
+		assist_extended_boost_input_t no_load = riding(0);
+		int ran = 0;
+		for (int t = 0; t < (int)DURATION_TICKS + 10; t++) {
+			if (!tick(&no_load, &cfg).active) {
+				break;
+			}
+			ran++;
+		}
+		check(ran == (int)DURATION_TICKS - 1,
+			"easing off after the trigger does not cut the boost short");
+	}
+
 	/* --- Off by default, and a short spike is not a decision ------------------------- */
 	{
 		assist_extended_boost_init();

@@ -27,11 +27,25 @@
  * a feature is ever wanted it must be a separate, explicitly reasoned safety function with its
  * own conditions — not a ride-feel setting.
  *
- * How it behaves now: a load held above the configured trigger for EXT_BOOST_CONFIRM_MS,
- * while the ride latch is armed and the bike is moving, starts the boost immediately. It runs
- * for the configured duration and ends on whichever comes first — the timer, the rider
- * stopping pedalling, or any cancel condition. Holding the push does not restart it: the load
- * must fall back below the trigger first.
+ * How it behaves now: a hard push TRIGGERS a TIMED boost, which then continues for as long as
+ * forward pedalling remains active.
+ *
+ *   Trigger   load held above the configured threshold for EXT_BOOST_CONFIRM_MS, while
+ *             pedaling_active and the ride latch are both true and the bike is moving.
+ *   Running   the boost current is fixed at the trigger instant, from the peak of that push.
+ *             BE PRECISE ABOUT WHAT IS RE-CHECKED WHILE IT RUNS: pedaling_active, the ride
+ *             latch, motion, safety cut, crank reverse, sensor validity, level and bank — all
+ *             every 4 kHz tick. The PEDAL LOAD IS NOT. Once triggered, easing off the pedal
+ *             does not shorten the boost; only the timer or a cancel ends it. That is
+ *             deliberate: a pedal stroke has dead spots, and re-testing the load would make
+ *             the boost stutter at exactly the cadence it exists to help.
+ *   Ends      on whichever comes first — the timer, pedaling_active going false, the latch
+ *             dropping, or any other cancel condition.
+ *
+ * ONE PUSH, ONE BOOST. A boost that reached ACTIVE blocks re-arming until the load falls
+ * EXT_BOOST_RELEASE_HYST_CENTIKG below the trigger, whether it ran its full time or was cut
+ * short. Otherwise a rider who stops the cranks without releasing the pedal would get a second
+ * boost from the same unbroken press on resuming.
  */
 
 /* 4 kHz control loop, same as everywhere else in the ride core. */
