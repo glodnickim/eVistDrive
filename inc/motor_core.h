@@ -19,10 +19,11 @@ typedef struct {
 	bool emergency_stop;
 } motor_command_t;
 
-/* Bind the legacy motor state without changing its initial values. */
+/* Bind the shared motor state without changing its initial values. */
 void motor_core_init(MotorState_t *motor_state);
 
-/* Command entry point to be adopted one legacy writer at a time. */
+/* The single entry point for commanding current. Direct writes to MS.i_q_setpoint elsewhere
+ * are what this exists to replace; they are converted one call site at a time. */
 void motor_core_set_command(const motor_command_t *command);
 
 #endif /* MOTOR_CORE_H_ */

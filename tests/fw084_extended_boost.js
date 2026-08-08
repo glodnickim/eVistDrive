@@ -585,9 +585,15 @@ console.log(`confirm ${CONFIRM_MS} ms (${CONFIRM_TICKS} ticks), arm timeout ${AR
         'classification: the flag comes from the boost, not from the latch');
 
     // The consequence the rider is promised, modelled against assist_limits.c.
+    // FW-094: this used to match the bare token NON_PEDAL, which only appeared in the removed
+    // assist_limits_apply_legacy() wrapper — so it passed for the wrong reason and broke on a
+    // pure deletion. Assert the mechanism instead: the limiter branches on the source, and the
+    // non-pedal arm is the 5..7 km/h taper.
     const limitsC = read('src', 'assist_limits.c');
-    const nonPedalMax = /NON_PEDAL/.test(limitsC);
-    check(nonPedalMax, 'classification: assist_limits still distinguishes the two sources');
+    check(/input->source == ASSIST_LIMIT_SOURCE_PEDAL_CONFIRMED/.test(limitsC),
+        'classification: assist_limits branches on the request source');
+    check(/map\(input->speed_x100, 500, 700, limited, 0\)/.test(limitsC),
+        'classification: the non-pedal arm is the 5..7 km/h taper');
     // And the UI has to say so, or the rider discovers it on a climb at 8 km/h.
     const help = fs.readFileSync(path.join('C:', 'Projekty', 'bafang_canable_pro',
         'ui', 'js', 'evistdrive', 'profiles.js'), 'utf8');

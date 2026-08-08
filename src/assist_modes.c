@@ -8,8 +8,13 @@
 #define ASSIST_LEVEL_COUNT 5
 #define ASSIST_MOTOR_POWER_HARD_MAX_W 1500U
 #define ASSIST_SUPPORT_RATIO_MAX_PCT 1000U
-#define ASSIST_LEGACY_MIN_PEDAL_LOAD_MAX_MV 300U
-#define ASSIST_LEGACY_START_LOAD_REDUCTION_MAX_MV 100U
+/*
+ * Bounds for the OLD BANK WIRE FORMAT (blob versions v1..v6), which stored start loads as a
+ * calibrated sensor delta in mV instead of the kg used since v7. They are only ever applied
+ * while migrating a stored bank on load — nothing to do with the removed Legacy engine.
+ */
+#define ASSIST_V6_WIRE_MIN_PEDAL_LOAD_MAX_MV 300U
+#define ASSIST_V6_WIRE_START_LOAD_REDUCTION_MAX_MV 100U
 #define HUMAN_POWER_CENTIKG_RPM_NUMERATOR 1694U
 #define HUMAN_POWER_CENTIKG_RPM_DENOMINATOR 1000U
 #define RIDE_CORE_FULL_IQ_SUPPORT_PCT 500U
@@ -35,8 +40,8 @@
 /*
  * Power ratios follow the reference factors 50/100/160/260,
  * where factor 50 means 1.0x rider power. SPORT+ is the midpoint between
- * SPORT and BOOST. These are provisional developer defaults; Legacy remains
- * the boot default until the versioned configuration is enabled.
+ * SPORT and BOOST. These are the compiled-in defaults, used when no stored
+ * bank is available.
  */
 #define DEFAULT_POWER_LEVEL(mode, ratio, emtb_level, torque_factor) { \
 	.mode_type = (mode), \
@@ -1419,11 +1424,11 @@ bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length)
 		} else {
 			/* v1..v6 stored a calibrated sensor delta in mV. Convert it
 			 * once while loading so the physical threshold is preserved. */
-			uint16_t legacy_threshold_mv = clamp_u16(
+			uint16_t v6_threshold_mv = clamp_u16(
 				get_u16(&record[19]), 0,
-				ASSIST_LEGACY_MIN_PEDAL_LOAD_MAX_MV);
+				ASSIST_V6_WIRE_MIN_PEDAL_LOAD_MAX_MV);
 			cfg->minimum_pedal_load_centikg = round_start_load_centikg(
-				torque_input_native_delta_to_centikg(legacy_threshold_mv),
+				torque_input_native_delta_to_centikg(v6_threshold_mv),
 				ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG);
 		}
 		cfg->startup_boost.enabled = record[21] != 0;
@@ -1454,14 +1459,14 @@ bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length)
 			} else {
 				/* v6 carried a reduction in mV. Convert it to the direct
 				 * rolling threshold used by v7; its rise fields are ignored. */
-				uint16_t legacy_threshold_mv = clamp_u16(
+				uint16_t v6_threshold_mv = clamp_u16(
 					get_u16(&record[19]), 0,
-					ASSIST_LEGACY_MIN_PEDAL_LOAD_MAX_MV);
-				uint16_t legacy_reduction_mv = clamp_u16(record[35], 0,
-					ASSIST_LEGACY_START_LOAD_REDUCTION_MAX_MV);
+					ASSIST_V6_WIRE_MIN_PEDAL_LOAD_MAX_MV);
+				uint16_t v6_reduction_mv = clamp_u16(record[35], 0,
+					ASSIST_V6_WIRE_START_LOAD_REDUCTION_MAX_MV);
 				uint16_t rolling_threshold_mv =
-					(legacy_reduction_mv >= legacy_threshold_mv) ? 0U :
-					(uint16_t)(legacy_threshold_mv - legacy_reduction_mv);
+					(v6_reduction_mv >= v6_threshold_mv) ? 0U :
+					(uint16_t)(v6_threshold_mv - v6_reduction_mv);
 				cfg->riding_start_load_centikg = round_start_load_centikg(
 					torque_input_native_delta_to_centikg(rolling_threshold_mv),
 					ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG);
@@ -1573,7 +1578,7 @@ bool assist_modes_calculate(
 			iq_limit,
 			output);
 		break;
-	case ASSIST_MODE_LEGACY:
+	case ASSIST_MODE_RESERVED_0:
 	case ASSIST_MODE_EMTB_CUSTOM:
 	default:
 		break;

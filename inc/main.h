@@ -76,8 +76,9 @@ typedef struct
 	int32_t 		i_q_setpoint;
 	int32_t 		i_d_setpoint;
 	int32_t 		i_setpoint_abs;
-	int32_t 		i_q_setpoint_temp;
-	int32_t 		i_d_setpoint_temp;
+	/* FW-094: i_q_setpoint_temp / i_d_setpoint_temp removed. They were the removed assist
+	 * monolith's scratch registers; the ride core returns its request by value. MotorState_t is
+	 * runtime only (never persisted), so dropping them changes no stored layout. */
 	int32_t         u_d;
 	int32_t         u_q;
 	int32_t         u_abs;
@@ -107,8 +108,9 @@ typedef struct
 	uint8_t 		cadence;
 	int8_t 			Obs_flag;
 	int8_t 			TQfilter;
-	int8_t 			ext_boost_duration;
-	int8_t 			ext_boost_strength;
+	/* FW-094: ext_boost_duration / ext_boost_strength removed. They cached the per-level
+	 * Para2 bytes for the removed overrun block. FW-084 Extended Boost is per-level config
+	 * inside the profile bank (assist_extended_boost_config_t) and never used these. */
 	FlagStatus 		pushassist_flag;
 	FlagStatus 		walk_can_request;
 	FlagStatus 		light_flag;
@@ -126,17 +128,43 @@ typedef struct
 
 }MotorState_t;
 
+/*
+ * FW-094 — ORPHANED BUT FROZEN FIELDS.
+ *
+ * These are still parsed from and echoed back to the Bafang Para blocks, but after the removal
+ * of the pre-ride-core assist path NOTHING in the firmware reads them to make a riding
+ * decision. They are kept, in place and at their exact sizes, for two independent reasons:
+ *
+ *   1. sizeof(MotorParams_t) is part of the FW-023 stored-record length check. Change it by one
+ *      byte and every record already written fails validation, so every setting on the bike
+ *      silently reverts to defaults on the next boot.
+ *   2. The shipped app reads and writes the Para bytes they map to. Dropping the round-trip
+ *      would make those fields read back as garbage.
+ *
+ *   decay_base        Para1[21]  - was the cadence-assist decay curve
+ *   Cadence_exponent  Para1[12]  - was the cadence exponent of that curve
+ *   Override_Duration Para1[37]  - was the overrun/"power drag-on" duration
+ *   MagicNumber       Para1[24..25] - unread since FW-050 (offroad gesture is a fixed sequence)
+ *   TS_coeff          0x62D9     - was the cadence-assist gain
+ *   ramp_end          Para1[39]  - unread; no consumer has existed for several releases
+ *   assist_profile    Para2[0..29]  - was the per-level speed/assist interpolation table
+ *   ext_boost_*       Para2[31..41] - was the per-level overrun duration/strength
+ *   TQO_threshold     Para0      - now only a parser sanity/repair value, not an assist input
+ *
+ * Removing them is a protocol change, not a cleanup: it needs a Para-block version bump and a
+ * matching app release. See section C of the FW-094 audit.
+ */
 typedef struct
 {
 
 	uint16_t       	wheel_cirumference;
-	uint16_t       	decay_base;
-	uint16_t       	Cadence_exponent;
-	uint16_t       	Override_Duration;
-	uint16_t       	MagicNumber;
-	uint16_t       	TS_coeff;
+	uint16_t       	decay_base;        //orphan, see the note above
+	uint16_t       	Cadence_exponent;  //orphan
+	uint16_t       	Override_Duration; //orphan
+	uint16_t       	MagicNumber;       //orphan
+	uint16_t       	TS_coeff;          //orphan
 	uint16_t       	PAS_timeout;
-	uint16_t       	ramp_end;
+	uint16_t       	ramp_end;          //orphan
 	uint16_t       	throttle_offset;
 	uint16_t       	throttle_max;
 	uint16_t       	active_profile_bank; //was torque_offset (unused); FW-005: 0 = Power bank, 1 = eMTB bank
@@ -148,7 +176,7 @@ typedef struct
 	uint16_t       	speedLimitx100;
 	uint16_t       	walk_assist_speed; // raw front-chainring RPM; legacy field name kept for EEPROM/CAN
 	uint8_t        	walk_assist_current; // 0-100 %, maps to Para1[36] (speed_limit_enabled in JS)
-	uint16_t       	TQO_threshold[6];
+	uint16_t       	TQO_threshold[6];   //orphan (parser sanity value only)
 	uint8_t       	com_mode;
 	int8_t       	system_voltage;
 	int8_t       	max_voltage;
@@ -156,10 +184,10 @@ typedef struct
 	int8_t       	legalflag; //use field Coaster Brake Support
 
 	uint8_t       	pulses_per_revolution;
-	uint8_t 		assist_profile[5][6]; //five assist levels with 6 assist factors each
-	uint8_t 		assist_settings[6][3]; //six  assist levels (including level zero) with 0: current limit, 1 speed limit, 2 ride mode
-	uint8_t 		ext_boost_duration[6];
-	uint8_t 		ext_boost_strength[6];
+	uint8_t 		assist_profile[5][6];  //orphan: five assist levels with 6 assist factors each
+	uint8_t 		assist_settings[6][3]; //LIVE: 0 current limit, 1 speed limit, 2 ride mode (per level)
+	uint8_t 		ext_boost_duration[6]; //orphan
+	uint8_t 		ext_boost_strength[6]; //orphan
 	q31_t 			angle_correction;
 
 	//--- Battery SOC / Range params (appended at end to keep EEPROM offsets stable) ---

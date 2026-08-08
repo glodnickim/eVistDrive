@@ -35,8 +35,8 @@ OF SUCH DAMAGE.
 #include "main.h"
 #include "FOC.h"
 #include "assist_limits.h"
-#include "legacy_assist.h"
 #include "motor_core.h"
+#include "motor_service.h"
 #include "rider_input.h"
 #include "ride_control.h"
 #include "torque_input.h"
@@ -148,7 +148,6 @@ void read_virtual_eeprom(void);
 uint8_t param_record_valid(void);   //FW-023: magic + version + length + crc of the stored record
 uint8_t hall_angles_plausible(void);//FW-023: six transitions ~60 deg apart, order is +/-1
 void hall_load_defaults(void);      //FW-023: restore the calibrated values compiled into this build
-uint8_t interpolate_assistfactor(void);
 int8_t calculate_SOC(uint16_t voltage, uint8_t cells_in_series);
 #if CAN_DIAGNOSTICS_ENABLE
 void print_debug_on_CAN(void);
@@ -163,8 +162,6 @@ uint32_t soc_crc32(const uint8_t* data, uint32_t len);
 float compute_limp_factor(float soc);
 float default_wh_km_for_level(uint8_t lvl);
 void Speed_processing(void);
-uint16_t map_rezi(int32_t actual_value, int32_t actual_time, int32_t timeout, int32_t decay_base);
-uint16_t legacy_assist_calculate_monolith(void);
 int16_t T_NTC(uint16_t ADC);
 //FW-093: the two halves of the shared DRIVE <-> COAST path (see the state comment below).
 void power_stage_enter_drive(void);
@@ -250,7 +247,6 @@ uint8_t  torque_fault=0;        // Error 25 active (out-of-range signal debounce
 uint16_t tq_fault_ticks=0;      // debounce for out-of-range signal
 uint32_t tq_fault_hold=0;       // min hold after the cause clears (~5 s) - no flicker/assist chatter
 volatile uint8_t bank_save_request=0; //FW-006: 0x6022 received -> persist banks at next standstill
-//FW-030: ride_engine_request removed (engine selection gone, ride core only)
 volatile uint8_t soc_full_persist=0;       //FW-018: 0x602B sets 1 = MP.soc_full_* changed, flash-persist at standstill
 #if CAN_DIAGNOSTICS_ENABLE
 //FW-015b: peak-hold diagnostics (reset on each 0x6029 read) - lets a brief bench press be captured
@@ -306,7 +302,6 @@ const int32_t one_deg = 11930465; //one degree in 2^32 logic
 
 int32_t i32_full_rotation_flag =-1;
 
-float 	helper=0;
 int32_t q31_PLL_error=0;
 int32_t q31_rotorposition_PLL=0;
 uint8_t ui_8_PLL_counter=0;
@@ -363,8 +358,6 @@ uint16_t switchtime[3];
 //i.e. a safety path.
 volatile uint16_t ui16_erps=0;
 volatile uint16_t ui16_erps_counter=0;
-uint16_t mapped_throttle=0;
-uint16_t mapped_torque=0;
 char char_dyn_adc_state_old=1;
 int16_t i16_ph1_current=0;
 int16_t i16_ph2_current=0;
@@ -375,11 +368,6 @@ const q31_t tics_lower_limit = WHEEL_CIRCUMFERENCE*5*3600/(6*GEAR_RATIO*SPEEDLIM
 const q31_t tics_higher_limit = WHEEL_CIRCUMFERENCE*5*3600/(6*GEAR_RATIO*(SPEEDLIMIT+2)*10);
 uint8_t i = 0;
 uint16_t p = 0;
-/* Legacy overrun (inactive in Ride Core) — see EXTENDED_BOOST_ENABLE in config.h. Nothing to
- * do with FW-084 Extended Boost, which owns its own module and state. */
-uint16_t Overrun_strength = 0;
-uint16_t Overrun_counter = 0;
-uint8_t Overrun_flag = 0;
 uint32_t timeout = 0xFFFF;
 uint8_t transmit_mailbox = 0;
 int32_t battery_current_cumulated=0;
@@ -406,11 +394,6 @@ uint8_t soc_boot_settle_s=0;      //seconds counted inside the boot settle windo
 uint16_t soc_boot_vmin=0xFFFF;    //min pack voltage seen during the settle window [mV]
 uint16_t soc_boot_vmax=0;         //max pack voltage seen during the settle window [mV]
 float soc_anchor_start_mah=0;     //remaining_mah captured when the anchor was set
-#if ASSIST_TORQUE_MODE==2
-//per-level expo curve (mode 2): percent table indexed like assist_settings (element 0 = no assist level)
-static const int8_t assist_curve_expo_pct[6]={0,ASSIST_CURVE_EXPO_L1,ASSIST_CURVE_EXPO_L2,ASSIST_CURVE_EXPO_L3,ASSIST_CURVE_EXPO_L4,ASSIST_CURVE_EXPO_L5};
-static float assist_curve_exponent=1.0f;  //recomputed on assist level change; 1.0 = straight line
-#endif
 uint32_t idle_ticks_slow=0;       //auto-off: slow-loop (40 ms) ticks with no rider/comms activity
 volatile uint16_t comm_lost_ticks=0; //comms watchdog: slow-loop ticks since last HMI frame (reset in processCAN_Rx)
 volatile uint8_t comm_seen=0;     //comms watchdog: 1 after first HMI frame -> arms the watchdog (grace period at boot)
@@ -680,7 +663,6 @@ int main(void)
     }
   //  while((adc_value[1])>3000);//safety for bricked throttle
 
-	helper=((float)1.0/((float)1.0+(float)MP.Cadence_exponent));
     //autodetect();
 
     // calibrate battery current zero offset (motor off, ~no load) for coulomb counting
@@ -749,15 +731,6 @@ int main(void)
         	//SAFETY: TQfilter is used as a bit-shift (torque_cumulated>>TQfilter). Ride-mode values >7 (or, via
         	//int8_t, negative) make the shift undefined -> torque_filtered=0 -> that level's assist dies (hit S+/Boost).
         	if(MS.TQfilter<1 || MS.TQfilter>7) MS.TQfilter=4;
-        	MS.ext_boost_duration=MP.ext_boost_duration[level_to_array_element[MS.assist_level]];
-        	MS.ext_boost_strength=MP.ext_boost_strength[level_to_array_element[MS.assist_level]];
-#if ASSIST_TORQUE_MODE==2
-        	{	//expo curve: derive this level's exponent ONCE here (percent -100..+100 -> 0.25..4.0)
-        		int8_t e_pct=assist_curve_expo_pct[level_to_array_element[MS.assist_level]];
-        		if(e_pct>=0) assist_curve_exponent=1.0f+(float)e_pct/33.3f;
-        		else         assist_curve_exponent=1.0f/(1.0f-(float)e_pct/33.3f);
-        	}
-#endif
         	//FW-050: the offroad gesture moved to the shared level_gesture engine. The old code
         	//built a decimal number with pow(10, offroadtics) into a uint16_t, and offroadtics
         	//doubled as the display splash value — so after a toggle it was set to 8/9 and the
@@ -782,9 +755,6 @@ int main(void)
 #if CAN_DIAGNOSTICS_ENABLE
             	print_debug_on_CAN();
 #endif
-//            	if((Overrun_strength-mapped_torque)>>3>0){
-//            		Overrun_strength-=(Overrun_strength-mapped_torque)>>3;
-//            	}
             	p++;
 
             	static uint8_t hb_tick=0, speed_tick=0, cad_tick=0, misc_tick=0, s202_tick=0;
@@ -1874,12 +1844,11 @@ void reg_ADC_processing(void)
 		coast_wheel_moved!=0); //FW-058/FW-061: latched over the episode, not sampled at its end
 	torque_input_set_run_window_deg(tuning_config_assist_torque_run_window_deg()); //FW-085: RUN estimator window in crank degrees (Canable)
 	torque_input_update(torque_raw_mv, MS.torque_on_crank, torque_fault==0);
-	//Publish one coherent, read-only rider snapshot. Legacy calculations below still use the
-	//same MS/globals directly; switching consumers is a separate, testable refactor step.
+	//Publish one coherent, read-only rider snapshot: the single input the assist pipeline reads.
 	{
 		const torque_snapshot_t *torque_snapshot = torque_input_get_snapshot();
 		//FW-068: the crank-movement half of the start condition is configurable from Canable
-		//(Dynamics). START_MIN_STEPS is now only its default and the frozen monolith's value.
+		//(Dynamics); TUNING_START_STEPS_DEFAULT is its default.
 		bool ride_core_pedaling = forward_pedaling != 0 &&
 			fwd_run >= tuning_config_start_steps();
 		rider_input_t input = {
@@ -1931,7 +1900,6 @@ void reg_ADC_processing(void)
     }else pwm_zero_current_ticks=0;
     if(pwm_zero_wait_ticks<64000)pwm_zero_wait_ticks++;
     if(ui16_erps_counter<64000)ui16_erps_counter++;
-    if(Overrun_counter<64000)Overrun_counter++;
 
     //--- Walk Assist physical button (PA4), debounce z histereza (press + release) ---
     uint8_t wa_btn_in_range=(adc_value[5]>=WA_BUTTON_THRESHOLD_LOW && adc_value[5]<=WA_BUTTON_THRESHOLD_HIGH);
@@ -2139,8 +2107,9 @@ void reg_ADC_processing(void)
 #if CAN_DIAGNOSTICS_ENABLE
         {
             const assist_mode_output_t* do_ = assist_modes_get_last_output();
-            int32_t current_iq_req = (ride_control_get_engine()==RIDE_ENGINE_CORE) ?
-                do_->iq_request : MS.i_q_setpoint_temp;
+            //FW-094: one engine, so one source. The old ternary picked the monolith's
+            //MS.i_q_setpoint_temp for the removed Legacy engine and was already dead.
+            int32_t current_iq_req = do_->iq_request;
             if(diag_peak_reset){ diag_peak_cadence=0; diag_peak_torque=0; diag_peak_human_w=0; diag_peak_support=0; diag_peak_motor_w=0; diag_peak_iq_req=0; diag_peak_iq_set=0;
                 diag_peak_precomp_motor_w=0; diag_peak_cadence_comp=1000; diag_peak_u_abs=0; diag_peak_reset=0; } //FW-057
             if(do_->cadence_for_assist_rpm>diag_peak_cadence) diag_peak_cadence=do_->cadence_for_assist_rpm;
@@ -2158,7 +2127,7 @@ void reg_ADC_processing(void)
         }
 #endif
     }
-    if (torque_counter>4000&&!Overrun_flag){ //reset after one second without torque on the pedal
+    if (torque_counter>4000){ //reset after one second without torque on the pedal
     	if (PAS_counter>MP.PAS_timeout){
 			//FW-024b: clear the reverse flag ONLY once the crank is truly STOPPED. Backpedalling has no
 			//forward torque and no forward cadence pulse, so this "1 s without torque" cleanup was firing
@@ -2548,27 +2517,6 @@ void dyn_adc_state(q31_t angle){
 	}
 }
 
-uint8_t interpolate_assistfactor(void){
-	uint16_t interval= speedlimitx100_scaled/5 ;
-	uint8_t ui8_speedfactor=0;
-	uint8_t ui8_speedcase=0;
-	uint8_t assist_profile_index=level_to_array_element[MS.assist_level];
-	if(assist_profile_index==0 || interval==0)return 0;
-	if (MS.Speedx100 < interval)ui8_speedcase=0;
-	else if (MS.Speedx100 < 2*interval)ui8_speedcase=1;
-	else if (MS.Speedx100 < 3*interval)ui8_speedcase=2;
-	else if (MS.Speedx100 < 4*interval)ui8_speedcase=3;
-	else ui8_speedcase=4;
-
-	ui8_speedfactor = map(
-			MS.Speedx100,
-			ui8_speedcase*interval,
-			(ui8_speedcase+1)*interval,
-			MP.assist_profile[assist_profile_index-1][ui8_speedcase],
-			MP.assist_profile[assist_profile_index-1][ui8_speedcase+1]);
-	return ui8_speedfactor;
-}
-
 #if CAN_DIAGNOSTICS_ENABLE
 /*
  * FW-093 diag (ID 0x00010207): power-stage transitions ONLY. Sent on the edge, never in the
@@ -2663,8 +2611,10 @@ void print_debug_on_CAN(void){
 	                   | (MS.brake_active_flag?0x08:0)
 	                   | ((Backwards_counter>=4)?0x10:0)
 	                   | (torque_fault?0x20:0)
-	                   | (BC_limit_flag?0x40:0)
-	                   | (Overrun_flag?0x80:0);
+	                   | (BC_limit_flag?0x40:0);
+	                   //FW-094: bit 0x80 was the Legacy overrun flag. That mechanism is gone and
+	                   //the flag could only ever read 0, so the wire value is unchanged; the bit
+	                   //is now free for a future diagnostic.
 	uint8_t dbg_halfrot_4ms = (uint16_half_rotation_counter >= 4080) ?
 		255 : (uint8_t)(uint16_half_rotation_counter >> 4);
 	transmit_message.tx_efid = 0x00010204;
@@ -3387,179 +3337,124 @@ void read_virtual_eeprom(void)
     }
 	}
 
-uint16_t map_rezi(int32_t actual_value, int32_t actual_time, int32_t timeout, int32_t decay_base){
-    if(actual_time<timeout)return actual_value;
-    else if(actual_time<4000) return (uint16_t)((float)actual_value/((1+(float)(actual_value*decay_base)/175000*(float)(actual_time-timeout))));
-    else return 0;
+/*
+ * FW-094: Walk Assist Iq. Declared in motor_service.h, called by ride_control_update() on the
+ * walk_active branch.
+ *
+ * Before FW-094 this lived inside legacy_assist_calculate_monolith(), which ran the whole
+ * pre-ride-core cadence-assist body (cadence^exponent map, pressure floor, throttle override,
+ * Overrun) and then overwrote the result on the Walk branch. None of that math reached the
+ * motor from here; what follows is the part that did.
+ */
+uint16_t walk_assist_iq_request(void){
+	//FW-060: reset once at the beginning of a complete WA request. wa_engaged is cleared only
+	//when the complete request ends (main loop), so a brake/speed pause must not re-arm the
+	//standstill kick in the same session.
+	if(MS.pushassist_flag && !wa_engaged){
+		walk_motor_reset();
+		wa_engaged=1;
+	}
+
+	int32_t wa_iq;
+	//Brake has first priority; then Error 25 (implausible torque signal), which cuts assist and
+	//throttle alike and lets the shared adaptive ramp bring the running current down without a
+	//jerk; then FW-013, no motor power while a load calibration runs (no Error 25, just zero).
+	if(MS.brake_active_flag || torque_fault || torque_input_calibration_active()){
+		wa_iq=0;
+	}
+	else{
+		//FW-060: walk_assist_motor owns Hall/safety; walk_speed_controller owns the one-shot
+		//energetic start, PI, anti-windup and complete Iq slew.
+		//Both Hall values are snapshotted first: they are written by the capture ISR and must
+		//be read as one coherent pair.
+		uint16_t wa_erps_age = ui16_erps_counter;
+		uint16_t wa_hall_ticks = ui16_timertics;
+		walk_motor_input_t wa_in = {
+			.active = 1,
+			.brake = MS.brake_active_flag != RESET,
+			.fault = MS.error_state != 0 || torque_fault != 0,
+			.wheel_speed_x100 = MS.Speedx100,
+			.max_wheel_speed_x100 = assist_modes_get_wa_max_wheel_x100(), //FW-043: per bank
+			.motor_hall_ticks = wa_hall_ticks,
+			.motor_erps_age_ticks = wa_erps_age,
+			.motor_iq_actual = MS.i_q,
+			.motor_iq_reference = MS.i_q_setpoint,
+			//FW-042/043/051: walk_assist_speed repurposed as target CHAINRING rpm, now banked.
+			//It was x100 (km/h), but that made every value above 6 unreachable: Canable
+			//clamped at 6. Raw rpm now uses a validated 20..60 range; stale stored
+			//values such as 600 are repaired to the default.
+			.target_chainring_rpm = assist_modes_get_wa_target_rpm()
+		};
+		wa_iq=(int32_t)walk_motor_update(&wa_in, &wa_diag);
+	}
+
+	/*
+	 * Shared limiter: undervoltage and controller temperature. walk_active suppresses the legal
+	 * speed taper, exactly as it did when this call went through the removed
+	 * assist_limits_apply_legacy() wrapper — Walk Assist has its own wheel-speed ceiling inside
+	 * walk_motor_update(). `source` is not read at all while walk_active is set; NON_PEDAL is
+	 * the honest value for a request made with the cranks stationary.
+	 */
+	assist_limits_input_t wa_limits = {
+		.voltage_raw = voltage_raw_filtered,
+		.voltage_min_raw = MP.voltage_min,
+		.controller_temperature_c = MS.int_Temperature,
+		.source = ASSIST_LIMIT_SOURCE_NON_PEDAL,
+		.speed_x100 = MS.Speedx100,
+		.speed_limit_x100 = speedlimitx100_scaled,
+		.legal_enabled = MP.legalflag != 0,
+		.offroad = MS.offroadflag != RESET,
+		.walk_active = true
+	};
+	int32_t limited = assist_limits_apply(wa_iq, &wa_limits);
+	if(limited<0) limited=0;
+	if(limited>65535) limited=65535;
+
+	//FW-093: no zero-target integral reset here. A WA speed pause hands back zero while the
+	//motor is still turning — exactly the case where the current loop needs its integral to
+	//synthesize the back-EMF and null the current before the bridge is released.
+	return (uint16_t)limited;
 }
 
-uint16_t legacy_assist_calculate_monolith(void){
-
-				//FW-060: reset once at the beginning of a complete WA request.
-				if(MS.pushassist_flag && !wa_engaged){
-					walk_motor_reset();
-					wa_engaged=1;
-				}
-				//FW-060: wa_engaged is cleared only when the complete WA request ends.
-				//A brake/speed pause must not re-arm the standstill kick in the same session.
-				//calculate iq setpoint
-	            //check brake with first priority
-	            if(MS.brake_active_flag)MS.i_q_setpoint_temp=0;
-	            //Error 25: implausible torque signal -> no motor power at all (assist and throttle);
-	            //the shared adaptive ramp brings the running current down without a jerk
-	            else if(torque_fault)MS.i_q_setpoint_temp=0;
-	            //FW-013: no assist while a load calibration is running (no Error 25, just zero output)
-	            else if(torque_input_calibration_active())MS.i_q_setpoint_temp=0;
-	            // Walk Assist: continuous Hall-ERPS PI holding banked chainring RPM.
-	            else if(MS.pushassist_flag){
-	            	//FW-060: walk_assist_motor owns Hall/safety; walk_speed_controller owns
-	            	//the one-shot energetic start, PI, anti-windup and complete Iq slew.
-	            	uint16_t wa_erps_age = ui16_erps_counter;
-	            	uint16_t wa_hall_ticks = ui16_timertics;
-	            	walk_motor_input_t wa_in = {
-	            		.active = 1,
-	            		.brake = MS.brake_active_flag != RESET,
-	            		.fault = MS.error_state != 0 || torque_fault != 0,
-	            		.wheel_speed_x100 = MS.Speedx100,
-	            		.max_wheel_speed_x100 = assist_modes_get_wa_max_wheel_x100(), //FW-043: per bank
-	            		.motor_hall_ticks = wa_hall_ticks,
-	            		.motor_erps_age_ticks = wa_erps_age,
-	            		.motor_iq_actual = MS.i_q,
-	            		.motor_iq_reference = MS.i_q_setpoint,
-	            		//FW-042/043/051: walk_assist_speed repurposed as target CHAINRING rpm, now banked.
-	            		//It was x100 (km/h), but that made every value above 6 unreachable: Canable
-	            		//clamped at 6. Raw rpm now uses a validated 20..60 range; stale legacy
-	            		//values such as 600 are repaired to the 50 rpm default.
-	            		.target_chainring_rpm = assist_modes_get_wa_target_rpm()
-	            	};
-	            	MS.i_q_setpoint_temp=(uint32_t)walk_motor_update(&wa_in, &wa_diag);
-	            }
-	            //calculate setpoint, if brake is not activated
-	            else{
-					uint16_t tq_floor_start = MP.TQO_threshold[level_to_array_element[MS.assist_level]];
-					if(tq_floor_start>=TQ_FULL_SCALE_MV) tq_floor_start=TQ_PRESSURE_FLOOR_START_MV; //stale EEPROM may hold old 3299, which inverts the pressure-floor map
-					mapped_throttle= map(adc_value[1], MP.throttle_offset, MP.throttle_max, 0, phase_current_max_scaled);
-					mapped_torque= map(MS.torque_on_crank, tq_floor_start, TQ_FULL_SCALE_MV, 0, phase_current_max_scaled); //#4 upper span configurable (3300=old; lower=more pressure-linear)
-
-					if(Backwards_counter<4){//normal ride mode, motor power only if pedals are not turned backwards
-						//CONSISTENT ENGAGEMENT with HYSTERESIS: arm on firm press + >=START_MIN_STEPS forward steps;
-						//once armed, HOLD until pressure drops near rest (TQ_GATE_RELEASE) or crank movement stops.
-						//This stops the shudder (assist unloads pedal -> pressure dips -> would cut without hold).
-						//Reverse/stop resets fwd_run -> can't false-engage on descent jiggle or dead-spots.
-						static uint8_t assist_latched=0;
-						uint8_t fwd_ok=(fwd_run>=START_MIN_STEPS);
-						if(!assist_latched){
-							if(fwd_ok && MS.torque_on_crank > (750+TQ_GATE_MIN)) assist_latched=1;
-						}else{
-							if(!fwd_ok) assist_latched=0;   //HOLD assist the whole time cranks turn forward; release ONLY when pedalling stops/reverses (not on pressure dips)
-						}
-						uint8_t engaged = assist_latched;
-						if(!engaged){
-							MS.i_q_setpoint_temp=0;
-						}else{
-#if ASSIST_TORQUE_MODE==2
-							//PRESSURE mode with per-level expo curve: y = x^(1+e) on the normalized pressure span.
-							//Gates/latch above decide IF power flows; the curve only shapes HOW MUCH per pressure.
-							if(phase_current_max_scaled>0){
-								float xn=(float)mapped_torque/(float)phase_current_max_scaled; //0..1 (map() clamps)
-								MS.i_q_setpoint_temp=(uint32_t)((float)phase_current_max_scaled*powf(xn,assist_curve_exponent));
-							}
-							else MS.i_q_setpoint_temp=0;
-#elif ASSIST_TORQUE_MODE
-							//Bosch-like PRESSURE mode: assist ∝ pedal pressure (cadence not used)
-							MS.i_q_setpoint_temp = (uint32_t)mapped_torque;
-#else
-							//cadence-based assist (TS_coeff * cadence^helper * torque_filtered)
-							MS.i_q_setpoint_temp=(uint32_t)((float) (MP.TS_coeff*powf((float)MS.cadence,helper))*(MS.torque_filtered)*0.0005*interpolate_assistfactor());//factor 0.0005 from various constants
-							if(MS.i_q_setpoint_temp>phase_current_max_scaled)MS.i_q_setpoint_temp = phase_current_max_scaled;
-							MS.i_q_setpoint_temp=map_rezi(MS.i_q_setpoint_temp, torque_counter, MP.PAS_timeout, MP.decay_base);
-							//torque override: immediate pressure floor (only while engaged)
-							if(mapped_torque>MS.i_q_setpoint_temp){
-								if(mapped_torque>Overrun_strength){ Overrun_strength=mapped_torque; Overrun_counter = 0; }
-								MS.i_q_setpoint_temp=mapped_torque;
-							}
-#endif
-						}
-					}
-					else MS.i_q_setpoint_temp=0; //cut motor power on pedaling backwards
-#if SMOOTH_START_ENABLE
-					{	//#2 soft pull-away: scale pedal assist 0->100% over START_RAMP_TICKS after a standstill (throttle below is exempt)
-						static uint16_t start_ramp=0;
-						if(MS.Speedx100==0 && MS.cadence==0) start_ramp=0;
-						else if(start_ramp<START_RAMP_TICKS) start_ramp++;
-						if(start_ramp<START_RAMP_TICKS) MS.i_q_setpoint_temp=(uint32_t)((uint32_t)MS.i_q_setpoint_temp*start_ramp/START_RAMP_TICKS);
-					}
-#endif
-						//throttle override
-					if(mapped_throttle>MS.i_q_setpoint_temp)MS.i_q_setpoint_temp=mapped_throttle;
-
-					//apply LEGACY OVERRUN (inactive in Ride Core): holds power after the pedal stops -> "power drag-on".
-					//Gated by EXTENDED_BOOST_ENABLE, default OFF. This is NOT FW-084 Extended Boost — that one is a
-					//separate ride-core module (assist_extended_boost.c) and never runs through here. See config.h.
-					if(EXTENDED_BOOST_ENABLE && Overrun_counter<(MP.Override_Duration*MS.ext_boost_duration)/100&&Backwards_counter<4){
-						MS.i_q_setpoint_temp=(Overrun_strength*MS.ext_boost_strength)/100;
-						if(MS.i_q_setpoint_temp>MP.phase_current_max)MS.i_q_setpoint_temp = MP.phase_current_max;
-						Overrun_flag=1;
-						torque_counter=MP.PAS_timeout+1;
-					}
-					else {
-						Overrun_strength=0;
-						Overrun_flag=0;
-					}
-
-
-	            }// else brake not active
-	        	//if(PAS_counter>MP.PAS_timeout)MS.i_q_setpoint_temp=0;
-
-	            //Legacy limit chain: low voltage, controller temperature, then legal speed taper.
-	            MS.i_q_setpoint_temp=assist_limits_apply_legacy(
-	            	MS.i_q_setpoint_temp,
-	            	voltage_raw_filtered,
-	            	uint16_cadence_filtered,
-	            	speedlimitx100_scaled,
-	            	&MS,
-	            	&MP);
-
-				if(MS.hall_angle_detect_flag>1){ // part 2 of positions calibration
-					MS.i_q_setpoint_temp=100;
-					temp6-=temp6>>4;
-					temp6+=MS.u_d;
-					// Never accept/store a phase-2 result while the bridge is off. At
-					// the phase transition ui_8_PWM_ON_Flag is deliberately zero; the
-					// normal main-loop start path sets it after it physically enables PWM.
-					if (p>70 && ui_8_PWM_ON_Flag){
-						p=60;
-						if ((MP.reverse*temp6>>4)>100)MP.angle_correction+=one_deg;
-						else if ((MP.reverse*temp6>>4)<-50)MP.angle_correction-=one_deg;
-						else {
-							MS.i_q_setpoint_temp=0;
-							PI_iq.integral_part=0;
-							PI_id.integral_part=0;
-							timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,_T>>1);
-							timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,_T>>1);
-							timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,_T>>1);
-							timer_primary_output_config(TIMER0,DISABLE); //Disable PWM
-							ui_8_PWM_ON_Flag=0;
-							pwm_cutoff_active=0;
-							pwm_cutoff_tick=0;
-							pwm_enable_request=0;       //FW-093
-							pwm_stage=PWM_STAGE_COAST;  //FW-093: bridge is off, say so
-							uint16_half_rotation_counter=0;
-							write_virtual_eeprom();
-							MS.hall_angle_detect_flag=1;
-						}
-					}
-
-				}
-				//FW-093: the monolith's own zero-target integral reset is gone too. This path
-				//still runs for Walk Assist, and a WA speed pause hands back zero while the
-				//motor is turning — exactly the case where the current loop needs its integral
-				//to hold the back-EMF and null the current before the bridge is released. The
-				//deliberate reset in the calibration-complete branch above stays: there the
-				//bridge is switched off in the same breath.
-
-	    		return MS.i_q_setpoint_temp;
-
+/*
+ * FW-094: phase 2 of position-sensor calibration. Declared in motor_service.h, called by
+ * ride_control_update() on the position_calibration_active branch.
+ *
+ * The monolith computed a full assist value here too and then unconditionally replaced it with
+ * the fixed probe current below, so removing that computation changes nothing.
+ */
+uint16_t hall_calibration_iq_request(void){
+	int32_t cal_iq=100;
+	temp6-=temp6>>4;
+	temp6+=MS.u_d;
+	// Never accept/store a phase-2 result while the bridge is off. At the phase transition
+	// ui_8_PWM_ON_Flag is deliberately zero; the normal main-loop start path sets it after it
+	// physically enables PWM.
+	if (p>70 && ui_8_PWM_ON_Flag){
+		p=60;
+		if ((MP.reverse*temp6>>4)>100)MP.angle_correction+=one_deg;
+		else if ((MP.reverse*temp6>>4)<-50)MP.angle_correction-=one_deg;
+		else {
+			cal_iq=0;
+			PI_iq.integral_part=0;
+			PI_id.integral_part=0;
+			timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,_T>>1);
+			timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,_T>>1);
+			timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,_T>>1);
+			timer_primary_output_config(TIMER0,DISABLE); //Disable PWM
+			ui_8_PWM_ON_Flag=0;
+			pwm_cutoff_active=0;
+			pwm_cutoff_tick=0;
+			pwm_enable_request=0;       //FW-093
+			pwm_stage=PWM_STAGE_COAST;  //FW-093: bridge is off, say so
+			uint16_half_rotation_counter=0;
+			write_virtual_eeprom();
+			MS.hall_angle_detect_flag=1;
+		}
+	}
+	//The deliberate integral reset above stays: there the bridge is switched off in the same
+	//breath, so nothing is left regulating.
+	return (uint16_t)cal_iq;
 }
 
 

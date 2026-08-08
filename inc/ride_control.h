@@ -5,17 +5,11 @@
 #include <stdint.h>
 
 /*
- * These are WIRE values: the engine byte goes out in the 0x6029 diagnostics block and
- * Canable reads it as 0 = Legacy, 1 = ride core. Written out explicitly rather than left
- * to enum ordering, so inserting a member above cannot silently renumber the telemetry.
+ * FW-094: there is no engine type any more. The ride core is the only assist pipeline, so
+ * nothing selects, reports or branches on one. The single remaining trace is a constant byte
+ * in the 0x6028/0x6029 telemetry blocks that the shipped app still parses — it lives in
+ * CAN_Display.c as a protocol constant, not as a runtime state.
  */
-typedef enum {
-	RIDE_ENGINE_LEGACY = 0,
-	RIDE_ENGINE_CORE = 1
-} ride_engine_t;
-
-_Static_assert(RIDE_ENGINE_CORE == 1,
-	"ride engine telemetry value must stay 1 (0x6029 diagnostics)");
 
 typedef struct {
 	uint32_t speed_x100;
@@ -42,8 +36,5 @@ typedef struct {
 
 void ride_control_init(void);
 void ride_control_update(const ride_control_input_t *input);
-// FW-030: engine selection removed (ride core only). get_engine kept as a stub that always
-// reports the ride core, for telemetry; set_engine / update_request removed.
-ride_engine_t ride_control_get_engine(void);
 
 #endif /* RIDE_CONTROL_H_ */

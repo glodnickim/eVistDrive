@@ -5,14 +5,14 @@
 #include "assist_limits.h"
 #include "assist_modes.h"
 #include "config.h"
-#include "legacy_assist.h"
 #include "motor_core.h"
+#include "motor_service.h"
 #include "torque_input.h"
 #include "tuning_config.h"
 
-// FW-030: The ride core is the ONLY ride engine. Legacy engine selection removed.
-// Walk Assist and Hall calibration still use legacy_assist_calculate() (the monolith
-// serves them regardless of engine) — see ride_control_update below.
+// FW-094: the ride core is the only assist pipeline — there is no engine type to select or
+// report. Walk Assist and position calibration are not assist modes: they are motor-layer
+// service paths with their own Iq producers (motor_service.h), called below.
 
 /*
  * FW-031: ride latch + current floor.
@@ -122,18 +122,16 @@ void ride_control_update(const ride_control_input_t *input)
 	walk_was_active = input->walk_active;
 
 	/*
-	 * Position-sensor calibration is a controller service mode, not an assist
-	 * mode. Its second phase currently lives in the frozen Legacy monolith and
-	 * must own Iq regardless of the persisted Legacy/ride-core selection. Bypass the
-	 * ride-feel ramp as well: on the completion tick the calibration code sets
-	 * Iq=0, disables PWM and stores the angle, and no stale ramp value may
-	 * re-enable the bridge.
+	 * Position-sensor calibration is a controller service mode, not an assist mode. It owns Iq
+	 * outright and bypasses the ride-feel ramp: on the completion tick the calibration code
+	 * sets Iq=0, disables PWM and stores the angle, and no stale ramp value may re-enable the
+	 * bridge.
 	 */
 	if (input->position_calibration_active) {
 		//FW-084: this path never reaches the Extended Boost block below, so clear it here
 		//or an arming survives the whole service mode and fires on the way out.
 		assist_extended_boost_reset(ASSIST_EXT_BOOST_CANCEL_CALIBRATION);
-		int32_t calibration_iq = legacy_assist_calculate();
+		int32_t calibration_iq = hall_calibration_iq_request();
 		motor_command_t calibration_command = {
 			.iq_target = calibration_iq,
 			.id_target = input->current_id,
@@ -163,12 +161,13 @@ void ride_control_update(const ride_control_input_t *input)
 	uint16_t ramp_down_fast_ms = 0;
 	if (input->walk_active) {
 		/*
-		 * The existing Walk controller remains the exclusive source until the
-		 * dedicated ERPS-based module replaces it. It must not disappear when
-		 * the developer selects the ride core engine.
+		 * Walk Assist owns its complete Iq trajectory (FW-060/FW-067) through its own
+		 * motor-speed controller. It is a conscious, separate path — not an assist mode with
+		 * different numbers — so it never enters the pipeline below and no second dynamic
+		 * element sits behind its speed controller.
 		 */
 		assist_extended_boost_reset(ASSIST_EXT_BOOST_CANCEL_WALK);   //FW-084
-		iq_target = legacy_assist_calculate();
+		iq_target = walk_assist_iq_request();
 	} else {
 		const rider_input_t *rider = rider_input_get();
 		const assist_level_config_t *level =
@@ -492,11 +491,4 @@ void ride_control_update(const ride_control_input_t *input)
 		.emergency_stop = false
 	};
 	motor_core_set_command(&command);
-}
-
-// FW-030: single engine. Kept as a stub because telemetry (FW-028, 0x6029) still
-// references it; always reports the ride core.
-ride_engine_t ride_control_get_engine(void)
-{
-	return RIDE_ENGINE_CORE;
 }

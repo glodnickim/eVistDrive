@@ -6,7 +6,8 @@
 
 /*
  * Normalized view of rider-related sensors in the existing EBICS native
- * units. Fixed-point values keep the 4 kHz Legacy path deterministic.
+ * units. Fixed-point throughout: the assist pipeline runs in the 4 kHz control
+ * tick and must be deterministic, so no value here is floating point.
  */
 typedef struct {
 	uint16_t torque_raw_mv;

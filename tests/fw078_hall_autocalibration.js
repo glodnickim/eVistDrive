@@ -36,10 +36,12 @@ for (const required of [
     `phase transition must reset ${required}`);
 }
 
-const phase2Start = mainSource.indexOf("if(MS.hall_angle_detect_flag>1)");
-assert(phase2Start >= 0, "phase-2 calibration block not found");
-const phase2End = mainSource.indexOf("return MS.i_q_setpoint_temp", phase2Start);
-assert(phase2End > phase2Start, "phase-2 calibration block end not found");
+// FW-094: phase 2 moved out of the removed assist monolith into its own motor-layer function
+// (motor_service.h). Same code, same order — only the anchors this test uses changed.
+const phase2Start = mainSource.indexOf("uint16_t hall_calibration_iq_request(void){");
+assert(phase2Start >= 0, "phase-2 calibration function not found");
+const phase2End = mainSource.indexOf("return (uint16_t)cal_iq;", phase2Start);
+assert(phase2End > phase2Start, "phase-2 calibration function end not found");
 const phase2 = mainSource.slice(phase2Start, phase2End);
 
 assert(/if\s*\(p>70\s*&&\s*ui_8_PWM_ON_Flag\)/.test(phase2),

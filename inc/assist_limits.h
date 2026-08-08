@@ -4,7 +4,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "main.h"
+/*
+ * FW-094: no longer includes main.h. The removed assist_limits_apply_legacy() took
+ * MotorState_t/MotorParams_t pointers and was the only thing tying the shared limiter to this
+ * controller's globals. Every caller now fills assist_limits_input_t itself, so the limiter is
+ * motor-agnostic: plain integers in, limited current out.
+ */
 
 /*
  * FW-091: which speed limit a request is entitled to depends on WHERE THE REQUEST CAME
@@ -44,13 +49,5 @@ typedef struct {
 int32_t assist_limits_apply(
 	int32_t iq_request,
 	const assist_limits_input_t *input);
-
-int32_t assist_limits_apply_legacy(
-	int32_t iq_request,
-	uint16_t voltage_raw,
-	uint16_t cadence_filtered,
-	uint16_t speed_limit_x100,
-	const MotorState_t *motor_state,
-	const MotorParams_t *motor_params);
 
 #endif /* ASSIST_LIMITS_H_ */

@@ -79,7 +79,10 @@ access_profiles:
 
 enums:
   mode_type:
-    legacy: 0
+    # FW-094: value 0 selected the pre-ride-core assist path per level. That path is removed;
+    # 0 is now reserved and produces no assist. It must NOT be reused for a new mode - stored
+    # banks and older app builds still write it.
+    reserved_0: 0
     power_linear: 1
     power_progressive: 2
     emtb: 3
@@ -103,8 +106,9 @@ rules:
   - id: ramp_cadence_order
     expression: ramp_cadence_low_rpm <= ramp_cadence_high_rpm
   - id: inactive_ride_core_modes
-    expression: mode_type == legacy
-    applies_until: hardware_legacy_regression_accepted
+    # FW-094: a bank carrying the reserved value 0 yields no assist (assist_modes_calculate
+    # reports unsupported). The app must never offer it as a selectable mode.
+    expression: mode_type == reserved_0
   - id: no_rotation_safe_default
     expression: assist_without_rotation == false
   - id: torque_public_scale

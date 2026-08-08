@@ -9,7 +9,11 @@
 #include "rider_input.h"
 
 typedef enum {
-	ASSIST_MODE_LEGACY = 0,
+	/* FW-094: wire value 0 used to select the pre-ride-core assist path per level. That path is
+	 * gone and 0 was never a supported ride-core mode, so it is now simply a reserved value:
+	 * a bank carrying it produces no assist (assist_modes_calculate returns unsupported). It
+	 * cannot be reused for a new mode — stored banks and older app builds still write it. */
+	ASSIST_MODE_RESERVED_0 = 0,
 	ASSIST_MODE_POWER_LINEAR = 1,
 	ASSIST_MODE_POWER_PROGRESSIVE = 2,
 	ASSIST_MODE_EMTB = 3,
@@ -28,7 +32,7 @@ typedef enum {
  * FW-073 renamed the eMTB member. These assertions exist so the next rename cannot quietly
  * take the value with it.
  */
-_Static_assert(ASSIST_MODE_LEGACY == 0, "wire value must stay 0");
+_Static_assert(ASSIST_MODE_RESERVED_0 == 0, "wire value must stay 0");
 _Static_assert(ASSIST_MODE_POWER_LINEAR == 1, "wire value must stay 1");
 _Static_assert(ASSIST_MODE_POWER_PROGRESSIVE == 2, "wire value must stay 2");
 _Static_assert(ASSIST_MODE_EMTB == 3, "eMTB wire value must stay 3");

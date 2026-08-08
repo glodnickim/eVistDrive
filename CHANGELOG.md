@@ -6,6 +6,38 @@ local (untracked) notes.
 
 ## [Unreleased]
 
+### One ride engine: the pre-ride-core assist path is gone — FW-094
+- Engine selection had been removed in FW-030, but the old assist monolith itself was still
+  running: Walk Assist and phase 2 of position calibration called it on every control tick. It
+  computed its entire pre-ride-core assist body — cadence map, pressure floor, throttle
+  override, smooth-start envelope, overrun — and then discarded the result, because both of
+  those paths overwrote it. The old arithmetic executed continuously and could not reach the
+  motor. It has been deleted.
+- The two paths that did reach the motor now have their own named functions in a new motor
+  layer (`motor_service.h`): Walk Assist, and position calibration. Both do exactly what the
+  reachable branches did, in the same order. The one intentional difference is that the Walk
+  result is clamped rather than implicitly truncated, which cannot change a value in the
+  reachable range.
+- Also removed: the ride-engine type and its getter, the overrun state
+  (`Overrun_strength`/`_counter`/`_flag`) and its per-level duration/strength cache, the legacy
+  limiter wrapper, `map_rezi()`, `interpolate_assistfactor()`, and the build switches
+  `ASSIST_TORQUE_MODE`, `ASSIST_CURVE_EXPO_L*`, `SMOOTH_START_ENABLE`, `START_RAMP_TICKS`,
+  `EXTENDED_BOOST_ENABLE`, `RIDE_ENGINE_DEFAULT`, `TQ_GATE_RELEASE`, `START_MIN_STEPS`. No
+  compatibility layer and no fallback were left in their place.
+- **Stored settings are unaffected.** The persistent parameter layout is byte-for-byte
+  unchanged, so no EEPROM migration is needed and nothing on the bike reverts to defaults. The
+  parameters that the removed code used to read are now orphaned — still written by the app and
+  echoed back by the firmware, but read by nobody. The Canable help text for each of them now
+  says so plainly instead of claiming they are "compiled in but not reached".
+- The engine byte in the 0x6028 and 0x6029 blocks stays on the wire as a documented constant:
+  the shipped app parses those blocks positionally, so dropping it would shift every field
+  after it. Assist mode 0 is likewise reserved rather than reused.
+- Side effect worth having: the shared limiter no longer depends on this controller's globals,
+  so it is genuinely motor-agnostic.
+- Not addressed here: FW-084 Extended Boost still holds torque after the cranks stop on a bike
+  without a brake sensor. It is native to the ride core, off by default, and unconfirmed on the
+  bike — see `documentation/FW-094_LEGACY_REMOVAL_AUDIT.md`.
+
 ### Extended Boost: a deliberate drive hold for steps and rocks — FW-084
 - New per-level setting group. The rider arms it with a firm push on the pedal; once the
   cranks are recognized as stopped the motor keeps pulling for a configured time at a current

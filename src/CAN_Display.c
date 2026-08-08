@@ -63,8 +63,21 @@ uint8_t BankBlob[256]; //FW-006/../FW-069/FW-084: one serialized profile bank (2
 uint8_t TuningBlob[32]; //FW-010: global ride-feel tuning blob (FW-068: 32 B used, 4 frames)
 uint8_t TorqueBlob[56]; //FW-013/FW-061: torque telemetry + calibration + coast re-zero diagnostics (v2 = 56 B)
 extern volatile uint8_t bank_save_request; //FW-006/FW-010: set by 0x6022, consumed in main.c at standstill
-//FW-030: ride_engine_request removed (engine selection gone, ride core only)
 extern volatile uint8_t soc_full_persist;    //FW-018: set by 0x602B, flash-persisted in main.c at standstill
+
+/*
+ * DEPRECATED PROTOCOL FIELD — kept on the wire, gone from the firmware.
+ *
+ * Byte 3 of the 0x6028 status block and of the 0x6029 diagnostics block used to carry which
+ * ride engine was running: 0 = Legacy, 1 = ride core. FW-030 removed the ability to select an
+ * engine and FW-094 removed the last Legacy code, so this is a constant now. It stays in the
+ * frames because the shipped Canable app parses both blocks positionally — dropping the byte
+ * would shift every field after it and needs a coordinated block-version bump (see the audit's
+ * protocol migration list).
+ *
+ * Do not reintroduce a variable behind this. There is one assist pipeline.
+ */
+#define DIAG_ENGINE_ID_RIDE_CORE 1
 #if CAN_DIAGNOSTICS_ENABLE
 extern volatile uint8_t diag_peak_reset, diag_peak_cadence; //FW-015b: peak-hold diagnostics
 extern uint16_t pas_idle_ticks; //FW-017: ticks since last PAS transition (for pas_idle_ms diagnostic)
@@ -823,14 +836,15 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 				                (torque_input_calibration_active()?0x20:0) |
 				                ((comm_seen && comm_lost_ticks>=COMM_CUT_TICKS)?0x40:0) |
 				                (ui_8_PWM_ON_Flag?0x80:0);
-				int32_t cur_iqr = (ride_control_get_engine()==RIDE_ENGINE_CORE) ?
-					cur->iq_request : MS->i_q_setpoint_temp;
+				//FW-094: one pipeline, one source. The old ternary's other arm was the
+				//monolith's MS->i_q_setpoint_temp and was already unreachable.
+				int32_t cur_iqr = cur->iq_request;
 				if(cur_iqr<0)cur_iqr=0;
 				if(cur_iqr>32767)cur_iqr=32767;
 				int32_t cur_iqs = MS->i_q_setpoint; if(cur_iqs<0)cur_iqs=0; if(cur_iqs>32767)cur_iqs=32767;
 				uint8_t dg[56];
 				dg[0]=0x44; dg[1]=0x47; dg[2]=5; //'D''G' ver5 (55 B): FW-084 appended the Extended Boost state
-				dg[3]=(uint8_t)ride_control_get_engine();
+				dg[3]=DIAG_ENGINE_ID_RIDE_CORE; //deprecated protocol field, see the define
 				uint32_t bcur = diag_peak_motor_w ? ((uint32_t)diag_peak_motor_w*1000000UL)/(MS->Voltage?MS->Voltage:40000) : 0; if(bcur>65535)bcur=65535;
 				int32_t iqr = diag_peak_iq_req; if(iqr>32767)iqr=32767; else if(iqr<0)iqr=0;
 				dg[4]=diag_peak_cadence; dg[5]=flags;
@@ -877,11 +891,11 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 			}
 			break;
 #endif
-		case 0x6028: //FW-014/018: read system status (ride engine active/pending + full-charge threshold) (Canable only)
+		case 0x6028: //FW-014/018: read system status (deprecated engine bytes + full-charge threshold) (Canable only)
 			if(Ext_ID_Rx.operation==1 && Ext_ID_Rx.source==5){
 				uint8_t sys[8]; sys[0]=0x53; sys[1]=0x59; sys[2]=2; //'S''Y' ver2 (bytes 5..6 = soc_full_pack_10mv)
-				sys[3]=(uint8_t)ride_control_get_engine(); //FW-030: always the ride core (single engine)
-				sys[4]=0xFF;                               //FW-030: no pending engine switch (selection removed)
+				sys[3]=DIAG_ENGINE_ID_RIDE_CORE; //deprecated protocol field, see the define
+				sys[4]=0xFF;                     //deprecated: no pending engine switch, ever
 				sys[5]=MP->soc_full_pack_10mv&0xFF; sys[6]=(MP->soc_full_pack_10mv>>8)&0xFF; //FW-018: 0 = not configured
 				uint16_t c=0xFFFF; for(uint8_t i=0;i<7;i++){c^=(uint16_t)sys[i]<<8; for(uint8_t b=0;b<8;b++)c=(c&0x8000)?((c<<1)^0x1021):(c<<1);}
 				sys[7]=(uint8_t)(c&0xFF); //1-byte CRC lo (8-byte frame; single-frame status)

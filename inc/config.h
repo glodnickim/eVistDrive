@@ -137,10 +137,6 @@
 #define SYSTEM_VOLTAGE 40// in V
 #define MAX_VOLTAGE 59// in V
 
-// Ride Core developer selector. Keep 0 for normal/Legacy firmware.
-// 0 = frozen Legacy path, 1 = ride-core Power Linear path.
-#define RIDE_ENGINE_DEFAULT 0
-
 //---------------------------------------------------------------------
 //Battery SOC & Range settings (coulomb counting + voltage correction)
 #define BATTERY_CAPACITY_MAH 14000   // default expected capacity (mAh), overwritten by Canable "Expected Battery Capacity" (Para1[7..8])
@@ -198,25 +194,19 @@
 #define IQ_SLEW_UP    5     // max i_q rise per tick (~35 ms 0..700): gentle torque build-up on engage
 #define IQ_SLEW_DOWN  10    // max i_q fall per tick (~17 ms): prompt but soft release on disengage
 
-// LEGACY OVERRUN (inactive in Ride Core). Holds motor current for a while AFTER the rider stops
-// pushing on the pedal — the old "power drag-on" behaviour. Lives in the frozen Legacy monolith
-// (main.c: Overrun_strength / Overrun_counter / Overrun_flag) and is reached only from the Legacy
-// assist path, which the ride core no longer uses. 0 = OFF, the shipped state; leave it there.
-//
-// NOT the same thing as FW-084 Extended Boost, despite this macro's name. FW-084 is a separate,
-// per-level Ride Core feature with its own module (assist_extended_boost.c): it is armed by a
-// confirmed pedal push, starts on the PAS-STOP edge, and re-applies the level's current ceiling.
-// This block has none of that — different state sources, the counter starts at the wrong moment
-// and it bypasses part of the ride core. Do not enable it to "get" Extended Boost.
-#define EXTENDED_BOOST_ENABLE 0   /* legacy overrun; FW-084 Extended Boost is a different feature */
+// FW-094: the old "overrun" / power-drag-on block and its EXTENDED_BOOST_ENABLE switch are
+// gone with the rest of the pre-ride-core assist path. Extended Boost is FW-084
+// (assist_extended_boost.c): a per-level ride-core feature, armed by a confirmed pedal push,
+// starting on the PAS-STOP edge and re-applying the level's current ceiling. It shares nothing
+// with the removed mechanism and needs no build switch — duration 0 turns it off per level.
 
 // --- Adaptive i_q ramp (#1): how fast motor current rises/falls, scaled by wheel speed + cadence ---
 // 1 = adaptive (gentle at low speed, snappy at speed -> smooth transitions & start).
-// 0 = fixed ramp (slow tick constants in time mode, IQ_SLEW_* in legacy mode).
+// 0 = fixed ramp (slow tick constants in time mode, IQ_SLEW_* in step mode).
 #define IQ_RAMP_ADAPTIVE   1
 
 // 1 = time-based ramp using fractional internal steps. This can reproduce multi-second
-// ramps at 4kHz. 0 = legacy integer step ramp below (IQ_SLEW_*).
+// ramps at 4kHz. 0 = integer step ramp below (IQ_SLEW_*).
 #define IQ_RAMP_TIME_MODE  1
 #define IQ_RAMP_Q_SHIFT    8    // fractional bits for internal ramp accumulator; keep >=1
 
@@ -229,7 +219,7 @@
 #define IQ_RAMP_DOWN_SLOW_TICKS  4000
 #define IQ_RAMP_DOWN_FAST_TICKS  560
 
-// Legacy integer step ramp. Used only when IQ_RAMP_TIME_MODE=0.
+// Integer step ramp. Used only when IQ_RAMP_TIME_MODE=0.
 #define IQ_SLEW_UP_SLOW    6    // i_q rise/tick at standstill/low cadence (was 3 - too slow to build up)
 #define IQ_SLEW_UP_FAST    12   // i_q rise/tick at speed/high cadence (was 7 - snappier response)
 #define IQ_SLEW_DOWN_SLOW  2    // i_q fall/tick at low speed (lower = SLOWER power fade when easing off / stopping)
@@ -240,14 +230,10 @@
 #define IQ_RAMP_CAD_LO     20   // rpm
 #define IQ_RAMP_CAD_HI     70   // rpm
 
-// --- Smooth start (#2): attenuate assist 0->100% while pulling away from standstill (@4kHz tick) ---
-// 0 = OFF (default; adaptive ramp already softens start). 1 = ON if start still feels harsh.
-#define SMOOTH_START_ENABLE 0
-#define START_RAMP_TICKS   1200 // ~300 ms envelope
-
-// FW-0xx: the legacy monolith's own STARTUP_BOOST_* constants and powf()-based boost were
-// removed (single source of truth). Startup boost for real riding lives in tuning_config.c /
-// assist_start.c (Canable-configurable, 120-entry integer table) - see assist_start.h.
+// FW-094: the pre-ride-core smooth-start envelope (SMOOTH_START_ENABLE / START_RAMP_TICKS) and
+// that path's own STARTUP_BOOST_* powf() boost are gone. Both live in the ride core now, per
+// level and configurable from Canable: smooth start in assist_start.c, startup boost in
+// tuning_config.c / assist_start.c (120-entry integer table) - see assist_start.h.
 
 // --- Soft cut-off stopnia mocy (usuwa klik przy koncowym DISABLE po zatrzymaniu) ---
 // 1 = przed wylaczeniem mostka zjedz napiecia faz do wektora neutralnego (_T/2)
@@ -296,34 +282,24 @@
 // from the raw Hall state. This is a statement about the MOTOR only — it never gates coast.
 #define ROTOR_MOVING_HALL_AGE_TICKS 1000
 
-// --- Torque->power upper span (#4): map(torque_on_crank, TQO_threshold, TQ_FULL_SCALE_MV, 0, current). ---
-// 3300 = old (hard pressure barely reaches full assist). 2000 = pressure-linear / "naciskowe" (Bosch-like):
-// firm press reaches full assist. Also = IMMEDIATE start power (mapped_torque is a cadence-free pressure FLOOR,
-// the only assist before cadence builds -> no "must crank first"). Rolling: cadence term usually wins, feel kept.
+// --- Stored torque-threshold sanity range (parser.c). ---
+// Upper end of the pedal-pressure span a stored TQO_threshold may sit in. It no longer shapes
+// assist — FW-094 removed the pressure map that used it — but parser.c still needs a bound to
+// recognise a stale/implausible stored value and repair it.
 #define TQ_FULL_SCALE_MV 2000
 
-// --- Torque gate (#D): min pedal pressure [mV above the ~750 mV rest] before cadence-based assist fires. ---
-// Gates on RAW torque_on_crank (level-independent) so it works the same on every assist level (S+/Boost too).
-// Without it, wiggling the cranks back/forth with almost no pressure excites the motor. Pure-pressure path
-// (mapped_torque) is unaffected. Higher = firmer press to engage; too high = light pedalling won't assist.
-// (Was gating on torque_filtered which is TQfilter/EMA-dependent per level -> broke high levels; fixed.)
+// --- Pedal-pressure rest offset [mV above the ~750 mV unloaded reading]. ---
+// The default and repair value for a stored TQO_threshold (parser.c). The rider-facing engage
+// threshold is NOT this: the ride core uses the per-level "Minimum pedal load" in kg
+// (assist_modes / ride_control).
 #define TQ_GATE_MIN 18
 #define TQ_PRESSURE_FLOOR_START_MV (750 + TQ_GATE_MIN)
 
-// --- Consistent engagement (#engage): forward crank steps required to arm assist (jiggle-proof). ---
-// Assist engages only with REAL pressure (TQ_GATE_MIN) AND >=START_MIN_STEPS consecutive forward quadrature
-// steps. Any reverse step resets the counter -> back/forth wiggle on descents/dead-spots can't engage.
-// ~96 steps/rev, so 4 steps ≈ 15° of crank -> fast & repeatable. Higher = firmer/longer push to start.
-// FW-068: for the RIDE-CORE path this is now only the DEFAULT. The live value is configurable from
-// Canable (Dynamics -> "Crank movement to start", TUNING_START_STEPS_*), and main.c reads it through
-// tuning_config_start_steps(). The constant below still applies verbatim inside the frozen Legacy
-// monolith (Walk Assist + position calibration), which is why it stays here.
-#define START_MIN_STEPS 4
-
 // --- Start phase: pedalling has clearly begun, but no cadence has been MEASURED yet ---
 // This does not engage assist by itself. It only stops the control path treating "no cadence
-// reading yet" as "not pedalling", while the normal START_MIN_STEPS + TQ_GATE_MIN latch still
-// decides whether motor power may start.
+// reading yet" as "not pedalling", while the normal ride latch (forward crank steps from
+// tuning_config_start_steps() + the per-level kg threshold) still decides whether motor power
+// may start.
 //
 // FW-087: this used to be expressed by writing a fake 1 rpm into MS.cadence (via a seed-rpm
 // constant, earlier 18 then 10). That value was never read by any assist calculation - every consumer
@@ -342,32 +318,14 @@
 // 60 rpm matches PREVIEW_CADENCE_RPM in the Canable preview, so the chart and the bike agree.
 #define START_PHASE_CURVE_RPM 60
 
-// --- Engagement HYSTERESIS (#hold): once engaged, stay engaged until pressure drops to TQ_GATE_RELEASE mV
-// above rest (must be < TQ_GATE_MIN). Without it the assist unloads the pedal -> pressure falls below the
-// engage threshold -> cut -> pressure rises -> re-engage... = shudder. With it, assist holds and its
-// magnitude just scales down with pressure. Release near rest so soft-pedalling still relaxes it.
-#define TQ_GATE_RELEASE 5
+// FW-094: TQ_GATE_RELEASE (the removed path's engage hysteresis) is gone. The ride core solves
+// the same shudder with the ride latch and its hold time — see ride_control.c (FW-031/FW-032)
+// and the Dynamics settings in the app.
 
-// --- Assist character (KROK 2): torque/pressure mode vs cadence mode ---
-// 0 = OFF (default): legacy cadence-based assist (TS_coeff * cadence^helper * torque_filtered). Cadence-driven.
-// 1 = ON: Bosch-like PRESSURE mode - assist proportional to pedal pressure (mapped_torque), only while pedalling
-//     forward with real load; cadence NOT used. Fixes twitchy/irregular engage + "wiggle without pressure".
-//     IMPORTANT: in this mode LOWER TQ_FULL_SCALE_MV (~1800-2200), otherwise assist is weak.
-// 2 = PRESSURE mode with PER-LEVEL EXPO CURVE (VESC-style): y = x^(1+e) on the normalized pressure span.
-//     Same gates/latch/ramps as mode 1; only the pressure->power SHAPE changes, separately per assist level.
-//     Simulation of the curve: https://claude.ai/code/artifact/2fd06015-0b0a-40d6-bf53-2dfb3e6df175
-#define ASSIST_TORQUE_MODE 0
-
-// Per-level curve bend for ASSIST_TORQUE_MODE=2, in percent -100..+100 (0 = straight line = mode 1):
-//   +% = progressive: soft on light pedalling, power comes when you PUSH (sporty; +50 ~ eMTB feel)
-//   -% = degressive: strong from the first touch, flattens on hard press (city/comfort)
-// Exponent mapping: E>=0 -> 1+E/33.3 (up to 4.0); E<0 -> 1/(1-E/33.3) (down to 0.25). Endpoints 0/100% fixed,
-// output always rises with pressure (monotonic by construction). Applied once per level change, powf per tick.
-#define ASSIST_CURVE_EXPO_L1 0   // level array 1 (Eco)
-#define ASSIST_CURVE_EXPO_L2 0   // level array 2 (Tour)
-#define ASSIST_CURVE_EXPO_L3 0   // level array 3 (Sport)
-#define ASSIST_CURVE_EXPO_L4 0   // level array 4 (Sport+)
-#define ASSIST_CURVE_EXPO_L5 0   // level array 5 (Boost)
+// FW-094: ASSIST_TORQUE_MODE and its ASSIST_CURVE_EXPO_L* table are gone. They were the three
+// build-time shapes of the pre-ride-core assist calculation (cadence-driven, pressure-linear,
+// pressure with an expo curve). The ride core replaces all three with per-level modes the rider
+// picks in the app and stores in a profile bank - see assist_mode_type_t in assist_modes.h.
 
 //---------------------------------------------------------------------
 //Torque sensor: fault detection (Bafang Error 25) + cyclic offset re-zero on coast (thermal drift)

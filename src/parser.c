@@ -16,7 +16,7 @@ uint16_t l=0;
  * voltage_min then sits above the live battery voltage and all ride engines,
  * including Walk Assist, are cut by the common undervoltage limiter.
  *
- * Repair only the legacy/core fields. Appended profile banks, tuning and torque
+ * Repair only the shared motor/limit fields. Appended profile banks, tuning and torque
  * calibration records remain untouched.
  */
 static uint8_t repair_motor_params(MotorParams_t* MP){
