@@ -1,8 +1,37 @@
 # FW-093 — Iq = 0 ma znaczyć prawdziwy wybieg (Hi-Z), a nie tłumienie silnika
 
+> ## ⛔ WYCOFANE 2026-08-08 — TA ZMIANA NIE DZIAŁAŁA
+>
+> **Objaw:** na 0.0298 i 0.0299 silnik **w ogóle nie kręci** — ani wspomaganie (żaden tryb,
+> żaden bank), ani Walk Assist. Bez jakiegokolwiek błędu na HMI. Potwierdzone jazdą:
+> **0.0297 kręci, 0.0298 już nie.** Winowajca: commit `5047de3`.
+>
+> **Dowód** (log CAN z wersji diagnostycznej 0.0302, ramki 0x10204/0x10208/0x10209):
+> `MS.i_q_setpoint` dochodził do 118 — ride core prosił o prąd poprawnie — ale
+> **`MS.i_q` = 0 i `MS.u_abs` = 0 w 428/428 ramek.** Regulator nie wystawiał ani wolta.
+> Wykluczone twardo: napięcie (2513 vs próg 1320), limity prądu (700/280), `torque_fault`,
+> kalibracja momentu, hamulec, kalibracja Halla, EEPROM, ABI.
+>
+> **Dwa mechanizmy, które to tłumaczą** (do rozstrzygnięcia przed kolejną próbą):
+> 1. Włączenie MOE przeniesiono z pętli głównej do przerwania FOC (`pwm_enable_request`).
+>    Rozdzielenie „ustaw flagę" i „włącz mostek" na dwa konteksty, przy **pięciu** miejscach
+>    kasujących to żądanie, daje stan „flaga mówi ON, sprzęt jest OFF" — bez błędu.
+> 2. `power_stage_enter_drive()` przy **każdym** wejściu w DRIVE kasował `PI_iq.out` i całkę.
+>    Decyzja o powrocie do COAST opiera się na **zmierzonym** prądzie, którego skasowany
+>    regulator nie zdąży zbudować → samopodtrzymujące się krążenie DRIVE↔COAST.
+>
+> **Wycofano w całości** (`5047de3` + `611507d`), zachowując FW-094/095, które są niewinne.
+> Przywrócono zachowanie mostka z 0.0297, w tym reset całki przy zerowym zadaniu — argument
+> przeciw niemu nadal wygląda słusznie na papierze, ale zachowanie na rowerze wygrywa.
+>
+> **Lekcja:** ta karta sama wskazywała powrót COAST→DRIVE jako miejsce, gdzie „test na rowerze
+> może pokazać problem". Wskazała trafnie, a mimo to zmiana pojechała bez tego testu.
+> Wybieg Hi-Z wróci jako nowa karta — z testem stanowiskowym mierzącym `u_abs` i prąd
+> rzeczywisty PRZED jazdą.
+
 - **Data:** 2026-08-07
-- **Status:** WDROŻONE w kodzie, build **0.0299** (poprawka po przeglądzie 0.0298).
-  Testy hostowe zielone. **NIEPRZETESTOWANE NA ROWERZE.** Karta wymaga akceptacji przed jazdą.
+- **Status:** ⛔ **WYCOFANE** — patrz ramka powyżej. Poniższa treść to zapis pierwotnego
+  zamysłu, zachowany dla historii; **nie opisuje stanu firmware'u.**
 - **Historia:** 0.0298 miał wdrożoną architekturę, ale kasowanie części całkującej PI
   (§2b) czyniło ją w praktyce nieskuteczną przy prędkości. Naprawione w 0.0299.
 - **Cel:** po puszczeniu Walk Assist albo po zakończeniu wspomagania Torque silnik ma

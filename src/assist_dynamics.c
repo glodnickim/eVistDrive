@@ -108,12 +108,6 @@ int32_t assist_dynamics_apply(
 	 * Finish here so nothing is driven through that transition — the motor coasts out on its
 	 * own inertia. By this point the fade has already brought the current low, so releasing it
 	 * is not felt; carrying it further is exactly what produced the clunk at standstill.
-	 *
-	 * FW-093: this only ever set the Iq TARGET to zero — the half bridges stayed enabled and
-	 * the FOC went on regulating the measured current to zero, which is electrical damping,
-	 * not a coast. What actually releases the bridge lives in main.c (power_stage_enter_coast),
-	 * driven by this same zero target. So "coast" now means the phases really stop being
-	 * driven, here and on every other path that reaches Iq = 0.
 	 */
 	if (input->coast_release && iq_target == 0) {
 		iq_reference_q = 0;

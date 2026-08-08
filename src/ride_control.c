@@ -105,10 +105,10 @@ _Static_assert(RIDE_HARD_CUT_RAMP_MS <= 250,
  * one — the angle steps. Stop driving a bit above that point so no current is flowing when it
  * happens. Only ever applied while releasing; a start needs current down here.
  *
- * FW-093: this threshold is about the ANGLE formula, not about the power stage. It is not
- * what decides when the bridge is released — every zero Iq target now leads to a real Hi-Z a
- * few ms later, at any speed (main.c, power_stage_enter_coast). Below this speed the fade is
- * simply cut short so the last bit of current is gone before the angle steps.
+ * FW-096: FW-093's Hi-Z coast was reverted (it did not turn the motor at all), so this is
+ * once again only about the ANGLE formula: it cuts the fade short so the last current is gone
+ * before the angle steps. It does NOT release the bridge — that still happens on the
+ * rotor-stopped path in main.c.
  */
 #define RIDE_COAST_RELEASE_ERPS 10
 

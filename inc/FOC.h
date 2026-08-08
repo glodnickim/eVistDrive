@@ -12,10 +12,6 @@
 //exportetd functions
 void FOC_calculation(int16_t int16_i_as, int16_t int16_i_bs, q31_t q31_teta, int16_t int16_i_q_target, MotorState_t* MS_FOC, MotorParams_t* MP_FOC);
 q31_t PI_control (PI_control_t* PI_c);
-//FW-093: drop the i_q/i_d EMA history. Called when the bridge goes Hi-Z: from that moment
-//no current can flow, so the filter must not carry the last driven reading into the next
-//bridge-on — the PI would compare a fresh setpoint against a stale measurement.
-void FOC_reset_current_filter(void);
 //q31_t PI_control_i_q (q31_t ist, q31_t soll);
 //q31_t PI_control_i_d (q31_t ist, q31_t soll);
 
