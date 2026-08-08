@@ -365,7 +365,30 @@
 // it down by 1 each, so a clean forward run (this many steps) is needed to clear -> reliable backward detection
 // despite crank jitter during backpedalling (the old net +1 vs -1 never reached the >=4 cut threshold). Chosen
 // so the backward hold clears at roughly the same forward-step count as the fwd_run re-engage (START_MIN_STEPS).
-#define BACKWARD_LATCH_COUNT 8
+// FW-099: 8 -> 5. ONE constant, nothing else, so the ride that follows measures exactly one
+// thing.
+//
+// THE ARITHMETIC, because it is easy to get wrong and we did. After a confirmed reversal
+// bc = BACKWARD_LATCH_COUNT and fwd_run = 0. Every forward step decrements one and increments
+// the other IN PARALLEL, so after N forward steps: bc = LATCH - N, fwd_run = N. Assist needs
+// BOTH bc < 4 (safety_cut clears) and fwd_run >= tuning_config_start_steps() (default 4):
+//
+//   LATCH 8 -> N > 4 and N >= 4  ->  binding N = 5
+//   LATCH 5 -> N > 1 and N >= 4  ->  binding N = 4   <- fwd_run takes over as the constraint
+//
+// So this saves ONE PAS step, not three. At the 24 rpm median measured at these events, and
+// 96 steps per crank revolution, one step is ~26 ms. HONEST EXPECTATION: the median return
+// gap moves from ~220 ms to ~190-200 ms. Anything much larger would mean Backwards_counter
+// also influences the engagement path somewhere we have not traced, which is worth knowing.
+//
+// Below 5 there is no point until fwd_run is addressed: fwd_run >= 4 already binds here, so
+// lowering further buys nothing while giving up hysteresis for free.
+//
+// Unchanged on purpose: the first cut (every reverse step still clears fwd_run, so torque
+// goes immediately), and BACKWARD_CONFIRM_STEPS. During sustained backpedalling each
+// confirmed reverse step re-sets the counter to 5, which is still >= 4, so the cut holds for
+// as long as the rider keeps pedalling backwards.
+#define BACKWARD_LATCH_COUNT 5
 
 // FW-098: how many CONSECUTIVE reverse quadrature steps must be seen before the long latch
 // above is applied. One step is not enough on its own.
