@@ -282,6 +282,21 @@ uint32_t metric_zero_notlatched=0; //ride latch not armed yet (start conditions,
  */
 uint8_t  gap_armed=0;
 uint32_t gap_ticks=0;
+/*
+ * FW-099b: the first version armed on "current is flowing" and CLOSED on the same condition,
+ * so it recorded 0 ms every time — the hard-cut ramp needs 200 ms to bring the current down
+ * and the test ran on the very next tick.
+ *
+ * Worse, the fix is not simply "wait for zero": with that ramp a short cut makes the current
+ * SAG, often without ever reaching zero. That is why metric_iq_zero_ticks reported 1.0 % while
+ * the backward latch was up 46.6 % of the time — the rider feels the sag, the counter sees
+ * non-zero current and calls it fine.
+ *
+ * So an interruption is now measured against what the rider HAD: it starts at the reverse
+ * step, only counts if the current then falls below half, and ends when it is back to 80 %.
+ */
+int32_t  gap_iq_ref=0;
+uint8_t  gap_dipped=0;
 uint16_t gap_count=0, gap_min=0xFFFF, gap_max=0, gap_last=0;
 /* 0:<50ms 1:50-100 2:100-150 3:150-200 4:200-300 5:300-500 6:500-1000 7:>1000, saturating */
 uint8_t  gap_hist[8]={0,0,0,0,0,0,0,0};
@@ -1812,8 +1827,11 @@ void reg_ADC_processing(void)
 				 * either side. Any forward step resets the run (see the forward branch), so
 				 * dithering can never accumulate its way to the threshold.
 				 */
-				//FW-099: start timing an interruption, but only if drive was actually lost.
-				if(!gap_armed && MS.i_q_setpoint>0){ gap_armed=1; gap_ticks=0; }
+				//FW-099b: start timing, remembering the help the rider had at this instant.
+				if(!gap_armed && MS.i_q_setpoint>0){
+					gap_armed=1; gap_ticks=0; gap_dipped=0;
+					gap_iq_ref=MS.i_q_setpoint;
+				}
 				if(pas_rev_run<255) pas_rev_run++;
 				if(pas_rev_run>pas_rev_run_max) pas_rev_run_max=pas_rev_run;
 				if(pas_rev_run>=BACKWARD_CONFIRM_STEPS){
@@ -2101,9 +2119,14 @@ void reg_ADC_processing(void)
          */
         if(gap_armed){
             gap_ticks++;
-            if(MS.i_q_setpoint>0 || gap_ticks>8000){   //resumed, or gave up after 2 s
-                uint32_t ms = gap_ticks/4;
-                if(MS.i_q_setpoint>0){
+            /* Did the cut actually take the help away? Below half of what was there. */
+            if(MS.i_q_setpoint*2 < gap_iq_ref) gap_dipped=1;
+            /* Back to 80 % of it = the rider has what they had; that ends the interruption. */
+            bool recovered = gap_dipped && (MS.i_q_setpoint*5 >= gap_iq_ref*4);
+            bool gave_up = gap_ticks>8000;   /* 2 s */
+            if(recovered || gave_up){
+                if(gap_dipped){
+                    uint32_t ms = gap_ticks/4;
                     gap_last = (ms>65535) ? 65535 : (uint16_t)ms;
                     if(gap_last<gap_min) gap_min=gap_last;
                     if(gap_last>gap_max) gap_max=gap_last;
@@ -2112,6 +2135,7 @@ void reg_ADC_processing(void)
                                 (ms<300)?4 : (ms<500)?5 : (ms<1000)?6 : 7;
                     if(gap_hist[b]<255) gap_hist[b]++;
                 }
+                /* Never dipped = the cut cost the rider nothing measurable; not an event. */
                 gap_armed=0;
             }
         }
