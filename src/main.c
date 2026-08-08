@@ -267,6 +267,9 @@ uint16_t pas_rev_latches=0;       //times BACKWARD_CONFIRM_STEPS was reached
  */
 uint32_t metric_pedal_ticks=0;    //ticks with the cranks turning forward
 uint32_t metric_iq_zero_ticks=0;  //...of which the motor was given no current at all
+//...and why. Not a pure reverse-latch measure on its own: the ordinary start delay counts too.
+uint32_t metric_zero_backward=0;   //backward latch was up
+uint32_t metric_zero_notlatched=0; //ride latch not armed yet (start conditions, incl. fwd_run)
 uint8_t ui8_overflow_flag=0;
 uint8_t ui8_SPEED_control_flag=0;
 uint8_t ui8_walk_btn_counter=0;
@@ -2076,7 +2079,28 @@ void reg_ADC_processing(void)
          */
         if(fwd_run>0 && pas_idle_ticks<=pas_stop_timeout){
             metric_pedal_ticks++;
-            if(MS.i_q_setpoint==0) metric_iq_zero_ticks++;
+            /*
+             * MS.i_q_setpoint is the FINAL commanded current, written by
+             * motor_core_set_command() after the ramps — not the measured MS.i_q. This asks
+             * "did the control path ask for anything", which is the question this card is
+             * about. Whether the power stage then delivered it is a different measurement.
+             */
+            if(MS.i_q_setpoint==0){
+                metric_iq_zero_ticks++;
+                /*
+                 * Zero current while pedalling forward has several causes and the total on
+                 * its own cannot tell them apart. fwd_run > 0 deliberately starts counting at
+                 * the FIRST forward step, so the ordinary, intended start delay
+                 * (tuning_config_start_steps, then the kg threshold) is inside this number
+                 * too. That is the right definition from the saddle — "I am turning the
+                 * cranks and getting nothing" — but it means the total is not a pure measure
+                 * of the reverse latch. Split it here so one ride can answer which it was.
+                 */
+                uint8_t why = ride_control_get_debug_flags();
+                if(Backwards_counter >= 4) metric_zero_backward++;
+                else if(why & RIDE_DBG_NOT_LATCHED) metric_zero_notlatched++;
+                /* everything else = total - these two, computed off the log */
+            }
         }
         //FW-028: the ride core bypasses the legacy monolith's zero-target PI cleanup.
         //When the final command is zero, drop stale controller integral immediately so
@@ -2748,6 +2772,33 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[5] = (metric_iq_zero_ticks>>16)&0xFF;
 	transmit_message.tx_data[6] = (metric_iq_zero_ticks>>8)&0xFF;
 	transmit_message.tx_data[7] = (metric_iq_zero_ticks)&0xFF;
+	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
+	timeout = 0xFFFF;
+	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
+		timeout--;
+		}
+
+	/*
+	 * FW-098 diag (ID 0x0001020D): WHY the current was zero, so the total in 0x20C can be
+	 * read for what it is.
+	 *
+	 *   Data1..2 = ticks the backward latch was up      (u32)
+	 *   Data3..4 = ticks the ride latch was not armed    (u32) — this is where the ordinary,
+	 *              intended start delay lands, and it is NOT a defect on its own
+	 *   everything else = 0x20C zero-ticks minus these two
+	 *
+	 * Without this split a result like "zero-Iq fell from 17 % to 15 %" cannot say whether
+	 * the reverse latch stopped mattering or never was the main cause.
+	 */
+	transmit_message.tx_efid = 0x0001020D;
+	transmit_message.tx_data[0] = (metric_zero_backward>>24)&0xFF;
+	transmit_message.tx_data[1] = (metric_zero_backward>>16)&0xFF;
+	transmit_message.tx_data[2] = (metric_zero_backward>>8)&0xFF;
+	transmit_message.tx_data[3] = (metric_zero_backward)&0xFF;
+	transmit_message.tx_data[4] = (metric_zero_notlatched>>24)&0xFF;
+	transmit_message.tx_data[5] = (metric_zero_notlatched>>16)&0xFF;
+	transmit_message.tx_data[6] = (metric_zero_notlatched>>8)&0xFF;
+	transmit_message.tx_data[7] = (metric_zero_notlatched)&0xFF;
 	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
 	timeout = 0xFFFF;
 	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
