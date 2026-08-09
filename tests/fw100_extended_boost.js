@@ -131,8 +131,11 @@ class Boost {
 
         let cancel = CANCEL.NONE;
         if (disabled) cancel = CANCEL.DISABLED;
-        else if (input.safetyCut) cancel = CANCEL.SAFETY_CUT;
+        // FW-100a: reverse BEFORE safety_cut. Both come from Backwards_counter >= 4, so with
+        // the old order the REVERSE reason was unreachable and a log could not tell backward
+        // pedalling from the brake.
         else if (input.reverse) cancel = CANCEL.REVERSE;
+        else if (input.safetyCut) cancel = CANCEL.SAFETY_CUT;
         else if (!input.torqueValid || !input.pasValid) cancel = CANCEL.SENSOR_INVALID;
         else if (input.walk) cancel = CANCEL.WALK;
         else if (input.calibration) cancel = CANCEL.CALIBRATION;
@@ -190,9 +193,9 @@ const riding = (load) => ({
 });
 const cranksStopped = (load = 0) => ({ ...riding(load), pedalingActive: false, latched: false });
 
-const armAndStop = (b, load = HARD) => {
-    for (let t = 0; t < CONFIRM_TICKS; t++) b.update(riding(load), cfg);
-    return b.update(cranksStopped(), cfg);
+const armAndStop = (b, load = HARD, config = cfg) => {
+    for (let t = 0; t < CONFIRM_TICKS; t++) b.update(riding(load), config);
+    return b.update(cranksStopped(), config);
 };
 
 // --- the boost holds what the rider already had ------------------------------------------
@@ -317,6 +320,68 @@ const armAndStop = (b, load = HARD) => {
     while (t2.update({ ...cranksStopped(), load: HARD }, cfg).active) ticks++;
     check(ticks === DURATION * TICKS_PER_MS,
         'load still on the pedal does not extend the timer');
+}
+
+// --- FW-100a: backward pedalling is distinguishable from the brake ------------------------
+//
+// Bench test 6. Both conditions come from Backwards_counter >= 4, so main.c raises safety_cut
+// at the same instant crank_reverse goes true. If the chain tested safety_cut first, a log
+// could never show WHICH it was — and the REVERSE reason would be dead code.
+{
+    const b = new Boost();
+    check(armAndStop(b, HARD).active, 'precondition: boost running');
+    // Exactly what the bike does: one reverse PAS step raises both flags together.
+    const o = b.update({ ...cranksStopped(), reverse: true, safetyCut: true }, cfg);
+    check(!o.active && o.iq === 0, 'a reverse step stops the boost in the same tick');
+    check(b.cancelReason === CANCEL.REVERSE,
+        'and is reported as REVERSE, not as the generic SAFETY_CUT');
+
+    // The brake alone must still report the brake.
+    const b2 = new Boost();
+    armAndStop(b2, HARD);
+    b2.update({ ...cranksStopped(), safetyCut: true }, cfg);
+    check(b2.cancelReason === CANCEL.SAFETY_CUT,
+        'the brake on its own still reports SAFETY_CUT');
+}
+
+// --- FW-100a: the two timers are independent ----------------------------------------------
+//
+// duration (up to 2000 ms) is larger than the arm timeout (1500 ms), which looks like it
+// should interact. arm_idle_ticks only advances while ARMED; active_ticks_left only while
+// ACTIVE. A boost must therefore be able to outlive the arm timeout.
+{
+    const longCfg = { ...cfg, duration: 1800 };
+    check(longCfg.duration > ARM_TIMEOUT_MS, 'precondition: duration exceeds the arm timeout');
+    const b = new Boost();
+    check(armAndStop(b, HARD, longCfg).active, 'precondition: boost running');
+    let ran = 1;
+    for (let t = 0; t < longCfg.duration * TICKS_PER_MS + 50; t++) {
+        if (!b.update(cranksStopped(), longCfg).active) break;
+        ran++;
+    }
+    check(ran === longCfg.duration * TICKS_PER_MS,
+        'a boost longer than the arm timeout runs its full time');
+    check(b.cancelReason === CANCEL.COMPLETED,
+        'and ends as COMPLETED, not as ARM_TIMEOUT');
+}
+
+// --- FW-100a: the held current is never a stale one from another level --------------------
+//
+// Bench test 8. After a level change the boost is cancelled; a new one needs a fresh arming
+// push, and the reference is refreshed on every pedalling tick. This locks that in.
+{
+    const b = new Boost();
+    check(armAndStop(b, HARD).active, 'precondition: boost running at the old level');
+    b.update({ ...cranksStopped(), level: 4 }, cfg);
+    check(b.cancelReason === CANCEL.LEVEL_OR_BANK, 'a level change cancels the boost');
+
+    // Re-arm on the new level, whose assist is weaker.
+    const WEAK = 40;
+    const newLevel = (load) => ({ ...riding(load), level: 4, lastPedalIq: WEAK });
+    for (let t = 0; t < CONFIRM_TICKS; t++) b.update(newLevel(HARD), cfg);
+    const out = b.update({ ...cranksStopped(), level: 4, lastPedalIq: WEAK }, cfg);
+    check(out.active && out.iq === WEAK,
+        'the next boost holds the NEW level current, not the remembered one');
 }
 
 // --- structural: the wiring, and the decisions that must not drift ------------------------

@@ -41,7 +41,25 @@ wraca do wyniku trybu, a `assist_dynamics` prowadzi prąd tam zwykłą rampą. �
 ## ⚠ PRZYJĘTE RYZYKO
 
 Silnik napędza przy **nieruchomej korbie**, na rowerze bez niezależnego czujnika hamulca.
-W oknie boostu zatrzymać go mogą tylko hamulec i timer.
+
+### Co przerywa działający boost
+
+Pierwsza wersja tej karty mówiła „tylko hamulec i timer". **To było zaniżenie** — w tekście,
+na podstawie którego właściciel ocenia ryzyko. Pełna lista, każdy warunek sprawdzany co tick
+4 kHz na początku łańcucha anulowania:
+
+| Grupa | Warunki |
+|---|---|
+| **działanie rowerzysty** | hamulec · **cofanie pedałami** · wznowienie pedałowania · zmiana poziomu lub banku |
+| **stan roweru** | zatrzymanie (poniżej 1 km/h lub 10 erps) · poziom 0 |
+| **usterka / serwis** | przegrzanie krytyczne · błąd czujnika momentu · czujnik momentu lub PAS nieważny · Walk Assist · kalibracja pozycji · kalibracja obciążenia · zapis banku |
+| **czas** | timer |
+
+**Cofanie pedałami jest zabezpieczone podwójnie i niezależnie od hamulca**: bezpośrednio przez
+`crank_reverse`, oraz przez `safety_cut`, który main.c składa z tego samego `Backwards_counter`.
+
+Ta lista **nie czyni funkcji bezpieczną sama z siebie** — znaczy tylko tyle, że zagrożeniem
+jest „silnik napędza, gdy rowerzysta nic nie robi", a nie „nic nie może go zatrzymać".
 
 FW-095 usunęło dokładnie to zachowanie na polecenie, które opisywało zagrożenie. Właściciel
 poprosił o przywrócenie, znając powyższe. **To jego decyzja o jego rowerze** i jest tu zapisana,

@@ -36,8 +36,25 @@
  * ACCEPTED RISK — READ BEFORE CHANGING ANYTHING HERE
  *
  * This feature drives the motor while the cranks are stationary, on a bike with no independent
- * brake-sensor input. Within the boost window the only things that can stop it are the brake
- * signal and the timer.
+ * brake-sensor input.
+ *
+ * WHAT STOPS A RUNNING BOOST. An earlier version of this block said "only the brake and the
+ * timer", which understated it badly — in a description someone uses to judge the risk. The
+ * full list, every entry tested each 4 kHz tick at the top of the cancel chain:
+ *
+ *   rider action    brake · BACKWARD PEDALLING · resuming pedalling · leaving the assist level
+ *   bike state      coming to a stop (below EXT_BOOST_MIN_SPEED_X100 or _MOTOR_ERPS) · level 0
+ *   fault / service critical overtemperature · torque-sensor fault · torque or PAS sensor
+ *                   invalid · Walk Assist · position calibration · load calibration ·
+ *                   a bank being written
+ *   time            the duration timer
+ *
+ * Backward pedalling is covered twice over and independently of the brake: directly through
+ * crank_reverse, and again through safety_cut, which main.c assembles from the same
+ * Backwards_counter. See the ordering note in the cancel chain.
+ *
+ * That list does not make the feature safe by itself — it means the hazard is "the motor
+ * drives while the rider is doing nothing", not "nothing can stop it".
  *
  * FW-095 had removed exactly this behaviour, on an instruction that turned out to describe the
  * hazard rather than forbid the feature. The owner has since asked for it back, knowing the

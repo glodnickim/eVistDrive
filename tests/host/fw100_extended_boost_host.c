@@ -215,6 +215,89 @@ int main(void)
 		}
 	}
 
+	/* --- FW-100a: backward pedalling is distinguishable from the brake -------------- */
+	{
+		/*
+		 * Bench test 6. Both conditions come from the same Backwards_counter >= 4, so the
+		 * bike raises safety_cut at the exact instant crank_reverse goes true. With the old
+		 * cancel order a log could never show WHICH it was, and REVERSE was unreachable.
+		 */
+		assist_extended_boost_init();
+		check(arm_and_stop(&cfg, HARD_PUSH).active, "precondition: boost running");
+		assist_extended_boost_input_t both = cranks_stopped();
+		both.crank_reverse = true;
+		both.safety_cut = true;
+		assist_extended_boost_output_t o = tick(&both, &cfg);
+		check(!o.active && o.iq_target == 0, "a reverse step stops the boost in the same tick");
+		check(cancel_now() == ASSIST_EXT_BOOST_CANCEL_REVERSE,
+			"and is reported as REVERSE, not the generic SAFETY_CUT");
+
+		assist_extended_boost_init();
+		check(arm_and_stop(&cfg, HARD_PUSH).active, "precondition: boost running");
+		assist_extended_boost_input_t brake_only = cranks_stopped();
+		brake_only.safety_cut = true;
+		tick(&brake_only, &cfg);
+		check(cancel_now() == ASSIST_EXT_BOOST_CANCEL_SAFETY_CUT,
+			"the brake on its own still reports SAFETY_CUT");
+	}
+
+	/* --- FW-100a: the two timers are independent -------------------------------------- */
+	{
+		/*
+		 * duration (up to 2000 ms) exceeds the arm timeout (1500 ms). arm_idle_ticks only
+		 * advances while ARMED; active_ticks_left only while ACTIVE. A boost must be able to
+		 * outlive the arm timeout with no interaction.
+		 */
+		const uint16_t long_duration = 1800U;
+		assist_extended_boost_config_t long_cfg = config(TRIGGER, 100, long_duration);
+		check(long_duration > EXT_BOOST_ARM_TIMEOUT_MS,
+			"precondition: duration exceeds the arm timeout");
+		assist_extended_boost_init();
+		check(arm_and_stop(&long_cfg, HARD_PUSH).active, "precondition: boost running");
+		assist_extended_boost_input_t stopped2 = cranks_stopped();
+		int ran = 1;
+		unsigned long_ticks = (unsigned)long_duration * EXT_BOOST_CONTROL_TICKS_PER_MS;
+		for (unsigned t = 0; t < long_ticks + 50U; t++) {
+			if (!tick(&stopped2, &long_cfg).active) {
+				break;
+			}
+			ran++;
+		}
+		check(ran == (int)long_ticks,
+			"a boost longer than the arm timeout runs its full time");
+		check(cancel_now() == ASSIST_EXT_BOOST_CANCEL_COMPLETED,
+			"and ends as COMPLETED, not as ARM_TIMEOUT");
+	}
+
+	/* --- FW-100a: the held current is never a stale one from another level ----------- */
+	{
+		/* Bench test 8. A level change cancels the boost; the next one needs a fresh
+		 * arming push at the new level, and last_pedal_iq is refreshed every pedalling
+		 * tick, so it cannot carry a value from the level that was left. */
+		assist_extended_boost_init();
+		check(arm_and_stop(&cfg, HARD_PUSH).active,
+			"precondition: boost running at the old level");
+		assist_extended_boost_input_t changed = cranks_stopped();
+		changed.level_index = 4;
+		tick(&changed, &cfg);
+		check(cancel_now() == ASSIST_EXT_BOOST_CANCEL_LEVEL_OR_BANK_CHANGE,
+			"a level change cancels the boost");
+
+		const int32_t weak_iq = 40;
+		assist_extended_boost_input_t new_level = riding(HARD_PUSH);
+		new_level.level_index = 4;
+		new_level.last_pedal_iq = weak_iq;
+		for (unsigned t = 0; t < CONFIRM_TICKS; t++) {
+			tick(&new_level, &cfg);
+		}
+		assist_extended_boost_input_t new_stopped = cranks_stopped();
+		new_stopped.level_index = 4;
+		new_stopped.last_pedal_iq = weak_iq;
+		assist_extended_boost_output_t o2 = tick(&new_stopped, &cfg);
+		check(o2.active && o2.iq_target == weak_iq,
+			"the next boost holds the NEW level current, not the remembered one");
+	}
+
 	/* --- the checks that say NO ------------------------------------------------------ */
 	{
 		/* A spike shorter than the confirm time never arms. */

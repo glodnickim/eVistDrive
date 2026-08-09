@@ -20,6 +20,20 @@ static assist_extended_boost_state_t state;
 static uint16_t candidate_peak_centikg;
 static uint16_t armed_peak_centikg;
 static uint16_t confirm_ticks;
+/*
+ * TWO INDEPENDENT TIMERS. Worth stating in one place, because the duration ceiling (2000 ms)
+ * is larger than the arm timeout (1500 ms) and that looks like it should interact. It does not:
+ *
+ *   arm_idle_ticks    how long a CONFIRMED arming has waited for the cranks to stop.
+ *                     Incremented only inside qualify_and_arm(), which is called only while
+ *                     state != ACTIVE, and only under `if (state == ARMED)`. During a running
+ *                     boost it is frozen and cannot fire.
+ *   active_ticks_left what is left of the boost itself. Set at the moment the boost starts,
+ *                     decremented only in the ACTIVE block.
+ *
+ * Neither is derived from the other and clear_state() zeroes both. A boost may therefore run
+ * longer than the arm timeout with no interaction whatsoever.
+ */
 static uint32_t arm_idle_ticks;
 static uint32_t active_ticks_left;
 static bool window_open;
@@ -200,10 +214,23 @@ void assist_extended_boost_update(
 	uint8_t cancel = ASSIST_EXT_BOOST_CANCEL_NONE;
 	if (disabled) {
 		cancel = ASSIST_EXT_BOOST_CANCEL_DISABLED;
+	} else if (input->crank_reverse) {
+		/*
+		 * FW-100a: tested BEFORE safety_cut, and that order is the whole point.
+		 *
+		 * Both come from the same Backwards_counter >= 4 — crank_reverse directly, safety_cut
+		 * because main.c folds backward pedalling into it along with brake, overtemperature
+		 * and the torque faults. With safety_cut first, backward pedalling could only ever be
+		 * logged as the generic "safety cut" and ASSIST_EXT_BOOST_CANCEL_REVERSE was
+		 * unreachable — a reason in the enum that no log could ever show.
+		 *
+		 * The behaviour is identical either way: the boost is cancelled in this same tick.
+		 * What changes is that a bench log now says WHICH of the two it was, which is exactly
+		 * what test 6 of the protocol asks.
+		 */
+		cancel = ASSIST_EXT_BOOST_CANCEL_REVERSE;
 	} else if (input->safety_cut) {
 		cancel = ASSIST_EXT_BOOST_CANCEL_SAFETY_CUT;
-	} else if (input->crank_reverse) {
-		cancel = ASSIST_EXT_BOOST_CANCEL_REVERSE;
 	} else if (!input->torque_sensor_valid || !input->pas_sensor_valid) {
 		cancel = ASSIST_EXT_BOOST_CANCEL_SENSOR_INVALID;
 	} else if (input->walk_active) {
