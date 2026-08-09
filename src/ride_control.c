@@ -130,6 +130,24 @@ static uint8_t debug_flags;
  */
 static int32_t last_pedal_iq_while_pedaling;
 
+/*
+ * FW-101: latch-arming snapshot. Written only, never read by any decision. See ride_control.h.
+ *
+ * Completed in two halves within the SAME control tick: the rider-side values at the arming
+ * itself, then iq_after_limits once the limiter has run further down this function. arm_pending
+ * carries it between the two, and seq only advances when the record is whole — so a reader can
+ * never latch onto a half-filled snapshot.
+ */
+static ride_arm_snapshot_t arm_snapshot;
+static bool arm_pending;
+
+void ride_control_get_arm_snapshot(ride_arm_snapshot_t *out)
+{
+	if (out != 0) {
+		*out = arm_snapshot;
+	}
+}
+
 uint8_t ride_control_get_debug_flags(void)
 {
 	return debug_flags;
@@ -294,6 +312,12 @@ void ride_control_update(const ride_control_input_t *input)
 					// start instant so the launch magnitude is crisp (not rubbery),
 					// then it smooths the following leg peaks.
 					torque_input_seed_run(rider->torque_assist_filtered);
+					//FW-101 diag: rider-side half of the arming snapshot. The Iq half is
+					//filled after the limiter below, in this same tick.
+					arm_snapshot.load_centikg = torque_centikg;
+					arm_snapshot.fast_native = rider->torque_assist_filtered;
+					arm_snapshot.run_seed_native = rider->torque_assist_filtered;
+					arm_pending = true;
 				} else {
 					// Not started yet: no assist from a light touch.
 					iq_target = 0;
@@ -503,6 +527,18 @@ void ride_control_update(const ride_control_input_t *input)
 		iq_target = (throttle_iq > pedal_iq) ? throttle_iq : pedal_iq;
 		if (throttle_iq > 0 && throttle_iq >= pedal_iq) {
 			profile_pedaling_active = true; // active demand -> no release fade while on throttle
+		}
+		/*
+		 * FW-101 diag: Iq half of the arming snapshot, taken HERE — after the latch, the
+		 * boost substitution and both limiter calls, but BEFORE assist_start, the gear
+		 * preload and the dynamics ramp. That is the boundary the episode record needs: it
+		 * separates "the pipeline asked for little" from "the ramp took time to deliver it".
+		 * seq is bumped last, so a reader never sees a half-filled record.
+		 */
+		if (arm_pending) {
+			arm_snapshot.iq_after_limits = iq_target;
+			arm_snapshot.seq++;
+			arm_pending = false;
 		}
 
 		assist_smooth_start_input_t smooth_input = {

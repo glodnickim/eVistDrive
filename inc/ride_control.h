@@ -52,6 +52,28 @@ typedef struct {
 
 uint8_t ride_control_get_debug_flags(void);
 
+/*
+ * FW-101 diagnostics: the values that existed AT THE INSTANT the ride latch armed.
+ *
+ * Measurement only — nothing reads this to make a decision. It exists because the 40 ms
+ * diagnostic frames cannot see a re-engagement: PAS steps arrive every 12-39 ms while riding,
+ * so the whole latch/seed/limiter transition can happen between two frames. These are captured
+ * where they are produced, at the 4 kHz tick, so an episode record can say WHICH stage of the
+ * chain spent the time — the RUN estimator seed, the power filter, the limiter or the ramp.
+ *
+ * `seq` increments once per arming. A reader detects a new arming by seeing it change, which
+ * is what anchors the episode timings in main.c.
+ */
+typedef struct {
+	uint16_t seq;
+	uint16_t load_centikg;      /* raw pedal load the latch armed on */
+	uint16_t fast_native;       /* the 35 ms filtered assist delta at that moment */
+	uint16_t run_seed_native;   /* what was pre-loaded into the RUN estimator */
+	int32_t  iq_after_limits;   /* target after latch and limiters, BEFORE the final ramp */
+} ride_arm_snapshot_t;
+
+void ride_control_get_arm_snapshot(ride_arm_snapshot_t *out);
+
 void ride_control_init(void);
 void ride_control_update(const ride_control_input_t *input);
 

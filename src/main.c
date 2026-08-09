@@ -280,6 +280,51 @@ uint32_t metric_zero_notlatched=0; //ride latch not armed yet (start conditions,
  * Armed only when a reverse step actually TAKES DRIVE AWAY (current was flowing at that
  * moment), so this measures interruptions the rider feels, not moments that were already idle.
  */
+/*
+ * FW-101: ONE RE-ENGAGEMENT EPISODE, recorded at the 4 kHz tick.
+ *
+ * The periodic frames go out every 40 ms while PAS steps arrive every 12-39 ms, so a whole
+ * reverse-and-recover transition can happen between two frames. The aggregate counters can
+ * therefore say how OFTEN it happens but never how the time inside one event was spent. This
+ * records a single episode end to end and reports the finished result, so the bus rate does
+ * not change.
+ *
+ * Three states, on purpose. The previous single gap_armed flag merged separate interruptions:
+ * once armed, it stayed armed until a dip appeared, so a reverse step that cost nothing and
+ * another one half a second later were timed as one long event.
+ *
+ *   EP_IDLE          nothing in progress
+ *   EP_WAIT_DIP      a reverse step happened while current was flowing, but the current has
+ *                    not actually fallen yet. A NEW reverse step here RE-ANCHORS the episode
+ *                    — the one that matters is the one that finally takes the drive away.
+ *   EP_WAIT_RECOVER  the current did fall below half. Further reverse steps now extend the
+ *                    same episode, because they are part of one interruption.
+ */
+typedef enum {
+	EP_IDLE = 0,
+	EP_WAIT_DIP = 1,
+	EP_WAIT_RECOVER = 2
+} ep_state_t;
+ep_state_t ep_state = EP_IDLE;
+uint32_t ep_ticks = 0;           /* since the anchoring reverse step */
+int32_t  ep_iq_ref = 0;          /* current the rider had at that instant */
+uint8_t  ep_rev_steps = 0;       /* reverse steps counted in this episode */
+uint8_t  ep_flags = 0;           /* see EP_FLAG_* */
+uint16_t ep_number = 0;          /* completed episodes */
+uint16_t ep_t_latch = 0xFFFF;    /* ms from anchor to the latch re-arming; 0xFFFF = never */
+uint16_t ep_t_recover = 0xFFFF;  /* ms from anchor to 80 % of the previous current */
+uint16_t ep_arm_seq_prev = 0;    /* to spot a new arming in ride_control's snapshot */
+/* Snapshot of the completed episode, published in 0x10210 / 0x10211. */
+uint8_t  ep_pub_rev_steps = 0, ep_pub_flags = 0;
+uint16_t ep_pub_t_latch = 0, ep_pub_t_recover = 0;
+uint16_t ep_pub_load = 0, ep_pub_fast = 0, ep_pub_seed = 0;
+int32_t  ep_pub_iq_after_limits = 0;
+#define EP_FLAG_HARD_CUT    0x01  /* brake / reverse / fault was active during the episode */
+#define EP_FLAG_PAS_TIMEOUT 0x02  /* the cranks were judged stopped at some point */
+#define EP_FLAG_LATCH_ARMED 0x04  /* the ride latch re-armed before the episode ended */
+#define EP_FLAG_LIMITER     0x08  /* a limiter took a non-zero demand to zero */
+#define EP_FLAG_TIMED_OUT   0x10  /* gave up after 2 s without recovering */
+
 uint8_t  gap_armed=0;
 uint32_t gap_ticks=0;
 /*
@@ -1827,16 +1872,40 @@ void reg_ADC_processing(void)
 				 * either side. Any forward step resets the run (see the forward branch), so
 				 * dithering can never accumulate its way to the threshold.
 				 */
-				//FW-099b: start timing, remembering the help the rider had at this instant.
-				if(!gap_armed && MS.i_q_setpoint>0){
+				/*
+				 * FW-099b/101: start timing, remembering the help the rider had.
+				 *
+				 * Re-anchor while still waiting for a dip: a reverse step that cost nothing
+				 * must not become the start time of a later one that did. Once the current
+				 * has actually fallen (EP_WAIT_RECOVER) further steps belong to the same
+				 * interruption and only extend the count.
+				 */
+				if(MS.i_q_setpoint>0 && ep_state!=EP_WAIT_RECOVER){
+					ep_state=EP_WAIT_DIP;
+					ep_ticks=0;
+					ep_iq_ref=MS.i_q_setpoint;
+					ep_rev_steps=0;
+					ep_flags=0;
+					ep_t_latch=0xFFFF;
+					ep_t_recover=0xFFFF;
+					ep_arm_seq_prev=0xFFFF;   /* force the next arming to look new */
+					//Keep the histogram path in step with the same anchor.
 					gap_armed=1; gap_ticks=0; gap_dipped=0;
 					gap_iq_ref=MS.i_q_setpoint;
 				}
+				if(ep_state!=EP_IDLE && ep_rev_steps<255) ep_rev_steps++;
+
 				if(pas_rev_run<255) pas_rev_run++;
 				if(pas_rev_run>pas_rev_run_max) pas_rev_run_max=pas_rev_run;
 				if(pas_rev_run>=BACKWARD_CONFIRM_STEPS){
 					Backwards_counter=BACKWARD_LATCH_COUNT;
-					pas_rev_latches++;   //FW-098 diag: how often the long penalty really fired
+					/*
+					 * FW-101: count SERIES, not steps. This used to increment on every step
+					 * from the third onwards, so one run of six reported four "latches" and
+					 * the ratio against pas_rev_events was meaningless. Only the step that
+					 * actually crosses the threshold counts.
+					 */
+					if(pas_rev_run==BACKWARD_CONFIRM_STEPS) pas_rev_latches++;
 				}
 			}
 		}
@@ -2116,6 +2185,58 @@ void reg_ADC_processing(void)
          * FW-099: time the interruption at full control-loop resolution. The expected effect
          * of this card is one PAS step (~26 ms at the measured 24 rpm), which is smaller than
          * the 40 ms diagnostic frame period — so it has to be measured here, not off the log.
+         */
+        /*
+         * FW-101: advance the one-episode recorder. Measurement only — no decision reads any
+         * of this. It answers the question the aggregate counters cannot: inside a single
+         * re-engagement, how much of the delay was the latch re-arming, and how much was
+         * everything after it (RUN estimator, power filter, limiter, ramp).
+         */
+        if(ep_state!=EP_IDLE){
+            ep_ticks++;
+            uint8_t ep_dbg = ride_control_get_debug_flags();
+            if(ep_dbg & RIDE_DBG_HARD_CUT) ep_flags|=EP_FLAG_HARD_CUT;
+            if(ep_dbg & RIDE_DBG_LIMITER_ZEROED) ep_flags|=EP_FLAG_LIMITER;
+            if(pas_idle_ticks>pas_stop_timeout) ep_flags|=EP_FLAG_PAS_TIMEOUT;
+
+            //A new arming shows up as a changed seq; record when, and what it armed on.
+            ride_arm_snapshot_t snap;
+            ride_control_get_arm_snapshot(&snap);
+            if(snap.seq!=ep_arm_seq_prev){
+                ep_arm_seq_prev=snap.seq;
+                if(ep_t_latch==0xFFFF){
+                    uint32_t ms=ep_ticks/4; ep_t_latch=(ms>65534)?65534:(uint16_t)ms;
+                    ep_flags|=EP_FLAG_LATCH_ARMED;
+                    ep_pub_load=snap.load_centikg;
+                    ep_pub_fast=snap.fast_native;
+                    ep_pub_seed=snap.run_seed_native;
+                    ep_pub_iq_after_limits=snap.iq_after_limits;
+                }
+            }
+
+            if(ep_state==EP_WAIT_DIP){
+                if(MS.i_q_setpoint*2 < ep_iq_ref) ep_state=EP_WAIT_RECOVER;
+                else if(ep_ticks>8000) ep_state=EP_IDLE;   //never cost anything: not an episode
+            }
+            if(ep_state==EP_WAIT_RECOVER){
+                bool back = (MS.i_q_setpoint*5 >= ep_iq_ref*4);
+                bool gave_up = ep_ticks>8000;
+                if(back || gave_up){
+                    uint32_t ms=ep_ticks/4; ep_t_recover=(ms>65534)?65534:(uint16_t)ms;
+                    if(gave_up) ep_flags|=EP_FLAG_TIMED_OUT;
+                    ep_pub_rev_steps=ep_rev_steps;
+                    ep_pub_flags=ep_flags;
+                    ep_pub_t_latch=ep_t_latch;
+                    ep_pub_t_recover=ep_t_recover;
+                    if(ep_number<65535) ep_number++;
+                    ep_state=EP_IDLE;
+                }
+            }
+        }
+        /*
+         * The histogram in 0x1020E/0x1020F. FW-101: it is anchored by the SAME condition as
+         * the episode recorder above, so it no longer merges two interruptions into one —
+         * a reverse step that has not yet cost anything re-anchors both.
          */
         if(gap_armed){
             gap_ticks++;
@@ -2895,6 +3016,70 @@ void print_debug_on_CAN(void){
 	 */
 	transmit_message.tx_efid = 0x0001020F;
 	for(uint8_t gi=0; gi<8; gi++) transmit_message.tx_data[gi]=gap_hist[gi];
+	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
+	timeout = 0xFFFF;
+	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
+		timeout--;
+		}
+
+	/*
+	 * FW-101 diag (ID 0x00010210): ONE re-engagement episode, timed at 4 kHz.
+	 *
+	 * The aggregate counters say how often interruptions happen; this says where the time
+	 * inside one of them went. Only completed episodes are published, so a reader sees a
+	 * stable record until the next one finishes — the episode number is what marks it new.
+	 *
+	 *   Data1 hi = episode number lo byte   lo = reverse steps in this episode
+	 *   Data2 hi = flags                    lo = (reserved, 0)
+	 *              0x01 hard cut · 0x02 PAS timeout · 0x04 latch re-armed ·
+	 *              0x08 limiter zeroed a demand · 0x10 gave up after 2 s
+	 *   Data3    = ms from the anchoring reverse step to the latch re-arming (0xFFFF = never)
+	 *   Data4    = ms from that same anchor to 80 % of the previous current
+	 *
+	 * Data3 against Data4 is the whole point: Data3 is what the reverse latch and fwd_run
+	 * cost, Data4 - Data3 is what everything after them cost (RUN estimator, power filter,
+	 * limiter, ramp).
+	 */
+	transmit_message.tx_efid = 0x00010210;
+	transmit_message.tx_data[0] = ep_number&0xFF;
+	transmit_message.tx_data[1] = ep_pub_rev_steps;
+	transmit_message.tx_data[2] = ep_pub_flags;
+	transmit_message.tx_data[3] = 0;
+	transmit_message.tx_data[4] = (ep_pub_t_latch>>8)&0xFF;
+	transmit_message.tx_data[5] = (ep_pub_t_latch)&0xFF;
+	transmit_message.tx_data[6] = (ep_pub_t_recover>>8)&0xFF;
+	transmit_message.tx_data[7] = (ep_pub_t_recover)&0xFF;
+	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
+	timeout = 0xFFFF;
+	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
+		timeout--;
+		}
+
+	/*
+	 * FW-101 diag (ID 0x00010211): the values AT THE INSTANT the latch re-armed, for the
+	 * episode reported above. Captured inside ride_control where they are produced.
+	 *
+	 *   Data1 = raw pedal load [centikg]
+	 *   Data2 = fast torque after the 35 ms filter [native]
+	 *   Data3 = what was seeded into the RUN estimator [native]
+	 *   Data4 = Iq target after latch and limiters, BEFORE the final ramp
+	 *
+	 * Data4 separates "the pipeline asked for little" from "the ramp took time to deliver
+	 * it". A small Data4 with a long Data4-minus-latch time in 0x10210 points at the
+	 * estimators; a healthy Data4 with the same long time points at the ramp.
+	 */
+	int32_t ep_iq_pub = ep_pub_iq_after_limits;
+	if(ep_iq_pub<0) ep_iq_pub=0;
+	if(ep_iq_pub>65535) ep_iq_pub=65535;
+	transmit_message.tx_efid = 0x00010211;
+	transmit_message.tx_data[0] = (ep_pub_load>>8)&0xFF;
+	transmit_message.tx_data[1] = (ep_pub_load)&0xFF;
+	transmit_message.tx_data[2] = (ep_pub_fast>>8)&0xFF;
+	transmit_message.tx_data[3] = (ep_pub_fast)&0xFF;
+	transmit_message.tx_data[4] = (ep_pub_seed>>8)&0xFF;
+	transmit_message.tx_data[5] = (ep_pub_seed)&0xFF;
+	transmit_message.tx_data[6] = (ep_iq_pub>>8)&0xFF;
+	transmit_message.tx_data[7] = (ep_iq_pub)&0xFF;
 	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
 	timeout = 0xFFFF;
 	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
