@@ -42,8 +42,16 @@
  * where factor 50 means 1.0x rider power. SPORT+ is the midpoint between
  * SPORT and BOOST. These are the compiled-in defaults, used when no stored
  * bank is available.
+ *
+ * The last six arguments are the per-level assist dynamics
+ * (power_rise, power_fall, iq_rise_slow, iq_rise_fast, iq_fall_slow,
+ * iq_fall_fast). Higher assist levels deliberately get SLOWER dynamics:
+ * at a higher ratio the same change in rider torque moves the requested motor
+ * torque by a larger amount, so calmer rise/fall keeps the reaction calm under
+ * high power and high cadence without changing the algorithm itself.
  */
-#define DEFAULT_POWER_LEVEL(mode, ratio, emtb_level, torque_factor) { \
+#define DEFAULT_POWER_LEVEL(mode, ratio, emtb_level, torque_factor, \
+	power_rise, power_fall, iq_rise_slow, iq_rise_fast, iq_fall_slow, iq_fall_fast) { \
 	.mode_type = (mode), \
 	.support_ratio_pct = (ratio), \
 	.support_min_pct = (ratio), \
@@ -63,13 +71,13 @@
 	.startup_boost = {true, ASSIST_STARTUP_BOOST_CADENCE, 100, 27}, \
 	.smooth_start = {false, 300}, \
 	.release_ms = 650, \
-	.power_rise_filter_ms = 150, \
-	.power_fall_filter_ms = 375, \
+	.power_rise_filter_ms = (power_rise), \
+	.power_fall_filter_ms = (power_fall), \
 	.riding_start_load_centikg = ASSIST_RIDING_MIN_PEDAL_LOAD_DEFAULT_CENTIKG, \
-	.iq_rise_slow_ms = 600, \
-	.iq_rise_fast_ms = 300, \
-	.iq_fall_slow_ms = 1000, \
-	.iq_fall_fast_ms = 140, \
+	.iq_rise_slow_ms = (iq_rise_slow), \
+	.iq_rise_fast_ms = (iq_rise_fast), \
+	.iq_fall_slow_ms = (iq_fall_slow), \
+	.iq_fall_fast_ms = (iq_fall_fast), \
 	/* FW-084: OFF by default. Duration 0 is the switch, so a fresh controller and a \
 	 * migrated old profile behave identically to firmware without Extended Boost. */ \
 	.extended_boost = { \
@@ -105,20 +113,40 @@
 
 static const assist_level_config_t default_levels[ASSIST_LEVEL_COUNT + 1] = {
 	DEFAULT_IDLE_LEVEL,
-	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 100, 60, 50),
-	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 200, 100, 80),
-	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 320, 140, 120),
-	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 420, 160, 160),
-	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 520, 180, 200)
+	/* LEVEL 1 / assist 100% */
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 100, 60, 50,
+		150, 375, 600, 300, 1000, 180),
+	/* LEVEL 2 / assist 200% */
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 200, 100, 80,
+		160, 400, 600, 330, 1000, 210),
+	/* LEVEL 3 / assist 320% */
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 320, 140, 120,
+		190, 450, 650, 380, 1050, 250),
+	/* LEVEL 4 / assist 420% */
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 420, 160, 160,
+		220, 500, 700, 450, 1100, 300),
+	/* LEVEL 5 / assist 520% */
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_POWER_LINEAR, 520, 180, 200,
+		250, 550, 750, 500, 1200, 350)
 };
 
 static const assist_level_config_t emtb_levels[ASSIST_LEVEL_COUNT + 1] = {
 	DEFAULT_IDLE_LEVEL,
-	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB, 100, 60, 50),
-	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB, 200, 100, 80),
-	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB, 320, 140, 120),
-	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB, 420, 160, 160),
-	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB, 520, 180, 200)
+	/* LEVEL 1 / assist 100% */
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB, 100, 60, 50,
+		150, 375, 600, 300, 1000, 180),
+	/* LEVEL 2 / assist 200% */
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB, 200, 100, 80,
+		160, 400, 600, 330, 1000, 210),
+	/* LEVEL 3 / assist 320% */
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB, 320, 140, 120,
+		190, 450, 650, 380, 1050, 250),
+	/* LEVEL 4 / assist 420% */
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB, 420, 160, 160,
+		220, 500, 700, 450, 1100, 300),
+	/* LEVEL 5 / assist 520% */
+	DEFAULT_POWER_LEVEL(ASSIST_MODE_EMTB, 520, 180, 200,
+		250, 550, 750, 500, 1200, 350)
 };
 
 #undef DEFAULT_POWER_LEVEL

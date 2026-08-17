@@ -50,8 +50,12 @@
  *   time            the duration timer
  *
  * Backward pedalling is covered twice over and independently of the brake: directly through
- * crank_reverse, and again through safety_cut, which main.c assembles from the same
- * Backwards_counter. See the ordering note in the cancel chain.
+ * crank_reverse (the legacy, slower-confirming backpedal latch - now pas_direction.c's
+ * derivation, unchanged timing), and again through safety_cut, which ride_control.c assembles
+ * as hard_cut from rider_input_t.direction_inhibit_active (the immediate, FIRST-step direction
+ * safety automaton - FW-109) OR'd with the non-direction cuts - a stricter, faster-reacting
+ * signal than crank_reverse alone, not the same one twice. See the ordering note in the cancel
+ * chain.
  *
  * That list does not make the feature safe by itself — it means the hazard is "the motor
  * drives while the rider is doing nothing", not "nothing can stop it".

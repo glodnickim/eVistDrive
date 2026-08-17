@@ -31,6 +31,18 @@ typedef struct {
 	 * Set only while releasing — never during a start, which happens in that same range.
 	 */
 	bool coast_release;
+	/*
+	 * FW-112 v2 (SAME-TICK ZERO + audit S13): force the ramp accumulator to 0 this tick.
+	 * Set when the FINAL demand after the mode calculation, latch/floor, boost, the limiters
+	 * and the throttle merge is 0 AND (a) this is the exact rolling fast-rearm tick (the
+	 * motor must not inherit the pre-reverse reference still fading out of the accumulator,
+	 * so MS.i_q_setpoint is 0 in the same tick permission is restored), or (b) the recovery
+	 * automaton is in WAIT_FRESH_LOAD (a hold armed by an earlier positive TRACK_FAST demand
+	 * must not keep its min-Iq reference flowing through the WAIT).
+	 * Set ONLY when the final demand is truly 0 — never on a cold start, a normal release,
+	 * or any real positive demand (a real throttle press included).
+	 */
+	bool force_zero_reference;
 } assist_dynamics_input_t;
 
 int32_t assist_dynamics_apply(

@@ -41,7 +41,7 @@
 #define WA_MOTOR_COAST_RECOVERY_IQ          24
 #define WA_MOTOR_COAST_RECOVERY_TICKS    16000  /* 4 s: 0.75 s ramp + 3.25 s at 24 Iq */
 #define WA_MOTOR_HALL_LOSS_DRIVE_IQ        30
-#define WA_MOTOR_RUN_MIN_IQ                   2
+#define WA_MOTOR_RUN_MIN_IQ                   0
 #define WA_MOTOR_RUN_MAX_IQ                  40
 #define WA_MOTOR_COAST_EXIT_IQ                2
 
@@ -192,6 +192,16 @@ static void publish_output(walk_motor_output_t *output, uint16_t target_erps,
 		(wa_control_output.above_target ? WA_FLAG_ABOVE_TARGET : 0) |
 		((wa_state == WA_STATE_LIMIT) ? WA_FLAG_LIMIT : 0) |
 		(wa_reacquire_active ? WA_FLAG_REACQUIRE : 0));
+	/* FW-113.2: module-level reason bits. Activation bits (NO_CAN_REQUEST /
+	 * BUTTON_RELEASED) are owned by main.c and OR-ed into the same field. There is
+	 * deliberately no wall-clock hold-timeout bit: only a real gate can stop WA.
+	 */
+	output->reason = (uint16_t)
+		((hall_valid ? 0 : WA_REASON_HALL) |
+		(wa_jam_active ? WA_REASON_JAM : 0) |
+		(wa_blocked ? WA_REASON_STALL : 0) |
+		((wa_state == WA_STATE_STALL) ? WA_REASON_STALL : 0) |
+		((wa_state == WA_STATE_LIMIT) ? WA_REASON_LIMIT : 0));
 }
 
 static void enter_limit(void)
@@ -222,6 +232,15 @@ int32_t walk_motor_update(const walk_motor_input_t *input,
 		input->wheel_speed_x100 >= max_wheel_x100) {
 		walk_motor_reset();
 		publish_output(output, target_erps, false);
+		/* FW-113.2: name which real gate stopped the drive. publish_output already set
+		 * the HALL bit (no Hall was read); these are the input-level gates. */
+		if (output != 0 && input != 0) {
+			output->reason |= (uint16_t)
+				((input->brake ? WA_REASON_BRAKE : 0) |
+				(input->fault ? WA_REASON_ERROR : 0) |
+				((input->wheel_speed_x100 >= max_wheel_x100) ?
+					WA_REASON_SPEED_GATE : 0));
+		}
 		return 0;
 	}
 	if (wa_blocked) {

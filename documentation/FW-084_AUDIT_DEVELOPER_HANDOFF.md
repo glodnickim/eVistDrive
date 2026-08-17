@@ -21,6 +21,7 @@ Nazw `Overrun` i `Override` **nie używać dla nowej funkcji**:
 
 - `Overrun_*`, `Override_Duration`, stare `ext_boost_*` w `MotorState_t` oraz
   `EXTENDED_BOOST_ENABLE` należą do nieaktywnego mechanizmu Legacy;
+  
 - `override` jest już używane także dla manetki i nie opisuje maszyny stanów FW-084;
 - w dokumentacji/UI/logach stary mechanizm nazywać `Legacy overrun (inactive in Ride Core)`;
 - nie włączać `EXTENDED_BOOST_ENABLE`; ewentualne usunięcie starego bloku zrobić osobnym,

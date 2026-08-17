@@ -29,6 +29,10 @@
 #include "ride_control.h"
 #include "rider_input.h"
 #include "level_gesture.h"
+#include "pas_direction.h"
+#include "can_tx_queue.h"
+#include "can_multiframe.h"
+#include "can_reply_effects.h"
 
 /* Build version string for the HMI info field (0x6001). The tracked build script
    generates build_version.h inside .build and adds that directory before inc/.
@@ -51,7 +55,11 @@ void sendAcknoledge(void);
 //FW-068/076: the result of a config write has to reach the tool. Used by the multiframe
 //blobs and by the short 0x3203 write; a rejected frame must never read as a success.
 void sendWriteResult(uint16_t command, uint8_t applied);
-void send_multiframe(uint16_t command, char* data, uint8_t length );
+bool send_multiframe(uint16_t command, char* data, uint8_t length );
+bool send_multiframe_tracked(uint16_t command, char* data, uint8_t length,
+                              can_multiframe_id_t *out_id); //FW-110 v4
+bool send_multiframe_trailer(uint16_t command, char* data, uint8_t length,
+                              const can_multiframe_trailer_t *trailer); //FW-110 v4
 void append_multiframe(uint16_t command, char* data);
 void update_checksum(void);
 //int16_t abs(int16_t value);
@@ -81,8 +89,10 @@ extern volatile uint8_t soc_full_persist;    //FW-018: set by 0x602B, flash-pers
 #if CAN_DIAGNOSTICS_ENABLE
 extern volatile uint8_t diag_peak_reset, diag_peak_cadence; //FW-015b: peak-hold diagnostics
 extern uint16_t pas_idle_ticks; //FW-017: ticks since last PAS transition (for pas_idle_ms diagnostic)
-extern uint8_t fwd_run;
-extern uint8_t Backwards_counter;
+//FW-109 v2: fwd_run/Backwards_counter used to be extern'd straight from main.c globals. fwd_run
+//was already stale even before this card (moved into src/pas_direction.c under FW-107 and never
+//actually read here since - dead declaration, removed). Backwards_counter moved the same way this
+//card - see pas_direction_backpedal_confirmed() at the one call site below.
 extern uint8_t torque_fault;
 extern uint8_t ui_8_PWM_ON_Flag;
 extern FlagStatus BC_limit_flag; //FW-033: battery-current limiter active (diagnostics)
@@ -95,7 +105,6 @@ extern uint8_t param_record_state; //FW-023: 0 = valid record, 1 = defaults, 2 =
 #endif
 uint8_t tx_data_length;
 uint8_t rx_data_length;
-uint8_t nbrofframes;
 float last_distance =0;
 float last_kilometer =0;
 float distance =0;
@@ -204,6 +213,20 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 					//save received setting
 					write_virtual_eeprom();
 				}
+				else if(Ext_ID_Rx.command==0x6200 && Ext_ID_Rx.source==5){ //Hall/position sensor calibration (Canable/BESST only)
+					/*
+					 * FW-110 v4: Hall/position calibration is DISABLED in both firmware variants.
+					 * 0x6200 must not be able to reach autodetect() from CAN - autodetect() drives
+					 * the motor open-loop for >5 s, and the only entry point that ever existed
+					 * (the FW-110 v3 supervisor, src/hall_calibration.c) is gone. A properly
+					 * directed WRITE 0x6200 from Canable/BESST (source=5) gets exactly ONE reply:
+					 * ERROR_ACK (operation 3, "function unavailable"). There is NEVER a NORMAL_ACK
+					 * here, and no code path in this file - or in src/main.c - can call autodetect().
+					 * Re-enabling remote calibration is a separate future card with its own safety
+					 * design and bench test.
+					 */
+					sendWriteResult(0x6200, 0);
+				}
 
 				else sendCAN_Tx(MP,MS);
 				//Factory sends NO WRITE-ACK for the continuous operational data 0x6300-0x6304; only for
@@ -211,8 +234,10 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 				//FW-076: 0x3203 sends its own result (ACK on success, ERROR_ACK on a rejected
 				//frame), so the generic ACK must not fire for it — the tool would see a
 				//success alongside a failure and believe the first one it matched.
+				//FW-110 v4: 0x6200 is the same case, now handled above (one ERROR_ACK only) - the
+				//generic ACK must not fire for it either.
 				if(!(Ext_ID_Rx.command>=0x6300 && Ext_ID_Rx.command<=0x6304)
-				   && Ext_ID_Rx.command!=0x3203) sendAcknoledge();
+				   && Ext_ID_Rx.command!=0x3203 && Ext_ID_Rx.command!=0x6200) sendAcknoledge();
 				break;
 			case READ_CMD:
 				sendCAN_Tx(MP,MS);
@@ -410,10 +435,9 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 		//FW-076: the 0x3203 write moved into the WRITE_CMD chain above, so the frame is
 		//validated before anything is applied and answers with exactly one ACK. It used to
 		//sit here, AFTER the generic handler had already replied with the OLD values.
+		//FW-110 v4: 0x6200 stays handled ONLY in the WRITE_CMD chain above (operation and
+		//source checked there) and answers with exactly one ERROR_ACK - no calibration path.
 
-		if(Ext_ID_Rx.command==0x6200){ //Position sensor calibration
-			autodetect();
-		}
 		if(Ext_ID_Rx.command==0x6101){ //Torque sensor calibration normally, here used for factory settings reset
 			InitEEPROM(MP);
 			read_virtual_eeprom();
@@ -447,14 +471,9 @@ void sendWriteResult(uint16_t command, uint8_t applied){
 	Ext_ID_Tx.operation = applied ? 2 : 3; //2 = NORMAL_ACK, 3 = ERROR_ACK
 	Ext_ID_Tx.target = Ext_ID_Rx.source; //reply to the requester (Canable/BESST = 5)
 	Ext_ID_Tx.source = 0x02;
-	transmit_message.tx_sfid = 0x00;
-	transmit_message.tx_efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
-	transmit_message.tx_ft = CAN_FT_DATA;
-	transmit_message.tx_ff = CAN_FF_EXTENDED;
-	transmit_message.tx_dlen = 0;
-	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-	timeout = 0xFFFF;
-	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)) timeout--;
+	uint32_t efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
+	uint8_t d[8] = {0};
+	can_tx_queue_enqueue(efid, 0U, d); //FW-110: was a blocking can_message_transmit/can_transmit_states wait
 }
 
 void sendAcknoledge(void){
@@ -463,58 +482,53 @@ void sendAcknoledge(void){
 	Ext_ID_Tx.target = 5; //WRITE-ACK ALWAYS to target=5 (HMI write-ACK port). Replying to source(=3) pollutes
 	                      //the target=3 READ channel with ACKs and breaks the info multiframe -> blank HMI info.
 	Ext_ID_Tx.source = 0x02; //controller
-	transmit_message.tx_sfid = 0x00;
-	transmit_message.tx_efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
-	transmit_message.tx_ft = CAN_FT_DATA;
-	transmit_message.tx_ff = CAN_FF_EXTENDED;
-	transmit_message.tx_dlen = 0;
-
-	/* transmit message */
-	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-	/* waiting for transmit completed */
-	timeout = 0xFFFF;
-	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-		timeout--;
-		}
-
+	uint32_t efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
+	uint8_t d[8] = {0};
+	can_tx_queue_enqueue(efid, 0U, d); //FW-110: was a blocking can_message_transmit/can_transmit_states wait
 }
 
-#if CAN_DIAGNOSTICS_ENABLE
+#if CAN_TORQUE_STREAM_ENABLE
+static uint32_t torque_stream_dropped;
+
+/* Attempts refused because the peripheral had no free mailbox this call - never retried, never
+ * queued (see sendCAN_3100's own header comment for why). */
+uint32_t sendCAN_3100_dropped_count(void) { return torque_stream_dropped; }
+
 void sendCAN_3100(MotorState_t* MS){
-	//Emulates the separate torque-sensor CAN node (source=01) that the original Bafang system has.
-	//HMI reads real-time cadence and torque from this frame every 10ms.
+	/* Emulates the separate torque-sensor CAN node (source=01) that the ORIGINAL Bafang system
+	 * has as a genuinely separate physical board. On that original system the HMI reads cadence
+	 * and torque from this frame - but on THIS firmware that comment does not hold: this stream
+	 * is compiled out of every normal riding build (CAN_TORQUE_STREAM_ENABLE defaults to 0, see
+	 * inc/config.h), and normal riding already works with cadence/torque shown on the HMI without
+	 * it ever being sent - the display gets that data through the regular poll frames below, not
+	 * this one.
+	 *
+	 * FW-110: deliberately NOT routed through can_tx_queue. That queue's 16 slots exist for
+	 * frames that must be delivered; this stream, measured at ~92 frames/s when enabled, would
+	 * compete for the exact same slots as HMI/ACK/multiframe replies purely by existing, which
+	 * is precisely the "0x3100 must never displace a critical frame" requirement this card
+	 * exists to satisfy. So this is its own, separate, best-effort path: at most ONE transmit
+	 * attempt, no retry, no wait, no queue - a busy peripheral this call is simply skipped and
+	 * counted, exactly like the next 10 ms tick will try again on its own regardless. */
 	static uint8_t ctr = 0;
-	transmit_message.tx_sfid    = 0x00;
-	transmit_message.tx_efid    = 0x01F83100; //source=1 (torque sensor), target=31 broadcast
-	transmit_message.tx_ft      = CAN_FT_DATA;
-	transmit_message.tx_ff      = CAN_FF_EXTENDED;
-	transmit_message.tx_dlen    = 4;
+	transmit_message.tx_sfid = 0x00;
+	transmit_message.tx_efid = 0x01F83100U; //source=1 (torque sensor), target=31 broadcast
+	transmit_message.tx_ft   = CAN_FT_DATA;
+	transmit_message.tx_ff   = CAN_FF_EXTENDED;
+	transmit_message.tx_dlen = 4U;
 	transmit_message.tx_data[0] = (uint8_t)((uint16_t)MS->torque_on_crank & 0xFF);
 	transmit_message.tx_data[1] = (uint8_t)((uint16_t)MS->torque_on_crank >> 8);
 	transmit_message.tx_data[2] = MS->cadence;
 	transmit_message.tx_data[3] = ctr++;
-	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-	timeout = 0xFFFF;
-	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-		timeout--;
-		}
+	uint8_t mb = can_message_transmit(CAN0, &transmit_message);
+	if (mb == CAN_NOMAILBOX) { torque_stream_dropped++; }
 }
 #endif
 
 void sendCAN_3202(void){
 	//Original firmware sends 0x3202 (1 byte 0x00) every ~100ms. HMI may lose sync or exit WA without it.
-	uint32_t timeout;
-	transmit_message.tx_sfid    = 0x00;
-	transmit_message.tx_efid    = 0x02F83202;
-	transmit_message.tx_ft      = CAN_FT_DATA;
-	transmit_message.tx_ff      = CAN_FF_EXTENDED;
-	transmit_message.tx_dlen    = 1;
-	transmit_message.tx_data[0] = 0x00;
-	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-	timeout = 0xFFFF;
-	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-		timeout--;
-	}
+	uint8_t d[8] = {0};
+	can_tx_queue_enqueue(0x02F83202U, 1U, d); //FW-110: was a blocking can_message_transmit/can_transmit_states wait
 }
 
 void sendCAN_Poll(MotorParams_t* MP, MotorState_t* MS, uint16_t command){
@@ -522,46 +536,33 @@ void sendCAN_Poll(MotorParams_t* MP, MotorState_t* MS, uint16_t command){
 	switch (command){
 
 		case 0x3201: //speed and power
-			/* initialize transmit message */
-			transmit_message.tx_sfid = 0x00;
-			transmit_message.tx_efid = 0x02F83201;
-			transmit_message.tx_ft = CAN_FT_DATA;
-			transmit_message.tx_ff = CAN_FF_EXTENDED;
-			transmit_message.tx_dlen = 8;
+			{
+			uint8_t d[8];
 			//FW-050: one confirmation source for every level gesture. Previously offroadtics
 			//(which was ALSO the gesture's digit counter) took priority over the bank splash,
 			//so a bank switch first showed ~4 km/h, and any quick double tap on the level
 			//button made the speedometer read 1 km/h. Now the splash has its own state and is
 			//non-zero only while a gesture is actually being confirmed.
-			{
-				uint8_t gesture_splash = level_gesture_splash_kmh();
-				if(gesture_splash){
-					transmit_message.tx_data[0] = (gesture_splash*100)&0xFF;
-					transmit_message.tx_data[1] = ((gesture_splash*100)>>8)&0xFF;
-				}
-				else{
-					transmit_message.tx_data[0] = (MS->Speedx100)&0xFF;
-					transmit_message.tx_data[1] = ((MS->Speedx100)>>8)&0xFF;
-				}
+			uint8_t gesture_splash = level_gesture_splash_kmh();
+			if(gesture_splash){
+				d[0] = (gesture_splash*100)&0xFF;
+				d[1] = ((gesture_splash*100)>>8)&0xFF;
 			}
-			transmit_message.tx_data[2] = (abs(MS->Battery_Current)/10)&0xFF;
-			transmit_message.tx_data[3] = ((abs(MS->Battery_Current)/10)>>8)&0xFF;
-			transmit_message.tx_data[4] = (MS->Voltage/10)&0xFF;
-			transmit_message.tx_data[5] = ((MS->Voltage/10)>>8)&0xFF;
-			transmit_message.tx_data[6] = MS->int_Temperature+40; //temp sterownika (M820: jeden czujnik); +40 = offset protokolu, parser PC odejmuje 40
-			transmit_message.tx_data[7] = MS->int_Temperature+40; //ta sama temp sterownika jako "motor temp"; +40 = offset protokolu (NIE przeklamanie)
-
-			/* transmit message */
-			transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-			/* waiting for transmit completed */
-			timeout = 0xFFFF;
-			while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-				timeout--;
-				}
+			else{
+				d[0] = (MS->Speedx100)&0xFF;
+				d[1] = ((MS->Speedx100)>>8)&0xFF;
+			}
+			d[2] = (abs(MS->Battery_Current)/10)&0xFF;
+			d[3] = ((abs(MS->Battery_Current)/10)>>8)&0xFF;
+			d[4] = (MS->Voltage/10)&0xFF;
+			d[5] = ((MS->Voltage/10)>>8)&0xFF;
+			d[6] = MS->int_Temperature+40; //temp sterownika (M820: jeden czujnik); +40 = offset protokolu, parser PC odejmuje 40
+			d[7] = MS->int_Temperature+40; //ta sama temp sterownika jako "motor temp"; +40 = offset protokolu (NIE przeklamanie)
+			can_tx_queue_enqueue(0x02F83201U, 8U, d); //FW-110: was a blocking can_message_transmit/can_transmit_states wait
+			}
 			break;
 
 		case 0x3200: //battery and distance
-			/* initialize transmit message */
 			if(delay_counter<10)delay_counter++;
 			else{
 				delay_counter=0;
@@ -574,52 +575,29 @@ void sendCAN_Poll(MotorParams_t* MP, MotorState_t* MS, uint16_t command){
 				if(distance>1000)last_kilometer=MS->distance_since_startup;
 				last_distance=MS->distance_since_startup;
 			}
-			transmit_message.tx_sfid = 0x00;
-			transmit_message.tx_efid = 0x02F83200;
-			transmit_message.tx_ft = CAN_FT_DATA;
-			transmit_message.tx_ff = CAN_FF_EXTENDED;
-			transmit_message.tx_dlen = 8;
-			transmit_message.tx_data[0] = MS->SOC;//battery percentage
-			transmit_message.tx_data[1] = (uint8_t)display_distance; // in 10m
-			transmit_message.tx_data[2] = 0x00;
-			transmit_message.tx_data[3] = MS->cadence; //cadence
-			transmit_message.tx_data[4] = MS->torque_on_crank&0xFF; //torque mV LSB
-			transmit_message.tx_data[5] = (MS->torque_on_crank>>8)&0xFF; //torque mv MSB
-			//protocol unit for remaining range is 0.01 km (display divides by 100) -> send km*100
 			{
-				uint16_t range_x100 = (MS->range < 650) ? (uint16_t)(MS->range*100) : 64999;
-				transmit_message.tx_data[6] = range_x100&0xFF;//range LSB (0.01 km)
-				transmit_message.tx_data[7] = (range_x100>>8)&0xFF;//range MSB
+			uint8_t d[8];
+			d[0] = MS->SOC;//battery percentage
+			d[1] = (uint8_t)display_distance; // in 10m
+			d[2] = 0x00;
+			d[3] = MS->cadence; //cadence
+			d[4] = MS->torque_on_crank&0xFF; //torque mV LSB
+			d[5] = (MS->torque_on_crank>>8)&0xFF; //torque mv MSB
+			//protocol unit for remaining range is 0.01 km (display divides by 100) -> send km*100
+			uint16_t range_x100 = (MS->range < 650) ? (uint16_t)(MS->range*100) : 64999;
+			d[6] = range_x100&0xFF;//range LSB (0.01 km)
+			d[7] = (range_x100>>8)&0xFF;//range MSB
+			can_tx_queue_enqueue(0x02F83200U, 8U, d); //FW-110: was a blocking can_message_transmit/can_transmit_states wait
 			}
-
-			/* transmit message */
-			transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-			/* waiting for transmit completed */
-			timeout = 0xFFFF;
-			while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-				timeout--;
-				}
-
 			break;
 
 		case 0x3205: //to do
-			/* initialize transmit message */
-			transmit_message.tx_sfid = 0x00;
-			transmit_message.tx_efid = 0x02F83205;
-			transmit_message.tx_ft = CAN_FT_DATA;
-			transmit_message.tx_ff = CAN_FF_EXTENDED;
-			transmit_message.tx_dlen = 2;
-			transmit_message.tx_data[0] = MS->calories&0xFF; //calories
-			transmit_message.tx_data[1] = (MS->calories>>8)&0xFF;
-
-
-			/* transmit message */
-			transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-			/* waiting for transmit completed */
-			timeout = 0xFFFF;
-			while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-				timeout--;
-				}
+			{
+			uint8_t d[8] = {0};
+			d[0] = MS->calories&0xFF; //calories
+			d[1] = (MS->calories>>8)&0xFF;
+			can_tx_queue_enqueue(0x02F83205U, 2U, d); //FW-110: was a blocking can_message_transmit/can_transmit_states wait
+			}
 			break;
 
 
@@ -633,20 +611,11 @@ void sendCAN_status_broadcast(MotorState_t* MS){
 	static const uint32_t hb_efid[3] = {0x02FF1200, 0x02F8320F, 0x02F83000};
 	static const uint8_t  hb_dlen[3] = {1, 8, 4};
 	for(uint8_t i=0;i<3;i++){
-		transmit_message.tx_sfid = 0x00;
-		transmit_message.tx_efid = hb_efid[i];
-		transmit_message.tx_ft = CAN_FT_DATA;
-		transmit_message.tx_ff = CAN_FF_EXTENDED;
-		transmit_message.tx_dlen = hb_dlen[i];
-		for(uint8_t j=0;j<8;j++) transmit_message.tx_data[j]=0;
-		if(i==0) transmit_message.tx_data[0] = (MS->brake_active_flag==SET) ? 0x01 : 0x00; //bit0=brake
-		else if(i==1) transmit_message.tx_data[0] = 0x01;
-		else { transmit_message.tx_data[3] = 0x0B; } //0x3000: byte3=0x0B matches orig firmware
-		transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-		timeout = 0xFFFF;
-		while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-			timeout--;
-		}
+		uint8_t d[8] = {0};
+		if(i==0) d[0] = (MS->brake_active_flag==SET) ? 0x01 : 0x00; //bit0=brake
+		else if(i==1) d[0] = 0x01;
+		else { d[3] = 0x0B; } //0x3000: byte3=0x0B matches orig firmware
+		can_tx_queue_enqueue(hb_efid[i], hb_dlen[i], d); //FW-110: was a blocking can_message_transmit/can_transmit_states wait
 	}
 }
 
@@ -680,81 +649,47 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 			break;
 
 		case 0x62D9: //startup angle used as multiplyer here
-			/* initialize transmit message */
-
 			Ext_ID_Tx.command = 0x62D9;
 			Ext_ID_Tx.operation = 2; //NORMAL_ACK — factory sends 0x821A62D9 (op=NORMAL_ACK), NOT WRITE. HMI needs this for wheel data.
 			Ext_ID_Tx.target = Ext_ID_Rx.source; //reply to the requester (display=3, BESST=5...)
 			Ext_ID_Tx.source = 0x02; //controller
-			transmit_message.tx_sfid = 0x00;
-			transmit_message.tx_efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
-			transmit_message.tx_ft = CAN_FT_DATA;
-			transmit_message.tx_ff = CAN_FF_EXTENDED;
-			transmit_message.tx_dlen = 2;
-			transmit_message.tx_data[0] =  (MP->TS_coeff)&0xFF;
-			transmit_message.tx_data[1] =  (MP->TS_coeff>>8)&0xFF;
-
-			/* transmit message */
-			transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-			/* waiting for transmit completed */
-			timeout = 0xFFFF;
-			while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-				timeout--;
-				}
+			{
+			uint32_t efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
+			uint8_t d[8] = {0};
+			d[0] =  (MP->TS_coeff)&0xFF;
+			d[1] =  (MP->TS_coeff>>8)&0xFF;
+			can_tx_queue_enqueue(efid, 2U, d); //FW-110: was a blocking can_message_transmit/can_transmit_states wait
+			}
 			break;
 
 		case 0x3203: //FW-076: speed limit + wheel diameter code + circumference
-			/* initialize transmit message */
-
 			Ext_ID_Tx.command = 0x3203;
 			//Was operation 0 (a WRITE), so the reply looked like the controller writing to
 			//the tool rather than answering it, and the request manager had nothing to match.
 			Ext_ID_Tx.operation = NORMAL_ACK;
 			Ext_ID_Tx.target = Ext_ID_Rx.source; //reply to the requester (display=3, BESST=5...) - was hardcoded 5
 			Ext_ID_Tx.source = 0x02; //controller
-			transmit_message.tx_sfid = 0x00;
-			transmit_message.tx_efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
-			transmit_message.tx_ft = CAN_FT_DATA;
-			transmit_message.tx_ff = CAN_FF_EXTENDED;
-			transmit_message.tx_dlen = 6;
-			transmit_message.tx_data[0] = MP->speedLimitx100&0xFF;
-			transmit_message.tx_data[1] = (MP->speedLimitx100>>8)&0xFF;
+			{
+			uint32_t efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
+			uint8_t d[8] = {0};
+			d[0] = MP->speedLimitx100&0xFF;
+			d[1] = (MP->speedLimitx100>>8)&0xFF;
 			//Was the constant "A1". The stored code is echoed now, so what the tool reads
 			//back is what it wrote — that is the whole point of persisting it.
-			transmit_message.tx_data[2] = MP->wheel_diameter_code[0];
-			transmit_message.tx_data[3] = MP->wheel_diameter_code[1];
-			transmit_message.tx_data[4] = MP->wheel_cirumference&0xFF;
-			transmit_message.tx_data[5] = (MP->wheel_cirumference>>8)&0xFF;
-
-			/* transmit message */
-			transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-			/* waiting for transmit completed */
-			timeout = 0xFFFF;
-			while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-				timeout--;
-				}
+			d[2] = MP->wheel_diameter_code[0];
+			d[3] = MP->wheel_diameter_code[1];
+			d[4] = MP->wheel_cirumference&0xFF;
+			d[5] = (MP->wheel_cirumference>>8)&0xFF;
+			can_tx_queue_enqueue(efid, 6U, d); //FW-110: was a blocking can_message_transmit/can_transmit_states wait
+			}
 			break;
 
-		case 0x6200: //to do
-			/* initialize transmit message */
-
-			Ext_ID_Tx.command = 0x6200;
-			Ext_ID_Tx.operation = NORMAL_ACK; //write
-			Ext_ID_Tx.target = Ext_ID_Rx.source; //reply to the requester (display=3, BESST=5...) - was hardcoded 5
-			Ext_ID_Tx.source = 0x02; //controller
-			transmit_message.tx_sfid = 0x00;
-			transmit_message.tx_efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
-			transmit_message.tx_ft = CAN_FT_DATA;
-			transmit_message.tx_ff = CAN_FF_EXTENDED;
-			transmit_message.tx_dlen = 0;
-			/* transmit message */
-			transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-			/* waiting for transmit completed */
-			timeout = 0xFFFF;
-			while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-				timeout--;
-				}
-			break;
+		//FW-110 v4: 0x6200 removed from here, and from everywhere else reachable from CAN.
+		//This switch fires for READ_CMD too (and, via the WRITE_CMD chain's own `else`, for any
+		//WRITE this file does not otherwise recognise) - a case here could not tell those apart,
+		//which is exactly how a READ used to reach the old post-switch autodetect() gate. There
+		//is deliberately NO case 0x6200 anywhere: a READ 0x6200 must do nothing at all, and the
+		//only WRITE 0x6200 reply in this file is the single ERROR_ACK in the WRITE_CMD chain.
 
 		case 0x6003: //to do
 			/* initialize transmit message */
@@ -783,16 +718,9 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 					Ext_ID_Tx.operation= 3;
 					Ext_ID_Tx.target   = Ext_ID_Rx.source;    //reply to requester (display=3)
 					Ext_ID_Tx.source   = 0x02;                //controller
-					transmit_message.tx_sfid = 0x00;
-					transmit_message.tx_efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
-					transmit_message.tx_ft = CAN_FT_DATA;
-					transmit_message.tx_ff = CAN_FF_EXTENDED;
-					transmit_message.tx_dlen = 4;
-					transmit_message.tx_data[0]=0x01; transmit_message.tx_data[1]=0x00;
-					transmit_message.tx_data[2]=0x02; transmit_message.tx_data[3]=0x06;
-					transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-					timeout = 0xFFFF;
-					while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)) timeout--;
+					uint32_t efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
+					uint8_t d[8] = {0x01,0x00,0x02,0x06,0,0,0,0};
+					can_tx_queue_enqueue(efid, 4U, d); //FW-110: was a blocking can_message_transmit/can_transmit_states wait
 				}
 			}
 			break;
@@ -832,7 +760,7 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 				                (rin->pedaling_active?0x02:0) |
 				                (MS->brake_active_flag?0x04:0) |
 				                (torque_fault?0x08:0) |
-				                ((Backwards_counter>=4)?0x10:0) |
+				                (pas_direction_backpedal_confirmed()?0x10:0) |
 				                (torque_input_calibration_active()?0x20:0) |
 				                ((comm_seen && comm_lost_ticks>=COMM_CUT_TICKS)?0x40:0) |
 				                (ui_8_PWM_ON_Flag?0x80:0);
@@ -886,8 +814,17 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 				dg[52]=eb.cancel_reason;                                                 //see assist_extended_boost_cancel_t
 				uint16_t c=0xFFFF; for(uint8_t i=0;i<53;i++){c^=(uint16_t)dg[i]<<8; for(uint8_t b=0;b<8;b++)c=(c&0x8000)?((c<<1)^0x1021):(c<<1);}
 				dg[53]=c&0xFF; dg[54]=(c>>8)&0xFF;
-				send_multiframe(Ext_ID_Rx.command, (char*)&dg[0], 55);
-				diag_peak_reset=1; //next 4kHz cycle clears the peaks
+				//FW-110 v4: diag_peak_reset is NOT set here. send_multiframe() returning true only
+				//proves the snapshot was ARMED; the reset must fire only when this exact transfer
+				//is CONFIRMED delivered end to end (its last fragment reaches CAN_TRANSMIT_OK),
+				//and must NOT fire if it is later aborted - see can_reply_effects.c, applied by
+				//main.c's loop. The transfer id is remembered here, at arm time.
+				{
+					can_multiframe_id_t xfer_id;
+					if(send_multiframe_tracked(Ext_ID_Rx.command, (char*)&dg[0], 55, &xfer_id)){
+						can_reply_effects_6029_armed(xfer_id);
+					}
+				}
 			}
 			break;
 #endif
@@ -905,16 +842,23 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 		case 0x6012: //to do
 			/* initialize transmit message */
 			if(Ext_ID_Rx.operation==1){
-			send_multiframe(Ext_ID_Rx.command, &Para2[0],64 );
 			//Trailing mini-block AFTER Para2: factory sends 0x821B6012 Data:01 00 02 06 as the
 			//"config transfer complete" marker. Without it the HMI never renders the Info/Settings screen.
-			Ext_ID_Tx.command = 0x6012; Ext_ID_Tx.operation = 3; Ext_ID_Tx.target = Ext_ID_Rx.source; Ext_ID_Tx.source = 0x02;
-			transmit_message.tx_sfid = 0x00;
-			transmit_message.tx_efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
-			transmit_message.tx_ft = CAN_FT_DATA; transmit_message.tx_ff = CAN_FF_EXTENDED; transmit_message.tx_dlen = 4;
-			transmit_message.tx_data[0]=0x01; transmit_message.tx_data[1]=0x00; transmit_message.tx_data[2]=0x02; transmit_message.tx_data[3]=0x06;
-			transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-			timeout = 0xFFFF; while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)) timeout--;
+			//FW-110 v4: the trailer is armed ATOMICALLY with the reply, as a phase of the same
+			//stop-and-wait transfer (can_multiframe_start_with_trailer) - it is produced only
+			//after the END fragment is confirmed CAN_TRANSMIT_OK. A separate start();set_trailer()
+			//pair is gone: the automaton can never run without a properly attached trailer, and a
+			//stale trailer cannot leak into a later reply.
+			{
+				can_multiframe_trailer_t trailer;
+				trailer.efid = Ext_ID_Rx.command + (3U << 16) + ((uint32_t)Ext_ID_Rx.source << 19) + (0x02U << 24);
+				trailer.dlen = 4U;
+				trailer.data[0] = 0x01; trailer.data[1] = 0x00;
+				trailer.data[2] = 0x02; trailer.data[3] = 0x06;
+				trailer.data[4] = 0;    trailer.data[5] = 0;
+				trailer.data[6] = 0;    trailer.data[7] = 0;
+				send_multiframe_trailer(Ext_ID_Rx.command, &Para2[0], 64, &trailer);
+			}
 			}
 			break;
 #if CAN_DIAGNOSTICS_ENABLE
@@ -939,80 +883,42 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 	}//end case
 }
 
-void send_multiframe(uint16_t command, char* data, uint8_t length ){
+bool send_multiframe(uint16_t command, char* data, uint8_t length ){
+	/*
+	 * FW-110: delegates to can_multiframe.c's non-blocking producer instead of building and
+	 * enqueueing every fragment synchronously in this one call. The old synchronous version
+	 * enqueued all of a reply's fragments back to back before can_tx_queue_service() had sent
+	 * even the first one - for a 255-byte reply (33 fragments) against a 16-frame queue, that
+	 * dropped the last 17 fragments deterministically, on every call, even on an idle bus. See
+	 * inc/can_multiframe.h for the full rationale.
+	 *
+	 * can_multiframe_start() returns false only when a reply is already active; per that
+	 * module's contract this function must then send NOTHING - not a partial START, not an
+	 * error frame - and let the caller's own retry (the Canable app already retries a timed-out
+	 * READ) recover it. That refusal is counted by can_multiframe_rejected_busy_count().
+	 *
+	 * FW-110 v4: the return value still means "armed", nothing more. A caller with a side effect
+	 * that must wait until the reply is CONFIRMED delivered (0x6029's diag_peak_reset) uses
+	 * send_multiframe_tracked() and feeds the id to can_reply_effects.c, which resolves it
+	 * against the real producer later - it never acts on the arm alone.
+	 */
+	return can_multiframe_start(command, Ext_ID_Rx.source, 0x02U, (const uint8_t*)data, length, 0);
+}
 
+/* FW-110 v4: like send_multiframe(), but also hands back the transfer id of the reply, for a
+ * caller that must attach a post-completion effect to THIS specific reply. */
+bool send_multiframe_tracked(uint16_t command, char* data, uint8_t length,
+                              can_multiframe_id_t *out_id){
+	return can_multiframe_start(command, Ext_ID_Rx.source, 0x02U, (const uint8_t*)data, length, out_id);
+}
 
-			//send multiframe start
-			Ext_ID_Tx.command = command;
-			Ext_ID_Tx.operation = LONG_START_CMD;
-			Ext_ID_Tx.target = Ext_ID_Rx.source; //reply to the requester (display=3, BESST=5...) - was hardcoded 5
-			Ext_ID_Tx.source = 0x02; //controller
-			transmit_message.tx_sfid = 0x00;
-			transmit_message.tx_efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
-			transmit_message.tx_ft = CAN_FT_DATA;
-			transmit_message.tx_ff = CAN_FF_EXTENDED;
-			transmit_message.tx_dlen = 1;
-			transmit_message.tx_data[0] = length;
-
-
-			/* transmit message */
-			transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-			/* waiting for transmit completed */
-			timeout = 0xFFFF;
-			while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-				timeout--;
-				}
-
-			//send multiframe data
-			if(length%8)nbrofframes = (length>>3);
-			else nbrofframes = (length>>3)-1;
-
-			for (k=0; k < nbrofframes; k++){
-				Ext_ID_Tx.command = k;
-				Ext_ID_Tx.operation = LONG_TRANG_CMD;
-				Ext_ID_Tx.target = Ext_ID_Rx.source; //reply to the requester (display=3, BESST=5...) - was hardcoded 5
-				Ext_ID_Tx.source = 0x02; //controller
-				transmit_message.tx_sfid = 0x00;
-				transmit_message.tx_efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
-				transmit_message.tx_ft = CAN_FT_DATA;
-				transmit_message.tx_ff = CAN_FF_EXTENDED;
-				transmit_message.tx_dlen = 8;
-				memcpy(&transmit_message.tx_data, data+k*8,8);
-
-
-				/* transmit message */
-				transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-				timeout = 0xFFFF;
-				while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-					timeout--;
-					}
-			}
-
-			//send multiframe end
-			Ext_ID_Tx.command = k;
-			Ext_ID_Tx.operation = LONG_END_CMD;
-			Ext_ID_Tx.target = Ext_ID_Rx.source; //reply to the requester (display=3, BESST=5...) - was hardcoded 5
-			Ext_ID_Tx.source = 0x02; //controller
-			transmit_message.tx_sfid = 0x00;
-			transmit_message.tx_efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
-			transmit_message.tx_ft = CAN_FT_DATA;
-			transmit_message.tx_ff = CAN_FF_EXTENDED;
-			if(length%8){
-			transmit_message.tx_dlen = length%8;//rest of data
-			memcpy(&transmit_message.tx_data, data+k*8,length%8);
-				}
-			else{
-				transmit_message.tx_dlen = 8;//rest of data
-				memcpy(&transmit_message.tx_data, data+k*8,8);
-					}
-			/* transmit message */
-			transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-			/* waiting for transmit completed */
-			timeout = 0xFFFF;
-			while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-				timeout--;
-				}
-
+/* FW-110 v4: like send_multiframe(), with the reply's trailing marker attached ATOMICALLY to the
+ * same transfer (0x6012's factory "config transfer complete" marker). The trailer is produced
+ * only after the END fragment is confirmed sent - never merely queued. */
+bool send_multiframe_trailer(uint16_t command, char* data, uint8_t length,
+                              const can_multiframe_trailer_t *trailer){
+	return can_multiframe_start_with_trailer(command, Ext_ID_Rx.source, 0x02U,
+	                                         (const uint8_t*)data, length, trailer, 0);
 }
 
 void append_multiframe(uint16_t command, char* data){

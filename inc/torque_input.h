@@ -147,6 +147,75 @@ void torque_input_seed_run(uint16_t value_native);
  * exactly what makes the window cadence-independent.
  */
 void torque_input_run_filter_step(void);
+/*
+ * FW-112 v2: rolling-rearm recovery for the RUN estimator - a separate three-state automaton
+ * (IDLE / WAIT_FRESH_LOAD / TRACK_FAST), driven as a ONE-SHOT EVENT by src/ride_control.c. There
+ * is no persistent "armed" state any more (the old torque_input_run_rearm_fast_track() latched
+ * across the whole wait and was cancelled by exactly the wrong edges; v2 grants permission on
+ * the direction confirm alone, so the automaton opens and closes on the actual rearm).
+ *
+ *   begin_rolling_rearm()   ride_control calls this exactly once, the tick a fast rearm actually
+ *                           happens (session_out.fast_rearm_this_tick - ACTIVE re-entered after a
+ *                           direction suspension). It seeds the RUN estimator to the CURRENT fast
+ *                           signal - the rearmed Iq starts at full magnitude immediately, with no
+ *                           dependence on the stale window - and enters WAIT_FRESH_LOAD.
+ *   WAIT_FRESH_LOAD         RUN is re-seeded to the current fast signal on every forward PAS step
+ *                           (torque_input_run_filter_step), so a stale pre-reverse window can
+ *                           never survive the rearm: the estimator follows the fresh pedal signal
+ *                           honestly, in step time, until the pressure is confirmed. The
+ *                           automaton leaves it on the tick the fast signal first holds at/above
+ *                           the assist deadband (fresh pressure confirmed).
+ *   TRACK_FAST              run_value_native = the fast signal EVERY control tick
+ *                           (torque_input_update), not just on PAS steps - the recovered RUN
+ *                           tracks the fresh pressure in fast-filter time (35 ms) regardless of
+ *                           step cadence. Two ways out: the fast signal drops back below the
+ *                           deadband (pressure lost -> back to WAIT_FRESH_LOAD, honest collapse),
+ *                           or it has held at/above it for TORQUE_ROLLING_REARM_STABLE_TICKS
+ *                           (recovery complete - the fresh signal has genuinely taken over) ->
+ *                           seed_run() once and return to IDLE, where ordinary FW-085 window
+ *                           averaging resumes from a known-good average.
+ *   cancel_rolling_rearm()  FORCE-closes the automaton immediately - ride_control calls it
+ *                           whenever the session stops being ACTIVE (a fresh reverse/invalid,
+ *                           COLD, brake, fault, assist level 0 or a real stop), so a later
+ *                           NORMAL cold start can never inherit a recovery window. This is the
+ *                           forced exit for terminal session edges ONLY: the automaton still
+ *                           closes on its own two natural exits above (TRACK_FAST stable
+ *                           completion -> seed_run() once and back to IDLE, or the honest
+ *                           collapse back to WAIT_FRESH_LOAD) and is never cancelled by the
+ *                           forward step count - the rearm GRANTS permission for
+ *                           tuning_config_start_steps() steps, but the estimator recovery is
+ *                           allowed to finish on its own.
+ *
+ * recovery_active() / recovery_run_native() are the READ side ride_control uses to fix the
+ * one-tick stale snapshot on the rearm edge: the rider snapshot is built in main.c BEFORE
+ * ride_control_update() runs, so on the permission tick it still carries the pre-rearm window
+ * average. While the automaton is not IDLE, recovery_run_native() returns the current fast
+ * signal, which ride_control substitutes into the mode calculation's torque_run_filtered input.
+ */
+typedef enum {
+	TORQUE_RECOVERY_IDLE = 0,
+	TORQUE_RECOVERY_WAIT_FRESH_LOAD = 1,
+	TORQUE_RECOVERY_TRACK_FAST = 2
+} torque_recovery_state_t;
+
+/*
+ * The "stable" window must prove the fresh signal has GENUINELY taken over before the
+ * recovery hands RUN back to ordinary FW-085 window averaging. One fast-filter time
+ * constant does NOT: at t=tau the 35 ms EMA has only covered 1-e^-1 ~= 63 % of the
+ * distance to the new level, so an exit then would re-seed RUN mid-ramp (the
+ * long-pollution probe shows the slow window then needing ~26 steps to reach 80 %).
+ * ~4 time constants (1-e^-4 ~= 98 %) is a settled plateau - and it keeps the whole
+ * recovery inside the hard ≥80 % / ≤150 ms / ≤8-steps bound even after a full
+ * no-pressure window (RUN follows the fresh signal in TRACK_FAST the entire time).
+ */
+#define TORQUE_ROLLING_REARM_STABLE_MS      (4U * TORQUE_ASSIST_FILTER_MS)
+#define TORQUE_ROLLING_REARM_STABLE_TICKS   (TORQUE_ROLLING_REARM_STABLE_MS * \
+	TORQUE_INPUT_TICKS_PER_MS)
+void torque_input_begin_rolling_rearm(void);
+void torque_input_cancel_rolling_rearm(void);
+bool torque_input_recovery_active(void);
+uint16_t torque_input_recovery_run_native(void);
+torque_recovery_state_t torque_input_recovery_state(void);
 
 uint16_t torque_input_load_centikg(void);
 uint16_t torque_input_zero_native(void);

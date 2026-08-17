@@ -562,7 +562,7 @@ legacy_global_fields:
     since: 1
     access: legacy_rw
     per_level: false
-    value: {type: u8, scale: 1, unit: rpm, min: 0, max: 150, default: 20}
+    value: {type: u8, scale: 1, unit: rpm, min: 0, max: 150, default: 50}
     current_binding: IQ_RAMP_CAD_LO
     ui_group: advanced_legacy_dynamics
 
@@ -571,7 +571,7 @@ legacy_global_fields:
     since: 1
     access: legacy_rw
     per_level: false
-    value: {type: u8, scale: 1, unit: rpm, min: 0, max: 150, default: 70}
+    value: {type: u8, scale: 1, unit: rpm, min: 0, max: 150, default: 110}
     current_binding: IQ_RAMP_CAD_HI
     ui_group: advanced_legacy_dynamics
 
@@ -735,8 +735,14 @@ walk_fields:
     since: 1
     access: persistent_rw
     per_level: false
+    deprecated: true
     value: {type: u16, scale: 1, unit: second, min: 1, max: 120, default: 10}
     implementation: planned_walk_erps
+    deprecated_note: "FW-113.2: no wall-clock WA hold timeout exists in firmware. It was removed
+      in the FW-023..FW-073 ride-core refactor (was ui32_WA_timer/WA_TIMEOUT_TICKS). This schema
+      field was never bound to any register; it stays documented here so a future reader does not
+      re-add a hold-time limit that the WA safety gates intentionally do not have. Diagnostics
+      expose hold duration in frame 0x10228 Data5-6 (observe only, never gates)."
     ui_group: advanced_walk
 
 codegen_gates:

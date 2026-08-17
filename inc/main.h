@@ -43,6 +43,7 @@ OF SUCH DAMAGE.
 #include "config.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 
 /* led spark function */
@@ -51,6 +52,21 @@ void TIMER2_IRQHandler(void);
 void runPIcontrol(void);
 void write_virtual_eeprom(void);
 void read_virtual_eeprom(void);
+/*
+ * FW-110 v4: autodetect() drives the motor open-loop for >5 s. It is UNREACHABLE from any
+ * CAN command: the FW-110 v3 supervisor that used to mediate 0x6200 requests is removed, and
+ * 0x6200 itself answers with a single ERROR_ACK in both firmware variants (see
+ * src/CAN_Display.c). autodetect()'s body is deliberately untouched by this card.
+ *
+ * HONEST LIMITATION (not mitigated by this card): once this function starts, IT is the main
+ * loop for the whole of its own >5 s run - nothing else in main()'s while(1) executes until it
+ * returns, including the PAS/speed decode this same standstill check depends on. The guard at
+ * the top of this function's own body is therefore a POINT-IN-TIME check, true at the instant
+ * the motor starts turning, not a continuous one held throughout the run. Physical safety during
+ * those >5 s (the rider not touching the pedals/throttle) is not verified in software here - it
+ * would require rewriting this procedure itself into a non-blocking automaton, which is real
+ * motor-control work outside this card's CAN-queueing scope, not something a comment can supply.
+ */
 void autodetect(void);
 extern uint16_t slow_loop_counter;
 extern uint16_t switchtime[3];

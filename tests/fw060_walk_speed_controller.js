@@ -280,8 +280,8 @@ assert(dynamicsSource.includes("if (input->immediate_cut)"));
 assert(rideSource.includes("walk_was_active && !input->walk_active"));
 assert(mainSource.includes("bank_toggle_pending"));
 
-// Binding FW-082 values.
-assert.strictEqual(C.runMinIq, 2);
+// Binding FW-082/FW-113.1 values.
+assert.strictEqual(C.runMinIq, 0);
 assert.strictEqual(C.runMaxIq, 40);
 assert.strictEqual(C.startIq, 40);
 assert.strictEqual(C.startMaxIq, 40);
@@ -386,7 +386,8 @@ assert(
   `RUN span completed at tick ${runFullTick}`
 );
 
-// Normal RUN reduction is smooth but stops at the 2 Iq Hall keepalive.
+// FW-113.1: normal RUN reduction is smooth all the way down to a TRUE 0 Iq when the
+// PI is above target - no positive keepalive floor left in normal RUN.
 const runFall = new ControllerModel();
 runFall.startupComplete = true;
 runFall.commandQ = C.runMaxIq * q;
@@ -406,11 +407,12 @@ for (let tick = 0; tick < 8000; tick++) {
 }
 assert.strictEqual(runFallResult.iq, C.runMinIq);
 assert(
-  runFallTick >= 4780 && runFallTick <= 4860,
-  `RUN reduction reached keepalive at tick ${runFallTick}`
+  runFallTick >= 5050 && runFallTick <= 5160,
+  `RUN reduction reached true 0 Iq at tick ${runFallTick}`
 );
 
-// Far above target normal RUN keeps exactly 2 Iq instead of losing Hall at zero.
+// Far above target normal RUN descends all the way to a true 0 Iq (FW-113.1) instead
+// of being pinned at a positive keepalive. START is never re-armed by this descent.
 const softOverspeed = new ControllerModel();
 softOverspeed.startupComplete = true;
 softOverspeed.commandQ = 20 * q;
@@ -507,8 +509,8 @@ assert(
     `${C.coastRecoveryTicks - coastRecoveryFullTick} dwell ticks`
 );
 
-// Repeated Hall loss/return cycles must keep START disarmed and normal RUN at
-// 2 Iq rather than falling back to zero between recovery attempts.
+// Repeated Hall loss/return cycles must keep START disarmed and normal RUN back at a
+// TRUE 0 Iq rather than a positive keepalive between recovery attempts (FW-113.1).
 const repeatedRecovery = new ControllerModel();
 repeatedRecovery.startupComplete = true;
 repeatedRecovery.commandQ = C.runMinIq * q;
@@ -527,7 +529,7 @@ for (let cycle = 0; cycle < 5; cycle++) {
     assert(cycleResult.iq <= C.reacquireIq);
     assert(!cycleResult.startupActive);
   }
-  for (let tick = 0; tick < 2500; tick++) {
+  for (let tick = 0; tick < 4000; tick++) {
     cycleResult = repeatedRecovery.update({
       measuredErps: 160,
       hallValid: true,

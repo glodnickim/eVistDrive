@@ -38,7 +38,20 @@ OF SUCH DAMAGE.
 #include "motor_core.h"
 #include "motor_service.h"
 #include "rider_input.h"
+#include "pas_direction.h"
+#include "pas_liveness.h"
+#include "pas_quadrature.h"
 #include "ride_control.h"
+#include "ride_episode.h"
+#include "ride_wheel.h"         /* FW-112.2: the rolling-vs-stopped wheel fact */
+#include "pas_trace.h"
+#include "pas_raw.h"
+#include "diag_session.h"
+#include "rearm_delay_diag.h"   /* FW-111 */
+#include "fw112_diag.h"         /* FW-112-DIAG */
+#include "can_tx_queue.h"
+#include "can_multiframe.h"
+#include "can_reply_effects.h"
 #include "torque_input.h"
 #include "assist_modes.h"
 #include "tuning_config.h"
@@ -111,12 +124,14 @@ uint32_t WordNum = ((FMC_WRITE_END_ADDR - FMC_WRITE_START_ADDR) >> 2);
 can_trasnmit_message_struct transmit_message;
 can_receive_message_struct receive_message;
 FlagStatus receive_flag;
-FlagStatus PAS_flag=0;
 FlagStatus Speed_flag=0;
 FlagStatus reg_ADC_flag=0;
 FlagStatus OnOffButton_flag=0;
 FlagStatus BC_limit_flag=0;
-uint8_t Backwards_counter=0;
+//FW-109 v2: Backwards_counter/pas_rev_run/pas_rev_run_max/pas_rev_latches moved into
+//src/pas_direction.c (pas_direction_backpedal_count()/_confirmed()/_rev_run()/_rev_run_max()/
+//_backpedal_latches()) - derived from the ONE module that classifies raw PAS steps, instead of a
+//second independent readout of the same decoder here. See pas_direction.h for the full reasoning.
 
 void nvic_config(void);
 void led_config(void);
@@ -133,11 +148,10 @@ int32_t speed_PLL (int32_t ist, int32_t soll, uint8_t speedadapt);
 void runPIcontrol(void);
 void autodetect(void);
 int32_t map (int32_t x, int32_t in_min, int32_t in_max, int32_t out_min, int32_t out_max);
-void get_standstill_position();
+void get_standstill_position(void);
 void dyn_adc_state(q31_t angle);
 void fmc_program_hall_angles(void);
 void fmc_erase_pages(void);
-void PAS_processing(void);
 void reg_ADC_processing(void);
 void UART4_init(void);
 int16_t internal_tics_to_speedx100 (uint32_t tics);
@@ -149,8 +163,16 @@ uint8_t param_record_valid(void);   //FW-023: magic + version + length + crc of 
 uint8_t hall_angles_plausible(void);//FW-023: six transitions ~60 deg apart, order is +/-1
 void hall_load_defaults(void);      //FW-023: restore the calibrated values compiled into this build
 int8_t calculate_SOC(uint16_t voltage, uint8_t cells_in_series);
+/* FW-110: unconditional (every build) - wires the critical-frame queue to the real CAN
+ * peripheral. Forward-declared here, defined near crit_can_ops below. */
+static void crit_can_queue_init(void);
+/* FW-110 v4: wires the completed-reply side effects (0x6029's deferred diag_peak_reset) to the
+ * real multiframe producer. Forward-declared here, defined near crit_can_ops below. */
+static void can_reply_effects_init_wrapper(void);
 #if CAN_DIAGNOSTICS_ENABLE
-void print_debug_on_CAN(void);
+/* FW-106: print_debug_on_CAN() is gone; its frames are a phase of this non-blocking dump. */
+static void diag_dump_step(void);
+static void diag_diagnostics_init(void);
 #endif
 //--- SOC / Range ---
 void soc_init(void);
@@ -183,7 +205,69 @@ uint8_t ui8_wa_light_prev=0;
 uint8_t ui8_wa_level_prev=0;
 uint32_t ui32_wa_latch_ticks=0;
 uint16_t err_pulse_counter=0;       //seconds counter for pulsed Error 10 in stage 1
-uint16_t Speed_counter=0;
+#if CAN_DIAGNOSTICS_ENABLE
+/* FW-113.2: WA activation diagnostics, sampled in reg_ADC_processing() where the gates are
+ * computed and serialized in aggregate frame 0x10228. Hold ticks count only while a complete
+ * WA request is held - they prove long holds stay live, they never gate anything. */
+uint16_t wa_activation_reason=0;  /* WA_REASON_* activation bits, OR-ed with module bits in 0x10228 */
+uint8_t  wa_gates=0;              /* walk_can_request/btn/speed_ok/brake/error/latch raw gates */
+uint16_t wa_hold_ticks=0;         /* free-running hold time @ main-loop rate while walk_request */
+#endif
+/*
+ * FW-103: the wheel-speed timebase, moved off the main loop entirely.
+ *
+ * Before this, the elapsed-ticks counter (Speed_counter) was incremented in reg_ADC_processing(),
+ * itself gated by a plain FlagStatus set at 4 kHz by TIMER1_IRQHandler. A FlagStatus is one bit:
+ * if the main loop is busy for more than one 4 kHz period (250 us) - and print_debug_on_CAN()
+ * alone can run to several hundred us of CAN mailbox waits - the interrupt sets the SAME flag a
+ * second time before it is consumed, and that tick is gone. The counter then undercounts the
+ * true elapsed time, so period-based speed reads HIGH, worse the shorter the true period is -
+ * i.e. worse at higher real speed. Exactly the symptom reported on the bike.
+ *
+ * The fix: a free-running tick counter written ONLY by the ISR (control_time_ticks), and the
+ * wheel pulse ISR (EXTI2) stamps its own arrival time into speed_edge_tick. Neither depends on
+ * the main loop keeping up - a delayed main loop delays when the number is READ, never what it
+ * IS. Unsigned subtraction (now - reference) stays correct across the 32-bit wrap without any
+ * special case.
+ *
+ * speed_last_tick only advances on an ACCEPTED pulse (Speed_processing below), preserving the
+ * FW-036 behaviour on a rejected/glitch edge exactly as before: the reference point does not
+ * move, so the period to the NEXT real edge is still measured from the last good one, not
+ * shortened by the glitch.
+ *
+ * FW-104: renamed from speed_time_ticks. The same lossy-flag defect turned out to affect PAS
+ * timing, the gap histogram and ride_episode too - they all now share this ONE hardware clock
+ * instead of each counting its own (possibly missed) call invocations. See the FW-104 block
+ * right before main()'s while(1) for the rest of that story.
+ */
+volatile uint32_t control_time_ticks=0; //ISR-only: free-running 4 kHz clock, shared by speed/PAS/ride diagnostics
+volatile uint32_t speed_edge_tick=0;    //ISR-only: control_time_ticks at the last wheel edge, any edge
+static uint32_t speed_last_tick=0;      //main-loop-owned: control_time_ticks at the last ACCEPTED edge
+static uint32_t wheel_pulse_count=0;    //FW-103: accepted edges since startup -> exact distance, see Speed_processing()
+
+/*
+ * FW-104: "how much are we actually losing". Every fix in this card removes an ASSUMPTION that
+ * reg_ADC_processing() runs once per hardware tick; this measures how false that assumption
+ * really was. control_time_ticks (ISR, never missed) against how far it has moved since the
+ * PREVIOUS processed iteration (main loop, can fall behind): any gap > 1 is that many 4 kHz
+ * periods that were silently coalesced into one call. Zeroed right before main()'s while(1) -
+ * the startup calibration loops spin tightly on reg_ADC_flag and would only add boot noise.
+ */
+static uint32_t control_prev_processed_tick=0;
+static bool     control_monitor_valid=false;
+static uint32_t missed_control_ticks=0;
+/* FW-110: was uint16_t, silently saturated at 65535 and then never moved again - a session that
+ * lost far more events than that (measured: 12,543 in one 88s session) reported a source value
+ * already stuck at the ceiling, so diag_session's own delta-from-session-start math produced 0.
+ * uint32_t so this global cannot saturate before a session's anchor is even taken; the 0x10218
+ * wire field is still 16 bits, so diag_session.c clamps at the point it serializes, not here. */
+static uint32_t missed_control_events=0;
+static uint16_t worst_missed_burst_ticks=0;
+#if CAN_DIAGNOSTICS_ENABLE
+/* FW-106: the loss burst seen on THIS iteration, handed to diag_session and cleared each tick. */
+static uint16_t diag_burst_this_tick=0;
+#endif
+
 uint8_t coast_wheel_moved=1;  //FW-061: wheel turned since pedalling stopped; starts "moving" so an unknown state is treated as riding
 int32_t ButtonVoltageCumulated=620<<6;
 #define iabs(x) (((x) >= 0)?(x):-(x))
@@ -244,8 +328,73 @@ uint8_t start_phase=0;       //FW-087: 1 = pedalling has begun but no cadence me
 uint16_t pas_idle_ticks=0;   //ticks since last quadrature transition (for stop detection)
 uint16_t pas_last_period_ticks=PAS_STOP_TICKS; //ticks between the two most recent forward transitions -> adaptive stop-timeout basis
 uint16_t pas_stop_timeout=PAS_STOP_TICKS; //this tick's adaptive stop threshold, clamp(2*pas_last_period_ticks, PAS_STOP_TICKS, PAS_STOP_TICKS_MAX)
-uint8_t forward_pedaling=0;  //1 = cranks turning forward (cadence>0, not reverse, not stopped)
-uint8_t fwd_run=0;           //consecutive forward quadrature steps (reset on any backward step or stop) -> jiggle-proof engage gate
+uint8_t forward_pedaling=0;  //FW-109: 1 = cranks turning forward (cadence>0, not stopped). No
+//longer implies "not in a reverse/invalid hold" - that question belongs to pas_direction.c's
+//automaton alone now (direction_inhibit_active); removing the old Backwards_counter<4 term here
+//does not weaken the cold-start gate, which fwd_run already protects independently (any reverse
+//or invalid step resets it, whether or not the legacy backpedal latch has confirmed a deliberate
+//backpedal yet).
+uint8_t pas_real_stop=0;   //FW-109: genuine stop / PAS timeout - pas_idle_ticks>pas_stop_timeout,
+//independent of Backwards_counter/direction_inhibit_active on purpose. See inc/rider_input.h.
+//FW-107: fwd_run moved into src/pas_direction.c (pas_direction_fwd_run() / _on_step() / _on_stop())
+//so a host test can drive the real production counter update. Same counter, same rules, just
+//no longer a bare global here - see inc/pas_direction.h.
+//FW-109 v2: pas_direction.c also owns the PAS direction safety automaton now (FORWARD_SAFE/
+//DIRECTION_INHIBIT/FORWARD_CONFIRMING - see inc/pas_direction.h), AND the legacy Backwards_
+//counter/pas_rev_run/pas_rev_run_max/pas_rev_latches derivation (see pas_direction_backpedal_*()/
+//_rev_run*()) - one module classifies every raw step, nothing here reinterprets it a second time.
+//direction_inhibit_active is read straight from the module (a level, always current - no
+//tick-scoped copy needed). forward_confirmed_this_tick is an EDGE and does need one: true only on
+//the exact pas_direction_on_step() call that just cleared DIRECTION_INHIBIT, consumed and reset to
+//false where rider_input_t is built - replaces the old pas_step_event_this_tick this same way.
+static bool pas_forward_confirmed_this_tick = false;
+
+/*
+ * FW-110: the standstill gate for Hall/position-sensor calibration (autodetect(), below).
+ * autodetect() drives the motor open-loop for >5 s - it must never start while the bike could be
+ * moving. Before this card, processCAN_Rx() called autodetect() directly the instant CAN command
+ * 0x6200 arrived, with no check at all: reachable at any time, including while riding.
+ *
+ * autodetect_standstill_ticks counts how long EVERY condition below has held CONTINUOUSLY, reset
+ * to 0 the instant any one of them is not met - it only ever measures an unbroken run, updated
+ * once per control iteration from reg_ADC_processing() (where all of these fields are freshest).
+ * Capped at the threshold rather than left free-running: nothing needs to know HOW long past the
+ * threshold standstill has held, only whether it has been reached.
+ */
+#define AUTODETECT_STANDSTILL_MS    1000U
+#define AUTODETECT_STANDSTILL_TICKS ((uint32_t)AUTODETECT_STANDSTILL_MS * CONTROL_TIMEBASE_HZ / 1000U)
+static uint32_t autodetect_standstill_ticks = 0;
+
+static bool autodetect_conditions_met(void)
+{
+	return (MS.Speedx100 == 0)
+	    && (MS.cadence == 0) && (pas_real_stop != 0)
+	    && (MS.i_q_setpoint == 0)
+	    && (MS.pushassist_flag == RESET)              /* no Walk Assist driving the motor */
+	    && (adc_value[1] <= MP.throttle_offset);       /* no throttle applied */
+}
+
+/* Call once per control iteration - see reg_ADC_processing()'s tail. */
+static void autodetect_standstill_track(void)
+{
+	if (autodetect_conditions_met()) {
+		if (autodetect_standstill_ticks < AUTODETECT_STANDSTILL_TICKS) autodetect_standstill_ticks++;
+	} else {
+		autodetect_standstill_ticks = 0;
+	}
+}
+
+/*
+ * FW-110: the ONE "is the bike confirmed standing still right now" query. FW-110 v3 also used it
+ * as the (then-removed) hall_calibration.c supervisor's standstill gate; FW-110 v4 keeps it
+ * because autodetect()'s own body still uses it as its last-instant defense-in-depth check, and
+ * autodetect() itself is deliberately untouched by this card (see the FW-110 v4 scope). A level,
+ * not an edge - always reflects the current state of autodetect_standstill_ticks, never cached.
+ */
+bool hall_calibration_standstill_confirmed(void)
+{
+	return autodetect_standstill_ticks >= AUTODETECT_STANDSTILL_TICKS;
+}
 volatile uint16_t pas_fwd_accum=0; //FW-027 diag: free-running count of forward quadrature steps (never reset, wraps at 65535). Log analysis diffs consecutive frames; nonzero delta while crank is stopped => phantom (EMI) transitions.
 //FW-097 MEASUREMENT ONLY: every reverse quadrature step, latched for the 0x0001020A frame.
 //No decision anywhere reads these. See the note at the backward-step branch in the decoder.
@@ -256,11 +405,11 @@ uint16_t pas_rev_last_period=0;   //the last genuine forward-step gap, for scale
 uint8_t  pas_rev_last_cadence=0;
 uint8_t  pas_rev_last_fwdrun=0;   //forward-step run that this reverse step destroyed
 uint16_t pas_rev_min_gap=0xFFFF;  //smallest gap ever seen at a reverse step
-//FW-098: consecutive-reverse-step run, and the two counters that separate "a reverse step was
-//seen" from "the long penalty actually fired".
-uint8_t  pas_rev_run=0;           //current unbroken run of reverse steps (any forward step clears it)
-uint8_t  pas_rev_run_max=0;       //longest run seen this session
-uint16_t pas_rev_latches=0;       //times BACKWARD_CONFIRM_STEPS was reached
+//FW-109 v2: the consecutive-reverse-step run and the confirmed-backpedal latch/series-count that
+//used to live here as pas_rev_run/pas_rev_run_max/pas_rev_latches moved into src/pas_direction.c
+//(pas_direction_rev_run()/_rev_run_max()/_backpedal_latches()) - same arithmetic, same FW-098/
+//FW-101 timing, just derived from the one module that classifies raw steps instead of a second
+//independent readout of the decoder here.
 /*
  * FW-098 SUCCESS METRIC. The counter dropping is not the point — the point is how much of the
  * time the rider is pedalling forward and getting nothing. Counted in the 4 kHz control tick.
@@ -270,6 +419,20 @@ uint32_t metric_iq_zero_ticks=0;  //...of which the motor was given no current a
 //...and why. Not a pure reverse-latch measure on its own: the ordinary start delay counts too.
 uint32_t metric_zero_backward=0;   //backward latch was up
 uint32_t metric_zero_notlatched=0; //ride latch not armed yet (start conditions, incl. fwd_run)
+/*
+ * FW-104: these four used to be `metric_x++` once per reg_ADC_processing() call - the same
+ * lossy-flag assumption as everything else in this card. The fix is not simply switching to
+ * `+= control_delta`: the classification (pedaling? zero Iq? why?) for the ticks that were
+ * SKIPPED belongs to whatever was true when the PREVIOUS iteration finished, not to whatever
+ * this iteration's fresh sensor reading says right now - the new reading describes only this
+ * instant, not the gap leading up to it. So the classification is saved at the end of every
+ * iteration, and the elapsed hardware time since the last iteration is credited to that SAVED
+ * classification at the start of the next one, before anything new is computed.
+ */
+static bool prev_metric_pedaling=false;
+static bool prev_metric_iq_zero=false;
+static bool prev_metric_why_backward=false;
+static bool prev_metric_why_notlatched=false;
 /*
  * FW-099 gap measurement, at the 4 kHz control tick.
  *
@@ -281,52 +444,18 @@ uint32_t metric_zero_notlatched=0; //ride latch not armed yet (start conditions,
  * moment), so this measures interruptions the rider feels, not moments that were already idle.
  */
 /*
- * FW-101: ONE RE-ENGAGEMENT EPISODE, recorded at the 4 kHz tick.
- *
- * The periodic frames go out every 40 ms while PAS steps arrive every 12-39 ms, so a whole
- * reverse-and-recover transition can happen between two frames. The aggregate counters can
- * therefore say how OFTEN it happens but never how the time inside one event was spent. This
- * records a single episode end to end and reports the finished result, so the bus rate does
- * not change.
- *
- * Three states, on purpose. The previous single gap_armed flag merged separate interruptions:
- * once armed, it stayed armed until a dip appeared, so a reverse step that cost nothing and
- * another one half a second later were timed as one long event.
- *
- *   EP_IDLE          nothing in progress
- *   EP_WAIT_DIP      a reverse step happened while current was flowing, but the current has
- *                    not actually fallen yet. A NEW reverse step here RE-ANCHORS the episode
- *                    — the one that matters is the one that finally takes the drive away.
- *   EP_WAIT_RECOVER  the current did fall below half. Further reverse steps now extend the
- *                    same episode, because they are part of one interruption.
+ * FW-101: the one-episode recorder now lives in ride_episode.c, free of MS/MP, so its state
+ * machine can be linked and driven by tests/host/fw101_episode_host.c. The first version was
+ * written inline here and shipped with three defects that invalidated its own output — and
+ * nothing in main.c can be tested, because every JS test reads this file as text.
  */
-typedef enum {
-	EP_IDLE = 0,
-	EP_WAIT_DIP = 1,
-	EP_WAIT_RECOVER = 2
-} ep_state_t;
-ep_state_t ep_state = EP_IDLE;
-uint32_t ep_ticks = 0;           /* since the anchoring reverse step */
-int32_t  ep_iq_ref = 0;          /* current the rider had at that instant */
-uint8_t  ep_rev_steps = 0;       /* reverse steps counted in this episode */
-uint8_t  ep_flags = 0;           /* see EP_FLAG_* */
-uint16_t ep_number = 0;          /* completed episodes */
-uint16_t ep_t_latch = 0xFFFF;    /* ms from anchor to the latch re-arming; 0xFFFF = never */
-uint16_t ep_t_recover = 0xFFFF;  /* ms from anchor to 80 % of the previous current */
-uint16_t ep_arm_seq_prev = 0;    /* to spot a new arming in ride_control's snapshot */
-/* Snapshot of the completed episode, published in 0x10210 / 0x10211. */
-uint8_t  ep_pub_rev_steps = 0, ep_pub_flags = 0;
-uint16_t ep_pub_t_latch = 0, ep_pub_t_recover = 0;
-uint16_t ep_pub_load = 0, ep_pub_fast = 0, ep_pub_seed = 0;
-int32_t  ep_pub_iq_after_limits = 0;
-#define EP_FLAG_HARD_CUT    0x01  /* brake / reverse / fault was active during the episode */
-#define EP_FLAG_PAS_TIMEOUT 0x02  /* the cranks were judged stopped at some point */
-#define EP_FLAG_LATCH_ARMED 0x04  /* the ride latch re-armed before the episode ended */
-#define EP_FLAG_LIMITER     0x08  /* a limiter took a non-zero demand to zero */
-#define EP_FLAG_TIMED_OUT   0x10  /* gave up after 2 s without recovering */
 
 uint8_t  gap_armed=0;
-uint32_t gap_ticks=0;
+static uint32_t gap_anchor_tick=0; //FW-104: control_time_ticks at arming, replaces a call-counted gap_ticks
+//FW-104: named, not a bare 8000 that quietly meant "2 s @ 4 kHz". Derived so it stays 2 s at
+//whatever CONTROL_TIMEBASE_HZ actually is.
+#define GAP_TIMEOUT_MS 2000U
+#define GAP_TIMEOUT_TICKS ((uint32_t)GAP_TIMEOUT_MS * CONTROL_TIMEBASE_HZ / 1000U)
 /*
  * FW-099b: the first version armed on "current is flowing" and CLOSED on the same condition,
  * so it recorded 0 ms every time — the hard-cut ramp needs 200 ms to bring the current down
@@ -358,9 +487,12 @@ uint16_t tq_fault_ticks=0;      // debounce for out-of-range signal
 uint32_t tq_fault_hold=0;       // min hold after the cause clears (~5 s) - no flicker/assist chatter
 volatile uint8_t bank_save_request=0; //FW-006: 0x6022 received -> persist banks at next standstill
 volatile uint8_t soc_full_persist=0;       //FW-018: 0x602B sets 1 = MP.soc_full_* changed, flash-persist at standstill
+//FW-015b: peak-hold diagnostics reset flag - set by the FW-110 v4 confirmed-0x6029 side effect in
+//every build (see can_reply_effects.c); in CAN_DIAGNOSTICS_ENABLE=0 builds the peaks it clears do
+//not exist, so it is write-only there, but it still must be declared because main.c sets it always.
+volatile uint8_t diag_peak_reset=0;
 #if CAN_DIAGNOSTICS_ENABLE
 //FW-015b: peak-hold diagnostics (reset on each 0x6029 read) - lets a brief bench press be captured
-volatile uint8_t diag_peak_reset=0;
 volatile uint8_t diag_peak_cadence=0;
 volatile uint16_t diag_peak_torque=0, diag_peak_human_w=0, diag_peak_support=0, diag_peak_motor_w=0;
 volatile uint16_t diag_peak_precomp_motor_w=0, diag_peak_cadence_comp=1000, diag_peak_u_abs=0; //FW-057
@@ -637,6 +769,18 @@ int main(void)
 	motor_command_t initial_motor_command = {0};
 	motor_core_set_command(&initial_motor_command);
 	ride_control_init();
+	pas_direction_init();  //FW-109 v2: explicit contract, not an accident of .bss zeroing -
+	                        //see inc/pas_direction.h; this module's per-step API (on_step/
+	                        //on_stop) is called from main.c's own PAS decode block below, so
+	                        //main.c is where its init belongs too, same as the modules above.
+	pas_liveness_init();   //FW-112.1: any-PAS-edge liveness timer - see inc/pas_liveness.h
+	crit_can_queue_init(); //FW-110: unconditional (every build) - critical HMI frames go through
+	                        //this queue whether or not CAN_DIAGNOSTICS_ENABLE is set.
+	can_multiframe_init(); //FW-110 v4: clean automaton/counters, no active transfer, no pending id
+	can_reply_effects_init_wrapper(); //FW-110 v4: unconditional - the 0x6029 completed-reply
+	                        //side effect must start with no pending transfer id.
+	ride_episode_init();   //FW-101 diagnostics
+	pas_trace_init();      //FW-102 diagnostics
 	level_gesture_init(level_gestures, sizeof(level_gestures)/sizeof(level_gestures[0])); //FW-050
 	MS.angle_est=SPEED_PLL;
 	MS.pushassist_flag=SET;
@@ -649,6 +793,7 @@ int main(void)
 	MS.pushassist_flag=RESET;
 	MS.walk_can_request=RESET;
 	MS.distance_since_startup=0;
+	wheel_pulse_count=0;   //FW-103: keep the exact-mm distance total in sync with the reset above
 
 	MP.pulses_per_revolution = PULSES_PER_REVOLUTION;
 	MP.wheel_cirumference = WHEEL_CIRCUMFERENCE;
@@ -756,6 +901,32 @@ int main(void)
     }
     soc_init();
 
+    /*
+     * FW-104: start the "how much are we losing" monitor HERE, not at boot. The calibration
+     * loops above spin tightly on reg_ADC_flag and process every tick 1:1 - counting them would
+     * only dilute the number that actually matters, which is what happens during real riding and
+     * diagnostic CAN traffic. control_prev_processed_tick and the prev_metric_* classification
+     * are given a clean baseline at the same instant, so the very first iteration inside the
+     * loop credits nothing to a classification that was never really observed.
+     */
+    control_prev_processed_tick = control_time_ticks;
+#if CAN_DIAGNOSTICS_ENABLE
+    /*
+     * FW-106: bring the diagnostic recorders up HERE, at the same instant as the loss monitor
+     * below and for the same reason - the calibration loops above spin tightly on reg_ADC_flag
+     * and anything they contributed would be boot noise, not riding.
+     */
+    diag_diagnostics_init();
+#endif
+    control_monitor_valid = true;
+    missed_control_ticks = 0;
+    missed_control_events = 0;
+    worst_missed_burst_ticks = 0;
+    prev_metric_pedaling = false;
+    prev_metric_iq_zero = false;
+    prev_metric_why_backward = false;
+    prev_metric_why_notlatched = false;
+
     while (1){
     	fwdgt_counter_reload();
 
@@ -767,10 +938,53 @@ int main(void)
 
 #endif
     	//FW-050: the offroad decimal-code accumulator is gone (see level_gesture.c).
-    	//if(PAS_flag)PAS_processing(); //disabled: cadence/direction now from quadrature decoder in reg_ADC_processing
-    	PAS_flag=0;
+    	//FW-109 v2: PAS_flag/PAS_processing() removed outright - a second, obsolete (M560-era)
+    	//cadence/direction decoder that had been unreachable since cadence/direction moved to the
+    	//quadrature decoder in reg_ADC_processing(); confirmed dead by grep (its only call site was
+    	//this now-removed commented-out line) before deletion. EXTI10_15_IRQHandler still clears
+    	//its own hardware interrupt flag, it just no longer sets a flag nothing reads.
     	if(Speed_flag)Speed_processing();
     	if(reg_ADC_flag)reg_ADC_processing();
+    	/*
+    	 * FW-110: one non-blocking step each of the critical-frame queue and the multiframe
+    	 * producer that feeds it (HMI protocol replies, the status/poll/heartbeat frames the
+    	 * display needs to stay in sync and not exit Walk Assist, and long Canable reads like the
+    	 * 255-byte profile bank). Unconditional - unlike the diagnostics dump below, these must
+    	 * flow in every build, not just CAN_DIAGNOSTICS_ENABLE=1. can_multiframe_step() runs
+    	 * first since it only ever feeds can_tx_queue_enqueue() - servicing the queue afterward
+    	 * lets a fragment it just offered go out the same tick it was produced.
+    	 */
+    	can_multiframe_step();
+    	can_tx_queue_service(control_time_ticks);
+    	/*
+    	 * FW-110 v4: apply side effects whose precondition is "this exact multiframe reply was
+    	 * CONFIRMED delivered end to end" - 0x6029's diag_peak_reset is the one. The transfer id
+    	 * was remembered by CAN_Display.c's 0x6029 handler at arm time (can_reply_effects_6029_
+    	 * armed); this poll resolves it against the real producer (just stepped above) and emits
+    	 * the effect at most once, only on a confirmed DONE. An aborted/ambiguous transfer emits
+    	 * nothing, keeping the peak-hold data - see can_reply_effects.c.
+    	 */
+    	{
+    		can_reply_effect_t fx = can_reply_effects_poll();
+    		if (fx == CANFX_EFFECT_DIAG_PEAK_RESET) {
+    			diag_peak_reset = 1; //next 4kHz cycle clears the peaks (see reg_ADC_processing)
+    		}
+    	}
+#if CAN_DIAGNOSTICS_ENABLE
+    	/*
+    	 * FW-106: one non-blocking step of the post-ride dump. It does nothing at all while the
+    	 * bike is moving, and at most one CAN mailbox action when it is not - so unlike the
+    	 * blocking block this replaced, it can never hold up the PAS decode above it.
+    	 *
+    	 * FW-110: diagnostics may not start (or retry) a NEW transmit while any critical frame is
+    	 * still waiting for a mailbox - allow_new_tx is main.c's proof of that, computed fresh
+    	 * every call from the two producers above. This does not block diag_dump_step() itself
+    	 * from running: it still polls an already in-flight diagnostic frame's result and still
+    	 * notices the rider setting off again and aborts the dump at once, on every single call,
+    	 * regardless of allow_new_tx - see diag_session_dump_step()'s own contract.
+    	 */
+    	diag_dump_step();
+#endif
 
 
 
@@ -813,8 +1027,20 @@ int main(void)
 
     	}
 
-#if CAN_DIAGNOSTICS_ENABLE
-            if(t3100_counter > 40){ t3100_counter=0; sendCAN_3100(&MS); } //40/4000Hz=10ms torque sensor emulation (dev telemetry - OFF by default; floods bus & can block HMI info at startup)
+#if CAN_TORQUE_STREAM_ENABLE
+            /*
+             * FW-110 v3: gated on the SAME facts allow_new_tx uses for diagnostics - this stream
+             * may not even ATTEMPT a transmit while any critical frame is queued, in flight, or
+             * still being produced by the multiframe automaton. can_message_transmit() and
+             * can_tx_queue_enqueue()/can_multiframe's own enqueues all draw from the SAME
+             * physical CAN peripheral mailboxes, so a direct transmit here - even outside
+             * can_tx_queue's FIFO - can still claim a mailbox a critical frame was about to use.
+             * Placed AFTER can_multiframe_step()/can_tx_queue_service() in this iteration (see
+             * above), never earlier - critical frames always get first refusal of the bus.
+             */
+            if(t3100_counter > 40 && can_tx_queue_depth() == 0U && !can_multiframe_busy()){
+            	t3100_counter=0; sendCAN_3100(&MS);
+            } //40/4000Hz=10ms torque sensor emulation (dev telemetry - OFF by default, own flag, own best-effort path outside can_tx_queue - FW-110)
 #endif
 
             if (slow_loop_counter > 160){ //slow loop base tick 40ms (160/4000Hz); CAN messages use own counters
@@ -825,9 +1051,12 @@ int main(void)
             	printf("%d, %d, %d, %d, %d\r\n",MS.Battery_Current,MS.i_q_setpoint,MP.reverse*MS.i_q,MS.p_human,MS.Speedx100);
 #endif
 
-#if CAN_DIAGNOSTICS_ENABLE
-            	print_debug_on_CAN();
-#endif
+/*
+ * FW-106: print_debug_on_CAN() used to be called here, every 40 ms, and sent 23 frames with a
+ * blocking mailbox wait behind each one - from the same main loop that decodes PAS. That is
+ * gone. Its frames are now one phase of the post-ride dump, driven from the main loop by
+ * diag_dump_step() and only while the bike is standing still.
+ */
             	p++;
 
             	static uint8_t hb_tick=0, speed_tick=0, cad_tick=0, misc_tick=0, s202_tick=0;
@@ -874,9 +1103,12 @@ int main(void)
             	//Speed display: hard zero after SPEED_STOP_TICKS of silence (~2.65 s, min ~3 km/h);
             	//between pulses cap the shown speed at the value implied by the silence so far (+25% grace),
             	//so braking reads as a smooth fall instead of a value frozen until the timeout.
-            	if(Speed_counter>SPEED_STOP_TICKS){ MS.Speedx100=0; last_valid_speed_x100=0; } //FW-036: clear baseline so first pulse after a stop isn't rejected
-            	else if(MS.Speedx100>0 && Speed_counter>400){ //>0.1 s since last pulse (guards div and leaves fresh pulses alone)
-            		uint32_t implied_x100 = (uint32_t)MP.wheel_cirumference*4*360/((uint32_t)MP.pulses_per_revolution*Speed_counter);
+            	//FW-103: silence measured from the same ISR timebase as the period itself, read
+            	//fresh here rather than a main-loop counter - correct across the 32-bit wrap too.
+            	uint32_t speed_silence_ticks = control_time_ticks - speed_last_tick;
+            	if(speed_silence_ticks>SPEED_STOP_TICKS){ MS.Speedx100=0; last_valid_speed_x100=0; } //FW-036: clear baseline so first pulse after a stop isn't rejected
+            	else if(MS.Speedx100>0 && speed_silence_ticks>SPEED_DECAY_GUARD_TICKS){ //>0.1 s since last pulse (guards div and leaves fresh pulses alone)
+            		uint32_t implied_x100 = (uint32_t)MP.wheel_cirumference*(SPEED_TIMEBASE_HZ/1000U)*360/((uint32_t)MP.pulses_per_revolution*speed_silence_ticks); //FW-103: same formula as Speed_processing(), same named rate
             		if((uint32_t)MS.Speedx100*100 > implied_x100*(100+SPEED_DECAY_MARGIN_PCT)){ MS.Speedx100=(uint16_t)implied_x100; last_valid_speed_x100=MS.Speedx100; } //FW-036: track decayed baseline
             	}
 				slow_loop_counter = 0;
@@ -927,7 +1159,7 @@ int main(void)
             if(MS.i_q_setpoint){
             	if(!ui_8_PWM_ON_Flag){
             		pwm_cutoff_active=0;        //przerwij ewentualne miekkie zwolnienie - wracamy do FOC
-            		get_standstill_position();
+			get_standstill_position();
             		//FW-035: bumpless enable. PI_control slews PI.out by max_step, so a stale
             		//.out from before the bridge was disabled would kick the gearbox on the first
             		//FOC cycle after re-enable. Start every bridge-on from a clean neutral state:
@@ -1341,7 +1573,7 @@ void timer0_config(void)
 
 }
 
-void timer1_config(void) //running at 6kHz interrupt frequency
+void timer1_config(void) //FW-104: stale "6kHz" corrected - CONTROL_TIMEBASE_HZ 4000U is what every consumer (speed, PAS diag, ride_episode) actually assumes
 {
     timer_oc_parameter_struct timer_ocintpara;
     timer_parameter_struct timer_initpara;
@@ -1506,7 +1738,21 @@ void TIMER1_IRQHandler(void) // regular ADC processing and common slow timing ta
         /* clear channel 0 interrupt bit */
         timer_interrupt_flag_clear(TIMER1,TIMER_INT_FLAG_UP);
 
+        control_time_ticks++; //FW-103/104: the real 4 kHz timebase; never gated on the main loop
         reg_ADC_flag=1;
+#if CAN_DIAGNOSTICS_ENABLE
+        /*
+         * FW-106: the raw PAS line recorder, sampled HERE and nowhere else. The production
+         * decoder in reg_ADC_processing() reads the same two pins from the MAIN LOOP, which is
+         * exactly what the diagnostic CAN traffic was stalling - so it could never be its own
+         * witness. This one cannot be delayed by anything the main loop does, which is the whole
+         * point: the difference between the two IS the measurement. Cost on an unchanged tick is
+         * one compare (see pas_raw_isr_sample), and the whole path is compiled out of the normal
+         * firmware.
+         */
+        pas_raw_isr_sample((uint8_t)(((GPIO_ISTAT(GPIOC)&GPIO_PIN_12)?1:0) |
+                                     ((GPIO_ISTAT(GPIOD)&GPIO_PIN_2)?2:0)), control_time_ticks);
+#endif
 //        pulse_counter++;
 //        if(pulse_counter>1000)gpio_bit_set(GPIOB,GPIO_PIN_8);
 //        else gpio_bit_reset(GPIOB,GPIO_PIN_8);
@@ -1656,7 +1902,8 @@ void TIMER2_IRQHandler(void)
 void EXTI10_15_IRQHandler(void)
 {
     if(RESET != exti_interrupt_flag_get(EXTI_12)) {
-    	PAS_flag = 1;
+    	//FW-109 v2: this used to set PAS_flag for PAS_processing() (removed - see below). Nothing
+    	//reads a flag any more; the hardware interrupt flag still has to be cleared here regardless.
         exti_interrupt_flag_clear(EXTI_12);
     }
 }
@@ -1664,38 +1911,10 @@ void EXTI10_15_IRQHandler(void)
 void EXTI2_IRQHandler(void)
 {
     if(RESET != exti_interrupt_flag_get(EXTI_2)) {
-    	Speed_flag = 1;
+    	speed_edge_tick = control_time_ticks;   //FW-103: stamp the edge HERE, immune to main loop delay
+    	Speed_flag = 1;                       //still just a "go look" hint - fine if a repeat is missed
         exti_interrupt_flag_clear(EXTI_2);
     }
-}
-
-void PAS_processing(void)
-{
-	if(PAS_counter>70){
-		MS.cadence=10000/PAS_counter;//24 Pulses per crank revolution, 4000 Hz Timer interrupt frequency (for M560 about 48 pulses on speed/direction pin)(4000*60/24)=10000
-		uint16_cadence_filtered-=uint16_cadence_filtered>>3;
-		uint16_cadence_filtered+=MS.cadence;
-
-
-		PAS_flag = 0;
-		if(gpio_input_bit_get(GPIOD,GPIO_PIN_2)){
-			if(Backwards_counter<10)Backwards_counter++;
-
-		}
-		else{
-			if(Backwards_counter)Backwards_counter--;
-			PAS_counter=0;
-		}
-		torque_cumulated-=torque_cumulated>>MS.TQfilter;
-		if(MS.torque_on_crank>750){
-			torque_cumulated+=(MS.torque_on_crank-750);
-		}
-		//Power=2*Pi*speed*torque, calibration factors: rpm to 1/s for cadence: /60, mV to Nm: 750 to 3200 --> 0 to 80 Nm. (from Bafang data sheet)
-		MS.torque_filtered=(torque_cumulated>>MS.TQfilter);
-		MS.p_human=(uint16_t)((float)(MS.cadence*MS.torque_filtered)*0.00342); //in Watt
-
-		//PAS_counter=0;
-	}
 }
 
 //FW-036: false-speed-pulse rejection. A hard current cut / backpedal can couple a spurious
@@ -1703,35 +1922,111 @@ void PAS_processing(void)
 //limiter then zeroes assist for ~2-3 s. Physics: the wheel can DECELERATE fast but cannot
 //ACCELERATE by a big step in a fraction of a second. So validate every pulse against the max
 //physical rise (relative to the last valid speed and the time since it), plus an absolute
-//backstop. A rejected pulse updates nothing (speed / distance / counter), so the reading stays
-//on the last good value and decays naturally, and a series of glitches can't hold false speed.
-#define SPEED_TICKS_PER_S          4000U   // Speed_counter increments at the 4 kHz loop
+//backstop. A rejected pulse updates nothing (speed / distance / reference edge), so the reading
+//stays on the last good value and decays naturally, and a series of glitches can't hold false
+//speed. FW-103: the reference edge (speed_last_tick) is what must NOT move on a reject - that is
+//what makes the NEXT real edge still measure the true period, uncontaminated by the glitch.
 #define SPEED_MAX_INSTANT_X100     7000U   // 70 km/h absolute backstop (no e-bike wheel does this)
 #define SPEED_MAX_ACCEL_X100_PER_S 2500U   // 25 km/h/s max physical rise (generous; blocks glitches)
 
+static bool speed_have_reference=false; //FW-103: the first edge after boot has no real period yet
+
 void Speed_processing(void)
 {
-		uint16_t ticks = Speed_counter;
-		if(ticks==0){ Speed_flag=0; return; } //two edges in one tick -> glitch (also guards /0)
-		uint32_t instant = MP.wheel_cirumference*4*360/(MP.pulses_per_revolution*ticks); //km/h x100
+		//FW-103: the very first edge after boot has nothing to measure FROM - speed_last_tick
+		//is still its power-on value, so a period against it would be "time since boot", not
+		//"time since the previous wheel edge". In practice the existing plausibility checks
+		//below would almost always absorb this harmlessly (a long boot-relative period implies
+		//a near-zero speed, not a false-high one), but relying on that interaction is fragile
+		//and says nothing about why it is safe. Made explicit instead.
+		if(!speed_have_reference){
+			speed_have_reference=true;
+			speed_last_tick=speed_edge_tick;
+			Speed_flag=0;
+			return;
+		}
+		//FW-103: both timestamps are ISR-written uint32_t; the subtraction is unsigned, so it
+		//stays correct across the 32-bit wrap of control_time_ticks without any special-case.
+		uint32_t period = speed_edge_tick - speed_last_tick;
+		Speed_flag = 0;
+		if(period==0){ speed_glitch_count++; return; } //two edges at the same tick -> glitch (also guards /0)
+		//FW-103: SPEED_TIMEBASE_HZ/1000U replaces a bare 4 - the km/h x100 conversion still uses
+		//the fixed unit constant 360, only the tick-rate factor is named (config.h, one place).
+		uint32_t instant = MP.wheel_cirumference*(SPEED_TIMEBASE_HZ/1000U)*360/(MP.pulses_per_revolution*period); //km/h x100
 		uint32_t allowed = (uint32_t)last_valid_speed_x100 +
-			((uint32_t)SPEED_MAX_ACCEL_X100_PER_S*ticks)/SPEED_TICKS_PER_S; //max physically-possible rise
+			((uint32_t)SPEED_MAX_ACCEL_X100_PER_S*period)/SPEED_TIMEBASE_HZ; //max physically-possible rise
 		if(instant>SPEED_MAX_INSTANT_X100 || instant>allowed){ //impossible jump up -> reject, keep last good
 			speed_glitch_count++;
-			Speed_flag=0;                 //do NOT reset Speed_counter / cumulated / distance
-			return;
+			return;                        //do NOT advance speed_last_tick / cumulated / distance
 		}
 		Speedx100_cumulated-=Speedx100_cumulated/MP.pulses_per_revolution;
 		Speedx100_cumulated+=instant;// 4000 Hz Timer interrupt frequency
 		MS.Speedx100=Speedx100_cumulated/MP.pulses_per_revolution;
 		last_valid_speed_x100=MS.Speedx100;
-		Speed_counter=0;
-		Speed_flag=0;
-		MS.distance_since_startup+=MP.wheel_cirumference/(MP.pulses_per_revolution*1000); //in m
+		speed_last_tick=speed_edge_tick;
+		//FW-103: distance from an exact integer running total (mm), not a per-pulse integer
+		//division. The old `+= circumference/(pulses*1000)` truncated to whole metres on EVERY
+		//pulse - at a typical ~2218 mm wheel and 1 pulse/rev that lost 0.218 m per wheel
+		//revolution, about 9% of the true distance, always in the same direction.
+		wheel_pulse_count++;
+		uint32_t distance_mm = (uint32_t)(((uint64_t)wheel_pulse_count*MP.wheel_cirumference)/MP.pulses_per_revolution);
+		MS.distance_since_startup = (float)distance_mm/1000.0f;
 }
+
+#if CAN_DIAGNOSTICS_ENABLE
+/* FW-111: the rearm recorder's wire fields are i16; the pipeline values are int32. */
+static int16_t diag_clamp16(int32_t v)
+{
+	if(v < -32768) return (int16_t)-32768;
+	if(v > 32767)  return (int16_t)32767;
+	return (int16_t)v;
+}
+#endif
 
 void reg_ADC_processing(void)
 {
+	/*
+	 * FW-104: ONE snapshot of the hardware clock for this whole iteration, reused by every
+	 * diagnostic call below instead of each re-reading control_time_ticks separately - an ISR
+	 * landing mid-iteration must not let two calls inside the same logical pass see two
+	 * different "now"s.
+	 */
+	const uint32_t control_now = control_time_ticks;
+
+	if(control_monitor_valid){
+		uint32_t control_delta = control_now - control_prev_processed_tick;
+
+		/*
+		 * The elapsed hardware time belongs to whatever was true when the PREVIOUS iteration
+		 * finished - that is what actually governed the motor during any ticks this iteration's
+		 * processing arrived late for, not the fresh reading about to be computed below.
+		 */
+		if(prev_metric_pedaling){
+			metric_pedal_ticks += control_delta;
+			if(prev_metric_iq_zero){
+				metric_iq_zero_ticks += control_delta;
+				if(prev_metric_why_backward) metric_zero_backward += control_delta;
+				else if(prev_metric_why_notlatched) metric_zero_notlatched += control_delta;
+			}
+		}
+
+		/* A healthy loop always sees delta==1. Anything more is that many missed 4 kHz periods. */
+		if(control_delta>1U){
+			uint32_t missed = control_delta-1U;
+			missed_control_ticks += missed;
+			missed_control_events++;
+			uint16_t missed_capped = (missed>0xFFFFU) ? 0xFFFFU : (uint16_t)missed;
+			if(missed_capped>worst_missed_burst_ticks) worst_missed_burst_ticks=missed_capped;
+#if CAN_DIAGNOSTICS_ENABLE
+			/* FW-106: hand the burst to the session module, which keeps the session's OWN
+			 * maximum. The global one above cannot be turned into a per-session figure by
+			 * subtracting anchors, which is why it is tracked in parallel rather than derived. */
+			diag_burst_this_tick = missed_capped;
+#endif
+		}
+	}
+	control_prev_processed_tick = control_now;
+
 	battery_current_cumulated-=battery_current_cumulated>>6;
 	battery_current_cumulated+= (adc_value[0]-bat_current_offset);
 	MS.Battery_Current=(int32_t)((float)(battery_current_cumulated>>6)*CAL_BAT_I); //Battery current in mA
@@ -1751,15 +2046,85 @@ void reg_ADC_processing(void)
 	if(MS.torque_on_crank>760&&PAS_counter<MP.PAS_timeout)torque_counter=0;//reset counter, if pressure on pedal and pedals rotating
 	//--- Quadrature PAS decoder (PC12=A, PD2=B) @4kHz -> feeds cadence/Backwards/torque/p_human/PAS_counter ---
 	{
-		static const int8_t qd[16]={0,1,-1,0, -1,0,0,1, 1,0,0,-1, 0,-1,1,0};
 		uint8_t s = ((GPIO_ISTAT(GPIOC)&GPIO_PIN_12)?1:0) | ((GPIO_ISTAT(GPIOD)&GPIO_PIN_2)?2:0);
 		if(pas_idle_ticks<64000) pas_idle_ticks++;
 		if(pas_cycle_ticks<64000) pas_cycle_ticks++;
 		if(pas_qstate==0xFF){ pas_qstate=s; }
 		else if(s!=pas_qstate){
-			int8_t st = qd[(pas_qstate<<2)|s]*PAS_DIR_SIGN; //+1 = forward
+			//FW-107: decode table moved to src/pas_quadrature.c (pure, no state) so a host test
+			//can drive the real production logic - see inc/pas_quadrature.h. Same table, same
+			//PAS_DIR_SIGN, same result.
+			int8_t st = pas_quadrature_step(pas_qstate, s); //+1 = forward
 			uint8_t pas_qstate_prev=pas_qstate;   //FW-097 diag: which transition it was
 			pas_qstate=s;
+			pas_liveness_transition();   //FW-112.1: EVERY physical edge (fwd/rev/INVALID) is
+			                             //crank liveness evidence - the direction decoder may
+			                             //refuse it permission, never liveness. See pas_liveness.h.
+#if CAN_DIAGNOSTICS_ENABLE
+			/*
+			 * FW-106 — MUST run before anything below that can arm pas_trace/pas_raw.
+			 *
+			 * A raw quadrature edge is happening on THIS tick, right here - and if it is the
+			 * first one after a stop, it is itself often the suspicious short-gap/two-bit
+			 * transition being investigated. The full diag_session_tick() call later in this
+			 * same control iteration also detects "moving" and starts a session, but by then
+			 * pas_trace_transition() below has already run and, on the very first tick of a
+			 * ride, would have armed a capture stamped with the OLD session id - a record that
+			 * no later dump would ever find, because it asks for records by session id. This
+			 * narrow, idempotent call closes that window: it starts the session (if one is not
+			 * already active) using ONLY the fact that a transition occurred, then the id is
+			 * pushed to every recorder immediately, before pt_in is even built below.
+			 */
+			diag_session_note_activity(control_now, missed_control_ticks, missed_control_events);
+			ride_episode_set_session_id(diag_session_current_id());
+			pas_trace_set_session_id(diag_session_current_id());
+			pas_raw_set_session_id(diag_session_current_id());
+			rearm_delay_set_session_id(diag_session_current_id());   //FW-111
+#endif
+			/*
+			 * FW-102: shared context for the raw trace, captured once per transition before
+			 * either branch below touches pas_idle_ticks. gap_ticks is the interval since the
+			 * PREVIOUS transition of either direction - the number that separates a real crank
+			 * step from a bounce (see pas_trace.h). rolling/latched come from ride_control's
+			 * live snapshots, one tick stale here since ride_control_update() for this tick has
+			 * not run yet - acceptable for a context tag, unlike for a decision.
+			 */
+			uint16_t pt_gap_ticks = pas_idle_ticks;
+			{
+				ride_gate_snapshot_t pt_gate;
+				ride_control_get_gate_snapshot(&pt_gate);
+				uint8_t pt_dbg = ride_control_get_debug_flags();
+				int32_t pt_iq = MS.i_q_setpoint;
+				if(pt_iq<0) pt_iq=0;
+				if(pt_iq>65535) pt_iq=65535;
+				pas_trace_input_t pt_in = {
+					.from_state = pas_qstate_prev,
+					.to_state = s,
+					.reverse = (st<0),
+					.gap_ticks = pt_gap_ticks,
+					.disc_pos = pas_fwd_accum,
+					.load_centikg = torque_input_load_centikg(),
+					.torque_raw_mv = torque_raw_mv,
+					.torque_fast = torque_input_get_snapshot()->assist_delta_filtered_native,
+					.iq_setpoint = (uint16_t)pt_iq,
+					.brake = MS.brake_active_flag != 0,
+					.rolling = pt_gate.bike_rolling,
+					.latched = !(pt_dbg & RIDE_DBG_NOT_LATCHED)
+				};
+				/*
+				 * FW-106: one trigger, two recorders, one key. pas_trace issues the capture id
+				 * when it arms; handing that same id straight to pas_raw_freeze() is what lets
+				 * the decoder's view and the raw line view of THIS event be joined offline by
+				 * key instead of by arrival order on the bus - the pairing the ride log proved
+				 * unreliable (FW-106 Bug 2).
+				 */
+				uint8_t pt_capture = pas_trace_transition(&pt_in);
+#if CAN_DIAGNOSTICS_ENABLE
+				if(pt_capture != PAS_TRACE_NO_CAPTURE) pas_raw_freeze(pt_capture);
+#else
+				(void)pt_capture;
+#endif
+			}
 			if(st>0){            //forward step
 				pas_last_period_ticks=pas_idle_ticks; //gap since the previous forward transition -> adaptive stop-timeout basis
 				pas_idle_ticks=0;
@@ -1776,11 +2141,13 @@ void reg_ADC_processing(void)
 				//the pulse would fire one step early and span only PAS_STEPS_PER_PULSE-1 gaps,
 				//reading 4/3 too high. So the step counter is held at 0 for this one step (see the
 				//short-circuit at the pulse test below) and the pulse lands a full interval later.
-				uint8_t cadence_interval_restart = (fwd_run==0);
+				uint8_t cadence_interval_restart = (pas_direction_fwd_run()==0);
 				if(cadence_interval_restart){ pas_cycle_ticks=0; pas_fwd_steps=0; }
-				if(fwd_run<250)fwd_run++;   //consecutive forward steps (jiggle-proof engage)
-				pas_rev_run=0;              //FW-098: a forward step breaks the reverse run
-				if(Backwards_counter)Backwards_counter--;
+				//FW-107: increments fwd_run (jiggle-proof engage). FW-109 v2: also breaks the
+				//reverse run and decays the legacy backpedal latch, internally - see pas_direction.c.
+				pas_direction_on_step(st);
+				pas_forward_confirmed_this_tick = pas_direction_forward_confirmed_last_call();   //FW-109
+				ride_episode_forward_step(control_now);  //FW-102/104: first forward step since the last reverse one
 				// torque EMA @ 3.75deg (96 updates/rev) - full quadrature resolution so all algorithms see torque every step, not only every 15deg
 				torque_cumulated-=torque_cumulated>>MS.TQfilter;
 				if(MS.torque_on_crank>750) torque_cumulated+=(MS.torque_on_crank-750);
@@ -1808,7 +2175,7 @@ void reg_ADC_processing(void)
 				//threshold in ride_control, which still has to be met before the latch arms and
 				//before a single milliamp flows. Crank jiggle stays blocked by fwd_run, which any
 				//reverse step resets.
-				if(MS.cadence==0 && !start_phase && fwd_run>=START_PHASE_STEPS){
+				if(MS.cadence==0 && !start_phase && pas_direction_fwd_run()>=START_PHASE_STEPS){
 					start_phase=1;
 				}
 #endif
@@ -1844,7 +2211,7 @@ void reg_ADC_processing(void)
 				pas_rev_last_gap=pas_idle_ticks;
 				pas_rev_last_period=pas_last_period_ticks;
 				pas_rev_last_cadence=MS.cadence;
-				pas_rev_last_fwdrun=fwd_run;
+				pas_rev_last_fwdrun=pas_direction_fwd_run();   //FW-107: read before pas_direction_on_step() resets it below
 				if(pas_idle_ticks<pas_rev_min_gap) pas_rev_min_gap=pas_idle_ticks;
 				pas_idle_ticks=0;
 				pas_fwd_steps=0;
@@ -1855,23 +2222,11 @@ void reg_ADC_processing(void)
 				 * cannot help while the crank is actually moving backwards — that guarantee
 				 * does not depend on anything below.
 				 */
-				fwd_run=0;
-				/*
-				 * FW-098: the LONG penalty now needs confirmation.
-				 *
-				 * FW-024 latched on the FIRST reverse step, because with the old net +1/-1
-				 * counting crank jitter during real backpedalling kept cancelling the count
-				 * and it never reached the >=4 cut threshold (measured: 28 s of backpedalling,
-				 * never hit 4). Latching fixed that, but it cannot tell deliberate
-				 * backpedalling from the crank rocking back in the dead spot — and the bike
-				 * log showed the latter is common at 16-52 rpm and left the counter pinned at
-				 * 8 for a large part of the ride.
-				 *
-				 * A run of consecutive reverse steps separates them: real backpedalling is an
-				 * unbroken run, dead-spot rocking is one or two steps with forward steps
-				 * either side. Any forward step resets the run (see the forward branch), so
-				 * dithering can never accumulate its way to the threshold.
-				 */
+				//FW-107: zeroes fwd_run, reports REVERSE - FW-109: also (re)enters DIRECTION_
+				//INHIBIT. FW-109 v2: also advances the legacy backpedal run/latch/series-count
+				//(FW-098/FW-101 arithmetic, unchanged) internally - see pas_direction.c.
+				pas_direction_on_step(st);
+				pas_forward_confirmed_this_tick = pas_direction_forward_confirmed_last_call();   //FW-109 (always false here)
 				/*
 				 * FW-099b/101: start timing, remembering the help the rider had.
 				 *
@@ -1880,33 +2235,35 @@ void reg_ADC_processing(void)
 				 * has actually fallen (EP_WAIT_RECOVER) further steps belong to the same
 				 * interruption and only extend the count.
 				 */
-				if(MS.i_q_setpoint>0 && ep_state!=EP_WAIT_RECOVER){
-					ep_state=EP_WAIT_DIP;
-					ep_ticks=0;
-					ep_iq_ref=MS.i_q_setpoint;
-					ep_rev_steps=0;
-					ep_flags=0;
-					ep_t_latch=0xFFFF;
-					ep_t_recover=0xFFFF;
-					ep_arm_seq_prev=0xFFFF;   /* force the next arming to look new */
-					//Keep the histogram path in step with the same anchor.
-					gap_armed=1; gap_ticks=0; gap_dipped=0;
-					gap_iq_ref=MS.i_q_setpoint;
-				}
-				if(ep_state!=EP_IDLE && ep_rev_steps<255) ep_rev_steps++;
-
-				if(pas_rev_run<255) pas_rev_run++;
-				if(pas_rev_run>pas_rev_run_max) pas_rev_run_max=pas_rev_run;
-				if(pas_rev_run>=BACKWARD_CONFIRM_STEPS){
-					Backwards_counter=BACKWARD_LATCH_COUNT;
+				{
+					ride_arm_snapshot_t rev_snap;
+					ride_control_get_arm_snapshot(&rev_snap);
+					ride_episode_reverse_step(MS.i_q_setpoint, rev_snap.seq, control_now);
 					/*
-					 * FW-101: count SERIES, not steps. This used to increment on every step
-					 * from the third onwards, so one run of six reported four "latches" and
-					 * the ratio against pas_rev_events was meaningless. Only the step that
-					 * actually crosses the threshold counts.
+					 * Keep the histogram anchored the same way. Same rule as the module:
+					 * re-anchor only while the current is still essentially untouched, so
+					 * successive steps during a shutdown ramp cannot chase it downward.
 					 */
-					if(pas_rev_run==BACKWARD_CONFIRM_STEPS) pas_rev_latches++;
+					if(MS.i_q_setpoint>0 &&
+					   (!gap_armed ||
+					    (!gap_dipped && MS.i_q_setpoint*10 >= gap_iq_ref*9))){
+						gap_armed=1; gap_anchor_tick=control_now; gap_dipped=0;
+						gap_iq_ref=MS.i_q_setpoint;
+					}
 				}
+			}else{
+				/*
+				 * FW-109: st==0 - an illegal two-bit quadrature jump, impossible for real
+				 * motion. Previously silently dropped here (neither branch above was taken,
+				 * so pas_direction_on_step() was never even called for it) - now explicitly
+				 * fed to the direction automaton so it can be counted diagnostically
+				 * (pas_direction_invalid_count()) and so "illegal transitions confirm neither
+				 * direction, and fail safe exactly like a reverse step" lives as ONE rule
+				 * inside that module (FW-109 v2), not as an absence of a call here that a
+				 * future edit could accidentally start making.
+				 */
+				pas_direction_on_step(st);
+				pas_forward_confirmed_this_tick = pas_direction_forward_confirmed_last_call();   //FW-109 (always false here)
 			}
 		}
 		//FW-0xx: adaptive stop timeout - 2x the last real forward-transition gap, clamped to
@@ -1919,12 +2276,43 @@ void reg_ADC_processing(void)
 			else if(stop_timeout_calc>PAS_STOP_TICKS_MAX) stop_timeout_calc=PAS_STOP_TICKS_MAX;
 			pas_stop_timeout = (uint16_t)stop_timeout_calc;
 		}
-		if(pas_idle_ticks>pas_stop_timeout){ MS.cadence=0; start_phase=0; uint16_cadence_filtered=0; pas_fwd_steps=0; fwd_run=0; } //stop
+		pas_liveness_tick(pas_stop_timeout);   //FW-112.1: REAL_STOP now answers ONLY "no physical
+		                                       //PAS edge of any direction for the timeout" - see
+		                                       //pas_liveness.h. pas_idle_ticks below stays the
+		                                       //cadence-gap/adaptive basis and diagnostics.
+		pas_real_stop = pas_liveness_stopped() ? 1 : 0;   //FW-109: computed once, before the stop reset below touches pas_idle_ticks's own consequences
+		if(pas_liveness_stopped()){ MS.cadence=0; start_phase=0; uint16_cadence_filtered=0; pas_fwd_steps=0; pas_direction_on_stop(); } //stop
 		//FW-087: the start phase counts as forward pedalling. The fake 1 rpm used to carry this
 		//implicitly through MS.cadence>0; without saying so explicitly, dropping the fake would
 		//close the assist gate a SECOND way, because forward_pedaling feeds pedaling_active
 		//(ride_core_pedaling below) which assist_modes checks alongside the cadence itself.
-		forward_pedaling = ((MS.cadence>0 || start_phase) && Backwards_counter<4 && pas_idle_ticks<=pas_stop_timeout);
+		//FW-109: no longer ANDs in Backwards_counter<4 - see forward_pedaling's own comment above.
+		forward_pedaling = ((MS.cadence>0 || start_phase) && !pas_real_stop);
+#if CAN_DIAGNOSTICS_ENABLE
+		/*
+		 * FW-106: session boundaries. "Moving" is deliberately generous - wheel OR current OR
+		 * any PAS activity. A session must never be declared over while any of the three is
+		 * still doing something, because the dump that follows is only safe when the bike is
+		 * genuinely standing still. Placed here because every one of these values has been
+		 * brought up to date for this tick by the block above.
+		 */
+		{
+			bool diag_moving = (MS.Speedx100>0)
+				|| ((control_now - speed_last_tick) < SPEED_STOP_TICKS)
+				|| (MS.i_q_setpoint != 0)
+				|| (pas_direction_fwd_run() != 0)
+				|| (pas_direction_backpedal_count() != 0)
+				|| (pas_idle_ticks <= pas_stop_timeout);
+			diag_session_tick(control_now, diag_moving,
+			                  missed_control_ticks, missed_control_events, diag_burst_this_tick);
+			diag_burst_this_tick = 0;
+			/* Records created from here on belong to whichever session is now current. */
+			ride_episode_set_session_id(diag_session_current_id());
+			pas_trace_set_session_id(diag_session_current_id());
+			pas_raw_set_session_id(diag_session_current_id());
+			rearm_delay_set_session_id(diag_session_current_id());   //FW-111
+		}
+#endif
 	}
 	//FW-061: latch "the wheel turned at some point since pedalling stopped". Sampling
 	//the speed at the END of a coast misclassifies a coast that finishes at a
@@ -1932,12 +2320,16 @@ void reg_ADC_processing(void)
 	//~3 km/h it periodically falls to zero between pulses. So OR three sources over
 	//the whole episode and reset only when pedalling resumes. Uncertain => moving.
 	{
-		static uint16_t prev_speed_counter=0;
+		//FW-103: speed_last_tick only changes value when a pulse is ACCEPTED (see
+		//Speed_processing), so "changed since last check" is the direct replacement for
+		//"the counter was reset by a pulse" - and (control_time_ticks-speed_last_tick) is the
+		//same silence-so-far read used by the display decay above.
+		static uint32_t prev_speed_last_tick=0;
 		if(pas_idle_ticks==0) coast_wheel_moved=0;                 //pedalling -> new episode
-		if(Speed_counter<prev_speed_counter ||                     //a wheel pulse reset the counter
+		if(speed_last_tick!=prev_speed_last_tick ||                //a new pulse was accepted
 		   MS.Speedx100>=TQ_RECAL_MOVING_X100 ||
-		   Speed_counter<SPEED_STOP_TICKS) coast_wheel_moved=1;    //pulse within the stop window
-		prev_speed_counter=Speed_counter;
+		   (control_time_ticks-speed_last_tick)<SPEED_STOP_TICKS) coast_wheel_moved=1; //pulse within the stop window
+		prev_speed_last_tick=speed_last_tick;
 	}
 	//--- torque sensor fault detection (debounced) -> Error 25 ---
 	if(MS.torque_on_crank<TQ_FAULT_LOW_MV || MS.torque_on_crank>TQ_FAULT_HIGH_MV){
@@ -1960,7 +2352,7 @@ void reg_ADC_processing(void)
 		//FW-068: the crank-movement half of the start condition is configurable from Canable
 		//(Dynamics); TUNING_START_STEPS_DEFAULT is its default.
 		bool ride_core_pedaling = forward_pedaling != 0 &&
-			fwd_run >= tuning_config_start_steps();
+			pas_direction_fwd_run() >= tuning_config_start_steps();
 		rider_input_t input = {
 			.torque_raw_mv = torque_raw_mv,
 			.torque_corrected_mv = MS.torque_on_crank,
@@ -1968,22 +2360,30 @@ void reg_ADC_processing(void)
 			.torque_assist_filtered = torque_snapshot->assist_delta_filtered_native,
 			.torque_run_filtered = torque_snapshot->assist_delta_run_native, //FW-033
 			.torque_load_centikg = torque_input_load_centikg(),
+			.torque_assist_now_native = torque_snapshot->assist_delta_native, //FW-107
 			.cadence_rpm = MS.cadence,
 			.wheel_speed_x100 = MS.Speedx100,
 			.motor_erps = ui16_erps,
 			.motor_voltage_utilization = (MS.u_abs > 2048) ? 2048U :
 				(MS.u_abs > 0 ? (uint16_t)MS.u_abs : 0U),
 			.pas_forward = ride_core_pedaling,
-			.pas_backward = Backwards_counter >= 4,
+			.pas_backward = pas_direction_backpedal_confirmed(),
 			.pedaling_active = ride_core_pedaling,
-			.crank_forward_steps = fwd_run, //FW-083: raw step count for ride_control's rolling-start reduction
-			.crank_direction_ok = forward_pedaling != 0, //FW-083: direction half of ride_core_pedaling, without the step count
+			.crank_forward_steps = pas_direction_fwd_run(), //FW-083: raw step count for ride_control's rolling-start reduction
+			.crank_direction_ok = forward_pedaling != 0, //FW-083/FW-109: cadence/timeout half only now - see forward_pedaling's own comment
+			.real_stop = pas_real_stop != 0,   //FW-109: independent of crank_direction_ok/direction_inhibit_active
+			.wheel_valid = ride_wheel_valid(control_now, speed_last_tick), //FW-112.2: accepted wheel edge within SPEED_STOP_TICKS (2.65 s) - the existing production freshness fact (same as diag_moving / auto-off), exposed so ride_session can tell a true stop from a rolling coast
+			.direction_inhibit_active = pas_direction_direction_inhibit_active(),   //FW-109 v2
+			.forward_confirmed_this_tick = pas_forward_confirmed_this_tick,     //FW-109: this tick's edge only
+			.sample_tick = control_now,   //FW-109: observability anchor for the tick this snapshot was built on (FW-112 v2: the fast-rearm load-freshness check moved into torque_input.c's recovery automaton - retained for diagnostics, no consumer reads it)
 			.start_phase = start_phase != 0,
 			.torque_sensor_valid = torque_fault == 0 &&
 				!torque_input_calibration_active(),
 			.pas_sensor_valid = pas_qstate != 0xFF
 		};
 		rider_input_update(&input);
+		//FW-109: consumed for this tick - must not survive to look like a fresh event next tick.
+		pas_forward_confirmed_this_tick = false;
 	}
 	//--- coulomb counting (signed: discharge>0 reduces charge, regen<0 adds back) ---
 	soc_mAs_acc += (float)MS.Battery_Current / 4000.0f; //mA * (1/4000 s) per ~4kHz tick
@@ -1997,7 +2397,7 @@ void reg_ADC_processing(void)
 #endif
     if(torque_counter<64000)torque_counter++;
     if(PAS_counter<64000)PAS_counter++;
-    if(Speed_counter<64000)Speed_counter++;
+    //FW-103/104: control_time_ticks replaces Speed_counter - incremented in TIMER1_IRQHandler itself.
     if(uint16_half_rotation_counter<64000)uint16_half_rotation_counter++;
     if(pwm_cutoff_active && pwm_cutoff_tick<SOFT_CUTOFF_TICKS)pwm_cutoff_tick++; //taktowanie okna miekkiego zwolnienia @4kHz
     if(ui16_erps_counter<64000)ui16_erps_counter++;
@@ -2068,7 +2468,7 @@ void reg_ADC_processing(void)
             if(MS.walk_can_request && !wa_hard_stop && !ui8_wa_latch_cancel_block){
                 ui8_wa_latch_active=1;
                 ui32_wa_latch_ticks=
-                    (uint32_t)assist_modes_get_wa_latch_timeout_s()*SPEED_TICKS_PER_S;
+                    (uint32_t)assist_modes_get_wa_latch_timeout_s()*SPEED_TIMEBASE_HZ; //FW-103: was SPEED_TICKS_PER_S, same 4 kHz control-loop rate
             }
         }
         if(wa_hard_stop || ui8_wa_latch_cancel_block){
@@ -2087,6 +2487,32 @@ void reg_ADC_processing(void)
 
     //--- pushassist_flag — tylko main.c ustawia ---
     MS.pushassist_flag=walk_active?SET:RESET;
+
+#if CAN_DIAGNOSTICS_ENABLE
+    /* FW-113.2: name the request origin and every gate that is currently NOT met. The
+     * activation bits here are the complement of the gates that would have to pass for a
+     * live request; the module adds its own HALL/JAM/STALL/LIMIT bits into the same field
+     * (0x10228 Data2 = wa_diag.reason | wa_activation_reason). Hold ticks only prove the
+     * session stayed live - there is no wall-clock timeout to observe. */
+    {
+        uint16_t act = 0;
+        if(!MS.walk_can_request)act |= WA_REASON_NO_CAN_REQUEST;
+        if(!ui8_walk_btn_state)act |= WA_REASON_BUTTON_RELEASED;
+        if(!walk_speed_ok)act |= WA_REASON_SPEED_GATE;
+        if(MS.brake_active_flag)act |= WA_REASON_BRAKE;
+        if(MS.error_state)act |= WA_REASON_ERROR;
+        wa_activation_reason = act;
+        wa_gates = (uint8_t)
+            ((MS.walk_can_request?0x01:0) |
+            (ui8_walk_btn_state?0x02:0) |
+            (walk_speed_ok?0x04:0) |
+            (MS.brake_active_flag?0x08:0) |
+            (MS.error_state?0x10:0) |
+            (ui8_wa_latch_active?0x20:0));
+        if(walk_request && wa_hold_ticks<0xFFFEU)wa_hold_ticks++;
+        else if(!walk_request)wa_hold_ticks=0;
+    }
+#endif
 
     if(walk_request || walk_active)wa_bank_switch_locked=1;
     // Clear the motor controller whenever neither the held request nor timed latch is active.
@@ -2143,6 +2569,21 @@ void reg_ADC_processing(void)
         }
     }
     {
+        /*
+         * FW-109 v2: the ONLY hard-cut reasons ride_control.c is told about directly any more
+         * are the non-direction ones - brake, critical overtemperature, torque-sensor fault,
+         * load calibration. Neither a reverse step nor an illegal PAS transition is passed here
+         * at all: both are their own fact, read straight from rider_input_t.
+         * direction_inhibit_active (src/pas_direction.c's direction safety automaton), which
+         * reacts on the FIRST such step rather than waiting for the legacy backpedal latch's
+         * 3-step confirm - see FW-109's report for the full diagnosis. That legacy latch
+         * (Backwards_counter's old role, now pas_direction_backpedal_confirmed()) still owns
+         * WSTECZ/Extended Boost's crank_reverse input/the ratio metrics below, unchanged, just no
+         * longer any part of the ride session's own decision, and no longer a second independent
+         * reading of the raw decoder - see pas_direction.c.
+         */
+        bool non_direction_safety_cut = MS.brake_active_flag || overtemp_stage >= 2 ||
+            torque_fault || torque_input_calibration_active();
         ride_control_input_t ride_input = {
             .speed_x100 = MS.Speedx100,
             .cadence_rpm = MS.cadence,
@@ -2162,9 +2603,7 @@ void reg_ADC_processing(void)
 			.offroad = MS.offroadflag != RESET,
             .walk_active = MS.pushassist_flag != RESET,
 			.position_calibration_active = MS.hall_angle_detect_flag > 1,
-            .safety_cut = MS.brake_active_flag || Backwards_counter >= 4 ||
-				overtemp_stage >= 2 || torque_fault ||
-				torque_input_calibration_active(),
+            .safety_cut_non_direction = non_direction_safety_cut,
             //FW-030: throttle ported to the ride core. map() returns 0 while ADC < throttle_offset,
             //so a disconnected/unused throttle contributes nothing (offset is the natural gate).
             //Scaled to full phase_current_max (throttle is level-independent, like a real throttle).
@@ -2192,62 +2631,222 @@ void reg_ADC_processing(void)
          * re-engagement, how much of the delay was the latch re-arming, and how much was
          * everything after it (RUN estimator, power filter, limiter, ramp).
          */
-        if(ep_state!=EP_IDLE){
-            ep_ticks++;
+        {
             uint8_t ep_dbg = ride_control_get_debug_flags();
-            if(ep_dbg & RIDE_DBG_HARD_CUT) ep_flags|=EP_FLAG_HARD_CUT;
-            if(ep_dbg & RIDE_DBG_LIMITER_ZEROED) ep_flags|=EP_FLAG_LIMITER;
-            if(pas_idle_ticks>pas_stop_timeout) ep_flags|=EP_FLAG_PAS_TIMEOUT;
-
-            //A new arming shows up as a changed seq; record when, and what it armed on.
-            ride_arm_snapshot_t snap;
-            ride_control_get_arm_snapshot(&snap);
-            if(snap.seq!=ep_arm_seq_prev){
-                ep_arm_seq_prev=snap.seq;
-                if(ep_t_latch==0xFFFF){
-                    uint32_t ms=ep_ticks/4; ep_t_latch=(ms>65534)?65534:(uint16_t)ms;
-                    ep_flags|=EP_FLAG_LATCH_ARMED;
-                    ep_pub_load=snap.load_centikg;
-                    ep_pub_fast=snap.fast_native;
-                    ep_pub_seed=snap.run_seed_native;
-                    ep_pub_iq_after_limits=snap.iq_after_limits;
+            ride_arm_snapshot_t ep_snap;
+            ride_control_get_arm_snapshot(&ep_snap);
+            //FW-102: the start gate as it stood THIS tick, straight from its one owner
+            //(ride_control) rather than re-derived here against a possibly stale constant.
+            ride_gate_snapshot_t ep_gate;
+            ride_control_get_gate_snapshot(&ep_gate);
+            ride_episode_input_t ep_in = {
+                .iq_setpoint = MS.i_q_setpoint,
+                .iq_pre_ramp = ep_snap.iq_pre_ramp,
+                .arm_seq = ep_snap.seq,
+                .hard_cut = (ep_dbg & RIDE_DBG_HARD_CUT) != 0,
+                .limiter_zeroed = (ep_dbg & RIDE_DBG_LIMITER_ZEROED) != 0,
+                .pas_timeout = pas_real_stop != 0,   //FW-112.1: the ride_episode "cranks stopped" flag must use the SAME verdict as the session terminal - pas_liveness (any-edge), not the forward-only cadence gap
+                .arm_load_centikg = ep_snap.load_centikg,
+                .arm_fast_native = ep_snap.fast_native,
+                .arm_run_seed_native = ep_snap.run_seed_native,
+                .arm_iq_after_limits = ep_snap.iq_after_limits,
+                .arm_fast_rearm = ep_snap.fast_rearm, //FW-107
+                .fwd_run = pas_direction_fwd_run(),
+                .required_steps = ep_gate.required_steps,
+                .load_centikg = torque_input_load_centikg(),
+                .load_threshold_centikg = ep_gate.load_threshold_centikg,
+                .rolling = ep_gate.bike_rolling
+            };
+            ride_episode_tick(&ep_in, control_now);
+            /*
+             * FW-102: a latch drop with no PAS transition of its own (e.g. the assist-hold
+             * timeout expiring while the crank is still) would otherwise never trigger a trace
+             * capture. Edge-detected here because this is the one place in the tick that already
+             * reads the debug flags.
+             */
+            {
+                static bool pt_was_latched = false;
+                bool pt_now_latched = !(ep_dbg & RIDE_DBG_NOT_LATCHED);
+                if(pt_was_latched && !pt_now_latched){
+                    /* FW-106: same trigger, same shared capture id - see the transition site. */
+                    uint8_t ll_capture = pas_trace_latch_loss();
+#if CAN_DIAGNOSTICS_ENABLE
+                    if(ll_capture != PAS_TRACE_NO_CAPTURE) pas_raw_freeze(ll_capture);
+#else
+                    (void)ll_capture;
+#endif
                 }
-            }
-
-            if(ep_state==EP_WAIT_DIP){
-                if(MS.i_q_setpoint*2 < ep_iq_ref) ep_state=EP_WAIT_RECOVER;
-                else if(ep_ticks>8000) ep_state=EP_IDLE;   //never cost anything: not an episode
-            }
-            if(ep_state==EP_WAIT_RECOVER){
-                bool back = (MS.i_q_setpoint*5 >= ep_iq_ref*4);
-                bool gave_up = ep_ticks>8000;
-                if(back || gave_up){
-                    uint32_t ms=ep_ticks/4; ep_t_recover=(ms>65534)?65534:(uint16_t)ms;
-                    if(gave_up) ep_flags|=EP_FLAG_TIMED_OUT;
-                    ep_pub_rev_steps=ep_rev_steps;
-                    ep_pub_flags=ep_flags;
-                    ep_pub_t_latch=ep_t_latch;
-                    ep_pub_t_recover=ep_t_recover;
-                    if(ep_number<65535) ep_number++;
-                    ep_state=EP_IDLE;
-                }
+                pt_was_latched = pt_now_latched;
             }
         }
+#if CAN_DIAGNOSTICS_ENABLE
+        /*
+         * FW-111: the delayed-rearm recorder, one observation per control tick. Placed AFTER
+         * ride_control_update() so the session state and the arm snapshot are this tick's own
+         * (the episode block just above reads the same two), and after the episode recorder so
+         * both view the same instant. Measurement only - nothing read here feeds any decision.
+         */
+        {
+            uint8_t rd_dbg = ride_control_get_debug_flags();
+            ride_arm_snapshot_t rd_snap;
+            ride_control_get_arm_snapshot(&rd_snap);
+            const assist_mode_output_t *rd_mode = assist_modes_get_last_output();
+            rearm_delay_input_t rd_in = {
+                .session_state = ride_control_get_session_state(),
+                .direction_inhibit_active = pas_direction_direction_inhibit_active(),
+                .real_stop = pas_real_stop != 0,
+                .limiter_zeroed = (rd_dbg & RIDE_DBG_LIMITER_ZEROED) != 0,
+                .pwm_on = ui_8_PWM_ON_Flag != 0,
+                .iq_request = diag_clamp16(rd_mode->iq_request),
+                .iq_pre_ramp = diag_clamp16(rd_snap.iq_pre_ramp),
+                .iq_setpoint = diag_clamp16(MS.i_q_setpoint),
+                .run_deadband = tuning_config_run_deadband_mv(),
+                .snapshot = torque_input_get_snapshot()
+            };
+            rearm_delay_tick(&rd_in, control_now);
+            rearm_delay_set_session_id(diag_session_current_id());
+
+            /*
+             * FW-111: the pas_trace TRACE/RAW reservation is bracketed by the REAL initiating
+             * event and the saga's real conclusion - NOT by this record's own open/close, and NOT
+             * by the PERMISSION (rearm) tick alone (a WEAK_TARGET can be detected up to 150 ms
+             * AFTER the rearm, while the record is in RECOVERING - see rearm_delay_diag.h and
+             * pas_trace.h for the full rationale). prearm_edge()/ownership_end_edge() are exact,
+             * one-shot, and derived purely from session_state plus the record FSM's own
+             * transitions, so they correctly bracket a saga that re-suspends (in FW-112 v2 any
+             * re-suspend is simply more SUSPENDED - no WAIT_REARM_LOAD stage exists any more) and
+             * correctly keep the reservation alive through the whole recovery watch.
+             *
+             * Order matters, in three ways:
+             *   1. PREARM first - establishes (or, for a new saga interrupting the previous one's
+             *      still-open recovery watch, ATOMICALLY replaces - see pas_trace_rearm_prearm())
+             *      the reservation before anything below can use it. This is also what makes
+             *      "end the old saga's ownership before starting the new one" correct on a
+             *      rotation tick without main.c having to sequence two separate calls itself.
+             *   2. Then the trigger/capture, which needs the reservation this exact tick if a
+             *      PROBLEM and the saga's conclusion ever coincide (e.g. WEAK_TARGET firing on
+             *      the exact tick the record's own RECOVERING timeout also closes it).
+             *   3. OWNERSHIP END last, so a same-tick trigger is never released out from under
+             *      itself - the capture always sees the reservation it needs BEFORE ownership can
+             *      end it.
+             * No sleep, delay, or wait loop anywhere in this block - one observation, one or two
+             * pas_trace calls, done; ride_control is never touched.
+             */
+            if (rearm_delay_prearm_edge()) {
+                pas_trace_rearm_prearm();
+            }
+
+            if (rearm_delay_reserve_trigger()) {
+                uint8_t rd_cap = PAS_TRACE_NO_CAPTURE;
+                uint8_t rd_status;
+                if (!pas_trace_rearm_held()) {
+                    /* PREARM never found a free slot at the initiating event - there is no
+                     * history to arm a trace on at all, not merely a busy one. */
+                    rd_status = REARM_DELAY_CAPTURE_NO_TRACE_NO_HISTORY;
+                } else {
+                    /* Context tag for the forced trigger: not a transition, so from==to==current. */
+                    ride_gate_snapshot_t rt_gate;
+                    ride_control_get_gate_snapshot(&rt_gate);
+                    int32_t rt_iq = rd_in.iq_setpoint; if (rt_iq < 0) rt_iq = 0;
+                    if (rt_iq > 65535) rt_iq = 65535;
+                    pas_trace_input_t rt_in = {
+                        .from_state = pas_qstate,
+                        .to_state = pas_qstate,
+                        .reverse = false,
+                        .gap_ticks = pas_idle_ticks,
+                        .disc_pos = pas_fwd_accum,
+                        .load_centikg = torque_input_load_centikg(),
+                        .torque_raw_mv = torque_raw_mv,
+                        .torque_fast = (rd_in.snapshot != 0) ? rd_in.snapshot->assist_delta_filtered_native : 0U,
+                        .iq_setpoint = (uint16_t)rt_iq,
+                        .brake = MS.brake_active_flag != 0,
+                        .rolling = rt_gate.bike_rolling,
+                        .latched = (rd_dbg & RIDE_DBG_NOT_LATCHED) == 0
+                    };
+                    rd_cap = pas_trace_rearm_capture(&rt_in);
+                    if (rd_cap == PAS_TRACE_NO_CAPTURE) {
+                        /* Held, but the slot is already armed/ready from an earlier PROBLEM in
+                         * this same saga - busy, not "no history". */
+                        rd_status = REARM_DELAY_CAPTURE_NO_TRACE_BUSY;
+                    } else {
+                        /* pas_raw_freeze()'s bool is honoured: a busy raw slot means the record
+                         * carries TRACE_ONLY, never a claim of a full TRACE+RAW pair. */
+                        rd_status = pas_raw_freeze(rd_cap)
+                            ? REARM_DELAY_CAPTURE_FULL
+                            : REARM_DELAY_CAPTURE_TRACE_ONLY;
+                    }
+                }
+                rearm_delay_note_reserve_done(rd_cap, rd_status);
+            }
+
+            if (rearm_delay_ownership_end_edge()) {
+                pas_trace_rearm_end_ownership();
+            }
+        }
+#endif
+        /*
+         * FW-112-DIAG: the whole-chain event recorder, one observation per control tick, placed
+         * AFTER ride_control_update() and the FW-111 rearm block so every state it reads - the
+         * session, the recovery automaton, the hold grace, the arm snapshot, the mode result and
+         * the start gate - is this tick's own. Measurement only: nothing read here feeds any
+         * decision. The permission/WHO-ZEROED reason comes from the deciding layer itself
+         * (ride_control_get_diag_reason), so a BLOCKED/ZEROED record names the exact stage that
+         * held current at 0 instead of this block re-deriving it from second-hand copies.
+         */
+#if CAN_DIAGNOSTICS_ENABLE
+        {
+            fw112_diag_set_session_id(diag_session_current_id());
+            ride_gate_snapshot_t fd_gate;
+            ride_control_get_gate_snapshot(&fd_gate);
+            ride_arm_snapshot_t fd_snap;
+            ride_control_get_arm_snapshot(&fd_snap);
+            const assist_mode_output_t *fd_mode = assist_modes_get_last_output();
+            const torque_snapshot_t *fd_tq = torque_input_get_snapshot();
+            fw112_diag_input_t fd_in = {
+                .session_state = ride_control_get_session_state(),
+                .recovery_state = (uint8_t)torque_input_recovery_state(),
+                .dir_state = (uint8_t)pas_direction_get_state(),
+                .fwd_run = pas_direction_fwd_run(),
+                .crank_forward_steps = rider_input_get()->crank_forward_steps,
+                .required_steps = fd_gate.required_steps,
+                .start_steps = tuning_config_start_steps(),
+                .cadence_rpm = MS.cadence,
+                .latched = (ride_control_get_debug_flags() & RIDE_DBG_NOT_LATCHED) == 0,
+                .pwm_on = ui_8_PWM_ON_Flag != 0,
+                .torque_sensor_valid = fd_tq ? fd_tq->sensor_valid : false,
+                .cal_user = fd_tq ? (fd_tq->calibration_source == 1U) : false,
+                .wheel_valid = rider_input_get()->wheel_valid,   //FW-112.2
+                .rolling_coast = rider_input_get()->real_stop &&
+                    rider_input_get()->wheel_valid,   //FW-112.2: PAS stopped AND wheel rolling = coast suspension reason
+                .assist_hold_ticks = ride_control_get_assist_hold_ticks(),
+                .load_centikg = fd_tq ? fd_tq->load_centikg : 0U,
+                .load_threshold_centikg = fd_gate.load_threshold_centikg,
+                .iq_request = diag_clamp16(fd_mode ? fd_mode->iq_request : 0),
+                .iq_pre_ramp = diag_clamp16(fd_snap.iq_pre_ramp),
+                .iq_setpoint = diag_clamp16(MS.i_q_setpoint),
+                .iq_actual = diag_clamp16(MS.i_q),
+                .reason_bits = ride_control_get_diag_reason()
+            };
+            fw112_diag_tick(&fd_in, control_now);
+        }
+#endif
         /*
          * The histogram in 0x1020E/0x1020F. FW-101: it is anchored by the SAME condition as
          * the episode recorder above, so it no longer merges two interruptions into one —
          * a reverse step that has not yet cost anything re-anchors both.
          */
         if(gap_armed){
-            gap_ticks++;
+            //FW-104: elapsed real time since arming, read fresh - not a call-counted gap_ticks++.
+            uint32_t gap_elapsed = control_now - gap_anchor_tick;
             /* Did the cut actually take the help away? Below half of what was there. */
             if(MS.i_q_setpoint*2 < gap_iq_ref) gap_dipped=1;
             /* Back to 80 % of it = the rider has what they had; that ends the interruption. */
             bool recovered = gap_dipped && (MS.i_q_setpoint*5 >= gap_iq_ref*4);
-            bool gave_up = gap_ticks>8000;   /* 2 s */
+            bool gave_up = gap_elapsed>GAP_TIMEOUT_TICKS;
             if(recovered || gave_up){
                 if(gap_dipped){
-                    uint32_t ms = gap_ticks/4;
+                    //FW-104: *1000/CONTROL_TIMEBASE_HZ, not a hidden /4 - no rate assumption left unnamed.
+                    uint32_t ms = (gap_elapsed*1000U)/CONTROL_TIMEBASE_HZ;
                     gap_last = (ms>65535) ? 65535 : (uint16_t)ms;
                     if(gap_last<gap_min) gap_min=gap_last;
                     if(gap_last>gap_max) gap_max=gap_last;
@@ -2260,16 +2859,23 @@ void reg_ADC_processing(void)
                 gap_armed=0;
             }
         }
-        if(fwd_run>0 && pas_idle_ticks<=pas_stop_timeout){
-            metric_pedal_ticks++;
+        /*
+         * FW-104: this used to increment metric_* directly, once per call. It now only
+         * classifies THIS instant and saves the verdict into prev_metric_* - the block at the
+         * top of this function is what actually credits elapsed hardware time to it, on the
+         * NEXT call, so a gap this iteration missed is attributed to the state that was true
+         * for it (this classification), not to whatever a late reading happens to say next.
+         */
+        prev_metric_pedaling = (pas_direction_fwd_run()>0 && pas_idle_ticks<=pas_stop_timeout);
+        if(prev_metric_pedaling){
             /*
              * MS.i_q_setpoint is the FINAL commanded current, written by
              * motor_core_set_command() after the ramps — not the measured MS.i_q. This asks
              * "did the control path ask for anything", which is the question this card is
              * about. Whether the power stage then delivered it is a different measurement.
              */
-            if(MS.i_q_setpoint==0){
-                metric_iq_zero_ticks++;
+            prev_metric_iq_zero = (MS.i_q_setpoint==0);
+            if(prev_metric_iq_zero){
                 /*
                  * Zero current while pedalling forward has several causes and the total on
                  * its own cannot tell them apart. fwd_run > 0 deliberately starts counting at
@@ -2280,10 +2886,17 @@ void reg_ADC_processing(void)
                  * of the reverse latch. Split it here so one ride can answer which it was.
                  */
                 uint8_t why = ride_control_get_debug_flags();
-                if(Backwards_counter >= 4) metric_zero_backward++;
-                else if(why & RIDE_DBG_NOT_LATCHED) metric_zero_notlatched++;
+                prev_metric_why_backward = pas_direction_backpedal_confirmed();
+                prev_metric_why_notlatched = !prev_metric_why_backward && (why & RIDE_DBG_NOT_LATCHED)!=0;
                 /* everything else = total - these two, computed off the log */
+            } else {
+                prev_metric_why_backward = false;
+                prev_metric_why_notlatched = false;
             }
+        } else {
+            prev_metric_iq_zero = false;
+            prev_metric_why_backward = false;
+            prev_metric_why_notlatched = false;
         }
         //FW-028: the ride core bypasses the legacy monolith's zero-target PI cleanup.
         //When the final command is zero, drop stale controller integral immediately so
@@ -2326,10 +2939,13 @@ void reg_ADC_processing(void)
     	if (PAS_counter>MP.PAS_timeout){
 			//FW-024b: clear the reverse flag ONLY once the crank is truly STOPPED. Backpedalling has no
 			//forward torque and no forward cadence pulse, so this "1 s without torque" cleanup was firing
-			//every tick during backpedalling and wiping Backwards_counter -> the FW-024 latch never held
+			//every tick during backpedalling and wiping the latch -> the FW-024 latch never held
 			//>=4 (measured on 0.0193: WSTECZ flag never lit). Gating on pas_idle_ticks fixes that: while the
 			//crank still moves (backward) the latch survives; once it stops the stale reverse flag clears.
-			if(pas_idle_ticks>pas_stop_timeout) Backwards_counter=0;
+			//FW-109 v2: same trigger condition, unchanged - now clears pas_direction.c's derived
+			//latch (see pas_direction_clear_backpedal_latch()'s own comment for why this reset is
+			//deliberately NOT merged into pas_direction_on_stop(), which fires on a broader condition).
+			if(pas_idle_ticks>pas_stop_timeout) pas_direction_clear_backpedal_latch();
 			MS.cadence=0;
 			MS.p_human=0;
 			uint16_cadence_filtered=0;
@@ -2341,6 +2957,8 @@ void reg_ADC_processing(void)
 		}
     }
 
+	autodetect_standstill_track(); //FW-110: every field it reads is fresh as of this tick, right here
+
 	reg_ADC_flag=0;
 }
 
@@ -2349,7 +2967,7 @@ int16_t internal_tics_to_speedx100 (uint32_t tics){
 }
 
 int16_t external_tics_to_speedx100 (uint32_t tics){
-	return MP.wheel_cirumference*4*360/(MP.pulses_per_revolution*tics);
+	return MP.wheel_cirumference*(SPEED_TIMEBASE_HZ/1000U)*360/(MP.pulses_per_revolution*tics); //FW-103: same named rate, kept consistent though this function is currently unused
 }
 
 int32_t speed_PLL (int32_t ist, int32_t soll, uint8_t speedadapt)
@@ -2418,6 +3036,21 @@ void runPIcontrol(void){
 }
 
 void autodetect(void) {
+	/*
+	 * FW-110 v3: defense-in-depth. This is the THIRD check of the same standstill condition -
+	 * after hall_calibration_request()'s check at the instant the CAN request was accepted, and
+	 * hall_calibration_step()'s own re-check right before it calls this function (both in
+	 * src/hall_calibration.c) - not because either is expected to fail, but so a future edit
+	 * that adds a new call site, or weakens either check above it, still cannot make this
+	 * function drive the motor open-loop while the bike could be moving. Silent return: a caller
+	 * that got here without confirming standstill has already failed its own contract, and this
+	 * function has no CAN context of its own to report anything back with.
+	 *
+	 * See this function's own declaration in inc/main.h for the honest limitation this does NOT
+	 * cover: once started, nothing re-checks this condition again until the whole procedure
+	 * returns, several seconds later.
+	 */
+	if(!hall_calibration_standstill_confirmed()) return;
 	// Position calibration owns the bridge directly. Cancel any pending normal
 	// soft cut-off before phase 1 so its delayed state cannot interfere here.
 	pwm_cutoff_active=0;
@@ -2696,8 +3329,145 @@ void dyn_adc_state(q31_t angle){
 	}
 }
 
+/* --- the real CAN peripheral, wrapped to the shape can_tx_queue expects (FW-110) ---------- */
+/* Unconditional (unlike the diag_can_* pair further down, which only exist in the
+ * CAN_DIAGNOSTICS_ENABLE=1 block below): critical HMI frames must go out in every build, not
+ * just the diagnostics one. Same real peripheral as diag_can_transmit/diag_can_state, wrapped to
+ * can_tx_queue's shape instead - the only difference is dlen, since critical frames are not all
+ * 8 bytes long the way every diagnostic frame is. */
+static uint8_t crit_can_transmit(uint32_t efid, uint8_t dlen, const uint8_t data[8])
+{
+	transmit_message.tx_sfid = 0x00;
+	transmit_message.tx_ft = CAN_FT_DATA;
+	transmit_message.tx_ff = CAN_FF_EXTENDED;
+	transmit_message.tx_dlen = dlen;
+	transmit_message.tx_efid = efid;
+	for(uint8_t i=0;i<8;i++) transmit_message.tx_data[i] = data[i];
+	uint8_t mb = can_message_transmit(CAN0, &transmit_message);
+	return (CAN_NOMAILBOX == mb) ? CANQ_NOMAILBOX : mb;
+}
+
+static uint8_t crit_can_state(uint8_t mailbox)
+{
+	can_transmit_state_enum st = can_transmit_states(CAN0, mailbox);
+	if(CAN_TRANSMIT_OK == st) return CANQ_OK;
+	if(CAN_TRANSMIT_PENDING == st) return CANQ_PENDING;
+	return CANQ_FAILED;
+}
+
+static const can_tx_ops_t crit_can_ops = { crit_can_transmit, crit_can_state };
+
+static void crit_can_queue_init(void)
+{
+	can_tx_queue_init(&crit_can_ops);
+}
+
+/* FW-110 v4: wires the completed-reply side effects (0x6029's deferred diag_peak_reset, see
+ * src/can_reply_effects.c) to a clean start. No hall_calibration supervisor exists any more -
+ * 0x6200 is blocked at the CAN layer (see src/CAN_Display.c), so autodetect() is unreachable
+ * from any command. */
+static void can_reply_effects_init_wrapper(void)
+{
+	can_reply_effects_init();
+}
+
 #if CAN_DIAGNOSTICS_ENABLE
-void print_debug_on_CAN(void){
+/*
+ * FW-106 — THE DIAGNOSTIC DUMP, as main.c sees it.
+ *
+ * The sequencing, the transmit automaton, the session lifecycle and all record accounting live
+ * in diag_session.c, which knows nothing of MS, MP or the GD32 driver and is therefore driven
+ * directly by tests/host/fw106_session_host.c. What is left here is the part that genuinely
+ * belongs to this file: turning controller state into eight bytes, and the two-line wrapper
+ * around the real CAN peripheral.
+ *
+ * That split is not tidiness. The first version of this kept the automaton here as static
+ * functions, and it shipped with four defects that no test could reach - an episode counted as
+ * sent twice, an interrupted record identified by a bool, sessions able to interleave in the
+ * log, and error bits that stayed set until reboot.
+ *
+ * WHY THE OLD PATTERN HAD TO GO. Every frame used to be sent with
+ *     transmit_mailbox = can_message_transmit(...);
+ *     timeout = 0xFFFF;
+ *     while((CAN_TRANSMIT_OK != can_transmit_states(...)) && (0 != timeout)) timeout--;
+ * twenty-three times per 40 ms, from the same main loop that decodes PAS. That spin is the prime
+ * suspect for the missed 4 kHz periods FW-104 measured - i.e. the diagnostic build may have been
+ * manufacturing the very fault it was installed to find.
+ */
+
+/* Bumped whenever any frame layout in this block changes, so a log can be read unambiguously.
+ * FW-107: bumped 1 -> 2. 0x10212 data[5] was reserved/always-0 before this card and now carries
+ * ep.fast_rearm - a log tagged version 1 must still read data[5] as "no information", but a
+ * version-2 log may read it as the fast-rearm flag. See documentation/
+ * FW-106_PAS_DIAGNOSTICS_RECORDER_BUGS_PL.md for the frame layout tables.
+ * FW-113.2: bumped 2 -> 3. The aggregate block grew from 13 to 14 frames (new 0x10228, the
+ * Walk Assist reason/gates frame). No existing frame layout changed - a version-2 log reads
+ * every old frame identically and simply does not contain 0x10228.
+ * FW-112-DIAG: bumped 3 -> 4. The dump gained a fifth record source (DIAG_SRC_FW112): each of
+ * its records is a header on 0x1022A plus 4 x 8 B snapshot frames on 0x1022B..0x1022E, and the
+ * session trailer's byte 7 gained bit 0x04 (DIAG_TRAILER_F_FW112_REJECTED). No existing frame
+ * layout changed - a version-3 log reads every old frame identically and simply contains no
+ * 0x1022x events. */
+#define DIAG_SCHEMA_VERSION 4U
+
+/* --- the real CAN peripheral, wrapped to the shape diag_session expects ------------------- */
+
+static uint8_t diag_can_transmit(uint32_t efid, const uint8_t *data)
+{
+	transmit_message.tx_sfid = 0x00;
+	transmit_message.tx_ft = CAN_FT_DATA;
+	transmit_message.tx_ff = CAN_FF_EXTENDED;
+	transmit_message.tx_dlen = 8;
+	transmit_message.tx_efid = efid;
+	for(uint8_t i=0;i<8;i++) transmit_message.tx_data[i] = data[i];
+	uint8_t mb = can_message_transmit(CAN0, &transmit_message);
+	/*
+	 * The driver picks the mailbox itself and, when none is free, writes nothing at all - so
+	 * this is not a loss and the same frame can simply be offered again.
+	 */
+	return (CAN_NOMAILBOX == mb) ? DIAG_CAN_NOMAILBOX : mb;
+}
+
+static uint8_t diag_can_state(uint8_t mailbox)
+{
+	can_transmit_state_enum st = can_transmit_states(CAN0, mailbox);
+	if(CAN_TRANSMIT_OK == st) return DIAG_CAN_OK;
+	if(CAN_TRANSMIT_PENDING == st) return DIAG_CAN_PENDING;
+	return DIAG_CAN_FAILED;
+}
+
+static const diag_can_ops_t diag_can_ops = { diag_can_transmit, diag_can_state };
+
+/* --- the aggregate block ------------------------------------------------------------------ */
+
+/*
+ * The thirteen fixed frames (0x10203..0x1020F and 0x10219) are still built by the linear code
+ * below, exactly as they always were - those blocks carry a great deal of hard-won meaning and
+ * rewriting them into a switch would have bought nothing but risk. diag_session asks for frame
+ * `index`; the builder walks its own frames and hands back the one that matches.
+ *
+ * The builder is now PURELY a builder. Every side effect that used to sit inside it - retiring
+ * an episode, bumping a sent counter - has moved to the record sources below, which is what
+ * makes re-running it harmless. Leaving one behind is precisely how an episode came to be
+ * counted twice.
+ */
+static uint16_t agg_target, agg_n;
+static uint32_t agg_efid;
+static uint8_t  agg_data[8];
+static bool     agg_hit;
+
+#define DIAG_EMIT() do { \
+		if(agg_n++ == agg_target){ \
+			agg_efid = transmit_message.tx_efid; \
+			for(uint8_t i_=0;i_<8;i_++) agg_data[i_] = transmit_message.tx_data[i_]; \
+			agg_hit = true; \
+			return; \
+		} \
+	} while(0)
+
+static void diag_build_aggregate(void){
+	agg_n = 0;
+
 
 
 	//FW-027 diag: ride-core runaway telemetry. Logged standalone (ID 0x00010203 -> logger Data1-4, big-endian).
@@ -2707,11 +3477,11 @@ void print_debug_on_CAN(void){
 	int32_t dbg_iq_actual = MS.i_q; if(dbg_iq_actual<-32768)dbg_iq_actual=-32768; if(dbg_iq_actual>32767)dbg_iq_actual=32767;
 	int32_t dbg_u_abs = MS.u_abs; if(dbg_u_abs<0)dbg_u_abs=0; if(dbg_u_abs>65535)dbg_u_abs=65535;
 	int32_t dbg_u_q = MS.u_q; if(dbg_u_q<-32768)dbg_u_q=-32768; if(dbg_u_q>32767)dbg_u_q=32767;
-	uint8_t dbg_safety_cut = (MS.brake_active_flag || Backwards_counter >= 4 ||
+	uint8_t dbg_safety_cut = (MS.brake_active_flag || pas_direction_backpedal_confirmed() ||
 		overtemp_stage >= 2 || torque_fault || torque_input_calibration_active()) ? 1 : 0;
 	const assist_mode_output_t* dbg_mo = assist_modes_get_last_output();
 	uint8_t dbg_flags = (forward_pedaling?0x01:0)
-	                  | ((Backwards_counter>=4)?0x02:0)
+	                  | (pas_direction_backpedal_confirmed()?0x02:0)
 	                  | (ui_8_PWM_ON_Flag?0x04:0)
 	                  | (start_phase?0x08:0)
 	                  | ((dbg_mo && dbg_mo->assist_without_rotation_active)?0x10:0);
@@ -2729,13 +3499,7 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[6] = (dbg_tq>>8)&0xFF;   //Data4: torque delta - is torque sustaining assist?
 	transmit_message.tx_data[7] = (dbg_tq)&0xFF;
 
-	/* transmit message */
-	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-	/* waiting for transmit completed */
-	timeout = 0xFFFF;
-	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-		timeout--;
-		}
+	DIAG_EMIT();
 
 	//FW-028 diag extension (ID 0x00010204): actual FOC/PWM state after the command path.
 	//Data1 signed i_q | Data2 u_abs | Data3 signed u_q | Data4 hi=flags2 lo=halfrot_4ms.
@@ -2743,7 +3507,7 @@ void print_debug_on_CAN(void){
 	                   | (ui_8_PWM_ON_Flag?0x02:0)
 	                   | (pwm_cutoff_active?0x04:0)
 	                   | (MS.brake_active_flag?0x08:0)
-	                   | ((Backwards_counter>=4)?0x10:0)
+	                   | (pas_direction_backpedal_confirmed()?0x10:0)
 	                   | (torque_fault?0x20:0)
 	                   | (BC_limit_flag?0x40:0);
 	                   //FW-094: bit 0x80 was the Legacy overrun flag. That mechanism is gone and
@@ -2761,11 +3525,7 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[6] = dbg_flags2;
 	transmit_message.tx_data[7] = dbg_halfrot_4ms;
 
-	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-	timeout = 0xFFFF;
-	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-		timeout--;
-		}
+	DIAG_EMIT();
 
 	//FW-060 diag (ID 0x00010205): Walk Assist motor-speed controller.
 	//Data1 hi=state lo=flags | Data2 target_erps | Data3 measured_erps | Data4 iq_cmd.
@@ -2780,11 +3540,7 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[6] = ((uint16_t)dbg_wa_iq>>8)&0xFF;
 	transmit_message.tx_data[7] = ((uint16_t)dbg_wa_iq)&0xFF;
 
-	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-	timeout = 0xFFFF;
-	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-		timeout--;
-		}
+	DIAG_EMIT();
 
 	//FW-060 diag (ID 0x00010206): PI/start internals; the first frame stays wire-compatible.
 	//Data1 error_erps (signed) | Data2 integral_iq | Data3 startup_iq | Data4 hall_age_ms.
@@ -2799,11 +3555,7 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[6] = (dbg_hall_ms>>8)&0xFF;
 	transmit_message.tx_data[7] = (dbg_hall_ms)&0xFF;
 
-	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-	timeout = 0xFFFF;
-	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-		timeout--;
-		}
+	DIAG_EMIT();
 
 	/*
 	 * FW-096 diag (ID 0x00010208): WHO ZEROED THE CURRENT.
@@ -2822,7 +3574,7 @@ void print_debug_on_CAN(void){
 	 *   Data4    = MS.i_q_setpoint  (what actually reached the motor)
 	 */
 	uint8_t why_safety = (MS.brake_active_flag?0x01:0)
-	                   | ((Backwards_counter>=4)?0x02:0)
+	                   | (pas_direction_backpedal_confirmed()?0x02:0)
 	                   | ((overtemp_stage>=2)?0x04:0)
 	                   | (torque_fault?0x08:0)
 	                   | (torque_input_calibration_active()?0x10:0)
@@ -2845,11 +3597,7 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[5] = (why_req)&0xFF;
 	transmit_message.tx_data[6] = (why_set>>8)&0xFF;
 	transmit_message.tx_data[7] = (why_set)&0xFF;
-	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-	timeout = 0xFFFF;
-	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-		timeout--;
-		}
+	DIAG_EMIT();
 
 	/*
 	 * FW-096 diag (ID 0x00010209): the two things that silently zero BOTH assist and Walk
@@ -2875,11 +3623,7 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[5] = (why_rcl)&0xFF;
 	transmit_message.tx_data[6] = (why_pcm>>8)&0xFF;
 	transmit_message.tx_data[7] = (why_pcm)&0xFF;
-	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-	timeout = 0xFFFF;
-	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-		timeout--;
-		}
+	DIAG_EMIT();
 
 	/*
 	 * FW-097 diag (ID 0x0001020A): WHY was a reverse step counted.
@@ -2910,11 +3654,7 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[5] = (rev_per)&0xFF;
 	transmit_message.tx_data[6] = pas_rev_last_cadence;
 	transmit_message.tx_data[7] = (uint8_t)rev_min;
-	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-	timeout = 0xFFFF;
-	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-		timeout--;
-		}
+	DIAG_EMIT();
 
 	/*
 	 * Counters in their own frame so a lost 0x20A cannot hide that events happened.
@@ -2924,17 +3664,13 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_efid = 0x0001020B;
 	transmit_message.tx_data[0] = (pas_rev_events>>8)&0xFF;
 	transmit_message.tx_data[1] = (pas_rev_events)&0xFF;
-	transmit_message.tx_data[2] = (pas_rev_latches>>8)&0xFF;
-	transmit_message.tx_data[3] = (pas_rev_latches)&0xFF;
-	transmit_message.tx_data[4] = (uint8_t)(Backwards_counter);
-	transmit_message.tx_data[5] = fwd_run;
-	transmit_message.tx_data[6] = pas_rev_run;
-	transmit_message.tx_data[7] = pas_rev_run_max;
-	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-	timeout = 0xFFFF;
-	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-		timeout--;
-		}
+	transmit_message.tx_data[2] = (pas_direction_backpedal_latches()>>8)&0xFF;
+	transmit_message.tx_data[3] = (pas_direction_backpedal_latches())&0xFF;
+	transmit_message.tx_data[4] = pas_direction_backpedal_count();
+	transmit_message.tx_data[5] = pas_direction_fwd_run();
+	transmit_message.tx_data[6] = pas_direction_rev_run();
+	transmit_message.tx_data[7] = pas_direction_rev_run_max();
+	DIAG_EMIT();
 
 	/*
 	 * FW-098 diag (ID 0x0001020C): THE metric this card is judged by.
@@ -2942,7 +3678,7 @@ void print_debug_on_CAN(void){
 	 *   Data1..2 = control ticks with the cranks turning forward   (u32, big-endian)
 	 *   Data3..4 = ...of which the motor was given no current      (u32, big-endian)
 	 *
-	 * The ratio is the fraction of pedalling time the rider gets nothing. Backwards_counter
+	 * The ratio is the fraction of pedalling time the rider gets nothing. The backpedal latch
 	 * falling is not success on its own — a shorter penalty that still lands on every stroke
 	 * would look good on the counter and feel identical on the bike.
 	 */
@@ -2955,11 +3691,7 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[5] = (metric_iq_zero_ticks>>16)&0xFF;
 	transmit_message.tx_data[6] = (metric_iq_zero_ticks>>8)&0xFF;
 	transmit_message.tx_data[7] = (metric_iq_zero_ticks)&0xFF;
-	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-	timeout = 0xFFFF;
-	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-		timeout--;
-		}
+	DIAG_EMIT();
 
 	/*
 	 * FW-098 diag (ID 0x0001020D): WHY the current was zero, so the total in 0x20C can be
@@ -2982,11 +3714,7 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[5] = (metric_zero_notlatched>>16)&0xFF;
 	transmit_message.tx_data[6] = (metric_zero_notlatched>>8)&0xFF;
 	transmit_message.tx_data[7] = (metric_zero_notlatched)&0xFF;
-	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-	timeout = 0xFFFF;
-	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-		timeout--;
-		}
+	DIAG_EMIT();
 
 	/*
 	 * FW-099 diag (ID 0x0001020E): how long drive was actually lost, timed at 4 kHz.
@@ -3002,11 +3730,7 @@ void print_debug_on_CAN(void){
 	transmit_message.tx_data[5] = (gap_max)&0xFF;
 	transmit_message.tx_data[6] = (gap_last>>8)&0xFF;
 	transmit_message.tx_data[7] = (gap_last)&0xFF;
-	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-	timeout = 0xFFFF;
-	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-		timeout--;
-		}
+	DIAG_EMIT();
 
 	/*
 	 * FW-099 diag (ID 0x0001020F): the DISTRIBUTION, one byte per bucket. The mean would hide
@@ -3016,75 +3740,631 @@ void print_debug_on_CAN(void){
 	 */
 	transmit_message.tx_efid = 0x0001020F;
 	for(uint8_t gi=0; gi<8; gi++) transmit_message.tx_data[gi]=gap_hist[gi];
-	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-	timeout = 0xFFFF;
-	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-		timeout--;
-		}
+	DIAG_EMIT();
 
 	/*
-	 * FW-101 diag (ID 0x00010210): ONE re-engagement episode, timed at 4 kHz.
+	 * diag (ID 0x00010219): HIGH CADENCE / RUN - the four numbers behind the 100-110 rpm
+	 * report, together on one frame instead of reconstructed from several. Read live, not
+	 * peak-held, so successive frames show the actual shape over time.
 	 *
-	 * The aggregate counters say how often interruptions happen; this says where the time
-	 * inside one of them went. Only completed episodes are published, so a reader sees a
-	 * stable record until the next one finishes — the episode number is what marks it new.
-	 *
-	 *   Data1 hi = episode number lo byte   lo = reverse steps in this episode
-	 *   Data2 hi = flags                    lo = (reserved, 0)
-	 *              0x01 hard cut · 0x02 PAS timeout · 0x04 latch re-armed ·
-	 *              0x08 limiter zeroed a demand · 0x10 gave up after 2 s
-	 *   Data3    = ms from the anchoring reverse step to the latch re-arming (0xFFFF = never)
-	 *   Data4    = ms from that same anchor to 80 % of the previous current
-	 *
-	 * Data3 against Data4 is the whole point: Data3 is what the reverse latch and fwd_run
-	 * cost, Data4 - Data3 is what everything after them cost (RUN estimator, power filter,
-	 * limiter, ramp).
+	 *   Data1 = torque_fast     the 35 ms filtered assist delta [native]
+	 *   Data2 = torque_RUN      the slow RUN estimator of that signal, FW-033 [native]
+	 *   Data3 = motor_power_w   assist_modes' own power figure [W]
+	 *   Data4 = iq_request      what assist_modes asked for, BEFORE ride_control's latch/
+	 *                           limiters/ramp - compare against MS.i_q_setpoint (0x10203) to
+	 *                           see how much of any gap is the request itself vs. downstream
 	 */
-	transmit_message.tx_efid = 0x00010210;
-	transmit_message.tx_data[0] = ep_number&0xFF;
-	transmit_message.tx_data[1] = ep_pub_rev_steps;
-	transmit_message.tx_data[2] = ep_pub_flags;
-	transmit_message.tx_data[3] = 0;
-	transmit_message.tx_data[4] = (ep_pub_t_latch>>8)&0xFF;
-	transmit_message.tx_data[5] = (ep_pub_t_latch)&0xFF;
-	transmit_message.tx_data[6] = (ep_pub_t_recover>>8)&0xFF;
-	transmit_message.tx_data[7] = (ep_pub_t_recover)&0xFF;
-	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-	timeout = 0xFFFF;
-	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-		timeout--;
-		}
+	const torque_snapshot_t *hc_torque = torque_input_get_snapshot();
+	const assist_mode_output_t *hc_mo = assist_modes_get_last_output();
+	int32_t hc_iq_request = hc_mo->iq_request;
+	if(hc_iq_request<0) hc_iq_request=0;
+	if(hc_iq_request>65535) hc_iq_request=65535;
+	transmit_message.tx_efid = 0x00010219;
+	transmit_message.tx_data[0] = (hc_torque->assist_delta_filtered_native>>8)&0xFF;
+	transmit_message.tx_data[1] = (hc_torque->assist_delta_filtered_native)&0xFF;
+	transmit_message.tx_data[2] = (hc_torque->assist_delta_run_native>>8)&0xFF;
+	transmit_message.tx_data[3] = (hc_torque->assist_delta_run_native)&0xFF;
+	transmit_message.tx_data[4] = (hc_mo->motor_power_w>>8)&0xFF;
+	transmit_message.tx_data[5] = (hc_mo->motor_power_w)&0xFF;
+	transmit_message.tx_data[6] = (hc_iq_request>>8)&0xFF;
+	transmit_message.tx_data[7] = (hc_iq_request)&0xFF;
+	DIAG_EMIT();
 
 	/*
-	 * FW-101 diag (ID 0x00010211): the values AT THE INSTANT the latch re-armed, for the
-	 * episode reported above. Captured inside ride_control where they are produced.
+	 * FW-113.2 diag (ID 0x00010228): WALK ASSIST - WHY IT IS OFF / BLOCKED, and how long the
+	 * current hold has stayed live. Aggregate frame 14 of 14 (index 13); existing WA frames
+	 * 0x10205/0x10206 are unchanged. There is deliberately NO hold-timeout bit: a long hold
+	 * alone can never stop WA - only the real gates below can. Diagnostics-only.
 	 *
-	 *   Data1 = raw pedal load [centikg]
-	 *   Data2 = fast torque after the 35 ms filter [native]
-	 *   Data3 = what was seeded into the RUN estimator [native]
-	 *   Data4 = Iq target after latch and limiters, BEFORE the final ramp
-	 *
-	 * Data4 separates "the pipeline asked for little" from "the ramp took time to deliver
-	 * it". A small Data4 with a long Data4-minus-latch time in 0x10210 points at the
-	 * estimators; a healthy Data4 with the same long time points at the ramp.
+	 *   Data0 = wa_diag.state     (OFF/REGULATE/LIMIT/STALL)
+	 *   Data1 = wa_diag.flags     (WA_FLAG_*, same encoding as 0x10205 Data1)
+	 *   Data2 = activation reason, main.c:
+	 *           0x01 NO_CAN_REQUEST  0x02 BUTTON_RELEASED  0x04 SPEED_GATE
+	 *           0x08 BRAKE           0x10 ERROR
+	 *   Data3 = module reason, walk_assist_motor.c:
+	 *           0x01 HALL  0x02 JAM  0x04 STALL  0x08 LIMIT
+	 *   Data4 = raw gates: 0x01 walk_can_request 0x02 btn_state 0x04 speed_ok
+	 *           0x08 brake 0x10 error 0x20 latch_active 0x40 pushassist_flag
+	 *   Data5-6 = hold_ticks since the current complete WA request began (u16, main-loop
+	 *            rate; proves long holds stay live - never gates anything)
+	 *   Data7 = reserved (0)
 	 */
-	int32_t ep_iq_pub = ep_pub_iq_after_limits;
-	if(ep_iq_pub<0) ep_iq_pub=0;
-	if(ep_iq_pub>65535) ep_iq_pub=65535;
-	transmit_message.tx_efid = 0x00010211;
-	transmit_message.tx_data[0] = (ep_pub_load>>8)&0xFF;
-	transmit_message.tx_data[1] = (ep_pub_load)&0xFF;
-	transmit_message.tx_data[2] = (ep_pub_fast>>8)&0xFF;
-	transmit_message.tx_data[3] = (ep_pub_fast)&0xFF;
-	transmit_message.tx_data[4] = (ep_pub_seed>>8)&0xFF;
-	transmit_message.tx_data[5] = (ep_pub_seed)&0xFF;
-	transmit_message.tx_data[6] = (ep_iq_pub>>8)&0xFF;
-	transmit_message.tx_data[7] = (ep_iq_pub)&0xFF;
-	transmit_mailbox = can_message_transmit(CAN0, &transmit_message);
-	timeout = 0xFFFF;
-	while((CAN_TRANSMIT_OK != can_transmit_states(CAN0, transmit_mailbox)) && (0 != timeout)){
-		timeout--;
+	uint8_t wa_act_reason8 = (uint8_t)wa_activation_reason;
+	uint8_t wa_mod_reason8 = (uint8_t)wa_diag.reason;
+	transmit_message.tx_efid = 0x00010228;
+	transmit_message.tx_data[0] = wa_diag.state;
+	transmit_message.tx_data[1] = wa_diag.flags;
+	transmit_message.tx_data[2] = wa_act_reason8;
+	transmit_message.tx_data[3] = wa_mod_reason8;
+	transmit_message.tx_data[4] = wa_gates |
+		(uint8_t)((MS.pushassist_flag!=RESET)?0x40:0);
+	transmit_message.tx_data[5] = (wa_hold_ticks>>8)&0xFF;
+	transmit_message.tx_data[6] = (wa_hold_ticks)&0xFF;
+	transmit_message.tx_data[7] = 0;
+	DIAG_EMIT();
+
+}
+
+static bool diag_aggregate_frame(uint16_t index, uint32_t *efid, uint8_t *data)
+{
+	agg_target = index;
+	agg_hit = false;
+	diag_build_aggregate();
+	if(!agg_hit) return false;
+	*efid = agg_efid;
+	for(uint8_t i=0;i<8;i++) data[i] = agg_data[i];
+	return true;
+}
+
+/* --- record source: EPISODES -------------------------------------------------------------- */
+
+/*
+ * One episode is six frames: a group header (0x1021A) and the five views 0x10210..0x10214 that
+ * were only ever paired by the fact that a single published slot could not change between them.
+ * With a queue that is no longer true, so the group is bracketed by a header carrying the keys -
+ * and the CAN id itself is the fragment number, which is why no fragment field is in the data.
+ *
+ * The record is looked up BY SESSION on every fragment. That is what stops one session's episode
+ * appearing inside another session's brackets after an interrupted dump left both in the queue.
+ */
+static uint16_t diag_ep_count(uint8_t session_id)
+{
+	return ride_episode_queue_count_session(session_id);
+}
+
+static bool diag_ep_frame(uint8_t session_id, uint16_t frag, uint32_t *efid, uint8_t *data, bool *last)
+{
+	ride_episode_result_t ep;
+	if(!ride_episode_queue_peek_session(session_id, &ep)) return false;
+
+	*last = (frag == 5U);
+	switch(frag){
+	case 0: {
+		uint16_t q_left = ride_episode_queue_count_session(session_id);
+		if(q_left>0) q_left--;
+		*efid = 0x0001021AU;
+		data[0] = DIAG_SCHEMA_VERSION;
+		data[1] = ep.session_id;
+		data[2] = (ep.number>>8)&0xFF;
+		data[3] = (ep.number)&0xFF;
+		data[4] = 5;
+		data[5] = (q_left>255U) ? 255U : (uint8_t)q_left;
+		data[6] = 0;
+		data[7] = 0;
+		return true;
+	}
+	case 1:
+		/* 0x10210: the episode's headline times. Layout unchanged since FW-101. */
+		*efid = 0x00010210U;
+		data[0] = (ep.number>>8)&0xFF;
+		data[1] = (ep.number)&0xFF;
+		data[2] = ep.rev_steps;
+		data[3] = ep.flags;
+		data[4] = (ep.t_latch_ms>>8)&0xFF;
+		data[5] = (ep.t_latch_ms)&0xFF;
+		data[6] = (ep.t_recover_ms>>8)&0xFF;
+		data[7] = (ep.t_recover_ms)&0xFF;
+		return true;
+	case 2: {
+		/* 0x10211: the values at the instant the latch re-armed. */
+		int32_t iq = ep.arm_iq_after_limits;
+		if(iq<0) iq=0;
+		if(iq>65535) iq=65535;
+		*efid = 0x00010211U;
+		data[0] = (ep.arm_load_centikg>>8)&0xFF;
+		data[1] = (ep.arm_load_centikg)&0xFF;
+		data[2] = (ep.arm_fast_native>>8)&0xFF;
+		data[3] = (ep.arm_fast_native)&0xFF;
+		data[4] = (ep.arm_run_seed_native>>8)&0xFF;
+		data[5] = (ep.arm_run_seed_native)&0xFF;
+		data[6] = (iq>>8)&0xFF;
+		data[7] = (iq)&0xFF;
+		return true;
+	}
+	case 3: {
+		/*
+		 * 0x10212: the third time, which separates the ramp from everything before it.
+		 *
+		 * FW-106: sourced ENTIRELY from the frozen `ep` record now. This used to call
+		 * ride_control_get_arm_snapshot() and ride_episode_get_state() LIVE, at whatever moment
+		 * the dump happened to reach this fragment - but a queued episode can be dumped long
+		 * after it completed, once other episodes or even other sessions have run in between,
+		 * and by then ride_control's live arm snapshot and ride_episode's live FSM state have
+		 * nothing to do with what was true for THIS specific episode. iq_pre_ramp is captured by
+		 * ride_episode.c itself at the instant t_target_ready is set (see ride_episode_tick()).
+		 */
+		*efid = 0x00010212U;
+		data[0] = (ep.t_target_ready_ms>>8)&0xFF;
+		data[1] = (ep.t_target_ready_ms)&0xFF;
+		data[2] = (ep.iq_pre_ramp_at_target_ready>>8)&0xFF;
+		data[3] = (ep.iq_pre_ramp_at_target_ready)&0xFF;
+		/* recorder state: 3 = published/queued. The live FSM values 0/1/2 (idle/wait_dip/
+		 * wait_recover) only ever describe the ACTIVE episode - meaningless for one already
+		 * resolved and sitting in the queue, so this is a constant, not a read of anything. */
+		data[4] = 3;
+		/* FW-107: was this episode's (single) arming a fast rearm - direction confirmed after a
+		 * lone reverse step, real RUN-level demand, never the start-load threshold. Was always
+		 * 0 (reserved, unused) before this card; a parser that already treated it as "reserved,
+		 * ignore" keeps working unchanged, and one that wants the new bit can now read it. */
+		data[5] = ep.fast_rearm;
+		data[6] = 0;
+		data[7] = 0;
+		return true;
+	}
+	case 4:
+		/* 0x10213: the anatomy of the wait BEFORE the latch. */
+		*efid = 0x00010213U;
+		data[0] = (ep.t_last_reverse_ms>>8)&0xFF;
+		data[1] = (ep.t_last_reverse_ms)&0xFF;
+		data[2] = (ep.t_first_forward_ms>>8)&0xFF;
+		data[3] = (ep.t_first_forward_ms)&0xFF;
+		data[4] = (ep.t_steps_ready_ms>>8)&0xFF;
+		data[5] = (ep.t_steps_ready_ms)&0xFF;
+		data[6] = (ep.t_load_ready_ms>>8)&0xFF;
+		data[7] = (ep.t_load_ready_ms)&0xFF;
+		return true;
+	default:
+		/* 0x10214: the two gate thresholds as they actually stood. */
+		*efid = 0x00010214U;
+		data[0] = ep.required_steps;
+		data[1] = 0;
+		data[2] = (ep.load_threshold_centikg>>8)&0xFF;
+		data[3] = (ep.load_threshold_centikg)&0xFF;
+		data[4] = (ep.load_peak_centikg>>8)&0xFF;
+		data[5] = (ep.load_peak_centikg)&0xFF;
+		data[6] = 0;
+		data[7] = 0;
+		return true;
+	}
+}
+
+static void diag_ep_release(uint8_t session_id, bool sent)
+{
+	(void)sent;   /* sent vs discarded is diag_session's ledger; the queue only forgets */
+	ride_episode_queue_release_session(session_id);
+}
+
+static uint32_t diag_ep_accepted(void) { return ride_episode_queue_enqueued(); }
+static uint32_t diag_ep_refused(void)  { return ride_episode_queue_rejected(); }
+
+/* --- record source: DECODER TRACE ---------------------------------------------------------- */
+
+/*
+ * One capture is a status frame plus two frames per sample. 0x10217 no longer carries
+ * torque_fast: two bytes had to be found for the sample index and the capture id, without which
+ * the pair could only be matched by arrival order - which the ride log disproved (2140 frames of
+ * one against 2025 of the other).
+ */
+static uint16_t diag_trace_count(uint8_t session_id)
+{
+	return pas_trace_count_session(session_id);
+}
+
+static bool diag_trace_frame(uint8_t session_id, uint16_t frag, uint32_t *efid, uint8_t *data, bool *last)
+{
+	int8_t slot = pas_trace_oldest_ready_slot_of(session_id);
+	if(slot < 0) return false;
+	uint16_t n = pas_trace_slot_count((uint8_t)slot);
+	uint8_t cap = pas_trace_slot_capture_id((uint8_t)slot);
+
+	*last = (frag + 1U) >= (1U + 2U * (uint32_t)n);
+
+	if(frag == 0){
+		*efid = 0x00010215U;
+		data[0] = pas_trace_slot_partial((uint8_t)slot) ? 2U : 1U;  /* 2 = sealed short */
+		data[1] = cap;
+		data[2] = (n>>8)&0xFF;
+		data[3] = (n)&0xFF;
+		{
+			uint16_t trig = pas_trace_slot_trigger_index((uint8_t)slot);
+			data[4] = (trig>>8)&0xFF;
+			data[5] = (trig)&0xFF;
 		}
+		data[6] = 0;
+		data[7] = session_id;
+		return true;
+	}
+
+	uint16_t idx = (uint16_t)((frag - 1U) / 2U);
+	pas_trace_sample_t s;
+	if(!pas_trace_slot_get((uint8_t)slot, idx, &s)) return false;
+
+	if(((frag - 1U) % 2U) == 0U){
+		*efid = 0x00010216U;
+		data[0] = (idx>>8)&0xFF;
+		data[1] = (idx)&0xFF;
+		data[2] = (s.gap_ticks>>8)&0xFF;
+		data[3] = (s.gap_ticks)&0xFF;
+		data[4] = s.from_to;
+		data[5] = s.flags;
+		data[6] = s.disc_pos;
+		data[7] = cap;
+	}else{
+		*efid = 0x00010217U;
+		data[0] = (s.load_centikg>>8)&0xFF;
+		data[1] = (s.load_centikg)&0xFF;
+		data[2] = (s.torque_raw_mv>>8)&0xFF;
+		data[3] = (s.torque_raw_mv)&0xFF;
+		data[4] = (uint8_t)(idx & 0xFFU);
+		data[5] = cap;
+		data[6] = (s.iq_setpoint>>8)&0xFF;
+		data[7] = (s.iq_setpoint)&0xFF;
+	}
+	return true;
+}
+
+static void diag_trace_release(uint8_t session_id, bool sent)
+{
+	(void)sent;
+	int8_t slot = pas_trace_oldest_ready_slot_of(session_id);
+	if(slot >= 0) pas_trace_slot_release((uint8_t)slot);
+}
+
+static uint32_t diag_trace_accepted(void) { return pas_trace_captures_frozen(); }
+static uint32_t diag_trace_refused(void)  { return pas_trace_capture_slots_full(); }
+
+/* --- record source: RAW ISR TRACE ---------------------------------------------------------- */
+
+/*
+ * The raw view of the same event: what the two PAS lines did according to the 4 kHz interrupt,
+ * which the main loop cannot delay. Paired with the decoder's capture by capture_id, never by
+ * arrival order. One event is exactly eight bytes, so it needs no second frame.
+ */
+static uint16_t diag_raw_count(uint8_t session_id)
+{
+	return pas_raw_count_session(session_id);
+}
+
+static bool diag_raw_frame(uint8_t session_id, uint16_t frag, uint32_t *efid, uint8_t *data, bool *last)
+{
+	if(pas_raw_count_session(session_id) == 0) return false;
+	uint16_t n = pas_raw_slot_count();
+	*last = (frag + 1U) >= (1U + (uint32_t)n);
+
+	if(frag == 0){
+		*efid = 0x0001021BU;
+		data[0] = pas_raw_slot_partial() ? 2U : 1U;
+		data[1] = pas_raw_slot_capture_id();
+		data[2] = (n>>8)&0xFF;
+		data[3] = (n)&0xFF;
+		{
+			uint16_t trig = pas_raw_slot_trigger_index();
+			data[4] = (trig>>8)&0xFF;
+			data[5] = (trig)&0xFF;
+		}
+		data[6] = 0;
+		data[7] = session_id;
+		return true;
+	}
+
+	pas_raw_event_t e;
+	if(!pas_raw_slot_get((uint16_t)(frag - 1U), &e)) return false;
+	*efid = 0x0001021CU;
+	data[0] = (e.tick>>24)&0xFF;
+	data[1] = (e.tick>>16)&0xFF;
+	data[2] = (e.tick>>8)&0xFF;
+	data[3] = (e.tick)&0xFF;
+	data[4] = (e.seq>>8)&0xFF;
+	data[5] = (e.seq)&0xFF;
+	data[6] = e.from_to;
+	data[7] = e.capture_id;
+	return true;
+}
+
+static void diag_raw_release(uint8_t session_id, bool sent)
+{
+	(void)session_id;
+	(void)sent;
+	pas_raw_slot_release();
+}
+
+static uint32_t diag_raw_accepted(void) { return pas_raw_captures_frozen(); }
+static uint32_t diag_raw_refused(void)  { return pas_raw_freeze_skipped(); }
+
+/* FW-106: the monotonic overrun count diag_session anchors per session - see diag_session.h. */
+static uint32_t diag_raw_overrun_total(void) { return pas_raw_capture_overrun(); }
+
+/* --- record source: DELAYED REARM (FW-111) ----------------------------------------------------- */
+
+/*
+ * One record opens with the header (0x0001021F), then each of its snapshots travels as 4 x 8 B
+ * data frames on 0x00010220..0x00010223. Fragment ORDER (not any content field) tells the parser
+ * which snapshot a data frame belongs to - the dump sends a record's fragments strictly in order
+ * and never interleaves, and the header's snapshot_count tells it how many snapshots to expect.
+ * The rearm module's snapshot struct is exactly 32 B with no padding, so this serializes it
+ * field-by-field into the four fragments rather than risking a memcpy of a struct whose layout a
+ * future edit could break.
+ */
+static uint16_t diag_rearm_count(uint8_t session_id)
+{
+	return rearm_delay_queue_count_session(session_id);
+}
+
+static bool diag_rearm_capture_frame(uint8_t session_id, uint16_t frag, uint32_t *efid,
+                                     uint8_t *data, bool *last);
+
+static bool diag_rearm_frame(uint8_t session_id, uint16_t frag, uint32_t *efid, uint8_t *data, bool *last)
+{
+	rearm_delay_record_t rec;
+	if(!rearm_delay_queue_peek_session(session_id, &rec)) return false;
+
+	/* header frame + 3 timing frames + 4 data frames per snapshot + 1 capture frame (v3), always
+	 * in order */
+	uint32_t total = 5U + 4U * (uint32_t)rec.snapshot_count;
+	*last = ((uint32_t)frag + 1U) >= total;
+
+	if(frag == 0){
+		*efid = REARM_DELAY_EFID_HEADER;
+		data[0] = REARM_DELAY_SCHEMA_VERSION;
+		data[1] = rec.session_id;
+		data[2] = rec.record_id;
+		data[3] = rec.reason_bits;
+		data[4] = rec.snapshot_count;
+		data[5] = (uint8_t)(rec.pre_reverse_iq >> 8);
+		data[6] = (uint8_t)(rec.pre_reverse_iq & 0xFF);
+		data[7] = 0;   /* reserved - v3 adds the capture-info frame instead */
+		return true;
+	}
+
+	if(frag <= 3){
+		/* Timing block: 12 x u16 big-endian = 3 x 8 B frames. 0xFFFF = stage never reached. */
+		*efid = (uint32_t)(REARM_DELAY_EFID_TIMING + (uint32_t)(frag - 1U));
+		uint16_t t[4];
+		switch(frag){
+		case 1:
+			t[0] = rec.t_pressure; t[1] = rec.t_filter_ready;
+			t[2] = rec.t_run_ready; t[3] = rec.t_demand;
+			break;
+		case 2:
+			t[0] = rec.t_permission; t[1] = rec.t_target_recovered;
+			t[2] = rec.t_setpoint_recovered; t[3] = rec.t_pwm_on;
+			break;
+		default:
+			t[0] = rec.t_standstill_enter; t[1] = rec.t_standstill_exit;
+			t[2] = rec.t_weak_start; t[3] = rec.t_close;
+			break;
+		}
+		for (uint8_t i = 0; i < 4U; i++) {
+			data[2U * i] = (uint8_t)(t[i] >> 8);
+			data[2U * i + 1U] = (uint8_t)(t[i] & 0xFF);
+		}
+		return true;
+	}
+
+	uint16_t f2 = (uint16_t)(frag - 4U);
+	uint16_t snap_idx = (uint16_t)(f2 / 4U);
+	uint16_t part    = (uint16_t)(f2 % 4U);
+
+	/* v3: the LAST frame of the record is the capture-info frame (frag == 4 + 4*snapshot_count). */
+	if(snap_idx == rec.snapshot_count){
+		if(part != 0) return false;
+		return diag_rearm_capture_frame(session_id, frag, efid, data, last);
+	}
+	if(snap_idx > rec.snapshot_count) return false;
+	rearm_delay_snapshot_t *s = &rec.snapshots[snap_idx];
+
+	*efid = REARM_DELAY_EFID_SNAPSHOT_BASE + part;
+	switch(part){
+	case 0:
+		data[0] = (uint8_t)(s->elapsed_ticks >> 24); data[1] = (uint8_t)(s->elapsed_ticks >> 16);
+		data[2] = (uint8_t)(s->elapsed_ticks >> 8);  data[3] = (uint8_t)s->elapsed_ticks;
+		data[4] = (uint8_t)(s->raw_native >> 8);     data[5] = (uint8_t)s->raw_native;
+		data[6] = (uint8_t)(s->zero_effective_native >> 8); data[7] = (uint8_t)s->zero_effective_native;
+		return true;
+	case 1:
+		data[0] = (uint8_t)(s->corrected_native >> 8); data[1] = (uint8_t)s->corrected_native;
+		data[2] = (uint8_t)(s->delta_native >> 8);     data[3] = (uint8_t)s->delta_native;
+		data[4] = (uint8_t)(s->assist_delta_native >> 8); data[5] = (uint8_t)s->assist_delta_native;
+		data[6] = (uint8_t)(s->assist_delta_filtered_native >> 8); data[7] = (uint8_t)s->assist_delta_filtered_native;
+		return true;
+	case 2:
+		data[0] = (uint8_t)(s->assist_delta_run_native >> 8); data[1] = (uint8_t)s->assist_delta_run_native;
+		data[2] = (uint8_t)(s->load_centikg >> 8);     data[3] = (uint8_t)s->load_centikg;
+		data[4] = (uint8_t)(s->run_deadband >> 8);     data[5] = (uint8_t)s->run_deadband;
+		data[6] = (uint8_t)(s->iq_request >> 8);       data[7] = (uint8_t)s->iq_request;
+		return true;
+	default:
+		data[0] = (uint8_t)(s->iq_pre_ramp >> 8);      data[1] = (uint8_t)s->iq_pre_ramp;
+		data[2] = (uint8_t)(s->iq_setpoint >> 8);      data[3] = (uint8_t)s->iq_setpoint;
+		data[4] = s->flags;
+		data[5] = s->milestone_id;
+		data[6] = s->session_id;
+		data[7] = s->record_id;
+		return true;
+	}
+}
+
+/* v3: the capture-info frame, sent as the LAST frame of every record. data[0] = capture_id
+ * (REARM_DELAY_NO_CAPTURE when none was obtained), data[1] = REARM_DELAY_CAPTURE_* status. */
+static bool diag_rearm_capture_frame(uint8_t session_id, uint16_t frag, uint32_t *efid,
+                                     uint8_t *data, bool *last)
+{
+	rearm_delay_record_t rec;
+	if(!rearm_delay_queue_peek_session(session_id, &rec)) return false;
+	if(frag != 4U + 4U * (uint32_t)rec.snapshot_count) return false;
+	*efid = REARM_DELAY_EFID_CAPTURE;
+	data[0] = rec.capture_id;
+	data[1] = rec.capture_status;
+	data[2] = 0; data[3] = 0; data[4] = 0; data[5] = 0; data[6] = 0; data[7] = 0;
+	*last = true;
+	return true;
+}
+
+static void diag_rearm_release(uint8_t session_id, bool sent)
+{
+	(void)sent;
+	rearm_delay_queue_release_session(session_id);
+}
+
+static uint32_t diag_rearm_accepted(void) { return rearm_delay_queue_enqueued(); }
+static uint32_t diag_rearm_refused(void)  { return rearm_delay_queue_rejected(); }
+
+/* --- record source: WHOLE-CHAIN EVENTS (FW-112-DIAG) ------------------------------------------- */
+
+/*
+ * One record opens with a header frame (0x0001022A), then the 32 B snapshot travels as 4 x 8 B
+ * data frames on 0x0001022B..0x0001022E. The record struct is exactly 32 B with no padding
+ * (asserted in fw112_diag.c), so this serializes it field-by-field into the four fragments
+ * rather than risking a memcpy of a struct whose layout a future edit could break - same
+ * discipline as the FW-111 rearm bridge above.
+ */
+static uint16_t diag_fw112_count(uint8_t session_id)
+{
+	return fw112_diag_queue_count_session(session_id);
+}
+
+static bool diag_fw112_frame(uint8_t session_id, uint16_t frag, uint32_t *efid, uint8_t *data, bool *last)
+{
+	fw112_diag_record_t rec;
+	if(!fw112_diag_queue_peek_session(session_id, &rec)) return false;
+
+	/* header + 4 data frames, always in order */
+	*last = (frag + 1U) >= 5U;
+
+	if(frag == 0){
+		*efid = FW112_DIAG_EFID_HEADER;
+		data[0] = FW112_DIAG_SCHEMA_VERSION;
+		data[1] = rec.session_id;
+		data[2] = (uint8_t)(rec.event_id >> 8);
+		data[3] = (uint8_t)(rec.event_id & 0xFF);
+		data[4] = rec.event_type;
+		data[5] = rec.reason_bits;
+		data[6] = 0;
+		data[7] = 0;
+		return true;
+	}
+
+	switch(frag){
+	case 1:
+		*efid = FW112_DIAG_EFID_SNAP_BASE + 0U;
+		data[0] = rec.session_state;
+		data[1] = rec.dir_state;
+		data[2] = rec.recovery_state;
+		data[3] = rec.fwd_run;
+		data[4] = rec.crank_forward_steps;
+		data[5] = rec.required_steps;
+		data[6] = rec.start_steps;
+		data[7] = rec.cadence_rpm;
+		return true;
+	case 2:
+		*efid = FW112_DIAG_EFID_SNAP_BASE + 1U;
+		data[0] = (uint8_t)(rec.assist_hold_ticks >> 8); data[1] = (uint8_t)(rec.assist_hold_ticks & 0xFF);
+		data[2] = (uint8_t)(rec.load_centikg >> 8);      data[3] = (uint8_t)(rec.load_centikg & 0xFF);
+		data[4] = (uint8_t)(rec.load_threshold_centikg >> 8); data[5] = (uint8_t)(rec.load_threshold_centikg & 0xFF);
+		data[6] = rec.flags;
+		data[7] = 0;
+		return true;
+	case 3:
+		*efid = FW112_DIAG_EFID_SNAP_BASE + 2U;
+		data[0] = (uint8_t)(rec.iq_request >> 8);  data[1] = (uint8_t)(rec.iq_request & 0xFF);
+		data[2] = (uint8_t)(rec.iq_pre_ramp >> 8); data[3] = (uint8_t)(rec.iq_pre_ramp & 0xFF);
+		data[4] = (uint8_t)(rec.iq_setpoint >> 8); data[5] = (uint8_t)(rec.iq_setpoint & 0xFF);
+		data[6] = (uint8_t)(rec.iq_actual >> 8);   data[7] = (uint8_t)(rec.iq_actual & 0xFF);
+		return true;
+	default:
+		*efid = FW112_DIAG_EFID_SNAP_BASE + 3U;
+		data[0] = (uint8_t)(rec.elapsed_ticks >> 24);
+		data[1] = (uint8_t)(rec.elapsed_ticks >> 16);
+		data[2] = (uint8_t)(rec.elapsed_ticks >> 8);
+		data[3] = (uint8_t)(rec.elapsed_ticks & 0xFF);
+		data[4] = 0; data[5] = 0; data[6] = 0; data[7] = 0;
+		return true;
+	}
+}
+
+static void diag_fw112_release(uint8_t session_id, bool sent)
+{
+	(void)sent;
+	fw112_diag_queue_release_session(session_id);
+}
+
+static uint32_t diag_fw112_accepted(void) { return fw112_diag_queue_enqueued(); }
+static uint32_t diag_fw112_refused(void)  { return fw112_diag_queue_rejected(); }
+
+/* --- sealing open captures at the end of a ride -------------------------------------------- */
+
+static void diag_seal_open_captures(void)
+{
+	pas_trace_seal_open_captures();
+	pas_raw_seal_open_capture();
+}
+
+static const diag_ops_t diag_ops = {
+	diag_aggregate_frame,
+	diag_seal_open_captures,
+	diag_raw_overrun_total,
+	{
+		{ diag_ep_count,    diag_ep_frame,    diag_ep_release,    diag_ep_accepted,    diag_ep_refused },
+		{ diag_trace_count, diag_trace_frame, diag_trace_release, diag_trace_accepted, diag_trace_refused },
+		{ diag_raw_count,   diag_raw_frame,   diag_raw_release,   diag_raw_accepted,   diag_raw_refused },
+		{ diag_rearm_count, diag_rearm_frame, diag_rearm_release, diag_rearm_accepted, diag_rearm_refused },   //FW-111
+		{ diag_fw112_count, diag_fw112_frame, diag_fw112_release, diag_fw112_accepted, diag_fw112_refused }    //FW-112-DIAG
+	}
+};
+
+static void diag_diagnostics_init(void)
+{
+	/*
+	 * FW-106: the clean point. Everything above this call in main() - hall/motor calibration,
+	 * the tight reg_ADC_flag spin loops - can produce PAS transitions or episode arming that has
+	 * nothing to do with riding. ride_episode_init()/pas_trace_init() already ran once at struct
+	 * setup, long before this point; re-running them HERE, at the same instant as pas_raw_init()
+	 * and the loss monitor below, discards anything boot noise produced so it cannot masquerade
+	 * as a session-0 record once real riding starts.
+	 */
+	ride_episode_init();
+	pas_trace_init();
+	pas_raw_init();
+	rearm_delay_init();   //FW-111
+	fw112_diag_init();    //FW-112-DIAG
+	diag_session_init(&diag_can_ops, &diag_ops);
+}
+
+/*
+ * One non-blocking step of the dump, called from the main loop rather than the 40 ms slow loop:
+ * at one confirmed frame per 40 ms a full capture would need the best part of a minute of
+ * standing still, and a dump that realistically never finishes is not a measurement.
+ *
+ * FW-106: "the rate is set by the CAN hardware" used to be the whole story here, and it was
+ * wrong - while(1) calls this far more often than once per 4 kHz control tick, so "one mailbox
+ * action per call" never actually limited the transmit rate, only the work done per call. A
+ * real ride log (log-2026-08-11-17-41-08-n0.log) showed the CAN hardware confirming every frame
+ * of an 18-record dump as sent while the USB sniffer capturing it for analysis only logged 766
+ * of the ~1389 frames actually sent - lost downstream of the bus, not on it. The pacing that
+ * fixes this lives inside diag_session_dump_step() itself (DIAG_TX_FRAME_INTERVAL_MS, see
+ * diag_session.h); this wrapper's only remaining job is to supply the current hardware tick.
+ */
+static void diag_dump_step(void)
+{
+	/*
+	 * FW-110: diagnostics may claim a mailbox for a NEW frame (or a retry of one that just
+	 * FAILED) only when nothing critical is waiting for one - a queued or in-flight critical
+	 * frame, or a multiframe reply still being produced (which itself only ever feeds the same
+	 * queue). Recomputed fresh every call: both are single flags read from their own module,
+	 * never cached, so this can never go stale between calls.
+	 */
+	bool allow_new_tx = (can_tx_queue_depth() == 0U) && !can_multiframe_busy();
+	diag_session_dump_step(control_time_ticks, allow_new_tx);
 }
 #endif
 
@@ -3108,9 +4388,20 @@ int16_t T_NTC(uint16_t ADC) // ADC 12 Bit, 10k NTC, RÃ¼ckgabewert in Â°C
 
 }
 
-void get_standstill_position(){
+void get_standstill_position(void){
 
+#if CAN_DIAGNOSTICS_ENABLE
+	  /* FW-111: the 25 ms Hall hold is a BLOCKING delay - no control tick runs inside it. The
+	   * hold is measured by the enter/exit tick markers, so each must read the clock FRESH at
+	   * its own side of the delay: a single `now_tick` captured before the delay would stamp
+	   * both markers with the same value and the hold would always measure 0 (Bug 1). The
+	   * subtraction happens in rearm_delay_diag.c via wrap-safe elapsed-from-anchor math. */
+	  rearm_delay_note_standstill_enter(control_time_ticks);   //FW-111: measure the 25 ms Hall hold (enter)
+#endif
 	  delay_1ms(25);
+#if CAN_DIAGNOSTICS_ENABLE
+	  rearm_delay_note_standstill_exit(control_time_ticks);    //FW-111: ... and its exit
+#endif
 	  ui8_hall_state = (GPIO_ISTAT(GPIOC)>>6)&0x07;
 		switch (ui8_hall_state) {
 			//6 cases for forward direction

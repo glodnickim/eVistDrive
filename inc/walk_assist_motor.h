@@ -46,6 +46,7 @@ typedef struct {
 	int32_t iq_cap;
 	int16_t integral_iq;
 	int16_t startup_iq;
+	uint16_t reason;
 } walk_motor_output_t;
 
 /* Diagnostic flag bits in CAN frame 0x00010205. */
@@ -57,6 +58,25 @@ typedef struct {
 #define WA_FLAG_ABOVE_TARGET 0x20
 #define WA_FLAG_LIMIT        0x40
 #define WA_FLAG_REACQUIRE    0x80
+
+/*
+ * FW-113.2: one unambiguous reason for WA being inactive or blocked, serialized in
+ * CAN frame 0x00010228 (Data1 = activation reason, Data2 = module reason). There is
+ * NO wall-clock hold-timeout bit by design: hold time alone can never disable WA, only
+ * a real safety gate can. The module sets the module-level bits (BRAKE, ERROR,
+ * SPEED_GATE from its inputs; HALL, JAM, STALL, LIMIT from its state machine); the
+ * activation-level bits NO_CAN_REQUEST and BUTTON_RELEASED are set by main.c, which
+ * alone knows the request origin.
+ */
+#define WA_REASON_NO_CAN_REQUEST  0x0001U
+#define WA_REASON_BUTTON_RELEASED 0x0002U
+#define WA_REASON_SPEED_GATE      0x0004U
+#define WA_REASON_BRAKE           0x0008U
+#define WA_REASON_ERROR           0x0010U
+#define WA_REASON_HALL            0x0020U
+#define WA_REASON_JAM             0x0040U
+#define WA_REASON_STALL           0x0080U
+#define WA_REASON_LIMIT           0x0100U
 
 /* Clears the active run state. The stall latch intentionally survives. */
 void walk_motor_reset(void);

@@ -6,6 +6,49 @@ local (untracked) notes.
 
 ## [Unreleased]
 
+### Calmer high assist levels: per-level dynamics defaults
+- All five levels previously shared almost the same assist dynamics. A higher assist ratio
+  multiplies the same rider torque change into a much larger motor-torque request, which made
+  L4/L5 noticeably more nervous than the lower levels for the same riding input.
+- The compiled-in factory defaults now deliberately slow the rise/fall dynamics as assist
+  rises, so the reaction stays calm at high power and high cadence. Only the *default values* of
+  the existing per-level parameters changed — the `assist_dynamics` algorithm is untouched.
+
+  | Level | Assist | Power rise | Power fall | Iq rise slow | Iq rise fast | Iq fall slow | Iq fall fast | Release |
+  |---|---|---|---|---|---|---|---|---|
+  | L1 | 100% | 150 ms | 375 ms | 600 ms | 300 ms | 1000 ms | 180 ms | 650 ms |
+  | L2 | 200% | 160 ms | 400 ms | 600 ms | 330 ms | 1000 ms | 210 ms | 650 ms |
+  | L3 | 320% | 190 ms | 450 ms | 650 ms | 380 ms | 1050 ms | 250 ms | 650 ms |
+  | L4 | 420% | 220 ms | 500 ms | 700 ms | 450 ms | 1100 ms | 300 ms | 650 ms |
+  | L5 | 520% | 250 ms | 550 ms | 750 ms | 500 ms | 1200 ms | 350 ms | 650 ms |
+
+- `release_ms` stays 650 ms on every level. The change is factory/default only: stored user
+  banks are never overwritten — the bank blob stays v8 with the same record layout, no EEPROM or
+  CAN change — and the new values apply to factory reset, creating a new default bank, or
+  restoring defaults. The Canable UI placeholder/defaults were synced to the same values.
+- Not touched: the `assist_dynamics` algorithm, torque filtering, cadence compensation, safety/
+  hard cut, release behaviour.
+
+### Adaptive Iq ramp cadence range for the M820
+- The SLOW→FAST interpolation of the adaptive Iq ramp used 20–70 rpm. On the M820 that range
+  sat too low: from 70 rpm the whole normal riding cadence already ran fully on the FAST
+  characteristic.
+- The compile-time thresholds are now 50–110 rpm, so FAST builds up across the cadence band the
+  M820 actually uses: 50 rpm = 0% FAST (full SLOW), ~17% at 60, ~33% at 70, ~50% at 80, ~67% at
+  90, ~83% at 100, 100% at 110 rpm. Only the input bounds changed — the interpolation math, the
+  per-level Iq rise/fall values and every filter are untouched.
+- The protocol schema metadata (`ramp_cadence_low_rpm` / `ramp_cadence_high_rpm`) was synced to
+  the new defaults (50/110); allowed ranges, types and layout are unchanged.
+- The 50/110 bounds are tuned for the M820. TODO: this cadence ramp range belongs in the
+  motor-specific profile — future EVistDrive motors may have a different usable cadence band.
+- Not touched: Iq rise/fall values, power filters, torque filter, `release_ms`, S-curve,
+  PAS/pre-stop, safety/hard cut, CAN and EEPROM.
+
+### Build after these changes
+- Firmware builds successfully as `0.0332_M820_BL820.bin`. The existing warnings
+  (`-Wpointer-sign` in `CAN_Display.c`, unused variable `fw_ver` in `main.c`) predate these
+  changes.
+
 ### Extended Boost may no longer outlive real pedalling — FW-095
 - Extended Boost used to be motor overrun after the cranks stop: a firm push armed it, the
   EDGE of pedalling stopping started it, and it then held motor current for up to a second

@@ -26,8 +26,9 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS);
 void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS);
 void sendCAN_Poll(MotorParams_t* MP, MotorState_t* MS, uint16_t command);
 void sendCAN_status_broadcast(MotorState_t* MS);
-#if CAN_DIAGNOSTICS_ENABLE
+#if CAN_TORQUE_STREAM_ENABLE
 void sendCAN_3100(MotorState_t* MS);
+uint32_t sendCAN_3100_dropped_count(void);
 #endif
 void sendCAN_3202(void);
 void update_checksum(void);

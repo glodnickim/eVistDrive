@@ -53,13 +53,38 @@
 //     0x00010203..0x00010206 and the three Canable diagnostic blocks above.
 // Essential HMI traffic and Canable configuration (including 0x6020/0x6023
 // and system/config status 0x6028) are never disabled by this switch.
-// scripts/build-firmware.ps1 sets this from -Variant; the fallback keeps IDE
+// .\build_firmware.ps1 (repo root) sets this via -CanDiagnostics; the fallback keeps IDE
 // and other direct compiler builds quiet.
 #ifndef CAN_DIAGNOSTICS_ENABLE
 #define CAN_DIAGNOSTICS_ENABLE 0
 #endif
 #if (CAN_DIAGNOSTICS_ENABLE != 0) && (CAN_DIAGNOSTICS_ENABLE != 1)
 #error "CAN_DIAGNOSTICS_ENABLE must be 0 or 1"
+#endif
+// --- Optional standalone torque-sensor CAN emulation stream (0x81F83100) ---
+// FW-110: this used to be silently tied to CAN_DIAGNOSTICS_ENABLE even though nothing in this
+// firmware reads the frame back - it exists only for an external bus logger/tool that wants to
+// see torque-sensor-shaped traffic. Measured at ~92 frames/s on a busy bus, which is real load on
+// top of everything else. Independent flag, default OFF in every build including
+// CAN_DIAGNOSTICS_ENABLE=1 (the PAS/diagnostics-recorder variant does not want this flood by
+// default). If ever turned on, the call site is its OWN separate, best-effort, single-attempt
+// path - deliberately NOT can_tx_queue: that queue's 16 slots are reserved for frames that must
+// be delivered, and this stream would compete with them for the same slots purely by existing.
+// Gated so an attempt is not even made unless can_tx_queue is empty and the multiframe producer
+// is idle (both draw from the same physical CAN mailboxes this stream also uses), and always
+// serviced AFTER them in the main loop - never earlier. See src/CAN_Display.c's sendCAN_3100().
+#ifndef CAN_TORQUE_STREAM_ENABLE
+#define CAN_TORQUE_STREAM_ENABLE 0
+#endif
+#if (CAN_TORQUE_STREAM_ENABLE != 0) && (CAN_TORQUE_STREAM_ENABLE != 1)
+#error "CAN_TORQUE_STREAM_ENABLE must be 0 or 1"
+#endif
+// FW-110 v4: never combine the optional 0x3100 torque-sensor emulation stream with the
+// diagnostic build. Both are best-effort/diagnostic-only paths whose coexistence in one
+// firmware would need a bus-priority argument this card does not make; the 0x6029 peak-reset
+// path this card validates must never share a build with the ~92 frames/s 0x3100 flood.
+#if (CAN_DIAGNOSTICS_ENABLE != 0) && (CAN_TORQUE_STREAM_ENABLE != 0)
+#error "CAN_DIAGNOSTICS_ENABLE=1 and CAN_TORQUE_STREAM_ENABLE=1 together are forbidden (FW-110 v4): the 0x3100 stream must not coexist with the diagnostics path it would displace."
 #endif
 #define R_TEMP_PULLUP 3500
 #define SIXSTEPTHRESHOLD 10000
@@ -117,9 +142,21 @@
 #define GEAR_RATIO 80 //11 for BionX IGH3
 #define SPEEDLIMIT 2500
 #define PULSES_PER_REVOLUTION 1 //wheel revolution, Para1[20]
+//FW-103/104: the ONE place the control-loop tick rate is named. TIMER1 drives control_time_ticks
+//at this rate (see main.c) - speed, PAS diagnostics and ride_episode all derive their "ticks per
+//second" from here, so a future prescaler change cannot leave a stale rate baked into one formula
+//and not another. SPEED_TIMEBASE_HZ is kept as an alias so FW-103's speed code did not need a
+//rename too.
+#define CONTROL_TIMEBASE_HZ 4000U
+#define SPEED_TIMEBASE_HZ CONTROL_TIMEBASE_HZ
 // Speed display stop detection + decay (was: frozen last value for 5 s after stopping).
-#define SPEED_STOP_TICKS 10600      // ticks @4kHz = 2.65 s without a wheel pulse -> speed = 0. Min detectable speed = circ*1440/ticks ~= 3.0 km/h @2218mm.
+//FW-103: derived from SPEED_TIMEBASE_HZ, not a bare tick count - this means 2.65 s at
+//whatever the timebase actually is, not "10600" regardless of it. *265U/100U == *2.65,
+//done in integer math; still exactly 10600 at 4000 Hz. Min detectable speed = circ*1440/ticks ~= 3.0 km/h @2218mm.
+#define SPEED_STOP_TICKS ((SPEED_TIMEBASE_HZ*265U)/100U)
 #define SPEED_DECAY_MARGIN_PCT 25   // between pulses show at most the speed implied by the silence so far, but only once a pulse is >25% overdue -> steady riding never touched, braking display falls smoothly instead of freezing
+//FW-103: also derived - 0.1 s of silence before the decay clamp engages, same reasoning as above.
+#define SPEED_DECAY_GUARD_TICKS (SPEED_TIMEBASE_HZ/10U)
 #define SPEEDSOURCE EXTERNAL
 #define SPEEDFILTER 1
 #define SPDSHFT 0
@@ -227,8 +264,13 @@
 
 #define IQ_RAMP_SPEED_LO   400  // Speedx100 = 4.0 km/h (below -> SLOW)
 #define IQ_RAMP_SPEED_HI   2000 // 20.0 km/h (above -> FAST)
-#define IQ_RAMP_CAD_LO     20   // rpm
-#define IQ_RAMP_CAD_HI     70   // rpm
+// M820 cadence ramp range: 50 rpm = 0% FAST (full SLOW), 110 rpm = 100% FAST, linear
+// interpolation in between (50..60..70..80..90..100..110 rpm -> ~0/17/33/50/67/83/100% FAST).
+// Plain compile-time constants for now.
+// TODO: cadence ramp range (LO/HI) belongs in the motor-specific profile — future
+// EVistDrive motors may have a different usable cadence band.
+#define IQ_RAMP_CAD_LO     50   // rpm
+#define IQ_RAMP_CAD_HI     110  // rpm
 
 // FW-094: the pre-ride-core smooth-start envelope (SMOOTH_START_ENABLE / START_RAMP_TICKS) and
 // that path's own STARTUP_BOOST_* powf() boost are gone. Both live in the ride core now, per
@@ -336,7 +378,9 @@
  * is 240000 ticks @4kHz, so ticks per pulse = 960000/(C*N). main.c publishes
  * MS.cadence = 10000/ticks = C * N/96. That equals the true C only when N = 96, and the
  * reading IS true - so N = 96 and the constant 10000 is exactly that assumption baked in.
- * (Independent check on the tick rate: SPEED_STOP_TICKS 10600 = 2.65 s -> 4000 Hz.)
+ * (Independent check on the tick rate: SPEED_TIMEBASE_HZ = 4000 Hz, the same TIMER1 this
+ * quadrature decoder runs from. FW-103: SPEED_STOP_TICKS is now DERIVED from that constant,
+ * so it stopped being independent corroboration the moment it stopped being its own literal.)
  *
  * Both figures were right, counting different things: 24 magnet pole-pairs give 4*24 = 96
  * QUADRATURE TRANSITIONS, while edges on a SINGLE channel give 2*24 = 48 "pulses/rev".

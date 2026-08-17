@@ -61,6 +61,22 @@ int32_t assist_dynamics_apply(
 #endif
 		return 0;
 	}
+	/*
+	 * FW-112 v2 SAME-TICK ZERO (+ audit S13): force the ramp accumulator to zero this tick.
+	 * The caller sets this when the FINAL demand is 0 and (a) this is the exact rolling
+	 * fast-rearm tick, or (b) the recovery automaton is in WAIT_FRESH_LOAD. In both cases
+	 * the old reference must not keep flowing through the ramp accumulator — the motor
+	 * command (and MS.i_q_setpoint) must be exactly 0 in the same tick. The caller only
+	 * sets it on a zero final demand, so a cold start, a normal release and any real
+	 * positive demand are unaffected.
+	 */
+	if (input->force_zero_reference) {
+#if IQ_RAMP_TIME_MODE
+		iq_reference_q = 0;
+		profile_release_step_q = 0;
+#endif
+		return 0;
+	}
 #if IQ_RAMP_TIME_MODE
 	/*
 	 * FW-060: WA owns its complete Iq trajectory, including start and release

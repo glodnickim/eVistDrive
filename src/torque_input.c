@@ -16,6 +16,15 @@ static uint16_t run_filled;
 static uint32_t run_sum;
 static uint16_t run_value_native;
 static uint16_t run_attack_steps; /* FW-090: consecutive steps holding a sustained rise */
+/* FW-112 v2: rolling-rearm recovery AUTOMATON - see torque_input_begin_rolling_rearm() in the
+ * header for the full lifecycle. IDLE is the normal FW-085 averaging state; WAIT_FRESH_LOAD is
+ * entered exactly on the fast-rearm edge (RUN re-seeded to the current fast signal on every
+ * forward step); TRACK_FAST is entered once the fresh signal holds at/above the assist deadband
+ * (RUN follows the fast signal every control tick). The automaton is closed ONLY by
+ * cancel_rolling_rearm() (!latched) or, from TRACK_FAST, by a completed recovery - never by a
+ * timeout and never by the forward step count. */
+static torque_recovery_state_t recovery_state;
+static uint16_t recovery_stable_ticks;
 
 static int32_t offset_correction;
 static bool cal_fault;
@@ -156,6 +165,10 @@ static void run_window_reset(void)
 	run_filled = 0U;
 	run_sum = 0U;
 	run_attack_steps = 0U; /* FW-090 */
+	/* FW-112 v2: a rebuilt window must not inherit a live recovery automaton - the stability
+	 * bookkeeping has no meaning against a freshly reset average. */
+	recovery_state = TORQUE_RECOVERY_IDLE;
+	recovery_stable_ticks = 0U;
 }
 
 void torque_input_set_run_window_deg(uint16_t window_deg)
@@ -197,12 +210,73 @@ void torque_input_seed_run(uint16_t value_native)
 	run_attack_steps = 0U; /* FW-090: the window now holds this level; start counting afresh */
 }
 
+/*
+ * FW-112 v2: rolling-rearm recovery, driven by src/ride_control.c as a one-shot EVENT (see the
+ * header for the full lifecycle and why it replaced v1's latched fast-track).
+ *
+ * begin: the rearm itself happened - seed the estimator to the current fast signal so the
+ * rearmed Iq starts at full magnitude, and enter WAIT_FRESH_LOAD. From here the per-forward-step
+ * re-seed (run_filter_step) keeps RUN pinned to the fresh signal in step time, and the automaton
+ * advances to TRACK_FAST once the fresh signal holds at/above the assist deadband (confirmed in
+ * torque_input_update()) - where RUN tracks the fast signal every control tick until the recovery
+ * completes.
+ */
+void torque_input_begin_rolling_rearm(void)
+{
+	torque_input_seed_run(snapshot.assist_delta_filtered_native);
+	recovery_state = TORQUE_RECOVERY_WAIT_FRESH_LOAD;
+	recovery_stable_ticks = 0U;
+}
+
+/* cancel: the rearm saga was abandoned - close the automaton immediately so a later NORMAL cold
+ * start can never inherit it. The estimator itself is left where it is: closing a recovery is a
+ * lifecycle fact, not a filter reset. */
+void torque_input_cancel_rolling_rearm(void)
+{
+	recovery_state = TORQUE_RECOVERY_IDLE;
+	recovery_stable_ticks = 0U;
+}
+
+/*
+ * FW-112 v2: READ side of the recovery automaton, used by ride_control to fix the one-tick
+ * stale snapshot on the rearm edge (see the header). recovery_active() is true for every tick
+ * the automaton is not IDLE; recovery_run_native() then returns the CURRENT fast signal - the
+ * value the recovery is tracking - not the last re-seeded RUN, so the caller can substitute it
+ * into the mode calculation's torque_run_filtered input without the one-step lag.
+ */
+bool torque_input_recovery_active(void)
+{
+	return recovery_state != TORQUE_RECOVERY_IDLE;
+}
+
+uint16_t torque_input_recovery_run_native(void)
+{
+	return snapshot.assist_delta_filtered_native;
+}
+
+torque_recovery_state_t torque_input_recovery_state(void)
+{
+	return recovery_state;
+}
+
 void torque_input_run_filter_step(void)
 {
 	if (run_window_steps == 0U) {
 		return; /* disabled: run tracks the fast signal, see torque_input_update */
 	}
 	uint16_t sample = snapshot.assist_delta_filtered_native;
+
+	/* FW-112 v2: WAIT_FRESH_LOAD re-seeds to the CURRENT fast sample on every forward step, so a
+	 * stale pre-reverse window can never survive the rearm - the estimate follows the fresh pedal
+	 * signal honestly, one sample per step, until the pressure is confirmed. Once the automaton
+	 * reaches TRACK_FAST, RUN is pinned to the fast signal every control tick in
+	 * torque_input_update() instead, so nothing further is done here - the step just advances the
+	 * published value that update has already made current. */
+	if (recovery_state == TORQUE_RECOVERY_WAIT_FRESH_LOAD) {
+		torque_input_seed_run(sample);
+		return;
+	}
+
 	if (run_filled >= run_window_steps) {
 		run_sum -= run_buffer[run_head];
 	} else {
@@ -502,6 +576,44 @@ void torque_input_update(uint16_t raw_native, int16_t torque_corrected_native,
 	snapshot.assist_delta_native = assist_delta;
 	snapshot.assist_delta_filtered_native = update_assist_filter(
 		sensor_valid ? assist_delta : 0U);
+
+	/*
+	 * FW-112 v2: advance the rolling-rearm recovery AUTOMATON (see torque_input_begin_rolling_
+	 * rearm() in the header). Once per tick while it is not IDLE:
+	 *   - WAIT_FRESH_LOAD -> TRACK_FAST  when the fresh signal holds at/above the assist deadband
+	 *                                       (pressure confirmed; run then follows the fast signal
+	 *                                       every tick, see the publish block below);
+	 *   - TRACK_FAST -> IDLE              when the fresh signal has held at/above the deadband for
+	 *                                       TORQUE_ROLLING_REARM_STABLE_TICKS (recovery complete -
+	 *                                       re-seed once to that level so ordinary FW-085
+	 *                                       averaging resumes from a known-good average);
+	 *   - TRACK_FAST -> WAIT_FRESH_LOAD   when the fresh signal drops back below the deadband
+	 *                                       (pressure lost mid-recovery - honest collapse);
+	 * and from WAIT_FRESH_LOAD there is NO further exit here: no timeout (a resumed-but-
+	 * unpressured ride simply keeps re-seeding RUN to the ~0 fast signal on each forward step,
+	 * which is already honest) and no dependence on forward steps arriving - the only edges that
+	 * close the automaton are cancel_rolling_rearm() (!latched) and the completed recovery above.
+	 */
+	if (recovery_state == TORQUE_RECOVERY_WAIT_FRESH_LOAD) {
+		if (snapshot.assist_delta_filtered_native >= TORQUE_ASSIST_DEADBAND_NATIVE) {
+			recovery_state = TORQUE_RECOVERY_TRACK_FAST;
+			recovery_stable_ticks = 0U;
+		}
+	} else if (recovery_state == TORQUE_RECOVERY_TRACK_FAST) {
+		if (snapshot.assist_delta_filtered_native >= TORQUE_ASSIST_DEADBAND_NATIVE) {
+			if (recovery_stable_ticks < TORQUE_ROLLING_REARM_STABLE_TICKS) {
+				recovery_stable_ticks++;
+			}
+			if (recovery_stable_ticks >= TORQUE_ROLLING_REARM_STABLE_TICKS) {
+				torque_input_seed_run(snapshot.assist_delta_filtered_native);
+				recovery_state = TORQUE_RECOVERY_IDLE;
+				recovery_stable_ticks = 0U;
+			}
+		} else {
+			recovery_state = TORQUE_RECOVERY_WAIT_FRESH_LOAD;
+			recovery_stable_ticks = 0U;
+		}
+	}
 	/*
 	 * FW-033/085: RUN estimator averages the FAST signal (cascade fast->run).
 	 * When disabled (window 0) run tracks fast exactly = old behaviour.
@@ -510,8 +622,15 @@ void torque_input_update(uint16_t raw_native, int16_t torque_corrected_native,
 	 * by the crank, not by this tick. Here we only publish the value it holds — so
 	 * between crank steps the estimate stays put instead of decaying, which is
 	 * precisely what stops assist pulsing once per leg at low cadence.
+	 *
+	 * FW-112 v2: while the recovery automaton is in TRACK_FAST, RUN follows the fast signal
+	 * every control tick instead — the re-seed on forward steps alone would lag the fresh
+	 * pressure by up to a full step interval at low cadence, and the whole point of the
+	 * recovery is fast-filter time (35 ms), not step time.
 	 */
-	if (run_window_steps == 0U) {
+	if (recovery_state == TORQUE_RECOVERY_TRACK_FAST) {
+		run_value_native = snapshot.assist_delta_filtered_native;
+	} else if (run_window_steps == 0U) {
 		run_value_native = snapshot.assist_delta_filtered_native;
 	}
 	snapshot.assist_delta_run_native = run_value_native;

@@ -218,11 +218,17 @@ void assist_extended_boost_update(
 		/*
 		 * FW-100a: tested BEFORE safety_cut, and that order is the whole point.
 		 *
-		 * Both come from the same Backwards_counter >= 4 — crank_reverse directly, safety_cut
-		 * because main.c folds backward pedalling into it along with brake, overtemperature
-		 * and the torque faults. With safety_cut first, backward pedalling could only ever be
-		 * logged as the generic "safety cut" and ASSIST_EXT_BOOST_CANCEL_REVERSE was
-		 * unreachable — a reason in the enum that no log could ever show.
+		 * FW-109 v2: these two no longer share one source. crank_reverse is rider_input_t.
+		 * pas_backward = pas_direction_backpedal_confirmed() - the legacy, slower-confirming
+		 * (3-step) backpedal latch, unchanged FW-024/FW-098 timing. safety_cut is
+		 * ride_control.c's own hard_cut = input->safety_cut_non_direction ||
+		 * rider->direction_inhibit_active - the direction safety automaton's IMMEDIATE
+		 * (first-step) signal, ORed with the non-direction cuts (brake/overtemperature/torque
+		 * fault). A reverse step can set safety_cut (via direction_inhibit_active) several
+		 * ticks before crank_reverse's own slower latch confirms - testing crank_reverse first
+		 * is still what keeps ASSIST_EXT_BOOST_CANCEL_REVERSE reachable in that window instead
+		 * of always being swallowed by the generic "safety cut" reason, which is why the order
+		 * still matters.
 		 *
 		 * The behaviour is identical either way: the boost is cancelled in this same tick.
 		 * What changes is that a bench log now says WHICH of the two it was, which is exactly

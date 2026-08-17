@@ -218,9 +218,22 @@ int main(void)
 	/* --- FW-100a: backward pedalling is distinguishable from the brake -------------- */
 	{
 		/*
-		 * Bench test 6. Both conditions come from the same Backwards_counter >= 4, so the
-		 * bike raises safety_cut at the exact instant crank_reverse goes true. With the old
-		 * cancel order a log could never show WHICH it was, and REVERSE was unreachable.
+		 * Bench test 6, deliberately SYNTHETIC (both flags forced true by hand): checks this
+		 * module's OWN cancel-reason priority when both happen to be true at once, regardless
+		 * of how often production actually produces that combination.
+		 *
+		 * FW-109 note: before that card, both conditions came from the same Backwards_counter
+		 * >= 4 in production, so main.c raised safety_cut at the exact instant crank_reverse
+		 * went true. Since FW-109, ride_control.c's safety_cut (fed to .safety_cut here) also
+		 * includes src/pas_direction.c's reverse_inhibit_active, which fires on the FIRST
+		 * reverse step - immediately, well before Backwards_counter's 3-step confirm sets
+		 * crank_reverse. In production the two are therefore no longer simultaneous:
+		 * safety_cut now typically LEADS crank_reverse by a couple of ticks. That is a
+		 * SAFETY non-issue (iq_target is forced to 0 by either flag alone, see the case-0/
+		 * case-1 checks above), but it does mean this module's cancel-reason diagnostic can
+		 * briefly report the generic SAFETY_CUT reason instead of REVERSE for those first
+		 * couple of ticks, before crank_reverse catches up and it reclassifies - see the
+		 * FW-109 report's open risks.
 		 */
 		assist_extended_boost_init();
 		check(arm_and_stop(&cfg, HARD_PUSH).active, "precondition: boost running");
