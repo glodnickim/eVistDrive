@@ -227,6 +227,20 @@ static void test_ownership_guard(void)
 	CHECK(rc != NULL, "setup: ride_control.c sanitizes");
 	if (!rc) { free(r); free(m); free(mraw); return; }
 
+	/*
+	 * The cap moved out of ride_control.c and into the ONE limiter chain, so the guard reads
+	 * both files: the chain owns the cap, ride_control owns the single publication. The
+	 * property being proved is unchanged - the cap gates the demand BEFORE the one final
+	 * 16 kHz owner sees it.
+	 */
+	long llen = 0;
+	char *l = read_whole_file(STRINGIZE(AP2_LIMITS_C_PATH), &llen);
+	CHECK(l != NULL, "setup: ap2_limits.c is readable");
+	if (!l) { free(rc); free(r); free(m); free(mraw); return; }
+	char *lim = strip_comments(l, llen);
+	CHECK(lim != NULL, "setup: ap2_limits.c sanitizes");
+	if (!lim) { free(l); free(rc); free(r); free(m); free(mraw); return; }
+
 	/* ---- PI_iq stays in the Iq domain (main.c pi_iq_apply_inputs) ------------------- */
 	CHECK(strstr(m, "PI_iq.recent_value = MS.i_q;") != NULL,
 		"G1. feedback is measured Iq, stated literally");
@@ -246,36 +260,44 @@ static void test_ownership_guard(void)
 	CHECK(occurrences(m, "PI_iq.recent_value =") == 1,
 		"G7. feedback has a single writer (measured Iq) in the whole file");
 
-	/* ---- the battery cap lives UPSTREAM, before the ONE final slew (ride_control.c) --- */
-	CHECK(strstr(rc, "battery_iq_cap_update(") != NULL,
+	/* ---- the battery cap lives UPSTREAM, before the ONE final slew ------------------- */
+	CHECK(strstr(lim, "battery_iq_cap_update(") != NULL,
 		"G8. the battery limiter is the upstream cap module call");
-	CHECK(strstr(rc, "iq_battery_cap") != NULL,
+	CHECK(strstr(lim, "iq_battery_cap") != NULL,
 		"G9. the battery cap output is an Iq-domain quantity");
+	CHECK(occurrences(lim, "battery_iq_cap_update(") == 1,
+		"G8b. exactly ONE battery cap call site in the whole limiter chain");
+	CHECK(strstr(rc, "battery_iq_cap_update(") == NULL,
+		"G8c. ride_control no longer applies the cap itself - it is a chain stage now");
 	CHECK(strstr(rc, "fast_iq_slew_publish(") != NULL,
 		"G10. the single final 16 kHz slew owner is present in ride_control");
 	/* Ordering: the cap update must appear before the normal final publish helper call. */
 	{
-		const char *cap = strstr(rc, "battery_iq_cap_update(");
-		const char *slew = cap ? strstr(cap, "ride_publish_final_iq(iq_target") : NULL;
+		/* Inside the chain: the battery stage runs before the chain returns its result. */
+		const char *cap = strstr(lim, "battery_iq_cap_update(");
+		const char *final_out = cap ? strstr(cap, "out->final_iq = iq;") : NULL;
+		/* In ride_control: the chain result is recorded as Iq_allowed and only then published
+		 * to the one final owner. */
 		const char *iq_allowed = strstr(rc, "iq_chain_note_allowed(");
-		CHECK(cap != NULL && slew != NULL && iq_allowed != NULL && cap < iq_allowed &&
-			iq_allowed < slew,
+		const char *slew = iq_allowed ? strstr(iq_allowed, "ride_publish_final_iq(cmd.final_iq_request") : NULL;
+		CHECK(cap != NULL && final_out != NULL && iq_allowed != NULL && slew != NULL,
 			"G11. cap -> Iq_allowed -> final slew ordering: the cap gates demand BEFORE the "
 			"ONE final 16 kHz slew owner");
 	}
 	/* Exactly one mailbox publication primitive; the fast ISR is the dynamic write owner. */
 	CHECK(occurrences(rc, "fast_iq_slew_publish(") == 1,
 		"G12. exactly ONE final Iq slew owner call site");
-	CHECK(strstr(rc, "iq_target = ride_battery_cap.iq_battery_cap;") != NULL ||
-		strstr(rc, "< iq_target)") != NULL,
-		"G13. the cap min-arbitrates into iq_target upstream");
+	CHECK(strstr(lim, "if (battery_cap_state.iq_battery_cap < iq) {") != NULL,
+		"G13. the cap min-arbitrates into the running demand upstream");
 	/* battery limiting remains effective: the module's latch is exposed and the entry/exit
 	 * thresholds are unchanged from legacy semantics. */
-	CHECK(strstr(rc, "battery_iq_cap_update(") != NULL &&
+	CHECK(strstr(lim, "battery_iq_cap_update(") != NULL &&
 		strstr(m, "BC_limit_flag = ride_control_battery_limit_active() ? 1 : 0;") != NULL &&
-		strstr(rc, "battery_iq_cap_update(") != NULL,
+		strstr(rc, "return assist_pipeline_battery_limited();") != NULL,
 		"G14. battery-current limiting wired end-to-end (cap active -> BC_limit_flag)");
 
+	free(lim);
+	free(l);
 	free(rc);
 	free(r);
 	free(m);

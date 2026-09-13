@@ -47,6 +47,22 @@ typedef struct {
 	/* START segment: the remaining ticks for which the start attack time is in force. */
 	uint32_t start_ticks_left;
 	bool start_active;
+	/*
+	 * THE RELEASE TIME IN FORCE, LATCHED AT THE EDGE.
+	 *
+	 * The 16 kHz owner derives a release rate once, at the command edge, from its live
+	 * accumulator - which is what makes "the current reaches zero in release_ms" true whatever
+	 * it was releasing from. A command that keeps CHANGING re-triggers that edge every tick,
+	 * and re-deriving "reach zero in release_ms" from an ever-smaller current turns a bounded
+	 * ramp into an exponential tail that takes several times as long to actually reach zero.
+	 *
+	 * Rider aggression shortens the release, and aggression decays during the release itself,
+	 * so without this latch the command changed on almost every tick. Freezing the value when
+	 * the release starts fixes that and is also the right behaviour on its own: how fast the
+	 * motor lets go is decided when the rider stops, not re-negotiated while it is happening.
+	 */
+	uint16_t release_latched_ms;
+	bool release_latched;
 	assist_pipeline_telemetry_t tlm;
 } ap2_pipeline_ctx_t;
 
@@ -69,6 +85,8 @@ void assist_pipeline_reset(void)
 	ctx.base_hold_ms = fallback->base_hold_ms;
 	ctx.start_ticks_left = 0U;
 	ctx.start_active = false;
+	ctx.release_latched_ms = 0U;
+	ctx.release_latched = false;
 
 	ap2_pas_state_reset();
 	ap2_rider_demand_reset();
@@ -464,6 +482,21 @@ void assist_pipeline_update(const assist_pipeline_input_t *in, assist_pipeline_c
 			ap2_scale_permille((int32_t)attack_ms, AP2_PERMILLE - shorten), 20, 5000);
 		release_ms = (uint16_t)ap2_clamp(
 			ap2_scale_permille((int32_t)release_ms, AP2_PERMILLE - shorten), 20, 5000);
+	}
+
+	/*
+	 * Latch the release time on the edge into "not permitted", and release it again the moment
+	 * the drive is permitted. See release_latched_ms for why a release time that keeps moving
+	 * turns the release into an exponential tail.
+	 */
+	if (pas.assist_permitted && !pas.block_positive) {
+		ctx.release_latched = false;
+	} else if (!ctx.release_latched) {
+		ctx.release_latched_ms = release_ms;
+		ctx.release_latched = true;
+	}
+	if (ctx.release_latched) {
+		release_ms = ctx.release_latched_ms;
 	}
 
 	/* ---- THROTTLE --------------------------------------------------------------------

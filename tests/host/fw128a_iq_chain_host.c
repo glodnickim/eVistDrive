@@ -197,15 +197,22 @@ int main(void)
 
 	/* --- A1e: the stages are recorded in the right order, one-way ---------------------------- */
 	{
-		const char *req = strstr(r, "iq_chain_note_requested(");
-		const char *lim = strstr(r, "assist_limits_apply(iq_target");
-		const char *alw = strstr(r, "iq_chain_note_allowed(");
-		const char *ramp = alw ? strstr(alw, "ride_publish_final_iq(iq_target") : NULL;
-		CHECK(req && lim && req < lim,
-		      "A1e. Iq_requested is recorded BEFORE the limiters - that is what makes it 'requested'");
+		/*
+		 * The limiter chain moved into ap2_limits.c and every owner (assist, Walk, service)
+		 * now converges on ONE record-and-publish block. The ordering property is unchanged
+		 * and is still checkable by reading straight down the function: the requested value is
+		 * the demand BEFORE the chain, the allowed value is what the chain returned, and the
+		 * publish to the single 16 kHz owner comes last.
+		 */
+		const char *req = strstr(r, "iq_chain_note_requested(requested);");
+		const char *alw = strstr(r, "iq_chain_note_allowed(cmd.final_iq_request);");
+		const char *ramp = alw ? strstr(alw, "ride_publish_final_iq(cmd.final_iq_request") : NULL;
+		const char *assist_req = strstr(r, "requested = assist_pipeline_telemetry()->iq_request_before_limits;");
+		CHECK(req && assist_req && assist_req < req,
+		      "A1e. Iq_requested is the demand BEFORE the limiter chain - that is what makes it 'requested'");
 		CHECK(alw && ramp && alw < ramp,
-		      "A1f. Iq_allowed is recorded BEFORE the ramp - that is what makes it 'allowed'");
-		CHECK(lim && alw && lim < alw, "A1g. ...and after the limiters");
+		      "A1f. Iq_allowed is recorded BEFORE the publish - that is what makes it 'allowed'");
+		CHECK(req && alw && req < alw, "A1g. ...and requested is recorded before allowed");
 	}
 
 	/* --- A10 + A11: one PI_iq input site, battery cap is upstream -------------------------------- */
@@ -249,9 +256,10 @@ int main(void)
 	/* QS-3C: the legacy domain-switch override is gone. The battery limiter is an Iq-domain
 	 * upstream cap (battery_iq_cap.c) in ride_control.c, before the one final slew, never
 	 * swapping feedback and never living in pi_iq_apply_inputs. */
-	CHECK(strstr(r, "battery_iq_cap_update(") != NULL &&
-	      strstr(r, "iq_battery_cap") != NULL,
-	      "A11c. QS-3C: the battery cap is an Iq-domain value, not a PI-domain switch");
+	CHECK(strstr(r, "ap2_limits_apply(") != NULL &&
+	      strstr(r, "battery_iq_cap_update(") == NULL,
+	      "A11c. QS-3C: the battery cap is an Iq-domain stage of the one limiter chain, "
+	      "not a PI-domain switch and not a second copy in ride_control");
 	CHECK(strstr(m, "PI_iq.recent_value = MS.Battery_Current") == NULL,
 	      "A11f. legacy BC override no longer writes recent_value — PI stays in Iq domain");
 	CHECK(strstr(m, "battery_current_max>>6") == NULL,
@@ -270,11 +278,12 @@ int main(void)
 	      "A13. the FW-127 acquisition chain is still wired exactly as it was");
 	CHECK(strstr(r, "fast_iq_slew_publish(") != NULL,
 	      "S4a. the ramp is still the single call it was - no ramp arithmetic was touched here");
-	CHECK(count_occurrences(r, "assist_limits_apply(") == 2,
-	      "S4b. the limiter is still called exactly twice (pedal and throttle), unchanged");
+	CHECK(count_occurrences(r, "ride_publish_final_iq(") == 4,
+	      "S4b. one publish helper, called from exactly the three explicit commands "
+	      "(force-zero, service, and the one shared point) plus its own definition");
 	CHECK(count_occurrences(r, "motor_core_set_command(") == 0 &&
 	      strstr(r, "ride_control_force_final_iq_zero();") != NULL &&
-	      strstr(r, "ride_control_request_service_iq(calibration_iq);") != NULL &&
+	      strstr(r, "hall_calibration_iq_request()") != NULL &&
 	      strstr(r, "motor_core_set_id_target(input->current_id);") != NULL,
 	      "S4c. stop/calibration/normal ownership is explicit and Motor Core cannot overwrite Iq");
 

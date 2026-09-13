@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "assist_modes.h"
+#include "assist_pipeline.h"
 #include "cadence_filter.h"
 #include "config.h"
 #include "fast_iq_slew.h"
@@ -161,15 +162,15 @@ int main(int argc,char **argv)
         ci.safety_cut_non_direction=isfinite(r.brake)&&r.brake!=0.0; ci.service_cut_active=false; ci.elapsed_ticks=elapsed;
         ride_control_update(&ci);
         for(uint32_t k=0;k<elapsed*4U;k++)fast_iq_slew_tick(mb,&ms.i_q_setpoint);
-        const assist_mode_output_t *mo=assist_modes_get_last_output();
-        double dr=isfinite(r.recorded_iq_request)?(double)mo->iq_request-r.recorded_iq_request:NAN;
+        const assist_pipeline_telemetry_t *mo=assist_pipeline_telemetry();
+        double dr=isfinite(r.recorded_iq_request)?(double)mo->iq_request_before_limits-r.recorded_iq_request:NAN;
         double df=isfinite(r.recorded_iq_ref)?(double)ms.i_q_setpoint-r.recorded_iq_ref:NAN;
         if(isfinite(dr)&&fabs(dr)>max_req_delta)max_req_delta=fabs(dr);
         if(isfinite(df)){if(fabs(df)>max_ref_delta)max_ref_delta=fabs(df);sum_ref_delta+=fabs(df);compared++;}
         fprintf(out,"%.9f,%.3f,%u,%.3f,%.3f,%.3f,%d,%d,%.3f,%.3f,%.3f,%.3f,0x%02X\n",
                 r.time_s,(double)cadence,(unsigned)ts->load_centikg,(double)speed_x100/100.0,vb,ia,
-                mo->iq_request,ms.i_q_setpoint,r.recorded_iq_request,r.recorded_iq_ref,dr,df,
-                (unsigned)ride_control_get_debug_flags());
+                mo->iq_request_before_limits,ms.i_q_setpoint,r.recorded_iq_request,r.recorded_iq_ref,dr,df,
+                (unsigned)assist_pipeline_reason_bits());
         rows++;
     }
     fclose(in); fclose(out);

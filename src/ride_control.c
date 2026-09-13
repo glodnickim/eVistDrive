@@ -147,6 +147,7 @@ void ride_control_update(const ride_control_input_t *input)
 	const rider_input_t *rider;
 	assist_pipeline_input_t pipe_in;
 	assist_pipeline_command_t cmd;
+	int32_t requested;
 	bool walk_release_cut;
 
 	if (input == 0) {
@@ -159,95 +160,108 @@ void ride_control_update(const ride_control_input_t *input)
 	walk_was_active = input->walk_active;
 
 	/*
-	 * SERVICE MODE. Position-sensor calibration owns Iq outright and bypasses the ride-feel
-	 * trajectory: on the completion tick the calibration code sets Iq to 0, disables PWM and
-	 * stores the angle, and no stale ramp value may re-enable the bridge. The pipeline is
-	 * reset on the way in, so a ride cannot survive a detour through a service mode and fire
-	 * on the way out.
+	 * ONE PUBLICATION POINT. Each of the three owners fills `cmd` and `requested`; the single
+	 * record-and-publish block at the bottom is reached by all of them. That is what keeps
+	 * "exactly one producer of Iq_requested, one of Iq_allowed, one final publish" a property
+	 * of the CODE SHAPE rather than a rule three separate exit paths each have to remember.
 	 */
 	if (input->position_calibration_active) {
+		/*
+		 * SERVICE MODE. Position-sensor calibration owns Iq outright and bypasses the
+		 * ride-feel trajectory: on the completion tick the calibration code sets Iq to 0,
+		 * disables PWM and stores the angle, and no stale ramp value may re-enable the
+		 * bridge. The pipeline is reset on the way in, so a ride cannot survive a detour
+		 * through a service mode and fire on the way out.
+		 */
+		int32_t cal_iq = (int32_t)hall_calibration_iq_request();
+		if (cal_iq < 0) {
+			cal_iq = 0;
+		}
 		assist_pipeline_reset();
-		ride_control_request_service_iq(hall_calibration_iq_request());
-		motor_core_set_id_target(input->current_id);
-		return;
+		requested = cal_iq;
+		cmd.final_iq_request = cal_iq;
+		cmd.slew_mode = FIS_MODE_BYPASS;
+		cmd.step_mag_8 = 0U;
+		cmd.release_ticks_16k = 0U;
+		cmd.zero_policy = FIS_ZERO_POLICY_NONE;
+	} else if (input->walk_active) {
+		/*
+		 * WALK ASSIST. A separate demand owner, not an assist mode with different numbers: it
+		 * has its own motor-speed controller, and a second dynamic element behind that speed
+		 * loop would only make it less stable. It does pass the shared ceilings.
+		 */
+		int32_t walk_raw = (int32_t)walk_assist_iq_request();
+		assist_pipeline_reset();
+		requested = walk_raw;
+		cmd.final_iq_request = walk_iq_through_shared_limits(input, walk_raw);
+		cmd.slew_mode = FIS_MODE_BYPASS;
+		cmd.step_mag_8 = 0U;
+		cmd.release_ticks_16k = 0U;
+		cmd.zero_policy = FIS_ZERO_POLICY_NONE;
+	} else if (walk_release_cut) {
+		/*
+		 * Leaving Walk: the walk current must not be handed to the assist release as if the
+		 * rider had just stopped pedalling. It is zeroed in the same tick, and the pipeline
+		 * starts the next ride from zero.
+		 */
+		assist_pipeline_reset();
+		requested = 0;
+		cmd.final_iq_request = 0;
+		cmd.slew_mode = FIS_MODE_FORCE_ZERO;
+		cmd.step_mag_8 = 0U;
+		cmd.release_ticks_16k = 0U;
+		cmd.zero_policy = FIS_ZERO_POLICY_NONE;
+	} else {
+		/* ---- PEDAL ASSIST: the one rider-facing path ---------------------------------- */
+		rider = rider_input_get();
+
+		pipe_in.torque_load_centikg = rider->torque_load_centikg;
+		pipe_in.torque_sensor_valid = rider->torque_sensor_valid;
+		pipe_in.cadence_rpm = input->cadence_rpm;
+		pipe_in.speed_x100 = input->speed_x100;
+		pipe_in.motor_erps = rider->motor_erps;
+
+		pipe_in.forward_valid = rider->crank_direction_ok;
+		pipe_in.direction_inhibit = rider->direction_inhibit_active;
+		pipe_in.inhibit_is_reverse = rider->pas_backward;
+		pipe_in.real_stop = rider->real_stop;
+		pipe_in.wheel_valid = rider->wheel_valid;
+		pipe_in.pas_sensor_valid = rider->pas_sensor_valid;
+		pipe_in.forward_steps = rider->crank_forward_steps;
+		/* The anti-jiggle guard is a property of the bike and its sensor, not of an assist
+		 * level, so it stays a global tuning value rather than travelling through the input. */
+		pipe_in.required_steps = tuning_config_start_steps();
+
+		pipe_in.assist_level_index = input->assist_level_index;
+
+		pipe_in.safety_cut = input->safety_cut_non_direction;
+		pipe_in.service_cut = input->service_cut_active;
+
+		pipe_in.battery_voltage_mv = input->battery_voltage_mv;
+		pipe_in.battery_current_ma = input->battery_current_mA;
+		pipe_in.battery_current_max = input->battery_current_max;
+		pipe_in.u_abs = input->u_abs;
+		pipe_in.cal_i = input->cal_i;
+		pipe_in.level_iq_limit = input->ride_core_iq_limit;
+		pipe_in.phase_current_max = input->phase_current_max;
+		pipe_in.voltage_raw = input->voltage_raw;
+		pipe_in.voltage_min_raw = input->voltage_min_raw;
+		pipe_in.controller_temperature_c = input->controller_temperature_c;
+
+		pipe_in.speed_limit_x100 = input->speed_limit_x100;
+		pipe_in.legal_enabled = input->legal_enabled;
+		pipe_in.offroad = input->offroad;
+
+		pipe_in.throttle_iq = input->throttle_iq;
+		pipe_in.elapsed_ticks = input->elapsed_ticks;
+
+		assist_pipeline_update(&pipe_in, &cmd);
+		requested = assist_pipeline_telemetry()->iq_request_before_limits;
 	}
 
-	/*
-	 * WALK ASSIST. A separate demand owner, not an assist mode with different numbers: it has
-	 * its own motor-speed controller and a second dynamic element behind it would only make
-	 * that loop less stable. The pipeline is reset for the same reason as above.
-	 */
-	if (input->walk_active) {
-		int32_t walk_iq = walk_iq_through_shared_limits(input,
-			(int32_t)walk_assist_iq_request());
-		assist_pipeline_reset();
-		iq_chain_note_requested(walk_iq);
-		iq_chain_note_allowed(walk_iq);
-		ride_publish_final_iq(walk_iq, FIS_MODE_BYPASS, 0U, 0U, FIS_ZERO_POLICY_NONE);
-		motor_core_set_id_target(input->current_id);
-		return;
-	}
-
-	/*
-	 * Leaving Walk: the walk current must not be handed to the assist release as if the rider
-	 * had just stopped pedalling. It is zeroed in the same tick, and the pipeline starts the
-	 * next ride from zero.
-	 */
-	if (walk_release_cut) {
-		assist_pipeline_reset();
-		ride_publish_final_iq(0, FIS_MODE_FORCE_ZERO, 0U, 0U, FIS_ZERO_POLICY_NONE);
-		motor_core_set_id_target(input->current_id);
-		return;
-	}
-
-	/* ---- PEDAL ASSIST: the one rider-facing path -------------------------------------- */
-	rider = rider_input_get();
-
-	pipe_in.torque_load_centikg = rider->torque_load_centikg;
-	pipe_in.torque_sensor_valid = rider->torque_sensor_valid;
-	pipe_in.cadence_rpm = input->cadence_rpm;
-	pipe_in.speed_x100 = input->speed_x100;
-	pipe_in.motor_erps = rider->motor_erps;
-
-	pipe_in.forward_valid = rider->crank_direction_ok;
-	pipe_in.direction_inhibit = rider->direction_inhibit_active;
-	pipe_in.inhibit_is_reverse = rider->pas_backward;
-	pipe_in.real_stop = rider->real_stop;
-	pipe_in.wheel_valid = rider->wheel_valid;
-	pipe_in.pas_sensor_valid = rider->pas_sensor_valid;
-	pipe_in.forward_steps = rider->crank_forward_steps;
-	/* The anti-jiggle guard is a property of the bike and its sensor, not of an assist
-	 * level, so it stays a global tuning value rather than travelling through the input. */
-	pipe_in.required_steps = tuning_config_start_steps();
-
-	pipe_in.assist_level_index = input->assist_level_index;
-
-	pipe_in.safety_cut = input->safety_cut_non_direction;
-	pipe_in.service_cut = input->service_cut_active;
-
-	pipe_in.battery_voltage_mv = input->battery_voltage_mv;
-	pipe_in.battery_current_ma = input->battery_current_mA;
-	pipe_in.battery_current_max = input->battery_current_max;
-	pipe_in.u_abs = input->u_abs;
-	pipe_in.cal_i = input->cal_i;
-	pipe_in.level_iq_limit = input->ride_core_iq_limit;
-	pipe_in.phase_current_max = input->phase_current_max;
-	pipe_in.voltage_raw = input->voltage_raw;
-	pipe_in.voltage_min_raw = input->voltage_min_raw;
-	pipe_in.controller_temperature_c = input->controller_temperature_c;
-
-	pipe_in.speed_limit_x100 = input->speed_limit_x100;
-	pipe_in.legal_enabled = input->legal_enabled;
-	pipe_in.offroad = input->offroad;
-
-	pipe_in.throttle_iq = input->throttle_iq;
-	pipe_in.elapsed_ticks = input->elapsed_ticks;
-
-	assist_pipeline_update(&pipe_in, &cmd);
-
-	/* The two named stages of the demand, for diagnostics. The pipeline is the producer of
-	 * both; recording a value cannot change it. */
-	iq_chain_note_requested(assist_pipeline_telemetry()->iq_request_before_limits);
+	/* The two named stages of the demand, for diagnostics. Recording a value cannot change
+	 * it: the owner above computed both, this only gives them names a reader can see. */
+	iq_chain_note_requested(requested);
 	iq_chain_note_allowed(cmd.final_iq_request);
 
 	ride_publish_final_iq(cmd.final_iq_request, cmd.slew_mode, cmd.step_mag_8,

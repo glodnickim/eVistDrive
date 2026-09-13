@@ -32,7 +32,6 @@
 
 #include "../common/check.h"
 
-#include "assist_dynamics.h"
 #include "fast_iq_slew.h"
 
 #include <stdbool.h>
@@ -129,27 +128,6 @@ static uint16_t step_for(int32_t scale, uint32_t ramp_ms)
 	return (uint16_t)step;
 }
 
-/* In-harness replica of the 16 kHz owner: a Q10 fractional accumulator advanced by the
- * same per-control step S (as a Q10 increment) once per 16 kHz tick, with the same
- * round-half-up publication and exact-target clamp. Used to assert the finer 62.5 us
- * intermediate progression and to cross-check the REAL module. */
-typedef struct {
-	int64_t acc_q10;
-} replica_t;
-
-static int32_t replica_tick(replica_t *r, int32_t rate, int32_t target)
-{
-	r->acc_q10 += rate;
-	int64_t tq = (int64_t)target << 10;   /* Q10 target, matching the Q10 accumulator */
-	if (rate > 0 && r->acc_q10 > tq) {
-		r->acc_q10 = tq;
-	} else if (rate < 0 && r->acc_q10 < tq) {
-		r->acc_q10 = tq;
-	}
-	if (r->acc_q10 < 0) r->acc_q10 = 0;
-	return (int32_t)((r->acc_q10 + 512) >> 10);
-}
-
 /* Run the 16 kHz owner for 4 ISR ticks (one 4 kHz boundary); returns final tick output. */
 static int32_t run_16k_quarter(fast_iq_slew_mailbox_t *mb, int32_t *out)
 {
@@ -160,143 +138,20 @@ static int32_t run_16k_quarter(fast_iq_slew_mailbox_t *mb, int32_t *out)
 	return last;
 }
 
-static assist_dynamics_input_t base_input(void)
-{
-	assist_dynamics_input_t din;
-	memset(&din, 0, sizeof(din));
-	din.speed_x100 = 0U;
-	din.cadence_rpm = 0U;
-	din.iq_scale = IDX_ID_SCALE;
-	din.phase_current_max = IDX_ID_SCALE;
-	din.profile_pedaling_active = true;
-	din.ramp_up_slow_ms = RISE_SLOW_MS;
-	din.ramp_down_slow_ms = FALL_SLOW_MS;
-	din.profile_release_ms = RELEASE_MS;
-	din.elapsed_ticks = 1U;
-	return din;
-}
-
-/* Drive both owners in lockstep for a RISE, comparing boundary outputs and timing. */
-static void parity_rise(void)
-{
-	fast_iq_slew_mailbox_t mb;
-	memset(&mb, 0, sizeof(mb));
-	fast_iq_slew_reset(&mb);
-	assist_dynamics_reset();   /* clear the 4 kHz owner's persistent static ramp state */
-
-	assist_dynamics_input_t din = base_input();
-	uint16_t step = step_for(IDX_ID_SCALE, RISE_SLOW_MS);
-
-	replica_t rep = { 0 };
-	int32_t eight = 0, four = 0, repv = 0;
-	unsigned ticks = 0;
-	int32_t target = IDX_ID_SCALE;
-
-	/* Production ordering: the 4 kHz producer publishes the demand for a control period,
-	 * then the ISR runs its four 16 kHz ticks for that period. So publish precedes the
-	 * quarter here. */
-	while (ticks < 4000 && four != target) {
-		fast_iq_slew_publish(&mb, target, FIS_MODE_RISE, step, 0U, FIS_ZERO_POLICY_NONE);
-		eight = run_16k_quarter(&mb, &eight);
-		four = assist_dynamics_apply(target, four, &din);
-		/* Replica stepped per 16 kHz tick inside the same quarter. */
-		for (unsigned i = 0; i < FOC_TICKS_PER_CTRL; i++) {
-			repv = replica_tick(&rep, (int32_t)step, target);
-		}
-		CHECK(eight == four, "QS-3D RISE: 16 kHz boundary sample equals 4 kHz output");
-		CHECK(eight == repv, "QS-3D RISE: real 16 kHz owner matches in-harness Q10 replica");
-		ticks++;
-	}
-	CHECK(ticks >= (unsigned)(RISE_SLOW_MS * CTRL_TICKS_PER_MS) - 20U &&
-		ticks <= (unsigned)(RISE_SLOW_MS * CTRL_TICKS_PER_MS) + 20U,
-		"QS-3D RISE: total rise timing matches the shipped slope");
-}
-
-/* RISE then FALL full->0; both owners must produce identical sequences and reach zero
- * in the same number of control ticks. */
-static void parity_fall(void)
-{
-	fast_iq_slew_mailbox_t mb;
-	memset(&mb, 0, sizeof(mb));
-	fast_iq_slew_reset(&mb);
-	assist_dynamics_reset();   /* clear the 4 kHz owner's persistent static ramp state */
-
-	assist_dynamics_input_t din = base_input();
-	uint16_t up_step = step_for(IDX_ID_SCALE, RISE_SLOW_MS);
-	uint16_t dn_step = step_for(IDX_ID_SCALE, FALL_SLOW_MS);
-
-	int32_t eight = 0, four = 0;
-	unsigned ticks = 0;
-	/* Prime both owners to full via the slow rise. */
-	while (ticks < 4000 && four != IDX_ID_SCALE) {
-		fast_iq_slew_publish(&mb, IDX_ID_SCALE, FIS_MODE_RISE, up_step, 0U, FIS_ZERO_POLICY_NONE);
-		eight = run_16k_quarter(&mb, &eight);
-		four = assist_dynamics_apply(IDX_ID_SCALE, four, &din);
-		CHECK(eight == four, "QS-3D FALL setup: boundary parity during rise");
-		ticks++;
-	}
-	CHECK(eight == IDX_ID_SCALE && four == IDX_ID_SCALE, "QS-3D FALL setup: primed to full scale");
-
-	unsigned n8 = 0, n4 = 0;
-	fast_iq_slew_publish(&mb, 0, FIS_MODE_FALL, dn_step, 0U, FIS_ZERO_POLICY_NONE);
-	while (n8 < 6000 && four != 0) {
-		fast_iq_slew_publish(&mb, 0, FIS_MODE_FALL, dn_step, 0U, FIS_ZERO_POLICY_NONE);
-		eight = run_16k_quarter(&mb, &eight);
-		four = assist_dynamics_apply(0, four, &din);
-		CHECK(eight == four, "QS-3D FALL: boundary parity during fall");
-		n8++;
-		if (four != 0) n4++;
-	}
-	CHECK(eight == 0 && four == 0, "QS-3D FALL: both owners reach exact zero");
-	CHECK(n8 == n4 + 1U || n8 == n4,
-		"QS-3D FALL: both owners reach zero in the same tick budget");
-}
-
-/* RISE then RELEASE over profile_release_ms; at settled full state the live-derived
- * 16 kHz rate equals the legacy 4 kHz release rate and both owners hit zero together. */
-static void parity_release(void)
-{
-	fast_iq_slew_mailbox_t mb;
-	memset(&mb, 0, sizeof(mb));
-	fast_iq_slew_reset(&mb);
-	assist_dynamics_reset();   /* clear the 4 kHz owner's persistent static ramp state */
-
-	assist_dynamics_input_t din = base_input();
-	uint16_t up_step = step_for(IDX_ID_SCALE, RISE_SLOW_MS);
-
-	int32_t eight = 0, four = 0;
-	unsigned ticks = 0;
-	while (ticks < 4000 && four != IDX_ID_SCALE) {
-		fast_iq_slew_publish(&mb, IDX_ID_SCALE, FIS_MODE_RISE, up_step, 0U, FIS_ZERO_POLICY_NONE);
-		eight = run_16k_quarter(&mb, &eight);
-		four = assist_dynamics_apply(IDX_ID_SCALE, four, &din);
-		CHECK(eight == four, "QS-3D RELEASE setup: boundary parity during rise");
-		ticks++;
-	}
-	CHECK(eight == IDX_ID_SCALE && four == IDX_ID_SCALE, "QS-3D RELEASE setup: primed to full scale");
-
-	/* Set the release configuration in the 4 kHz owner's input, then enter the fade. */
-	din.profile_pedaling_active = false;
-	din.profile_release_ms = RELEASE_MS;
-	din.elapsed_ticks = 1U;
-	/* Legacy reference step; the R1 owner derives the equivalent rate from live Q10 state. */
-	uint16_t rel_step = step_for(IDX_ID_SCALE, RELEASE_MS);
-
-	unsigned n8 = 0, n4 = 0;
-	fast_iq_slew_publish(&mb, 0, FIS_MODE_RELEASE, rel_step, RELEASE_MS * 16U, FIS_ZERO_POLICY_NONE);
-	while (n8 < 4000 && four != 0) {
-		fast_iq_slew_publish(&mb, 0, FIS_MODE_RELEASE, rel_step, RELEASE_MS * 16U, FIS_ZERO_POLICY_NONE);
-		eight = run_16k_quarter(&mb, &eight);
-		four = assist_dynamics_apply(0, four, &din);
-		CHECK(eight == four, "QS-3D RELEASE: boundary parity during release fade");
-		n8++;
-		if (four != 0) n4++;
-	}
-	CHECK(eight == 0 && four == 0, "QS-3D RELEASE: both owners reach exact zero");
-	CHECK(n8 == n4 + 1U || n8 == n4,
-		"QS-3D RELEASE: both owners reach zero in the same tick budget");
-}
-
+/*
+ * THE THREE LOCKSTEP-PARITY TESTS ARE GONE, and so is the 4 kHz owner they compared against.
+ *
+ * They existed to prove one migration: that moving the final Iq ramp from a 4 kHz owner to
+ * the 16 kHz one preserved the physical trajectory. Assist Pipeline V2 removed the 4 kHz
+ * owner entirely (it had already been dead code), so a parity check now has only one side.
+ * Keeping it would mean re-implementing the retired ramp inside the test - which proves that
+ * the test agrees with itself, not that the firmware is right.
+ *
+ * What the parity tests actually protected - that a full-scale rise, fall and release each
+ * take the configured time and land on exact zero - is proved directly against the surviving
+ * owner by test_exact_release_ceil_sweep, test_live_normal_releases, test_live_safety_releases
+ * and the new assist-trajectory suite, which drives the real producer instead of a replica.
+ */
 static void test_force_zero_and_bypass(void)
 {
 	fast_iq_slew_mailbox_t mb;
@@ -708,6 +563,9 @@ static void test_production_static_guards(void)
 {
 	char *main_c = read_source(STRINGIZE(MAIN_C_PATH));
 	char *ride_c = read_source(STRINGIZE(RIDE_CONTROL_C_PATH));
+	/* The trajectory DECISION moved into the one assist chain; ride_control kept the single
+	 * publication. Each guard below reads whichever of the two owns the property it asserts. */
+	char *pipe_c = read_source(STRINGIZE(ASSIST_PIPELINE_C_PATH));
 	char *motor_c = read_source(STRINGIZE(MOTOR_CORE_C_PATH));
 	char *foc_c = read_source(STRINGIZE(FOC_C_PATH));
 	CHECK(main_c && ride_c && motor_c && foc_c, "STATIC setup: production sources are readable");
@@ -725,21 +583,27 @@ static void test_production_static_guards(void)
 		strstr(main_c, "PI_iq.recent_value = MS.i_q;") != NULL,
 		"STATIC: PI_iq reference and feedback remain entirely in the Iq domain");
 
-	const char *cap = strstr(ride_c, "battery_iq_cap_update(");
-	const char *publish = cap ? strstr(cap, "ride_publish_final_iq(iq_target") : NULL;
-	CHECK(cap && publish && cap < publish &&
-		strstr(main_c, "PI_iq.recent_value = MS.Battery_Current;") == NULL,
-		"STATIC: battery cap remains before final slew and no post-slew battery-domain clamp exists");
+	{
+		/* The cap is a stage of the limiter chain the pipeline runs before it decides the
+		 * trajectory; ride_control then publishes that decision once. Both halves are checked,
+		 * so neither can be moved after the final owner without this failing. */
+		const char *limits = pipe_c ? strstr(pipe_c, "ap2_limits_apply(&lim_in, &lim);") : NULL;
+		const char *traj = limits ? strstr(limits, "cmd->slew_mode = trajectory(") : NULL;
+		const char *publish = strstr(ride_c, "ride_publish_final_iq(cmd.final_iq_request");
+		CHECK(limits && traj && publish &&
+			strstr(main_c, "PI_iq.recent_value = MS.Battery_Current;") == NULL,
+			"STATIC: battery cap remains before final slew and no post-slew battery-domain clamp exists");
+	}
 	CHECK(strstr(ride_c, "assist_dynamics_apply(") == NULL,
-		"STATIC: legacy assist_dynamics dynamic final owner is not active");
-	CHECK(strstr(ride_c, "return input->safety_cut ? FIS_MODE_SAFETY : FIS_MODE_RELEASE;") != NULL,
+		"STATIC: the legacy 4 kHz final owner is gone, not merely inactive");
+	CHECK(pipe_c && strstr(pipe_c, "return block_positive ? FIS_MODE_SAFETY : FIS_MODE_RELEASE;") != NULL,
 		"STATIC: production explicitly publishes FIS_MODE_SAFETY for the 200 ms hard cut");
-	CHECK(strstr(ride_c, "fast_iq_slew_current_accumulator_q10()") != NULL &&
-		strstr(ride_c, "iq_target > 0) ? up_ticks : dn_ticks") == NULL &&
-		strstr(ride_c, "return (iq_target > 0) ? FIS_MODE_RISE : FIS_MODE_FALL") == NULL,
+	CHECK(pipe_c && strstr(pipe_c, "fast_iq_slew_current_accumulator_q10()") != NULL &&
+		strstr(pipe_c, "rising = target_q10 > live_q10;") != NULL &&
+		strstr(pipe_c, "return (iq_target > 0) ? FIS_MODE_RISE : FIS_MODE_FALL") == NULL,
 		"R2 STATIC: production direction compares target with authoritative live Q10, never target sign");
 	CHECK(strstr(main_c, "ride_control_force_final_iq_zero();") != NULL &&
-		strstr(ride_c, "ride_control_request_service_iq(calibration_iq);") != NULL &&
+		strstr(ride_c, "hall_calibration_iq_request()") != NULL &&
 		strstr(ride_c, "motor_core_set_id_target(input->current_id);") != NULL,
 		"STATIC: comm-loss and calibration are explicitly classified under fast-owner commands");
 	CHECK(strstr(main_c, "fast_iq_slew_cold_prepare(") != NULL &&
@@ -751,15 +615,12 @@ static void test_production_static_guards(void)
 		"STATIC: hard overcurrent still disables MOE independently of the slew");
 
 done:
-	free(main_c); free(ride_c); free(motor_c); free(foc_c);
+	free(main_c); free(ride_c); free(pipe_c); free(motor_c); free(foc_c);
 }
 
 int main(void)
 {
 	puts("QS-3D 16 kHz final Iq slew parity host proof");
-	parity_rise();
-	parity_fall();
-	parity_release();
 	test_force_zero_and_bypass();
 	test_direction_change();
 	test_mailbox_interruptions_and_retry();

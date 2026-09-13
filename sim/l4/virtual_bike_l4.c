@@ -16,7 +16,8 @@
 #include <string.h>
 
 #include "FOC.h"
-#include "assist_limits.h"
+#include "ap2_limits.h"
+#include "assist_pipeline.h"
 #include "assist_modes.h"
 #include "battery_iq_cap.h"
 #include "cadence_filter.h"
@@ -31,7 +32,6 @@
 #include "pwm_geometry.h"
 #include "quiet_zero.h"
 #include "ride_control.h"
-#include "ride_session.h"
 #include "rider_input.h"
 #include "rotor_angle.h"
 #include "rotor_motion.h"
@@ -415,7 +415,7 @@ static void l4_tick(l4_t *s,FILE *csv)
     in.legal_enabled=true; in.offroad=false; in.walk_active=false;
     in.safety_cut_non_direction=s->brake; in.service_cut_active=false; in.elapsed_ticks=1U;
     ride_control_update(&in);
-    if(ride_control_get_session_state()==RIDE_SESSION_ACTIVE&&s->first_permission_tick==0U)s->first_permission_tick=s->tick;
+    if(assist_pipeline_pas_state()==AP2_PAS_FORWARD&&s->first_permission_tick==0U)s->first_permission_tick=s->tick;
     if(ride_control_battery_limit_active())s->battery_limit_ticks++;
     if(speed_x100>=SPEEDLIMIT)s->speed_limit_ticks++;
 
@@ -448,13 +448,13 @@ static void l4_tick(l4_t *s,FILE *csv)
     if(s->batt.terminal_v<s->min_vbus)s->min_vbus=s->batt.terminal_v;
 
     if(csv && (s->tick%20U)==0U){
-        const assist_mode_output_t *mo=assist_modes_get_last_output();
+        const assist_pipeline_telemetry_t *mo=assist_pipeline_telemetry();
         fprintf(csv,"%.6f,%.2f,%.2f,%.2f,%.2f,%.3f,%.3f,%.3f,%u,%u,%d,%d,%.3f,%.3f,%.3f,%.3f,%u,%u,%u,%u\n",
             (double)s->tick/CTRL_HZ,s->bike.distance_m,s->bike.speed_mps*3.6f,s->bike.crank_rpm,
             s->rider.torque_nm,s->rider.torque_ckg,s->batt.terminal_v,s->batt.current_a,
             (unsigned)lroundf(s->batt.true_soc_pct),(unsigned)lroundf(s->fw_soc.soc_display),
-            mo->iq_request,s->ms.i_q_setpoint,(float)s->ms.i_q,s->motor.erps,
-            (float)s->ms.u_abs,limp,ride_control_get_session_state(),ride_control_get_debug_flags(),
+            mo->iq_request_before_limits,s->ms.i_q_setpoint,(float)s->ms.i_q,s->motor.erps,
+            (float)s->ms.u_abs,limp,ride_control_get_session_state(),assist_pipeline_reason_bits(),
             ride_control_battery_limit_active()?1U:0U,s->motor.hall_age_ticks);
     }
 }

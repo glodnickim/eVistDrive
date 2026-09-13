@@ -23,9 +23,11 @@ varmap={
  'canDisplayCPathForward': ROOT/'src/CAN_Display.c',
  'currentCalCPathForward': ROOT/'src/current_cal.c',
  'rideControlCPathForward': ROOT/'src/ride_control.c',
- 'assistDynamicsCPathForward': ROOT/'src/assist_dynamics.c',
+ 'assistPipelineCPathForward': ROOT/'src/assist_pipeline.c',
+ 'ap2LimitsCPathForward': ROOT/'src/ap2_limits.c',
+ 'ap2PasStateCPathForward': ROOT/'src/ap2_pas_state.c',
+ 'ap2RiderDemandCPathForward': ROOT/'src/ap2_rider_demand.c',
  'motorCoreCPathForward': ROOT/'src/motor_core.c',
- 'rollingNoAssistDiagCPathForward': ROOT/'src/rolling_no_assist_diag.c',
  'focCPathForward': ROOT/'src/FOC.c',
  'focCurrentLoopCPathForward': ROOT/'src/foc_current_loop.c',
  'sampleWindowCPathForward': ROOT/'src/sample_window.c',
@@ -90,8 +92,14 @@ for b in blocks:
     suites.append(dict(name=name,harness=harness,modules=modules,incdirs=incdirs,defines=defines,args=args,expect=expect,transport=transport))
 
 print(f'Parsed {len(suites)} suites')
-if len(suites)<60:
-    print('ERROR: parser missed suites',file=sys.stderr);sys.exit(3)
+# The guard is that the parser found EVERY suite the registry declares, not that the
+# registry is at least some remembered size. A magic minimum has to be edited by hand
+# whenever a suite is legitimately retired, and at that moment it stops catching the
+# thing it exists for - a parser that silently skipped a block it could not read.
+declared=len(re.findall(r'(?m)^\s*@\{ Name = ', text))
+if len(suites)!=declared:
+    print(f'ERROR: parser found {len(suites)} suites but the registry declares {declared}',
+          file=sys.stderr);sys.exit(3)
 
 cc=os.environ.get('CC','gcc')
 failed=[]; skipped=[]; passed=[]

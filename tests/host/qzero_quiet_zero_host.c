@@ -46,6 +46,9 @@
 #ifndef FOC_C_PATH
 #error "FOC_C_PATH must be supplied by run-host-tests.ps1"
 #endif
+#ifndef ASSIST_PIPELINE_C_PATH
+#error "ASSIST_PIPELINE_C_PATH must be supplied by run-host-tests.ps1"
+#endif
 #ifndef RIDE_CONTROL_C_PATH
 #error "RIDE_CONTROL_C_PATH must be supplied by run-host-tests.ps1"
 #endif
@@ -900,6 +903,8 @@ static void production_wiring_checks(void)
 	char *main_raw = read_whole_file(STRINGIZE(MAIN_C_PATH), &main_len);
 	char *foc_raw = read_whole_file(STRINGIZE(FOC_C_PATH), &foc_len);
 	char *ride_raw = read_whole_file(STRINGIZE(RIDE_CONTROL_C_PATH), &ride_len);
+	long pipe_len = 0;
+	char *pipe_raw = read_whole_file(STRINGIZE(ASSIST_PIPELINE_C_PATH), &pipe_len);
 	char *loop_raw = read_whole_file(STRINGIZE(FOC_CURRENT_LOOP_C_PATH), &loop_len);
 	CHECK(main_raw && foc_raw && ride_raw && loop_raw,
 		"setup: main.c, FOC.c, ride_control.c and foc_current_loop.c are readable");
@@ -908,6 +913,10 @@ static void production_wiring_checks(void)
 	char *main_c = strip_comments(main_raw, main_len);
 	char *foc_c = strip_comments(foc_raw, foc_len);
 	char *ride_c = strip_comments(ride_raw, ride_len);
+	/* The zero POLICY is decided where the final trajectory is decided, which is now the one
+	 * assist chain rather than ride_control. ride_control still owns the single publication,
+	 * so both files are read and each is checked for the half it owns. */
+	char *pipe_c = pipe_raw ? strip_comments(pipe_raw, pipe_len) : NULL;
 	char *loop_c = strip_comments(loop_raw, loop_len);
 	CHECK(main_c && foc_c && ride_c && loop_c, "setup: all QZERO/current-loop sources sanitize successfully");
 	if (!main_c || !foc_c || !ride_c || !loop_c) { free(main_c); free(foc_c); free(ride_c); free(loop_c); goto done; }
@@ -997,18 +1006,20 @@ static void production_wiring_checks(void)
 
 	/* ---- T14: the producer grants QUIET in exactly one place, and defaults to NONE ---- */
 	{
-		CHECK(count_all(ride_c, "FIS_ZERO_POLICY_QUIET") == 1,
-			"T14: exactly one place in ride_control.c can grant Quiet Zero");
-		const char *grant = strstr(ride_c, "FIS_ZERO_POLICY_QUIET");
-		const char *release_branch = strstr(ride_c, "if (profile_release_active) {");
-		const char *release_return = strstr(ride_c,
-			"return input->safety_cut ? FIS_MODE_SAFETY : FIS_MODE_RELEASE;");
+		CHECK(pipe_c && count_all(pipe_c, "FIS_ZERO_POLICY_QUIET") == 1 &&
+			count_all(ride_c, "FIS_ZERO_POLICY_QUIET") == 0,
+			"T14: exactly one place in the whole assist chain can grant Quiet Zero, and it is in the trajectory decision - not in the layer that merely publishes it");
+		const char *grant = pipe_c ? strstr(pipe_c, "FIS_ZERO_POLICY_QUIET") : NULL;
+		const char *release_branch = pipe_c ?
+			strstr(pipe_c, "if (iq_target == 0 && (block_positive || !permitted)) {") : NULL;
+		const char *release_return = pipe_c ?
+			strstr(pipe_c, "return block_positive ? FIS_MODE_SAFETY : FIS_MODE_RELEASE;") : NULL;
 		CHECK(grant && release_branch && release_return &&
 			release_branch < grant && grant < release_return,
-			"T14: and it is inside the profile-release branch, above its own return");
-		CHECK(strstr(ride_c, "*out_zero_policy = input->service_cut ? FIS_ZERO_POLICY_NONE : FIS_ZERO_POLICY_QUIET;") != NULL,
+			"T14: and it is inside the release branch, above its own return");
+		CHECK(pipe_c && strstr(pipe_c, "*out_zero_policy = service_cut ? FIS_ZERO_POLICY_NONE : FIS_ZERO_POLICY_QUIET;") != NULL,
 			"T14: the pedal-load calibration is excluded at the grant itself");
-		CHECK(strstr(ride_c, "*out_zero_policy = FIS_ZERO_POLICY_NONE;") != NULL,
+		CHECK(pipe_c && strstr(pipe_c, "*out_zero_policy = FIS_ZERO_POLICY_NONE;") != NULL,
 			"T14: the policy is default-deny - every other path leaves the ordinary PI in charge");
 		CHECK(count_all(ride_c, "fast_iq_slew_publish(") == 1,
 			"T14: still exactly one publish call site - the policy did not create a second owner");
@@ -1019,18 +1030,21 @@ static void production_wiring_checks(void)
 			strstr(main_c, ".rotor_erps = (int32_t)rotor_motion.edge_erps,") != NULL &&
 			strstr(main_c, ".speed_fresh = rotor_motion_speed_fresh(&rotor_motion, ui16_erps_counter),") != NULL,
 			"T14: QZERO uses a fresh real Hall interval, never the age-decayed liveness speed");
-		CHECK(count_all(ride_c, "#define RIDE_COAST_RELEASE_ERPS") == 0 &&
-			strstr(ride_c, "rider->motor_erps < RIDE_COAST_RELEASE_ERPS") != NULL,
-			"T14: ride_control.c no longer keeps a private copy of that threshold but still uses it");
+		CHECK(pipe_c && count_all(pipe_c, "#define RIDE_COAST_RELEASE_ERPS") == 0 &&
+			strstr(pipe_c, "#define AP2_COAST_RELEASE_ERPS RIDE_COAST_RELEASE_ERPS") != NULL &&
+			strstr(pipe_c, "in->motor_erps < AP2_COAST_RELEASE_ERPS") != NULL,
+			"T14: the coast threshold is the shared constant, named once and not re-declared");
 		/* Nothing this card touches may have changed the release timing constants. */
-		CHECK(strstr(ride_c, "#define RIDE_HARD_CUT_RAMP_MS 200") != NULL,
-			"T14: the 200 ms hard-cut ramp is untouched");
-		CHECK(strstr(ride_c, "profile_release_ms = level->release_ms;") != NULL,
-			"T14: the normal release still comes from the level's own release_ms");
+		CHECK(pipe_c && strstr(pipe_c, "#define AP2_SAFETY_RELEASE_MS 200U") != NULL,
+			"T14: the 200 ms firmware-owned safety release is untouched");
+		CHECK(pipe_c && strstr(pipe_c, "release_ms = prof.p.release_ms;") != NULL,
+			"T14: the normal release still comes from the profile's own release time");
 	}
 
 	free(main_c);
 	free(foc_c);
+	free(pipe_c);
+	free(pipe_raw);
 	free(ride_c);
 	free(loop_c);
 done:

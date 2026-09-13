@@ -72,40 +72,47 @@ def metric(rows,k):
                 PeakToPeak=max(vals)-min(vals),StdDev=statistics.pstdev(vals),
                 Ripple=(max(vals)-min(vals))/abs(mean) if mean else 0.0)
 
-power_mod=['torque_input.c','rider_input.c','assist_modes.c','cadence_comp.c','power_curve.c',
-           'assist_start.c','assist_extended_boost.c','tuning_config.c']
-ride_mod=power_mod+['ride_control.c','fast_iq_slew.c','battery_iq_cap.c','ride_session.c',
-                    'iq_chain.c','pedal_assist_gate.c','assist_dynamics.c','assist_limits.c','motor_core.c']
-# ride_control now owns final 16 kHz mailbox and therefore must be linked with the same real modules
-# used by the main host suites; this makes this portable runner current with FW139/FW140.
+# The whole assist chain, exactly as the firmware links it.
+assist_mod=['torque_input.c','rider_input.c','assist_modes.c','tuning_config.c',
+            'ap2_pas_state.c','ap2_rider_demand.c','ap2_estimators.c','ap2_profiles.c',
+            'ap2_limits.c','battery_iq_cap.c','fast_iq_slew.c','assist_pipeline.c']
+ride_mod=assist_mod+['ride_control.c','iq_chain.c','motor_core.c']
 
 torque=build('torque_trace',Path('torque/torque_trace_host.c'),['crank_model.c'],['torque_input.c'])
-power=build('power_pipeline',Path('pipeline/power_pipeline_host.c'),['crank_model.c'],power_mod)
+assist=build('assist_pipeline',Path('pipeline/assist_pipeline_host.c'),['crank_model.c'],assist_mod)
 ride=build('ride_control_pipeline',Path('pipeline/ride_control_pipeline_host.c'),
            ['crank_model.c','map_adapter.c','motor_service_stub.c'],ride_mod,True)
 burst=build('missed_tick_burst',Path('scenarios/missed_tick_burst_host.c'),['crank_model.c'],
             ['torque_input.c','ride_episode.c'])
 
 scenarios=['RUN_60','RUN_80','RUN_100','RUN_110','RUN_120','CADENCE_RAMP_50_120']
+# Cruise scenarios exist to measure ripple attenuation and run only on the assist layer:
+# the torque and ride layers have nothing extra to say about them.
+assist_only=['CRUISE_60','CRUISE_80','CRUISE_100']
 files={}
 for sc in scenarios:
-    for exe,tag in ((torque,'torque'),(power,'power'),(ride,'ride')):
+    for exe,tag in ((torque,'torque'),(assist,'assist'),(ride,'ride')):
         path=OUT/f'{sc}_{tag}.csv'; run([str(exe),sc,str(path)]); files[(sc,tag)]=path
+for sc in assist_only:
+    path=OUT/f'{sc}_assist.csv'; run([str(assist),sc,str(path)]); files[(sc,'assist')]=path
 burst_csv=OUT/'missed_tick_burst_summary.csv'; run([str(burst),str(burst_csv)])
 
 # Exact deterministic rerun of a representative pipeline scenario.
-repeat=OUT/'RUN_100_power_repeat.csv'; run([str(power),'RUN_100',str(repeat)])
-base=(OUT/'RUN_100_power.csv').read_bytes(); rep=repeat.read_bytes()
+repeat=OUT/'RUN_100_assist_repeat.csv'; run([str(assist),'RUN_100',str(repeat)])
+base=(OUT/'RUN_100_assist.csv').read_bytes(); rep=repeat.read_bytes()
 if base != rep:
     print('FAIL: whole-pipeline determinism differs on identical RUN_100 rerun', file=sys.stderr)
     raise SystemExit(1)
 
-power_cols=['torque_raw','torque_corrected','torque_fast','torque_run','human_power_w',
-            'motor_power_raw_w','motor_power_w','iq_request']
-ride_cols=['torque_fast','torque_run','iq_request','iq_final']
+# The signals a ride-feel regression actually shows up in: the rider's pulsating input, the
+# two halves of the demand model that absorb that pulsation, and the resulting request.
+assist_cols=['torque_raw','torque_corrected','torque_fast','load_centikg','rider_demand',
+             'assist_base','assist_dynamic','assist_response','iq_request','iq_final']
+ride_cols=['torque_fast','rider_demand','assist_base','iq_request','iq_final']
 summary=[]
-for sc in scenarios:
-    for tag,cols in [('power',power_cols),('ride',ride_cols)]:
+for sc in scenarios+assist_only:
+    for tag,cols in ([('assist',assist_cols),('ride',ride_cols)] if sc in scenarios
+                     else [('assist',assist_cols)]):
         rows=read_csv(files[(sc,tag)])
         for c in cols:
             m=metric(rows,c)
@@ -118,8 +125,8 @@ report=(
     'Portable whole-pipeline regression\n'
     '==================================\n'
     f'Scenarios: {len(scenarios)} x 3 layers = {len(scenarios)*3} traces\n'
-    'Harnesses: torque_trace, power_pipeline, ride_control_pipeline, missed_tick_burst\n'
-    'Determinism RUN_100 power rerun: PASS (byte-identical CSV)\n'
+    'Harnesses: torque_trace, assist_pipeline, ride_control_pipeline, missed_tick_burst\n'
+    'Determinism RUN_100 assist rerun: PASS (byte-identical CSV)\n'
     'Build flags: -Wall -Wextra -Werror; documented type-limits exceptions only\n'
     'Result: PASS\n')
 (OUT/'REPORT.txt').write_text(report)

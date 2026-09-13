@@ -5,10 +5,12 @@ from pathlib import Path
 
 R=Path(__file__).resolve().parents[1]
 mods=[
- 'src/torque_input.c','src/rider_input.c','src/assist_modes.c','src/cadence_comp.c','src/cadence_filter.c',
- 'src/power_curve.c','src/assist_start.c','src/assist_extended_boost.c','src/tuning_config.c',
- 'src/ride_control.c','src/fast_iq_slew.c','src/battery_iq_cap.c','src/ride_session.c',
- 'src/iq_chain.c','src/pedal_assist_gate.c','src/assist_dynamics.c','src/assist_limits.c',
+ 'src/torque_input.c','src/rider_input.c','src/assist_modes.c','src/cadence_filter.c',
+ 'src/tuning_config.c',
+    'src/ap2_pas_state.c','src/ap2_rider_demand.c','src/ap2_estimators.c',
+    'src/ap2_profiles.c','src/ap2_limits.c','src/assist_pipeline.c',
+ 'src/ride_control.c','src/fast_iq_slew.c','src/battery_iq_cap.c',
+ 'src/iq_chain.c',
  'src/motor_core.c','src/pas_quadrature.c','src/pas_direction.c','src/pas_liveness.c',
  'src/pas_sampler.c','src/pas_cadence.c','tests/host/common/map_adapter.c',
  'tests/host/common/motor_service_stub.c']

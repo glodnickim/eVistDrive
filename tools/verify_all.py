@@ -81,6 +81,9 @@ def main():
     step('independent BL820 container regression',[sys.executable,'tests/tools_prepare_m820_bl820.py'])
     step('real-module host suites',[sys.executable,'tools/run_host_tests.py'])
     step('whole-pipeline deterministic regression',[sys.executable,'tools/run_regression.py'])
+    # The one property the assist pipeline exists for: the motor must not reproduce the
+    # pedal ripple. Measured from the traces the step above just produced.
+    step('assist ripple attenuation',[sys.executable,'tools/analyze_assist_ripple.py'])
     san_ok=(not a.quick) and sanitizers_available()
     if a.quick:
         san_tag=''

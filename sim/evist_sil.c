@@ -13,7 +13,8 @@
 #include <string.h>
 
 #include "assist_modes.h"
-#include "assist_limits.h"
+#include "ap2_limits.h"
+#include "assist_pipeline.h"
 #include "cadence_filter.h"
 #include "config.h"
 #include "motor_core.h"
@@ -23,7 +24,6 @@
 #include "pas_sampler.h"
 #include "rider_input.h"
 #include "ride_control.h"
-#include "ride_session.h"
 #include "torque_input.h"
 #include "tuning_config.h"
 
@@ -681,7 +681,7 @@ static void sim_ctrl_tick(sim_t *s, FILE *csv)
     in.elapsed_ticks = 1U;
     ride_control_update(&in);
 
-    if (ride_control_get_session_state() == RIDE_SESSION_ACTIVE && s->first_permission_tick == 0U)
+    if (assist_pipeline_pas_state() == AP2_PAS_FORWARD && s->first_permission_tick == 0U)
         s->first_permission_tick = s->tick;
 
     for (unsigned k = 0; k < INNER_PER_CTRL; k++) {
@@ -711,14 +711,14 @@ static void sim_ctrl_tick(sim_t *s, FILE *csv)
     }
 
     if (csv && (s->tick % 4U) == 0U) {
-        const assist_mode_output_t *mo = assist_modes_get_last_output();
+        const assist_pipeline_telemetry_t *mo = assist_pipeline_telemetry();
         fprintf(csv, "%u,%u,%u,%u,%u,%d,%.3f,%.3f,%u,%u,%u,%u,%u,%u,%d\n",
             s->tick, ab, pas_direction_fwd_run(), s->MS.cadence,
             cadence_filter_get(), s->MS.i_q_setpoint,
             s->plant.iq_actual, s->plant.erps, s->plant.hall_age_ticks,
-            ride_control_get_session_state(), ride_control_get_debug_flags(),
+            ride_control_get_session_state(), assist_pipeline_reason_bits(),
             ts->load_centikg, ts->assist_delta_filtered_native,
-            ts->assist_delta_run_native, mo->iq_request);
+            ts->assist_delta_run_native, mo->iq_request_before_limits);
     }
 }
 
@@ -847,7 +847,7 @@ static int run_stop_restart_scenario(void)
         int32_t d = s.MS.i_q_setpoint - prev_iq;
         if (d > max_rise_step) max_rise_step = d;
         prev_iq = s.MS.i_q_setpoint;
-        if (!restart_permission && ride_control_get_session_state() == RIDE_SESSION_ACTIVE)
+        if (!restart_permission && assist_pipeline_pas_state() == AP2_PAS_FORWARD)
             restart_permission = s.tick;
         if (!restart_first_iq && s.MS.i_q_setpoint > 0) {
             restart_first_iq = s.tick;
@@ -979,19 +979,25 @@ static void walk_sil_ctrl_tick(MotorState_t *ms, plant_t *p, uint32_t ctrl_tick,
     walk_motor_output_t out;
     int32_t iq = walk_motor_update(&in, &out);
 
-    /* Same ordinary shared limiter used by main.c after walk_motor_update(). */
-    assist_limits_input_t lim = {
-        .voltage_raw = TEST_VOLTAGE_RAW,
-        .voltage_min_raw = VOLTAGE_MIN,
-        .controller_temperature_c = TEST_TEMP_C,
-        .source = ASSIST_LIMIT_SOURCE_NON_PEDAL,
-        .speed_x100 = wheel_speed_x100,
-        .speed_limit_x100 = SPEEDLIMIT,
-        .legal_enabled = true,
-        .offroad = false,
-        .walk_active = true
-    };
-    iq = assist_limits_apply(iq, &lim);
+    /* The same ONE limiter chain ride_control runs Walk through in production. */
+    ap2_limits_input_t lim;
+    ap2_limits_output_t lim_out;
+    memset(&lim, 0, sizeof(lim));
+    lim.iq_request = iq;
+    lim.source = AP2_LIMIT_SOURCE_WALK;
+    lim.battery_voltage_mv = 42000U;
+    lim.u_abs = 1024;
+    lim.cal_i = 95;
+    lim.battery_current_max = 15000;
+    lim.phase_current_max = (int32_t)PH_CURRENT_MAX;
+    lim.voltage_raw = TEST_VOLTAGE_RAW;
+    lim.voltage_min_raw = VOLTAGE_MIN;
+    lim.controller_temperature_c = TEST_TEMP_C;
+    lim.speed_x100 = wheel_speed_x100;
+    lim.speed_limit_x100 = SPEEDLIMIT;
+    lim.legal_enabled = true;
+    ap2_limits_apply(&lim, &lim_out);
+    iq = lim_out.final_iq;
     if (iq < 0) iq = 0;
     if (iq > 65535) iq = 65535;
 

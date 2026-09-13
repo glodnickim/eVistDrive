@@ -38,6 +38,7 @@
 #include <string.h>
 
 #include "assist_modes.h"
+#include "assist_pipeline.h"
 #include "config.h"
 #include "crank_model.h"
 #include "csv.h"
@@ -119,7 +120,8 @@ int main(int argc, char **argv)
 	FILE *out = csv_open_or_die(argv[2],
 		"tick,time_s,crank_angle_deg,pas_state,cadence_input,"
 		"torque_raw,torque_corrected,torque_fast,torque_run,load_centikg,"
-		"iq_request,iq_final,debug_flags");
+		"rider_demand,assist_base,assist_dynamic,iq_request,iq_final,"
+		"lifecycle,why");
 
 	uint32_t total_ticks = (uint32_t)(sc->duration_s * CRANK_MODEL_TICK_HZ);
 
@@ -185,16 +187,19 @@ int main(int argc, char **argv)
 		ride_input.throttle_iq = 0;
 		ride_control_update(&ride_input);
 
-		const assist_mode_output_t *mode_out = assist_modes_get_last_output();
+		const assist_pipeline_telemetry_t *tlm = assist_pipeline_telemetry();
 
-		fprintf(out, "%u,%.6f,%.3f,%u,%.3f,%u,%d,%u,%u,%u,%d,%d,0x%02X\n",
+		fprintf(out, "%u,%.6f,%.3f,%u,%.3f,%u,%d,%u,%u,%u,%d,%d,%d,%d,%d,0x%02X,0x%02X\n",
 			tick, t_s, crank.crank_angle_deg, crank_pas_state(&crank), cadence_rpm,
 			(unsigned)raw_mv, (int)corrected,
 			(unsigned)snap->assist_delta_filtered_native,
 			(unsigned)snap->assist_delta_run_native,
 			(unsigned)snap->load_centikg,
-			(int)mode_out->iq_request, (int)MS.i_q_setpoint,
-			(unsigned)ride_control_get_debug_flags());
+			(int)tlm->rider_demand_permille, (int)tlm->assist_base_permille,
+			(int)tlm->assist_dynamic_permille,
+			(int)tlm->iq_request_before_limits, (int)MS.i_q_setpoint,
+			(unsigned)assist_pipeline_state_byte(),
+			(unsigned)assist_pipeline_reason_bits());
 	}
 
 	fclose(out);
