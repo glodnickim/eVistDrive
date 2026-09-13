@@ -1,0 +1,14 @@
+{
+  "name": "w1-f06-load-fall",
+  "input": "input.csv",
+  "source_name": "F06-LOAD-FALL.csv",
+  "source_sha256": "b15579d84510b04fb19a35e54525d976f71921d4bee2182c43ae627045dbbc82",
+  "source_package": "integration/evidence/ride-w1-20260329 (qualification-001)",
+  "what": "pedal load falling away from a sustained effort",
+  "coverage": [
+    "CORE"
+  ],
+  "created_utc": "2026-09-13T21:19:42.543093+00:00",
+  "accepted_output_sha256": null,
+  "accepted_output_note": "not pinned until validated on the physical bike"
+}

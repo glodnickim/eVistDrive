@@ -1,0 +1,14 @@
+{
+  "name": "w1-f07-pause-43s",
+  "input": "input.csv",
+  "source_name": "F07-PAUSE-43S.csv",
+  "source_sha256": "fae293d3acdddbcb736379c43babddab6f3fdb599aed1a70776ca11f4a51cd10",
+  "source_package": "integration/evidence/ride-w1-20260329 (qualification-001)",
+  "what": "a 43 s pause in pedalling, then a restart",
+  "coverage": [
+    "CORE"
+  ],
+  "created_utc": "2026-09-13T21:19:42.544094+00:00",
+  "accepted_output_sha256": null,
+  "accepted_output_note": "not pinned until validated on the physical bike"
+}

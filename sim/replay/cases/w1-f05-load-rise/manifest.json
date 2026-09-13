@@ -1,0 +1,14 @@
+{
+  "name": "w1-f05-load-rise",
+  "input": "input.csv",
+  "source_name": "F05-LOAD-RISE.csv",
+  "source_sha256": "32e059c1d902dc9079521a2b6fc5e68dc65dfe4366b9d705d1e3973e8c50ab5c",
+  "source_package": "integration/evidence/ride-w1-20260329 (qualification-001)",
+  "what": "pedal load rising into a sustained effort",
+  "coverage": [
+    "CORE"
+  ],
+  "created_utc": "2026-09-13T21:19:42.542094+00:00",
+  "accepted_output_sha256": null,
+  "accepted_output_note": "not pinned until validated on the physical bike"
+}

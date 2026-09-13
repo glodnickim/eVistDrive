@@ -1,4 +1,8 @@
-# EVistDrive FW144 — current architecture map
+# EVistDrive — current architecture map
+
+> The pedal-assist path is **Assist Pipeline V2**. Its blocks, units, state machines, parameters,
+> limiters and telemetry are documented in [ASSIST_PIPELINE_V2.md](ASSIST_PIPELINE_V2.md); this
+> file keeps the whole-firmware view around it.
 
 ## Control flow
 
@@ -17,12 +21,17 @@ SENSOR TRUTH
 RIDE PERMISSION / SESSION
         |
         v
-ASSIST DEMAND
-  Torque / Power / eMTB / Curve / Startup Boost / cadence compensation
+RIDE PERMISSION / SELECTION
+  ride_control.c: calibration | Walk Assist | pedal assist - one owner per tick
         |
         v
-LIMITS
-  phase current / battery current / power / speed / thermal / safety
+ASSIST PIPELINE V2
+  rider demand -> base + dynamic -> aggression / load -> profile / AUTO
+  -> characteristic -> start / attack / release
+        |
+        v
+LIMITS (one chain, ap2_limits.c)
+  power -> battery current -> phase current -> voltage -> thermal -> speed
         |
         v
 FINAL Iq TRAJECTORY @ 16 kHz
@@ -88,7 +97,9 @@ Impossible 1-3 tick reverse bounce is rejected before direction safety. True rev
 Control uses the conditioned cadence. Raw cadence is retained for telemetry/diagnostics.
 
 ### Torque
-Filtering is elapsed-time based, so missed/coalesced 4 kHz foreground calls do not stretch a nominal 35/120/250 ms filter by call count.
+Filtering is elapsed-time based, so missed/coalesced 4 kHz foreground calls do not stretch a
+nominal filter by call count. The assist path applies exactly ONE filter to the measurement
+(20 ms, sensor noise only); pedal ripple is modelled by the base/dynamic split, not filtered away.
 
 ## Simulation layers
 
@@ -134,13 +145,12 @@ Keep rich TSDZ-style configurability, but do not let each parameter create a new
 
 Examples:
 
-- Assist -> demand magnitude
-- Power -> ceiling
-- Acceleration -> positive final-Iq dynamics
-- Deceleration/Release -> negative final-Iq dynamics
-- Startup Boost -> demand shaping
-- Start Smoothness -> start segment of one final-Iq trajectory
-- torque smoothing -> sensor/rider-effort estimator only
+- Profile -> a whole behaviour (characteristic, base/dynamic mix, dynamics, power envelope)
+- Assist trim -> how much effort is needed to reach full assist
+- Power -> ceiling only; it may tighten the profile envelope, never widen it
+- Attack -> how fast the demand may rise
+- Release -> how fast it lets go, and the time to zero on a stop
+- Start -> the rate in force for the first start_ms of a ride
 
 Every user setting should have a single documented owner.
 
@@ -148,10 +158,13 @@ Every user setting should have a single documented owner.
 
 These are not authorization to refactor blindly:
 
-1. `ride_session` + `pedal_assist_gate` still contain overlapping permission concepts; current tests do not show active-ride chatter, so preserve behavior until a focused migration has explicit semantics/tests.
-2. legacy/inactive configuration fields should eventually be migrated/hidden, not silently repurposed.
-3. `min-Iq hold`, QZERO and old low-speed/coast policies require hardware-backed A/B before removal or retuning.
-4. `main.c` remains a large hardware/glue node; extract only when ownership is clear and parity is tested.
+1. Legacy/inactive configuration fields are still stored and round-tripped (`inc/assist_bank_wire.h`).
+   They should eventually be reclaimed by a versioned transport change, not silently repurposed.
+2. QZERO and the low-speed coast policy require hardware-backed A/B before removal or retuning.
+3. `main.c` remains a large hardware/glue node; extract only when ownership is clear and parity is tested.
+4. Every ride-feel number in the Assist Pipeline V2 profile table is a starting point, not a
+   measurement - the pipeline has never driven the physical motor. The torque sensor scale
+   (`CLAIM-EVD-TORQUE-SCALE-004`) dominates all of them and must be measured first.
 
 ## Definition of a flash candidate
 

@@ -39,9 +39,15 @@ Production ownership rules:
 - PAS electrical plausibility: `pas_sampler.c`
 - PAS direction safety: `pas_direction.c`
 - cadence used by control: `cadence_filter.c`
-- rider torque conditioning: `torque_input.c`
-- ride permission / supervisory command: `ride_control.c` plus current session/gate modules
-- assist demand: `assist_modes.c`
+- rider torque conditioning (zero, calibration, physical kg): `torque_input.c`
+- pedal-assist permission and lifecycle: `ap2_pas_state.c` - the ONE owner
+- rider demand and the pedal-cycle base/dynamic split: `ap2_rider_demand.c`
+- rider aggression and terrain load: `ap2_estimators.c`
+- profiles, the assist characteristic and AUTO: `ap2_profiles.c`
+- the one limiter chain: `ap2_limits.c`
+- assist demand, start/stop dynamics, and the ONE path to Iq: `assist_pipeline.c`
+- selection between calibration / Walk / pedal assist, and the single publish: `ride_control.c`
+- assist configuration storage and the bank wire format: `assist_modes.c` (no control math)
 - final Iq trajectory: `fast_iq_slew.c` (16 kHz owner)
 - current-loop PI + common voltage-vector saturation: `foc_current_loop.c`
 - transforms / current measurement / SVPWM path: `FOC.c`
@@ -50,6 +56,23 @@ Production ownership rules:
 - low-speed stop helper: `quiet_zero.c` (QZERO; still hardware-sensitive)
 
 Never add a second independent writer for final Iq, PI setpoint, or final Park angle.
+
+### Assist Pipeline V2 ownership rules
+
+Read [docs/ASSIST_PIPELINE_V2.md](docs/ASSIST_PIPELINE_V2.md) before changing anything in the
+assist path. The rules that are not negotiable:
+
+- `assist_pipeline_update()` is the ONLY place pedal assist becomes a current request. Do not add
+  a second writer, a floor, a boost or an override beside or after it.
+- A reverse crank step, a safety cut or assist level 0 means the request is exactly zero in the
+  SAME tick. No hold, estimator or ramp may carry a positive value past that point.
+- There is ONE filter on the measurement path and two dynamics primitives (`inc/ap2_math.h`).
+  If a change seems to need a third mechanism in the signal path, the block it sits in is
+  modelled wrongly - fix the model, do not add a filter.
+- Every block takes elapsed 4 kHz ticks. Never reintroduce call-count-based filtering.
+- Ride-feel numbers live in the profile table and in the stored bank. Do not scatter them.
+- Wire values and diagnostic source indices are protocol. Extend them; never renumber or
+  silently reinterpret them.
 
 ## 4. Important fixes that must not regress
 

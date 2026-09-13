@@ -1,0 +1,14 @@
+{
+  "name": "w1-f03-stable-cad85",
+  "input": "input.csv",
+  "source_name": "F03-STABLE-CAD85.csv",
+  "source_sha256": "39e5ff5c727d3a57168eeb7a276acf5b3cecd503e4c5887cf9c98dc40da4eb79",
+  "source_package": "integration/evidence/ride-w1-20260329 (qualification-001)",
+  "what": "steady riding at about 85 rpm",
+  "coverage": [
+    "CORE"
+  ],
+  "created_utc": "2026-09-13T21:19:42.541093+00:00",
+  "accepted_output_sha256": null,
+  "accepted_output_note": "not pinned until validated on the physical bike"
+}
