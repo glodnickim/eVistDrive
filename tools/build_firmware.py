@@ -309,6 +309,13 @@ def _build_one(version: str, variant: str, version_source: str, entries: list[st
                 "-C", str(ROOT), *args], capture=True).strip()
 
 
+def git_value(*args: str) -> str:
+    if not (ROOT / ".git").exists():
+        return "NO-GIT"
+    return run(["git", "-c", f"safe.directory={ROOT}", "-c", "core.excludesFile=",
+                "-C", str(ROOT), *args], capture=True).strip()
+
+
 def source_entries() -> list[str]:
     out: list[str] = []
     for line in (ROOT / "scripts" / "sources-m820.txt").read_text().splitlines():
@@ -611,5 +618,5 @@ def main() -> int:
     return 0
 
 
-    if __name__ == "__main__":
-        raise SystemExit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())
