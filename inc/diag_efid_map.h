@@ -20,11 +20,7 @@
  * and add it to the assert list. If it overlaps anything, the build fails instead of the bike.
  */
 
-#include "rearm_delay_diag.h"  /* REARM_DELAY_EFID_*      (FW-111) */
-#include "fw112_diag.h"        /* FW112_DIAG_EFID_*       (FW-112-DIAG) */
-#include "fw112_ab.h"          /* FW112_AB_EFID_*         (FW-112 A/B) */
 #include "fw117_trace.h"       /* FW117_TRACE_EFID_*      (FW-117, TEMPORARY) */
-#include "rolling_no_assist_diag.h" /* ROLLING_NO_ASSIST_EFID_* (rolling no-assist diagnostic) */
 #include "stop_trace.h"           /* NORMAL on-demand stop capture, 10300..10307 */
 #include "ride_telemetry.h"       /* FW-145 continuous live ride telemetry, 10400..10407 */
 
@@ -35,24 +31,31 @@
 /* --- the occupied ranges, inclusive on both ends ------------------------------------------- */
 
 /* FW-111 delayed-rearm recorder: three timing frames, one 4-fragment snapshot, one capture frame */
-#define DIAG_EFID_REARM_LO        (REARM_DELAY_EFID_TIMING)
-#define DIAG_EFID_REARM_HI        (REARM_DELAY_EFID_CAPTURE)
+/*
+ * RETIRED BUT STILL RESERVED. These four recorders observed the legacy assist pipeline and
+ * were removed with it, so their headers are gone and the numbers are written out here.
+ * The RANGES stay claimed on purpose: a capture taken from an older firmware still carries
+ * these IDs, and a new feature that reused one would make two different record formats share
+ * an identifier - which is exactly the collision this map exists to prevent.
+ */
+#define DIAG_EFID_REARM_LO        0x00010220U
+#define DIAG_EFID_REARM_HI        0x00010227U
 
 /* FW-112-DIAG whole-chain event recorder: header + 4 snapshot fragments */
-#define DIAG_EFID_FW112_DIAG_LO   (FW112_DIAG_EFID_HEADER)
-#define DIAG_EFID_FW112_DIAG_HI   (FW112_DIAG_EFID_SNAP_BASE + 3U)
+#define DIAG_EFID_FW112_DIAG_LO   0x0001022AU
+#define DIAG_EFID_FW112_DIAG_HI   0x0001022EU
 
 /* FW-112 A/B rearm-episode logger: header + 4 record fragments */
-#define DIAG_EFID_FW112_AB_LO     (FW112_AB_EFID_HEADER)
-#define DIAG_EFID_FW112_AB_HI     (FW112_AB_EFID_SNAP_BASE + 3U)
+#define DIAG_EFID_FW112_AB_LO     0x0001022FU
+#define DIAG_EFID_FW112_AB_HI     0x00010233U
 
 /* FW-126 compact FOC-start trace on the FW-117 transport: header + 6 fragments */
 #define DIAG_EFID_FW117_LO        (FW117_TRACE_EFID_HEADER)
 #define DIAG_EFID_FW117_HI        (FW117_TRACE_EFID_DATA_BASE + FW117_TRACE_DATA_FRAGMENTS - 1U)
 
 /* Rolling no-assist diagnostic schema v2: header + 6 data fragments */
-#define DIAG_EFID_RNA_LO          (ROLLING_NO_ASSIST_EFID_HEADER)
-#define DIAG_EFID_RNA_HI          (ROLLING_NO_ASSIST_EFID_DATA_BASE + ROLLING_NO_ASSIST_DATA_FRAGMENTS - 1U)
+#define DIAG_EFID_RNA_LO          0x00010248U
+#define DIAG_EFID_RNA_HI          0x0001024EU
 
 /* FW-145 continuous live-ride stream: seven coherent data frames + one META frame. */
 #define DIAG_EFID_RIDE_TELEM_LO   (RIDE_TELEMETRY_EFID_BASE)

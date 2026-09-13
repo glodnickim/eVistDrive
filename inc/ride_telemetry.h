@@ -27,10 +27,21 @@
 #define RIDE_TELEMETRY_EFID_STATE  (RIDE_TELEMETRY_EFID_BASE + 5U)
 #define RIDE_TELEMETRY_EFID_ROTOR  (RIDE_TELEMETRY_EFID_BASE + 6U)
 #define RIDE_TELEMETRY_EFID_META   (RIDE_TELEMETRY_EFID_BASE + 7U)
-#define RIDE_TELEMETRY_EFID_LAST   RIDE_TELEMETRY_EFID_META
+/*
+ * SCHEMA 2 added the two assist-pipeline frames. META stays at +7 because shipped decoders
+ * key on it, so the new data frames continue ABOVE it rather than renumbering anything.
+ */
+#define RIDE_TELEMETRY_EFID_ASSIST (RIDE_TELEMETRY_EFID_BASE + 8U)
+#define RIDE_TELEMETRY_EFID_RIDER  (RIDE_TELEMETRY_EFID_BASE + 9U)
+#define RIDE_TELEMETRY_EFID_LAST   RIDE_TELEMETRY_EFID_RIDER
 
-#define RIDE_TELEMETRY_SCHEMA_VERSION 1U
-#define RIDE_TELEMETRY_DATA_FRAMES   7U
+/*
+ * SCHEMA 2. The legacy assist pipeline is gone, so three fields changed MEANING and two frames
+ * were added. The version byte in the META frame is what makes that safe: a decoder written for
+ * schema 1 sees 2 and stops, instead of reading a permille demand as a native ADC delta.
+ */
+#define RIDE_TELEMETRY_SCHEMA_VERSION 2U
+#define RIDE_TELEMETRY_DATA_FRAMES   9U
 
 /* One CAN frame every 3 ms. Seven data frames therefore describe one coherent snapshot every
  * ~21 ms (~47.6 Hz at 4 kHz). META is inserted at most once per second between snapshots.
@@ -60,12 +71,33 @@ _Static_assert(RIDE_TELEMETRY_FRAME_INTERVAL_TICKS > 0U,
 #define RIDE_TELEM_F_BRIDGE_SHIFT     13U
 #define RIDE_TELEM_F_BRIDGE_MASK      (7U << RIDE_TELEM_F_BRIDGE_SHIFT)
 
+/* limit_flags in 0x10409: which stage of the one limiter chain was binding this tick. */
+#define AP2_TELEM_LIM_POWER    (1U << 0)
+#define AP2_TELEM_LIM_BATTERY  (1U << 1)
+#define AP2_TELEM_LIM_PHASE    (1U << 2)
+#define AP2_TELEM_LIM_VOLTAGE  (1U << 3)
+#define AP2_TELEM_LIM_THERMAL  (1U << 4)
+#define AP2_TELEM_LIM_SPEED    (1U << 5)
+#define AP2_TELEM_LIM_ZEROED   (1U << 6)
+#define AP2_TELEM_LIM_START    (1U << 7)
+#define AP2_TELEM_LIM_RELEASE  (1U << 8)
+
 typedef struct {
     uint32_t control_tick;
 
     uint16_t load_centikg;
-    uint16_t torque_fast_native;
-    uint16_t torque_run_native;
+    /* SCHEMA 2: the demand model, in permille of the rider-effort full scale. These replace
+     * the two native-unit torque filters of the removed pipeline. */
+    uint16_t torque_normalized_permille;
+    uint16_t rider_demand_permille;
+    uint16_t assist_base_permille;
+    uint16_t assist_dynamic_permille;
+    uint16_t assist_response_permille;
+    uint16_t rider_aggression_permille;
+    uint16_t load_state_permille;
+    uint16_t auto_factor_permille;
+    /* Which limiter stage was binding, AP2_TELEM_LIM_* below. */
+    uint16_t limit_flags;
     uint8_t cadence_raw_rpm;
     uint8_t cadence_control_rpm;
 

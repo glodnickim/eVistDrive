@@ -35,7 +35,8 @@ OF SUCH DAMAGE.
 #include "main.h"
 #include "FOC.h"
 #include "foc_current_loop.h"
-#include "assist_limits.h"
+#include "ap2_limits.h"
+#include "assist_pipeline.h"
 #include "motor_core.h"
 #include "motor_service.h"
 #include "rider_input.h"
@@ -48,11 +49,7 @@ OF SUCH DAMAGE.
 #include "pas_trace.h"
 #include "pas_raw.h"
 #include "diag_session.h"
-#include "rearm_delay_diag.h"   /* FW-111 */
-#include "fw112_diag.h"         /* FW-112-DIAG */
-#include "fw112_ab.h"           /* FW-112 A/B */
 #include "fw117_trace.h"        /* FW-117 TEMP: bridge lifecycle trace */
-#include "rolling_no_assist_diag.h" /* rolling no-assist diagnostic */
 #include "qs_transition_diag.h" /* QS-1: passive full-rate transition snapshot */
 #include "current_cal.h"         /* FW-126.7: calibration in the neutral dwell        */
 #include "pwm_geometry.h"        /* FW-127A: requested -> applied PWM geometry         */
@@ -73,7 +70,6 @@ OF SUCH DAMAGE.
 #if CAN_DIAGNOSTICS_ENABLE
 #include "diag_efid_map.h"       /* FW-121.0: compile-time proof that no two diag id blocks overlap */
 #include "ride_telemetry.h"      /* FW-145: continuous Level-4 ride stream for CANable */
-#include "rolling_no_assist_dump.h" /* FW-123: explicit/repeatable FROZEN capture replay */
 #include "qs_transition_dump.h"
 #endif
 #include "can_tx_queue.h"
@@ -637,7 +633,7 @@ volatile uint8_t diag_peak_reset=0;
 //FW-015b: peak-hold diagnostics (reset on each 0x6029 read) - lets a brief bench press be captured
 volatile uint8_t diag_peak_cadence=0;
 volatile uint16_t diag_peak_torque=0, diag_peak_human_w=0, diag_peak_support=0, diag_peak_motor_w=0;
-volatile uint16_t diag_peak_precomp_motor_w=0, diag_peak_cadence_comp=1000, diag_peak_u_abs=0; //FW-057
+volatile uint16_t diag_peak_assist_dynamic=0, diag_peak_u_abs=0;
 volatile int32_t diag_peak_iq_req=0, diag_peak_iq_set=0;
 #endif
 uint32_t ui32_erps_cumulated=0;
@@ -1348,7 +1344,7 @@ int main(void)
 	 * vacates the bus when the session closes and the detailed dump begins. */
 	ride_telemetry_step(control_time_ticks,
 		(can_tx_queue_depth() == 0U) && !can_multiframe_busy() &&
-		!rolling_no_assist_dump_busy() && !qs_transition_dump_busy(),
+		!qs_transition_dump_busy(),
 		diag_session_is_active());
 #endif
 
@@ -2722,7 +2718,6 @@ void reg_ADC_processing(void)
 			ride_episode_set_session_id(diag_session_current_id());
 			pas_trace_set_session_id(diag_session_current_id());
 			pas_raw_set_session_id(diag_session_current_id());
-			rearm_delay_set_session_id(diag_session_current_id());   //FW-111
 #endif
 			/*
 			 * FW-102: shared context for the raw trace, captured once per transition before
@@ -2734,9 +2729,7 @@ void reg_ADC_processing(void)
 			 */
 			uint16_t pt_gap_ticks = ev.gap;   //PRE-FW128: real ticks since the previous edge
 			{
-				ride_gate_snapshot_t pt_gate;
-				ride_control_get_gate_snapshot(&pt_gate);
-				uint8_t pt_dbg = ride_control_get_debug_flags();
+				const assist_pipeline_telemetry_t *pt_tlm = assist_pipeline_telemetry();
 				int32_t pt_iq = MS.i_q_setpoint;
 				if(pt_iq<0) pt_iq=0;
 				if(pt_iq>65535) pt_iq=65535;
@@ -2751,8 +2744,8 @@ void reg_ADC_processing(void)
 					.torque_fast = torque_input_get_snapshot()->assist_delta_filtered_native,
 					.iq_setpoint = (uint16_t)pt_iq,
 					.brake = MS.brake_active_flag != 0,
-					.rolling = pt_gate.bike_rolling,
-					.latched = !(pt_dbg & RIDE_DBG_NOT_LATCHED)
+					.rolling = pt_tlm->bike_rolling,
+					.latched = pt_tlm->assist_permitted
 				};
 				/*
 				 * FW-106: one trigger, two recorders, one key. pas_trace issues the capture id
@@ -2896,9 +2889,8 @@ void reg_ADC_processing(void)
 				 * interruption and only extend the count.
 				 */
 				{
-					ride_arm_snapshot_t rev_snap;
-					ride_control_get_arm_snapshot(&rev_snap);
-					ride_episode_reverse_step(MS.i_q_setpoint, rev_snap.seq, control_now);
+					ride_episode_reverse_step(MS.i_q_setpoint,
+						assist_pipeline_telemetry()->engage_seq, control_now);
 					/*
 					 * Keep the histogram anchored the same way. Same rule as the module:
 					 * re-anchor only while the current is still essentially untouched, so
@@ -3003,7 +2995,6 @@ void reg_ADC_processing(void)
 			ride_episode_set_session_id(diag_session_current_id());
 			pas_trace_set_session_id(diag_session_current_id());
 			pas_raw_set_session_id(diag_session_current_id());
-			rearm_delay_set_session_id(diag_session_current_id());   //FW-111
 		}
 #endif
 	}
@@ -3372,11 +3363,30 @@ void reg_ADC_processing(void)
             if(rt_v_10mv > 65535U) rt_v_10mv = 65535U;
             if(rt_u_abs > 65535U) rt_u_abs = 65535U;
 
+            const assist_pipeline_telemetry_t *rt_ap = assist_pipeline_telemetry();
+            uint16_t rt_limit_flags = (uint16_t)(
+                (rt_ap->power_limited   ? AP2_TELEM_LIM_POWER   : 0U) |
+                (rt_ap->battery_limited ? AP2_TELEM_LIM_BATTERY : 0U) |
+                (rt_ap->phase_limited   ? AP2_TELEM_LIM_PHASE   : 0U) |
+                (rt_ap->voltage_limited ? AP2_TELEM_LIM_VOLTAGE : 0U) |
+                (rt_ap->thermal_limited ? AP2_TELEM_LIM_THERMAL : 0U) |
+                (rt_ap->speed_limited   ? AP2_TELEM_LIM_SPEED   : 0U) |
+                (rt_ap->limiter_zeroed  ? AP2_TELEM_LIM_ZEROED  : 0U) |
+                (rt_ap->start_active    ? AP2_TELEM_LIM_START   : 0U) |
+                (rt_ap->release_active  ? AP2_TELEM_LIM_RELEASE : 0U));
+
             ride_telemetry_snapshot_t rt = {
                 .control_tick = control_now,
                 .load_centikg = rt_tq ? rt_tq->load_centikg : 0U,
-                .torque_fast_native = rt_tq ? rt_tq->assist_delta_filtered_native : 0U,
-                .torque_run_native = rt_tq ? rt_tq->assist_delta_run_native : 0U,
+                .torque_normalized_permille = (uint16_t)diag_clamp16(rt_ap->torque_normalized_permille),
+                .rider_demand_permille = (uint16_t)diag_clamp16(rt_ap->rider_demand_permille),
+                .assist_base_permille = (uint16_t)diag_clamp16(rt_ap->assist_base_permille),
+                .assist_dynamic_permille = (uint16_t)diag_clamp16(rt_ap->assist_dynamic_permille),
+                .assist_response_permille = (uint16_t)diag_clamp16(rt_ap->assist_response_permille),
+                .rider_aggression_permille = (uint16_t)diag_clamp16(rt_ap->rider_aggression_permille),
+                .load_state_permille = (uint16_t)diag_clamp16(rt_ap->load_state_permille),
+                .auto_factor_permille = (uint16_t)diag_clamp16(rt_ap->auto_factor_permille),
+                .limit_flags = rt_limit_flags,
                 .cadence_raw_rpm = MS.cadence,
                 .cadence_control_rpm = cadence_filter_get(),
                 .iq_requested = diag_clamp16((rt_iq && rt_iq->valid) ? rt_iq->requested : 0),
@@ -3385,8 +3395,8 @@ void reg_ADC_processing(void)
                 /*
                  * TWO SIGN DOMAINS IN THIS FRAME, ON PURPOSE. iq_requested / iq_allowed / iq_ref
                  * above are the POSITIVE demand; MS.i_q and MS.i_d are the Park domain, where this
-                 * drive's MP.reverse = -1 makes forward drive NEGATIVE (stated at
-                 * rolling_no_assist_diag.c, which is why that module compares MAGNITUDES).
+                 * drive's MP.reverse = -1 makes forward drive NEGATIVE, which is why any
+                 * consumer comparing them has to compare MAGNITUDES.
                  *
                  * These are emitted RAW and must stay that way while RIDE_TELEMETRY_SCHEMA_VERSION
                  * is 1: changing the meaning of a field without changing the version leaves every
@@ -3403,8 +3413,11 @@ void reg_ADC_processing(void)
                 .wheel_speed_x100 = (MS.Speedx100 > 65535U) ? 65535U : (uint16_t)MS.Speedx100,
                 .u_abs = (uint16_t)rt_u_abs,
                 .flags = rt_flags,
-                .permission_bits = ride_control_get_permission_bits(),
-                .debug_flags = ride_control_get_debug_flags(),
+                /* SCHEMA 2: these two now carry the ONE assist chain's own answers - the
+                 * lifecycle/profile byte and the why-is-the-request-what-it-is byte. Both are
+                 * produced by the layer that decided them, not re-derived by a reader. */
+                .permission_bits = assist_pipeline_state_byte(),
+                .debug_flags = assist_pipeline_reason_bits(),
                 .session_state = ride_control_get_session_state(),
                 .qzero_state = qzero_diag_state_isr,
                 .assist_level = MS.assist_level,
@@ -3446,30 +3459,30 @@ void reg_ADC_processing(void)
          * everything after it (RUN estimator, power filter, limiter, ramp).
          */
         {
-            uint8_t ep_dbg = ride_control_get_debug_flags();
-            ride_arm_snapshot_t ep_snap;
-            ride_control_get_arm_snapshot(&ep_snap);
-            //FW-102: the start gate as it stood THIS tick, straight from its one owner
-            //(ride_control) rather than re-derived here against a possibly stale constant.
-            ride_gate_snapshot_t ep_gate;
-            ride_control_get_gate_snapshot(&ep_gate);
+            /*
+             * Every field here now comes from the ONE assist chain's own telemetry rather than
+             * from three separate snapshots of three competing mechanisms. The episode question
+             * is unchanged: inside a single re-engagement, how much of the delay was permission
+             * and how much was everything after it.
+             */
+            const assist_pipeline_telemetry_t *ep_tlm = assist_pipeline_telemetry();
             ride_episode_input_t ep_in = {
                 .iq_setpoint = MS.i_q_setpoint,
-                .iq_pre_ramp = ep_snap.iq_pre_ramp,
-                .arm_seq = ep_snap.seq,
-                .hard_cut = (ep_dbg & RIDE_DBG_HARD_CUT) != 0,
-                .limiter_zeroed = (ep_dbg & RIDE_DBG_LIMITER_ZEROED) != 0,
-                .pas_timeout = pas_real_stop != 0,   //FW-112.1: the ride_episode "cranks stopped" flag must use the SAME verdict as the session terminal - pas_liveness (any-edge), not the forward-only cadence gap
-                .arm_load_centikg = ep_snap.load_centikg,
-                .arm_fast_native = ep_snap.fast_native,
-                .arm_run_seed_native = ep_snap.run_seed_native,
-                .arm_iq_after_limits = ep_snap.iq_after_limits,
-                .arm_fast_rearm = ep_snap.fast_rearm, //FW-107
+                .iq_pre_ramp = ep_tlm->iq_request_before_limits,
+                .arm_seq = ep_tlm->engage_seq,
+                .hard_cut = ep_tlm->block_positive,
+                .limiter_zeroed = ep_tlm->limiter_zeroed,
+                .pas_timeout = pas_real_stop != 0,   //the same verdict the lifecycle terminal uses: pas_liveness (any-edge), not the forward-only cadence gap
+                .arm_load_centikg = ep_tlm->torque_load_centikg,
+                .arm_fast_native = (uint16_t)ep_tlm->rider_demand_permille,
+                .arm_run_seed_native = (uint16_t)ep_tlm->assist_base_permille,
+                .arm_iq_after_limits = ep_tlm->final_iq_request,
+                .arm_fast_rearm = false,
                 .fwd_run = pas_direction_fwd_run(),
-                .required_steps = ep_gate.required_steps,
+                .required_steps = ep_tlm->required_steps,
                 .load_centikg = torque_input_load_centikg(),
-                .load_threshold_centikg = ep_gate.load_threshold_centikg,
-                .rolling = ep_gate.bike_rolling
+                .load_threshold_centikg = ep_tlm->engage_threshold_centikg,
+                .rolling = ep_tlm->bike_rolling
             };
             ride_episode_tick(&ep_in, control_now);
             /*
@@ -3480,7 +3493,7 @@ void reg_ADC_processing(void)
              */
             {
                 static bool pt_was_latched = false;
-                bool pt_now_latched = !(ep_dbg & RIDE_DBG_NOT_LATCHED);
+                bool pt_now_latched = ep_tlm->assist_permitted;
                 if(pt_was_latched && !pt_now_latched){
                     /* FW-106: same trigger, same shared capture id - see the transition site. */
                     uint8_t ll_capture = pas_trace_latch_loss();
@@ -3494,251 +3507,13 @@ void reg_ADC_processing(void)
             }
         }
 #if CAN_DIAGNOSTICS_ENABLE
-        /*
-         * FW-111: the delayed-rearm recorder, one observation per control tick. Placed AFTER
-         * ride_control_update() so the session state and the arm snapshot are this tick's own
-         * (the episode block just above reads the same two), and after the episode recorder so
-         * both view the same instant. Measurement only - nothing read here feeds any decision.
-         */
-        {
-            uint8_t rd_dbg = ride_control_get_debug_flags();
-            ride_arm_snapshot_t rd_snap;
-            ride_control_get_arm_snapshot(&rd_snap);
-            const assist_mode_output_t *rd_mode = assist_modes_get_last_output();
-            rearm_delay_input_t rd_in = {
-                .session_state = ride_control_get_session_state(),
-                .direction_inhibit_active = pas_direction_direction_inhibit_active(),
-                .real_stop = pas_real_stop != 0,
-                .limiter_zeroed = (rd_dbg & RIDE_DBG_LIMITER_ZEROED) != 0,
-                .pwm_on = ui_8_PWM_ON_Flag != 0,
-                .iq_request = diag_clamp16(rd_mode->iq_request),
-                .iq_pre_ramp = diag_clamp16(rd_snap.iq_pre_ramp),
-                .iq_setpoint = diag_clamp16(MS.i_q_setpoint),
-                .run_deadband = tuning_config_run_deadband_mv(),
-                .snapshot = torque_input_get_snapshot()
-            };
-            rearm_delay_tick(&rd_in, control_now);
-            rearm_delay_set_session_id(diag_session_current_id());
-
-            /*
-             * FW-111: the pas_trace TRACE/RAW reservation is bracketed by the REAL initiating
-             * event and the saga's real conclusion - NOT by this record's own open/close, and NOT
-             * by the PERMISSION (rearm) tick alone (a WEAK_TARGET can be detected up to 150 ms
-             * AFTER the rearm, while the record is in RECOVERING - see rearm_delay_diag.h and
-             * pas_trace.h for the full rationale). prearm_edge()/ownership_end_edge() are exact,
-             * one-shot, and derived purely from session_state plus the record FSM's own
-             * transitions, so they correctly bracket a saga that re-suspends (in FW-112 v2 any
-             * re-suspend is simply more SUSPENDED - no WAIT_REARM_LOAD stage exists any more) and
-             * correctly keep the reservation alive through the whole recovery watch.
-             *
-             * Order matters, in three ways:
-             *   1. PREARM first - establishes (or, for a new saga interrupting the previous one's
-             *      still-open recovery watch, ATOMICALLY replaces - see pas_trace_rearm_prearm())
-             *      the reservation before anything below can use it. This is also what makes
-             *      "end the old saga's ownership before starting the new one" correct on a
-             *      rotation tick without main.c having to sequence two separate calls itself.
-             *   2. Then the trigger/capture, which needs the reservation this exact tick if a
-             *      PROBLEM and the saga's conclusion ever coincide (e.g. WEAK_TARGET firing on
-             *      the exact tick the record's own RECOVERING timeout also closes it).
-             *   3. OWNERSHIP END last, so a same-tick trigger is never released out from under
-             *      itself - the capture always sees the reservation it needs BEFORE ownership can
-             *      end it.
-             * No sleep, delay, or wait loop anywhere in this block - one observation, one or two
-             * pas_trace calls, done; ride_control is never touched.
-             */
-            if (rearm_delay_prearm_edge()) {
-                pas_trace_rearm_prearm();
-            }
-
-            if (rearm_delay_reserve_trigger()) {
-                uint8_t rd_cap = PAS_TRACE_NO_CAPTURE;
-                uint8_t rd_status;
-                if (!pas_trace_rearm_held()) {
-                    /* PREARM never found a free slot at the initiating event - there is no
-                     * history to arm a trace on at all, not merely a busy one. */
-                    rd_status = REARM_DELAY_CAPTURE_NO_TRACE_NO_HISTORY;
-                } else {
-                    /* Context tag for the forced trigger: not a transition, so from==to==current. */
-                    ride_gate_snapshot_t rt_gate;
-                    ride_control_get_gate_snapshot(&rt_gate);
-                    int32_t rt_iq = rd_in.iq_setpoint; if (rt_iq < 0) rt_iq = 0;
-                    if (rt_iq > 65535) rt_iq = 65535;
-                    pas_trace_input_t rt_in = {
-                        .from_state = pas_sampler_state(),
-                        .to_state = pas_sampler_state(),
-                        .reverse = false,
-                        .gap_ticks = pas_idle_ticks,
-                        .disc_pos = pas_fwd_accum,
-                        .load_centikg = torque_input_load_centikg(),
-                        .torque_raw_mv = torque_raw_mv,
-                        .torque_fast = (rd_in.snapshot != 0) ? rd_in.snapshot->assist_delta_filtered_native : 0U,
-                        .iq_setpoint = (uint16_t)rt_iq,
-                        .brake = MS.brake_active_flag != 0,
-                        .rolling = rt_gate.bike_rolling,
-                        .latched = (rd_dbg & RIDE_DBG_NOT_LATCHED) == 0
-                    };
-                    rd_cap = pas_trace_rearm_capture(&rt_in);
-                    if (rd_cap == PAS_TRACE_NO_CAPTURE) {
-                        /* Held, but the slot is already armed/ready from an earlier PROBLEM in
-                         * this same saga - busy, not "no history". */
-                        rd_status = REARM_DELAY_CAPTURE_NO_TRACE_BUSY;
-                    } else {
-                        /* pas_raw_freeze()'s bool is honoured: a busy raw slot means the record
-                         * carries TRACE_ONLY, never a claim of a full TRACE+RAW pair. */
-                        rd_status = pas_raw_freeze(rd_cap)
-                            ? REARM_DELAY_CAPTURE_FULL
-                            : REARM_DELAY_CAPTURE_TRACE_ONLY;
-                    }
-                }
-                rearm_delay_note_reserve_done(rd_cap, rd_status);
-            }
-
-            if (rearm_delay_ownership_end_edge()) {
-                pas_trace_rearm_end_ownership();
-            }
-        }
-#endif
-        /*
-         * FW-112-DIAG: the whole-chain event recorder, one observation per control tick, placed
-         * AFTER ride_control_update() and the FW-111 rearm block so every state it reads - the
-         * session, the recovery automaton, the hold grace, the arm snapshot, the mode result and
-         * the start gate - is this tick's own. Measurement only: nothing read here feeds any
-         * decision. The permission/WHO-ZEROED reason comes from the deciding layer itself
-         * (ride_control_get_diag_reason), so a BLOCKED/ZEROED record names the exact stage that
-         * held current at 0 instead of this block re-deriving it from second-hand copies.
-         */
-#if CAN_DIAGNOSTICS_ENABLE
-        {
-            fw112_diag_set_session_id(diag_session_current_id());
-            ride_gate_snapshot_t fd_gate;
-            ride_control_get_gate_snapshot(&fd_gate);
-            ride_arm_snapshot_t fd_snap;
-            ride_control_get_arm_snapshot(&fd_snap);
-            const assist_mode_output_t *fd_mode = assist_modes_get_last_output();
-            const torque_snapshot_t *fd_tq = torque_input_get_snapshot();
-            fw112_diag_input_t fd_in = {
-                .session_state = ride_control_get_session_state(),
-                .recovery_state = (uint8_t)torque_input_recovery_state(),
-                .recovery_stable_ticks = torque_input_recovery_stable_ticks(),
-                .recovery_stable_ticks_at_edge = torque_input_recovery_stable_ticks_at_edge(),
-                .assist_delta_filtered_native = fd_tq ? fd_tq->assist_delta_filtered_native : 0U,
-                .dir_state = (uint8_t)pas_direction_get_state(),
-                .fwd_run = pas_direction_fwd_run(),
-                .cadence_rpm = MS.cadence,
-                .latched = (ride_control_get_debug_flags() & RIDE_DBG_NOT_LATCHED) == 0,
-                .pwm_on = ui_8_PWM_ON_Flag != 0,
-                .torque_sensor_valid = fd_tq ? fd_tq->sensor_valid : false,
-                .cal_user = fd_tq ? (fd_tq->calibration_source == 1U) : false,
-                .wheel_valid = rider_input_get()->wheel_valid,   //FW-112.2
-                .rolling_coast = rider_input_get()->real_stop &&
-                    rider_input_get()->wheel_valid,   //FW-112.2: PAS stopped AND wheel rolling = coast suspension reason
-                .assist_hold_ticks = ride_control_get_assist_hold_ticks(),
-                .load_centikg = fd_tq ? fd_tq->load_centikg : 0U,
-                .load_threshold_centikg = fd_gate.load_threshold_centikg,
-                .iq_request = diag_clamp16(fd_mode ? fd_mode->iq_request : 0),
-                .iq_pre_ramp = diag_clamp16(fd_snap.iq_pre_ramp),
-                .iq_setpoint = diag_clamp16(MS.i_q_setpoint),
-                .iq_actual = diag_clamp16(MS.i_q),
-                .reason_bits = ride_control_get_diag_reason(),
-                /* C0-PROOF: new diagnostic fields */
-                .permission_bits = ride_control_get_permission_bits(),
-                .iq_before_pu = diag_clamp16(fd_mode ? fd_mode->iq_before_pu : 0),
-                .motor_voltage_utilization = (MS.u_abs > 2048) ? 2048U :
-                    (uint16_t)MS.u_abs,
-                /* flags2: base from ride_control + FINAL_ZERO + PU_CLAMPED computed here */
-                .flags2 = 0  /* computed below */
-            };
-            /* C0-PROOF: flags2 with FINAL_ZERO and PU_CLAMPED — computed here because
-             * they require iq_setpoint (MS.i_q_setpoint) and iq_before_pu (fd_mode) which
-             * ride_control does not carry. */
-            {
-                uint8_t f2 = ride_control_get_flags2();
-                bool assist_perm = (fd_in.permission_bits & FW112_PERM_ASSIST_PERMISSION) != 0;
-                bool rider_active = (MS.cadence > 0) || rider_input_get()->start_phase;
-                if (assist_perm && rider_active && MS.i_q_setpoint == 0) {
-                    f2 |= FW112_FLAG2_FINAL_ZERO;
-                }
-                fd_in.flags2 = f2;
-            }
-            fw112_diag_tick(&fd_in, control_now);
-        }
-        {
-            /* FW-112 A/B: the rearm-episode logger. Episode opens at the REVOKED edge (session
-             * leaves ACTIVE) and captures the chain until a positive setpoint; the active level
-             * configuration is read from the SAME source the mode pipeline uses
-             * (assist_modes_get_default_level), so assist_level/bank/mode are the level
-             * dependency's axis. */
-            fw112_ab_set_session_id(diag_session_current_id());
-            ride_gate_snapshot_t ab_gate;
-            ride_control_get_gate_snapshot(&ab_gate);
-            ride_arm_snapshot_t ab_snap;
-            ride_control_get_arm_snapshot(&ab_snap);
-            const assist_mode_output_t *ab_mode = assist_modes_get_last_output();
-            const torque_snapshot_t *ab_tq = torque_input_get_snapshot();
-            uint8_t ab_level = level_to_array_element[MS.assist_level];
-            const assist_level_config_t *ab_cfg = assist_modes_get_default_level(ab_level);
-            fw112_ab_input_t ab_in = {
-                .session_state = ride_control_get_session_state(),
-                .recovery_state = (uint8_t)torque_input_recovery_state(),
-                .dir_state = (uint8_t)pas_direction_get_state(),
-                .assist_level = ab_level,
-                .bank_index = assist_modes_get_active_bank(),
-                .mode_type = ab_cfg->mode_type,
-                .emtb_parameter = ab_cfg->emtb_parameter,
-                .support_ratio_pct = ab_cfg->support_ratio_pct,
-                .max_iq_pct = ab_cfg->max_iq_pct,
-                .emtb_based_on_power = ab_cfg->emtb_based_on_power,
-                .cadence_comp_enabled = assist_modes_get_cadence_comp_enabled(),
-                .assist_without_rotation = ab_cfg->assist_without_rotation,
-                .latched = (ride_control_get_debug_flags() & RIDE_DBG_NOT_LATCHED) == 0,
-                .pwm_on = ui_8_PWM_ON_Flag != 0,
-                .torque_sensor_valid = ab_tq ? ab_tq->sensor_valid : false,
-                .wheel_valid = rider_input_get()->wheel_valid,
-                .rolling_coast = rider_input_get()->real_stop &&
-                    rider_input_get()->wheel_valid,
-                .emtb_reference_voltage_mv = ab_cfg->emtb_reference_voltage_mv,
-                .max_motor_power_w = ab_cfg->max_motor_power_w,
-                .battery_voltage_mv = (MS.Voltage > 0) ?
-                    (uint16_t)((MS.Voltage > 65535) ? 65535 : MS.Voltage) : 0U,
-                .controller_temperature_c = diag_clamp16(MS.int_Temperature),
-                .load_threshold_centikg = ab_gate.load_threshold_centikg,
-                .required_steps = ab_gate.required_steps,
-                .start_steps = tuning_config_start_steps(),
-                .cadence_rpm = MS.cadence,
-                .torque_for_assist_mv = ab_mode ? ab_mode->torque_for_assist_mv : 0U,
-                .load_centikg = ab_tq ? ab_tq->load_centikg : 0U,
-                .iq_request = diag_clamp16(ab_mode ? ab_mode->iq_request : 0),
-                .iq_after_latch_floor = diag_clamp16(ab_snap.iq_after_latch_floor),
-                .iq_pre_ramp = diag_clamp16(ab_snap.iq_pre_ramp),
-                .iq_setpoint = diag_clamp16(MS.i_q_setpoint),
-                .assist_hold_ticks = ride_control_get_assist_hold_ticks(),
-                /* FW-112 TWO-MECHANISM DIAGNOSTIC (schema 2): the direct signals.
-                 * afilt_native is the raw published assist_delta_filtered_native - the ONE
-                 * value WAIT_FRESH_LOAD -> TRACK_FAST tests (src/torque_input.c), always live.
-                 * arun_native deliberately mirrors ride_control.c's OWN substitution
-                 * (src/ride_control.c:519-522), not the raw snapshot field: while a recovery is
-                 * active, snapshot.assist_delta_run_native is only reseeded on FORWARD STEPS
-                 * (src/torque_input.c's torque_input_run_filter_step(), WAIT_FRESH_LOAD branch)
-                 * and can therefore be stale by up to one step interval between steps, whereas
-                 * torque_input_recovery_run_native() is what assist_modes_calculate() actually
-                 * receives, every control tick. Recording the raw field here would show a
-                 * signal the demand calculation never actually sees. */
-                .afilt_native = ab_tq ? ab_tq->assist_delta_filtered_native : 0U,
-                .arun_native = torque_input_recovery_active() ?
-                    torque_input_recovery_run_native() :
-                    (ab_tq ? ab_tq->assist_delta_run_native : 0U)
-            };
-            fw112_ab_tick(&ab_in, control_now);
-        }
 #if FW117_TRACE_ENABLE
         {
             /* FW-126 compact FOC START TRACE. Observation only: the stamped current sequence
              * identifies the ISR generation of every current/CCR fact and no trace field feeds
              * motor control. */
             fw117_trace_set_session_id(diag_session_current_id());
-            const assist_mode_output_t *ft_mode = assist_modes_get_last_output();
-            ride_arm_snapshot_t ft_snap;
-            ride_control_get_arm_snapshot(&ft_snap);
+            const assist_pipeline_telemetry_t *ft_tlm = assist_pipeline_telemetry();
             fw117_trace_input_t ft_in = {
                 .now_tick = control_now,
                 .pwm_on = ui_8_PWM_ON_Flag != 0,
@@ -3749,8 +3524,8 @@ void reg_ADC_processing(void)
                 .hall = ui8_hall_state,
                 .pi_q_int = diag_clamp16((int32_t)PI_iq.integral_part),
                 .pi_d_int = diag_clamp16((int32_t)PI_id.integral_part),
-                .iq_request = diag_clamp16(ft_mode ? ft_mode->iq_request : 0),
-                .iq_pre_ramp = diag_clamp16(ft_snap.iq_pre_ramp),
+                .iq_request = diag_clamp16(ft_tlm->iq_request_before_limits),
+                .iq_pre_ramp = diag_clamp16(ft_tlm->final_iq_request),
                 .iq_setpoint = diag_clamp16(MS.i_q_setpoint),
                 .iq_meas = diag_clamp16(MS.i_q),
                 .id_meas = diag_clamp16(MS.i_d),
@@ -3775,97 +3550,6 @@ void reg_ADC_processing(void)
             fw117_trace_tick(&ft_in, control_now);
         }
 #endif /* FW117_TRACE_ENABLE */
-        if((control_now % ROLLING_NO_ASSIST_DIAG_DECIMATION) == 0U){
-            /* Rolling no-assist diagnostic: one observation per control tick (decimated to 250 Hz
-             * on the absolute control clock). All ISR-owned values are copied in one very short
-             * diagnostic-only critical section at the sample point; no function call and no
-             * control-state write occurs while IRQs are masked. */
-            rolling_no_assist_diag_set_session_id(diag_session_current_id());
-            ride_gate_snapshot_t rna_gate;
-            ride_control_get_gate_snapshot(&rna_gate);
-            ride_arm_snapshot_t rna_snap;
-            ride_control_get_arm_snapshot(&rna_snap);
-            const assist_mode_output_t *rna_mode = assist_modes_get_last_output();
-            const torque_snapshot_t *rna_tq = torque_input_get_snapshot();
-            uint8_t perm = ride_control_get_permission_bits();
-            uint8_t dbg = ride_control_get_debug_flags();
-            uint8_t reason = ride_control_get_diag_reason();
-            bool latched = (dbg & RIDE_DBG_NOT_LATCHED) == 0;
-
-			bool rna_pwm_on, rna_moe, rna_neutral_active, rna_current_feedback_valid;
-            uint8_t rna_bridge, rna_hall, rna_neutral_count;
-            uint16_t rna_angle_hall, rna_angle_absolute, rna_erps, rna_mvu;
-            int8_t rna_rotor_direction;
-            int16_t rna_iq_setpoint, rna_iq_actual, rna_pi_q, rna_pi_d, rna_rpm;
-            uint16_t rna_half_rotation_counter;
-            uint32_t rna_primask = __get_PRIMASK();
-            __disable_irq();
-            rna_pwm_on = ui_8_PWM_ON_Flag != 0;
-            rna_moe = (TIMER_CCHP(TIMER0) & TIMER_CCHP_POEN) != 0U;
-            rna_bridge = bridge_lifecycle;
-            rna_hall = ui8_hall_state;
-            rna_angle_hall = (uint16_t)(((uint32_t)q31_rotorposition_hall) >> 16);
-            rna_angle_absolute = (uint16_t)(((uint32_t)q31_rotorposition_absolute) >> 16);
-            rna_rotor_direction = i8_recent_rotor_direction;
-            rna_erps = ui16_erps;
-			rna_iq_setpoint = diag_clamp16(MS.i_q_setpoint);
-			rna_iq_actual = diag_clamp16(MS.i_q);
-			rna_current_feedback_valid = foc_current_valid != 0U;
-            rna_pi_q = diag_clamp16((int32_t)PI_iq.integral_part);
-            rna_pi_d = diag_clamp16((int32_t)PI_id.integral_part);
-            rna_rpm = MS.cadence;
-            rna_neutral_active = neutral_dwell_active != 0U;
-            rna_neutral_count = neutral_dwell_counter;
-            rna_mvu = (MS.u_abs > 2048) ? 2048U :
-                (MS.u_abs > 0 ? (uint16_t)MS.u_abs : 0U);
-            /* FW-122.1: half_rotation_counter has an ISR writer (TIMER2_IRQHandler resets it
-             * on Hall case 13/23 - see FW-124 section 5), so it is copied in the same
-             * IRQ-protected section as the other ISR-touched fields above. */
-            rna_half_rotation_counter = uint16_half_rotation_counter;
-            if(rna_primask == 0U) __enable_irq();
-            /* Retained legacy diagnostic fields are main-loop-owned and stay zero in normal
-             * ARMED_ZERO operation, so no IRQ protection is needed to read them here. */
-            bool rna_pwm_cutoff_active = pwm_cutoff_active != 0U;
-            uint16_t rna_pwm_cutoff_tick = pwm_cutoff_tick;
-
-            rolling_no_assist_input_t rna_in = {
-                .now_tick = control_now,
-                .iq_request_raw = diag_clamp16(rna_mode ? rna_mode->iq_request : 0),
-                .iq_before_pu = diag_clamp16(rna_mode ? rna_mode->iq_before_pu : 0),
-                .iq_after_latch_floor = diag_clamp16(rna_snap.iq_after_latch_floor),
-                .iq_pre_ramp = diag_clamp16(rna_snap.iq_pre_ramp),
-                .iq_setpoint = rna_iq_setpoint,
-                .iq_actual = rna_iq_actual,
-                .pwm_on = rna_pwm_on,
-                .moe = rna_moe,
-                .bridge_lifecycle = rna_bridge,
-                .hall = rna_hall,
-                .angle_hall = rna_angle_hall,
-                .angle_absolute = rna_angle_absolute,
-                .rotor_direction = rna_rotor_direction,
-                .pi_q_int = rna_pi_q,
-                .pi_d_int = rna_pi_d,
-                .erps = rna_erps,
-                .rpm = rna_rpm,
-                .motor_voltage_utilization = rna_mvu,
-                .neutral_dwell_active = rna_neutral_active,
-                .neutral_dwell_counter = rna_neutral_count,
-				.current_cal_foc_allowed = current_cal_foc_allowed(&current_cal) != 0U,
-				.current_feedback_valid = rna_current_feedback_valid,
-                .load_centikg = rna_tq ? rna_tq->load_centikg : 0U,
-                .load_threshold = rna_gate.load_threshold_centikg,
-                .permission_present = (perm & FW112_PERM_ASSIST_PERMISSION) != 0,
-                .permission_bits = perm,
-                .reason_bits = reason,
-                .load_met = rna_tq ? (rna_tq->load_centikg >= rna_gate.load_threshold_centikg) : false,
-                .rider_latched = latched,
-                .debug_flags = dbg,
-                .pwm_cutoff_active = rna_pwm_cutoff_active,
-                .pwm_cutoff_tick = rna_pwm_cutoff_tick,
-                .half_rotation_counter = rna_half_rotation_counter
-            };
-            rolling_no_assist_diag_tick(&rna_in, control_now);
-        }
 #endif
         /*
          * The histogram in 0x1020E/0x1020F. FW-101: it is anchored by the SAME condition as
@@ -3922,9 +3606,9 @@ void reg_ADC_processing(void)
                  * cranks and getting nothing" — but it means the total is not a pure measure
                  * of the reverse latch. Split it here so one ride can answer which it was.
                  */
-                uint8_t why = ride_control_get_debug_flags();
                 prev_metric_why_backward = pas_direction_backpedal_confirmed();
-                prev_metric_why_notlatched = !prev_metric_why_backward && (why & RIDE_DBG_NOT_LATCHED)!=0;
+                prev_metric_why_notlatched = !prev_metric_why_backward &&
+                    !assist_pipeline_telemetry()->assist_permitted;
                 /* everything else = total - these two, computed off the log */
             } else {
                 prev_metric_why_backward = false;
@@ -3951,23 +3635,26 @@ void reg_ADC_processing(void)
         //FW-015b: peak-hold of ride-core diagnostics so a brief press on the bench is catchable
 #if CAN_DIAGNOSTICS_ENABLE
         {
-            const assist_mode_output_t* do_ = assist_modes_get_last_output();
-            //FW-094: one engine, so one source. The old ternary picked the monolith's
-            //MS.i_q_setpoint_temp for the removed Legacy engine and was already dead.
-            int32_t current_iq_req = do_->iq_request;
+            const assist_pipeline_telemetry_t* do_ = assist_pipeline_telemetry();
+            int32_t current_iq_req = do_->iq_request_before_limits;
+            uint16_t peak_effort = (do_->rider_demand_permille < 0) ? 0U :
+                ((do_->rider_demand_permille > 65535) ? 65535U :
+                 (uint16_t)do_->rider_demand_permille);
+            uint16_t peak_dynamic = (do_->assist_dynamic_permille < 0) ? 0U :
+                ((do_->assist_dynamic_permille > 65535) ? 65535U :
+                 (uint16_t)do_->assist_dynamic_permille);
             if(diag_peak_reset){ diag_peak_cadence=0; diag_peak_torque=0; diag_peak_human_w=0; diag_peak_support=0; diag_peak_motor_w=0; diag_peak_iq_req=0; diag_peak_iq_set=0;
-                diag_peak_precomp_motor_w=0; diag_peak_cadence_comp=1000; diag_peak_u_abs=0; diag_peak_reset=0; } //FW-057
-            if(do_->cadence_for_assist_rpm>diag_peak_cadence) diag_peak_cadence=do_->cadence_for_assist_rpm;
-            if(do_->torque_for_assist_mv>diag_peak_torque) diag_peak_torque=do_->torque_for_assist_mv;
-            if(do_->human_power_w>diag_peak_human_w) diag_peak_human_w=do_->human_power_w;
+                diag_peak_assist_dynamic=0; diag_peak_u_abs=0; diag_peak_reset=0; }
+            if(do_->cadence_rpm>diag_peak_cadence) diag_peak_cadence=do_->cadence_rpm;
+            if(peak_effort>diag_peak_torque) diag_peak_torque=peak_effort;
+            if(do_->rider_power_w>diag_peak_human_w) diag_peak_human_w=do_->rider_power_w;
             if(do_->applied_support_ratio_pct>diag_peak_support) diag_peak_support=do_->applied_support_ratio_pct;
             if(do_->motor_power_w>diag_peak_motor_w) diag_peak_motor_w=do_->motor_power_w;
             if(current_iq_req>diag_peak_iq_req) diag_peak_iq_req=current_iq_req;
             if(MS.i_q_setpoint>diag_peak_iq_set) diag_peak_iq_set=MS.i_q_setpoint;
-            //FW-057: pre-compensation power and the multiplier that was applied, so the
-            //ride log can separate "the map asked for more" from "a limiter took it away".
-            if(do_->precomp_motor_power_w>diag_peak_precomp_motor_w) diag_peak_precomp_motor_w=do_->precomp_motor_power_w;
-            if(do_->cadence_comp_permille>diag_peak_cadence_comp) diag_peak_cadence_comp=do_->cadence_comp_permille;
+            //The reactive half of the request, peak-held: it separates "the rider pushed
+            //harder and got it" from "the sustained level alone carried the ride".
+            if(peak_dynamic>diag_peak_assist_dynamic) diag_peak_assist_dynamic=peak_dynamic;
             if(MS.u_abs>0 && (uint32_t)MS.u_abs>diag_peak_u_abs) diag_peak_u_abs=(MS.u_abs>65535)?65535:(uint16_t)MS.u_abs;
         }
 #endif
@@ -4847,12 +4534,12 @@ static void diag_build_aggregate(void){
 	int32_t dbg_u_q = MS.u_q; if(dbg_u_q<-32768)dbg_u_q=-32768; if(dbg_u_q>32767)dbg_u_q=32767;
 	uint8_t dbg_safety_cut = (MS.brake_active_flag || pas_direction_backpedal_confirmed() ||
 		overtemp_stage >= 2 || torque_fault || torque_input_calibration_active()) ? 1 : 0;
-	const assist_mode_output_t* dbg_mo = assist_modes_get_last_output();
+	const assist_pipeline_telemetry_t* dbg_mo = assist_pipeline_telemetry();
 	uint8_t dbg_flags = (forward_pedaling?0x01:0)
 	                  | (pas_direction_backpedal_confirmed()?0x02:0)
 	                  | (ui_8_PWM_ON_Flag?0x04:0)
 	                  | (start_phase?0x08:0)
-	                  | ((dbg_mo && dbg_mo->assist_without_rotation_active)?0x10:0);
+	                  | (dbg_mo->assist_permitted?0x10:0);
 	transmit_message.tx_sfid = 0x00;
 	transmit_message.tx_efid = 0x00010203; //ID for debug message
 	transmit_message.tx_ft = CAN_FT_DATA;
@@ -4949,8 +4636,8 @@ static void diag_build_aggregate(void){
 	                   | ((MS.pushassist_flag!=RESET)?0x20:0)
 	                   | (ui_8_PWM_ON_Flag?0x40:0)
 	                   | ((level_to_array_element[MS.assist_level]==0)?0x80:0);
-	const assist_mode_output_t* why_mo = assist_modes_get_last_output();
-	int32_t why_req = why_mo ? why_mo->iq_request : 0;
+	const assist_pipeline_telemetry_t* why_mo = assist_pipeline_telemetry();
+	int32_t why_req = why_mo->iq_request_before_limits;
 	if(why_req<0) why_req=0;
 	if(why_req>65535) why_req=65535;
 	int32_t why_set = MS.i_q_setpoint;
@@ -4958,7 +4645,7 @@ static void diag_build_aggregate(void){
 	if(why_set>65535) why_set=65535;
 	transmit_message.tx_efid = 0x00010208;
 	transmit_message.tx_data[0] = why_safety;
-	transmit_message.tx_data[1] = ride_control_get_debug_flags();
+	transmit_message.tx_data[1] = assist_pipeline_reason_bits();
 	transmit_message.tx_data[2] = level_to_array_element[MS.assist_level];
 	transmit_message.tx_data[3] = MS.cadence;
 	transmit_message.tx_data[4] = (why_req>>8)&0xFF;
@@ -5118,20 +4805,25 @@ static void diag_build_aggregate(void){
 	 *   Data1 = torque_fast     the 35 ms filtered assist delta [native]
 	 *   Data2 = torque_RUN      the slow RUN estimator of that signal, FW-033 [native]
 	 *   Data3 = motor_power_w   assist_modes' own power figure [W]
-	 *   Data4 = iq_request      what assist_modes asked for, BEFORE ride_control's latch/
-	 *                           limiters/ramp - compare against MS.i_q_setpoint (0x10203) to
-	 *                           see how much of any gap is the request itself vs. downstream
+	 *   Data1 = rider_demand    the rider's intent, permille (was: the 35 ms fast torque)
+	 *   Data2 = assist_base     the sustained half of the request, permille (was: RUN torque)
+	 *   Data4 = iq_request      what the assist chain asked for BEFORE the limiter chain -
+	 *                           compare against MS.i_q_setpoint (0x10203) to see how much of
+	 *                           any gap is the request itself vs. the limits downstream
 	 */
-	const torque_snapshot_t *hc_torque = torque_input_get_snapshot();
-	const assist_mode_output_t *hc_mo = assist_modes_get_last_output();
-	int32_t hc_iq_request = hc_mo->iq_request;
+	const assist_pipeline_telemetry_t *hc_mo = assist_pipeline_telemetry();
+	int32_t hc_iq_request = hc_mo->iq_request_before_limits;
+	int32_t hc_demand = hc_mo->rider_demand_permille;
+	int32_t hc_base = hc_mo->assist_base_permille;
 	if(hc_iq_request<0) hc_iq_request=0;
 	if(hc_iq_request>65535) hc_iq_request=65535;
+	if(hc_demand<0) hc_demand=0; if(hc_demand>65535) hc_demand=65535;
+	if(hc_base<0) hc_base=0; if(hc_base>65535) hc_base=65535;
 	transmit_message.tx_efid = 0x00010219;
-	transmit_message.tx_data[0] = (hc_torque->assist_delta_filtered_native>>8)&0xFF;
-	transmit_message.tx_data[1] = (hc_torque->assist_delta_filtered_native)&0xFF;
-	transmit_message.tx_data[2] = (hc_torque->assist_delta_run_native>>8)&0xFF;
-	transmit_message.tx_data[3] = (hc_torque->assist_delta_run_native)&0xFF;
+	transmit_message.tx_data[0] = (hc_demand>>8)&0xFF;
+	transmit_message.tx_data[1] = (hc_demand)&0xFF;
+	transmit_message.tx_data[2] = (hc_base>>8)&0xFF;
+	transmit_message.tx_data[3] = (hc_base)&0xFF;
 	transmit_message.tx_data[4] = (hc_mo->motor_power_w>>8)&0xFF;
 	transmit_message.tx_data[5] = (hc_mo->motor_power_w)&0xFF;
 	transmit_message.tx_data[6] = (hc_iq_request>>8)&0xFF;
@@ -5554,345 +5246,45 @@ static uint32_t diag_raw_refused(void)  { return pas_raw_freeze_skipped(); }
 /* FW-106: the monotonic overrun count diag_session anchors per session - see diag_session.h. */
 static uint32_t diag_raw_overrun_total(void) { return pas_raw_capture_overrun(); }
 
-/* --- record source: DELAYED REARM (FW-111) ----------------------------------------------------- */
-
-/*
- * One record opens with the header (0x0001021F), then each of its snapshots travels as 4 x 8 B
- * data frames on 0x00010220..0x00010223. Fragment ORDER (not any content field) tells the parser
- * which snapshot a data frame belongs to - the dump sends a record's fragments strictly in order
- * and never interleaves, and the header's snapshot_count tells it how many snapshots to expect.
- * The rearm module's snapshot struct is exactly 32 B with no padding, so this serializes it
- * field-by-field into the four fragments rather than risking a memcpy of a struct whose layout a
- * future edit could break.
+/* --- retired record sources -------------------------------------------------------------------
+ *
+ * DIAG_SRC_REARM, DIAG_SRC_FW112, DIAG_SRC_AB and DIAG_SRC_ROLLING_NO_ASSIST recorded the
+ * internals of the legacy assist pipeline: the rearm machinery, the FW-112 permission chain, the
+ * rearm-episode logger and the rolling no-assist hunt. Those mechanisms were replaced wholesale
+ * by one PAS lifecycle and one demand chain, so the recorders have nothing left to observe and
+ * are gone with them.
+ *
+ * THE SOURCE SLOTS STAY. DIAG_SRC_* are wire indices that shipped decoders use to tell one dump
+ * apart from another; renumbering them would make an old decoder read a trace record as a rearm
+ * record. The slots therefore remain, permanently empty - a session simply never has a record
+ * from them. What replaces them is assist_pipeline_telemetry(), published continuously on the
+ * live ride telemetry block rather than dumped after the fact.
  */
-static uint16_t diag_rearm_count(uint8_t session_id)
+static uint16_t diag_retired_count(uint8_t session_id)
 {
-	return rearm_delay_queue_count_session(session_id);
+	(void)session_id;
+	return 0U;
 }
 
-static bool diag_rearm_capture_frame(uint8_t session_id, uint16_t frag, uint32_t *efid,
-                                     uint8_t *data, bool *last);
-
-static bool diag_rearm_frame(uint8_t session_id, uint16_t frag, uint32_t *efid, uint8_t *data, bool *last)
+static bool diag_retired_frame(uint8_t session_id, uint16_t frag, uint32_t *efid,
+                               uint8_t *data, bool *last)
 {
-	rearm_delay_record_t rec;
-	if(!rearm_delay_queue_peek_session(session_id, &rec)) return false;
-
-	/* header frame + 3 timing frames + 4 data frames per snapshot + 1 capture frame (v3), always
-	 * in order */
-	uint32_t total = 5U + 4U * (uint32_t)rec.snapshot_count;
-	*last = ((uint32_t)frag + 1U) >= total;
-
-	if(frag == 0){
-		*efid = REARM_DELAY_EFID_HEADER;
-		data[0] = REARM_DELAY_SCHEMA_VERSION;
-		data[1] = rec.session_id;
-		data[2] = rec.record_id;
-		data[3] = rec.reason_bits;
-		data[4] = rec.snapshot_count;
-		data[5] = (uint8_t)(rec.pre_reverse_iq >> 8);
-		data[6] = (uint8_t)(rec.pre_reverse_iq & 0xFF);
-		data[7] = 0;   /* reserved - v3 adds the capture-info frame instead */
-		return true;
-	}
-
-	if(frag <= 3){
-		/* Timing block: 12 x u16 big-endian = 3 x 8 B frames. 0xFFFF = stage never reached. */
-		*efid = (uint32_t)(REARM_DELAY_EFID_TIMING + (uint32_t)(frag - 1U));
-		uint16_t t[4];
-		switch(frag){
-		case 1:
-			t[0] = rec.t_pressure; t[1] = rec.t_filter_ready;
-			t[2] = rec.t_run_ready; t[3] = rec.t_demand;
-			break;
-		case 2:
-			t[0] = rec.t_permission; t[1] = rec.t_target_recovered;
-			t[2] = rec.t_setpoint_recovered; t[3] = rec.t_pwm_on;
-			break;
-		default:
-			t[0] = rec.t_standstill_enter; t[1] = rec.t_standstill_exit;
-			t[2] = rec.t_weak_start; t[3] = rec.t_close;
-			break;
-		}
-		for (uint8_t i = 0; i < 4U; i++) {
-			data[2U * i] = (uint8_t)(t[i] >> 8);
-			data[2U * i + 1U] = (uint8_t)(t[i] & 0xFF);
-		}
-		return true;
-	}
-
-	uint16_t f2 = (uint16_t)(frag - 4U);
-	uint16_t snap_idx = (uint16_t)(f2 / 4U);
-	uint16_t part    = (uint16_t)(f2 % 4U);
-
-	/* v3: the LAST frame of the record is the capture-info frame (frag == 4 + 4*snapshot_count). */
-	if(snap_idx == rec.snapshot_count){
-		if(part != 0) return false;
-		return diag_rearm_capture_frame(session_id, frag, efid, data, last);
-	}
-	if(snap_idx > rec.snapshot_count) return false;
-	rearm_delay_snapshot_t *s = &rec.snapshots[snap_idx];
-
-	*efid = REARM_DELAY_EFID_SNAPSHOT_BASE + part;
-	switch(part){
-	case 0:
-		data[0] = (uint8_t)(s->elapsed_ticks >> 24); data[1] = (uint8_t)(s->elapsed_ticks >> 16);
-		data[2] = (uint8_t)(s->elapsed_ticks >> 8);  data[3] = (uint8_t)s->elapsed_ticks;
-		data[4] = (uint8_t)(s->raw_native >> 8);     data[5] = (uint8_t)s->raw_native;
-		data[6] = (uint8_t)(s->zero_effective_native >> 8); data[7] = (uint8_t)s->zero_effective_native;
-		return true;
-	case 1:
-		data[0] = (uint8_t)(s->corrected_native >> 8); data[1] = (uint8_t)s->corrected_native;
-		data[2] = (uint8_t)(s->delta_native >> 8);     data[3] = (uint8_t)s->delta_native;
-		data[4] = (uint8_t)(s->assist_delta_native >> 8); data[5] = (uint8_t)s->assist_delta_native;
-		data[6] = (uint8_t)(s->assist_delta_filtered_native >> 8); data[7] = (uint8_t)s->assist_delta_filtered_native;
-		return true;
-	case 2:
-		data[0] = (uint8_t)(s->assist_delta_run_native >> 8); data[1] = (uint8_t)s->assist_delta_run_native;
-		data[2] = (uint8_t)(s->load_centikg >> 8);     data[3] = (uint8_t)s->load_centikg;
-		data[4] = (uint8_t)(s->run_deadband >> 8);     data[5] = (uint8_t)s->run_deadband;
-		data[6] = (uint8_t)(s->iq_request >> 8);       data[7] = (uint8_t)s->iq_request;
-		return true;
-	default:
-		data[0] = (uint8_t)(s->iq_pre_ramp >> 8);      data[1] = (uint8_t)s->iq_pre_ramp;
-		data[2] = (uint8_t)(s->iq_setpoint >> 8);      data[3] = (uint8_t)s->iq_setpoint;
-		data[4] = s->flags;
-		data[5] = s->milestone_id;
-		data[6] = s->session_id;
-		data[7] = s->record_id;
-		return true;
-	}
-}
-
-/* v3: the capture-info frame, sent as the LAST frame of every record. data[0] = capture_id
- * (REARM_DELAY_NO_CAPTURE when none was obtained), data[1] = REARM_DELAY_CAPTURE_* status. */
-static bool diag_rearm_capture_frame(uint8_t session_id, uint16_t frag, uint32_t *efid,
-                                     uint8_t *data, bool *last)
-{
-	rearm_delay_record_t rec;
-	if(!rearm_delay_queue_peek_session(session_id, &rec)) return false;
-	if(frag != 4U + 4U * (uint32_t)rec.snapshot_count) return false;
-	*efid = REARM_DELAY_EFID_CAPTURE;
-	data[0] = rec.capture_id;
-	data[1] = rec.capture_status;
-	data[2] = 0; data[3] = 0; data[4] = 0; data[5] = 0; data[6] = 0; data[7] = 0;
+	(void)session_id;
+	(void)frag;
+	(void)efid;
+	(void)data;
 	*last = true;
-	return true;
+	return false;
 }
 
-static void diag_rearm_release(uint8_t session_id, bool sent)
+static void diag_retired_release(uint8_t session_id, bool sent)
 {
+	(void)session_id;
 	(void)sent;
-	rearm_delay_queue_release_session(session_id);
 }
 
-static uint32_t diag_rearm_accepted(void) { return rearm_delay_queue_enqueued(); }
-static uint32_t diag_rearm_refused(void)  { return rearm_delay_queue_rejected(); }
+static uint32_t diag_retired_zero(void) { return 0U; }
 
-/* --- record source: WHOLE-CHAIN EVENTS (FW-112-DIAG) ------------------------------------------- */
-
-/*
- * One record opens with a header frame (0x0001022A), then the 32 B snapshot travels as 4 x 8 B
- * data frames on 0x0001022B..0x0001022E. The record struct is exactly 32 B with no padding
- * (asserted in fw112_diag.c), so this serializes it field-by-field into the four fragments
- * rather than risking a memcpy of a struct whose layout a future edit could break - same
- * discipline as the FW-111 rearm bridge above.
- */
-static uint16_t diag_fw112_count(uint8_t session_id)
-{
-	return fw112_diag_queue_count_session(session_id);
-}
-
-static bool diag_fw112_frame(uint8_t session_id, uint16_t frag, uint32_t *efid, uint8_t *data, bool *last)
-{
-	fw112_diag_record_t rec;
-	if(!fw112_diag_queue_peek_session(session_id, &rec)) return false;
-
-	/* C0-PROOF (schema 4): header + 3 data frames = 4 CAN frames total. */
-	*last = (frag + 1U) >= 4U;
-
-	if(frag == 0){
-		*efid = FW112_DIAG_EFID_HEADER;
-		data[0] = FW112_DIAG_SCHEMA_VERSION;
-		data[1] = rec.session_id;
-		data[2] = (uint8_t)(rec.event_id >> 8);
-		data[3] = (uint8_t)(rec.event_id & 0xFF);
-		data[4] = rec.event_type;
-		data[5] = rec.reason_bits;
-		data[6] = rec.recovery_ev_lo;
-		data[7] = rec.recovery_ev_hi;
-		return true;
-	}
-
-	switch(frag){
-	case 1:
-		*efid = FW112_DIAG_EFID_SNAP_BASE + 0U;
-		data[0] = rec.packed_state;
-		data[1] = rec.permission_bits;
-		data[2] = rec.cadence_rpm;
-		data[3] = rec.fwd_run;
-		data[4] = rec.hold_ticks_sat;
-		data[5] = rec.flags2;
-		data[6] = (uint8_t)(rec.elapsed_ticks >> 8);
-		data[7] = (uint8_t)(rec.elapsed_ticks & 0xFF);
-		return true;
-	case 2:
-		*efid = FW112_DIAG_EFID_SNAP_BASE + 1U;
-		data[0] = (uint8_t)(rec.load_centikg >> 8); data[1] = (uint8_t)(rec.load_centikg & 0xFF);
-		data[2] = (uint8_t)(rec.load_threshold_centikg >> 8); data[3] = (uint8_t)(rec.load_threshold_centikg & 0xFF);
-		data[4] = (uint8_t)(rec.motor_voltage_utilization >> 8); data[5] = (uint8_t)(rec.motor_voltage_utilization & 0xFF);
-		data[6] = (uint8_t)(rec.iq_before_pu >> 8); data[7] = (uint8_t)(rec.iq_before_pu & 0xFF);
-		return true;
-	default:
-		*efid = FW112_DIAG_EFID_SNAP_BASE + 2U;
-		data[0] = (uint8_t)(rec.iq_request >> 8);  data[1] = (uint8_t)(rec.iq_request & 0xFF);
-		data[2] = (uint8_t)(rec.iq_pre_ramp >> 8); data[3] = (uint8_t)(rec.iq_pre_ramp & 0xFF);
-		data[4] = (uint8_t)(rec.iq_setpoint >> 8); data[5] = (uint8_t)(rec.iq_setpoint & 0xFF);
-		data[6] = (uint8_t)(rec.iq_actual >> 8);   data[7] = (uint8_t)(rec.iq_actual & 0xFF);
-		return true;
-	}
-}
-
-static void diag_fw112_release(uint8_t session_id, bool sent)
-{
-	(void)sent;
-	fw112_diag_queue_release_session(session_id);
-}
-
-static uint32_t diag_fw112_accepted(void) { return fw112_diag_queue_enqueued(); }
-static uint32_t diag_fw112_refused(void)  { return fw112_diag_queue_rejected(); }
-
-/* --- record source: REARM EPISODES (FW-112 A/B) ---------------------------------------------- */
-
-/*
- * One record opens with a header frame (0x0001022F), then the 32 B record travels as 4 x 8 B
- * data frames on 0x00010230..0x00010233. The record union is exactly 32 B with no padding
- * (asserted in fw112_ab.c), so this serializes it field-by-field into the four fragments rather
- * than risking a memcpy of a struct whose layout a future edit could break - same discipline as
- * the FW-111/FW-112-DIAG bridges. The header carries the schema/session/episode/type/milestone;
- * both record types leave 27 B for the four data fragments.
- */
-static uint16_t diag_fw112ab_count(uint8_t session_id)
-{
-	return fw112_ab_queue_count_session(session_id);
-}
-
-static bool diag_fw112ab_frame(uint8_t session_id, uint16_t frag, uint32_t *efid, uint8_t *data, bool *last)
-{
-	fw112_ab_record_t rec;
-	if(!fw112_ab_queue_peek_session(session_id, &rec)) return false;
-
-	/* header + 4 data frames, always in order */
-	*last = (frag + 1U) >= (1U + FW117_TRACE_DATA_FRAGMENTS);
-
-	if(frag == 0){
-		*efid = FW112_AB_EFID_HEADER;
-		data[0] = FW112_AB_SCHEMA_VERSION;
-		data[1] = rec.smp.session_id;
-		data[2] = (uint8_t)(rec.smp.episode_id >> 8);
-		data[3] = (uint8_t)(rec.smp.episode_id & 0xFF);
-		data[4] = rec.smp.record_type;
-		data[5] = (rec.smp.record_type == (uint8_t)FW112_AB_REC_SAMPLE) ? rec.smp.ms_and_idx : 0U;
-		data[6] = 0;
-		data[7] = 0;
-		return true;
-	}
-
-	if(rec.smp.record_type == (uint8_t)FW112_AB_REC_CONFIG){
-		switch(frag){
-		case 1:
-			*efid = FW112_AB_EFID_SNAP_BASE + 0U;
-			data[0] = rec.cfg.assist_level;
-			data[1] = rec.cfg.bank_index;
-			data[2] = rec.cfg.mode_type;
-			data[3] = rec.cfg.emtb_parameter;
-			data[4] = (uint8_t)(rec.cfg.support_ratio_pct >> 8);
-			data[5] = (uint8_t)(rec.cfg.support_ratio_pct & 0xFF);
-			data[6] = rec.cfg.max_iq_pct;
-			data[7] = rec.cfg.flags;
-			return true;
-		case 2:
-			*efid = FW112_AB_EFID_SNAP_BASE + 1U;
-			data[0] = rec.cfg.reserved2;
-			data[1] = (uint8_t)(rec.cfg.emtb_reference_voltage_mv >> 8);
-			data[2] = (uint8_t)(rec.cfg.emtb_reference_voltage_mv & 0xFF);
-			data[3] = (uint8_t)(rec.cfg.max_motor_power_w >> 8);
-			data[4] = (uint8_t)(rec.cfg.max_motor_power_w & 0xFF);
-			data[5] = (uint8_t)(rec.cfg.controller_temperature_c >> 8);
-			data[6] = (uint8_t)(rec.cfg.controller_temperature_c & 0xFF);
-			data[7] = 0;
-			return true;
-		case 3:
-			*efid = FW112_AB_EFID_SNAP_BASE + 2U;
-			data[0] = (uint8_t)(rec.cfg.battery_voltage_mv_div10 >> 8);
-			data[1] = (uint8_t)(rec.cfg.battery_voltage_mv_div10 & 0xFF);
-			data[2] = (uint8_t)(rec.cfg.load_threshold_centikg >> 8);
-			data[3] = (uint8_t)(rec.cfg.load_threshold_centikg & 0xFF);
-			data[4] = rec.cfg.required_steps;
-			data[5] = rec.cfg.start_steps;
-			data[6] = rec.cfg.cadence_rpm_at_arm;
-			data[7] = rec.cfg.reserved3;
-			return true;
-		default:
-			*efid = FW112_AB_EFID_SNAP_BASE + 3U;
-			data[0] = (uint8_t)(rec.cfg.arm_tick >> 24);
-			data[1] = (uint8_t)(rec.cfg.arm_tick >> 16);
-			data[2] = (uint8_t)(rec.cfg.arm_tick >> 8);
-			data[3] = (uint8_t)(rec.cfg.arm_tick & 0xFF);
-			data[4] = 0; data[5] = 0; data[6] = 0; data[7] = 0;
-			return true;
-		}
-	}
-
-	switch(frag){
-	case 1:
-		*efid = FW112_AB_EFID_SNAP_BASE + 0U;
-		data[0] = rec.smp.assist_level;
-		data[1] = (uint8_t)(rec.smp.tick_offset >> 8);
-		data[2] = (uint8_t)(rec.smp.tick_offset & 0xFF);
-		data[3] = (uint8_t)(rec.smp.torque_for_assist_mv >> 8);
-		data[4] = (uint8_t)(rec.smp.torque_for_assist_mv & 0xFF);
-		data[5] = (uint8_t)(rec.smp.load_centikg >> 8);
-		data[6] = (uint8_t)(rec.smp.load_centikg & 0xFF);
-		data[7] = rec.smp.cadence_rpm;
-		return true;
-	case 2:
-		*efid = FW112_AB_EFID_SNAP_BASE + 1U;
-		data[0] = rec.smp.session_state;
-		data[1] = rec.smp.recovery_state;
-		data[2] = rec.smp.dir_state;
-		data[3] = rec.smp.flags;
-		data[4] = rec.smp.assist_hold_ticks;
-		data[5] = (uint8_t)(rec.smp.iq_request >> 8);
-		data[6] = (uint8_t)(rec.smp.iq_request & 0xFF);
-		data[7] = 0;
-		return true;
-	case 3:
-		*efid = FW112_AB_EFID_SNAP_BASE + 2U;
-		data[0] = (uint8_t)(rec.smp.iq_after_latch_floor >> 8); data[1] = (uint8_t)(rec.smp.iq_after_latch_floor & 0xFF);
-		data[2] = (uint8_t)(rec.smp.iq_pre_ramp >> 8);          data[3] = (uint8_t)(rec.smp.iq_pre_ramp & 0xFF);
-		data[4] = (uint8_t)(rec.smp.iq_setpoint >> 8);         data[5] = (uint8_t)(rec.smp.iq_setpoint & 0xFF);
-		data[6] = (uint8_t)rec.smp.controller_temperature_c;
-		data[7] = rec.smp.arun_native_clamped;   /* FW-112 TWO-MECHANISM DIAGNOSTIC schema 2 */
-		return true;
-	default:
-		*efid = FW112_AB_EFID_SNAP_BASE + 3U;
-		data[0] = (uint8_t)(rec.smp.battery_voltage_mv_div10 >> 8); data[1] = (uint8_t)(rec.smp.battery_voltage_mv_div10 & 0xFF);
-		/* FW-112 TWO-MECHANISM DIAGNOSTIC schema 2: afilt, full 16-bit precision. */
-		data[2] = (uint8_t)(rec.smp.afilt_native >> 8);            data[3] = (uint8_t)(rec.smp.afilt_native & 0xFF);
-		data[4] = 0; data[5] = 0; data[6] = 0; data[7] = 0;
-		return true;
-	}
-}
-
-static void diag_fw112ab_release(uint8_t session_id, bool sent)
-{
-	(void)sent;
-	fw112_ab_queue_release_session(session_id);
-}
-
-static uint32_t diag_fw112ab_accepted(void) { return fw112_ab_queue_enqueued(); }
-static uint32_t diag_fw112ab_refused(void)  { return fw112_ab_queue_rejected(); }
 
 #if FW117_TRACE_ENABLE
 /* --- FW-117 TEMP: bridge lifecycle trace bridge, same shape as the FW-112 A/B one ------------- */
@@ -5987,38 +5379,6 @@ static uint32_t diag_fw117_accepted(void) { return 0U; }
 static uint32_t diag_fw117_refused(void)  { return 0U; }
 #endif /* FW117_TRACE_ENABLE */
 
-/* --- Rolling no-assist diagnostic bridge, same shape as fw117's ----------------------------- */
-
-/*
- * FW-123: this recorder is intentionally manual-only. diag_session's normal automatic dump
- * retires a source after delivery, which would erase a FROZEN capture before a technician can
- * inspect/replay it. Keep the accounting hooks for the per-session refusal bit, but expose no
- * record to the automatic source scan. rolling_no_assist_dump.c owns the explicit CAN replay.
- */
-static uint16_t diag_rolling_no_assist_count(uint8_t session_id)
-{
-	(void)session_id;
-	return 0U;
-}
-
-static bool diag_rolling_no_assist_frame(uint8_t session_id, uint16_t frag, uint32_t *efid, uint8_t *data, bool *last)
-{
-	(void)session_id;
-	(void)frag;
-	(void)efid;
-	(void)data;
-	*last = true;
-	return false;
-}
-
-static void diag_rolling_no_assist_release(uint8_t session_id, bool sent)
-{
-	(void)session_id;
-	(void)sent;
-}
-
-static uint32_t diag_rolling_no_assist_accepted(void) { return rolling_no_assist_diag_queue_enqueued(); }
-static uint32_t diag_rolling_no_assist_refused(void)  { return rolling_no_assist_diag_queue_rejected(); }
 
 /* --- sealing open captures at the end of a ride -------------------------------------------- */
 
@@ -6036,11 +5396,11 @@ static const diag_ops_t diag_ops = {
 		{ diag_ep_count,    diag_ep_frame,    diag_ep_release,    diag_ep_accepted,    diag_ep_refused },
 		{ diag_trace_count, diag_trace_frame, diag_trace_release, diag_trace_accepted, diag_trace_refused },
 		{ diag_raw_count,   diag_raw_frame,   diag_raw_release,   diag_raw_accepted,   diag_raw_refused },
-		{ diag_rearm_count, diag_rearm_frame, diag_rearm_release, diag_rearm_accepted, diag_rearm_refused },   //FW-111
-		{ diag_fw112_count, diag_fw112_frame, diag_fw112_release, diag_fw112_accepted, diag_fw112_refused },   //FW-112-DIAG
-		{ diag_fw112ab_count, diag_fw112ab_frame, diag_fw112ab_release, diag_fw112ab_accepted, diag_fw112ab_refused },  //FW-112 A/B
+		{ diag_retired_count, diag_retired_frame, diag_retired_release, diag_retired_zero, diag_retired_zero },  //DIAG_SRC_REARM, retired
+		{ diag_retired_count, diag_retired_frame, diag_retired_release, diag_retired_zero, diag_retired_zero },  //DIAG_SRC_FW112, retired
+		{ diag_retired_count, diag_retired_frame, diag_retired_release, diag_retired_zero, diag_retired_zero },  //DIAG_SRC_AB, retired
 		{ diag_fw117_count, diag_fw117_frame, diag_fw117_release, diag_fw117_accepted, diag_fw117_refused },  //FW-117 TEMP
-		{ diag_rolling_no_assist_count, diag_rolling_no_assist_frame, diag_rolling_no_assist_release, diag_rolling_no_assist_accepted, diag_rolling_no_assist_refused }  //rolling no-assist
+		{ diag_retired_count, diag_retired_frame, diag_retired_release, diag_retired_zero, diag_retired_zero }  //DIAG_SRC_ROLLING_NO_ASSIST, retired
 	}
 };
 
@@ -6057,14 +5417,9 @@ static void diag_diagnostics_init(void)
 	ride_episode_init();
 	pas_trace_init();
 	pas_raw_init();
-	rearm_delay_init();   //FW-111
-	fw112_diag_init();    //FW-112-DIAG
-	fw112_ab_init();      //FW-112 A/B
 #if FW117_TRACE_ENABLE
 	fw117_trace_init();   //FW-117 TEMP: bridge lifecycle trace
 #endif
-	rolling_no_assist_diag_init(); //rolling no-assist diagnostic
-	rolling_no_assist_dump_init(&diag_can_ops);
 	qs_transition_diag_init();
 	qs_transition_dump_init(&diag_can_ops);
 	diag_session_init(&diag_can_ops, &diag_ops);
@@ -6095,12 +5450,11 @@ static void diag_dump_step(void)
 	 * never cached, so this can never go stale between calls.
 	 */
 	bool allow_new_tx = (can_tx_queue_depth() == 0U) && !can_multiframe_busy();
-	rolling_no_assist_dump_step(control_time_ticks, allow_new_tx, diag_session_is_active());
 	qs_transition_dump_step(control_time_ticks, allow_new_tx, diag_session_is_active());
 	/* A manual replay is one coherent 1792-frame transaction. Do not interleave automatic
 	 * session diagnostics with it: that would make an external Canable capture harder to prove
 	 * complete and offers no benefit while the technician explicitly requested this dump. */
-	if (!rolling_no_assist_dump_busy() && !qs_transition_dump_busy()) {
+	if (!qs_transition_dump_busy()) {
 		diag_session_dump_step(control_time_ticks, allow_new_tx);
 	}
 }
@@ -6683,24 +6037,13 @@ uint16_t walk_assist_iq_request(void){
 	}
 
 	/*
-	 * Shared limiter: undervoltage and controller temperature. walk_active suppresses the legal
-	 * speed taper, exactly as it did when this call went through the removed
-	 * assist_limits_apply_legacy() wrapper — Walk Assist has its own wheel-speed ceiling inside
-	 * walk_motor_update(). `source` is not read at all while walk_active is set; NON_PEDAL is
-	 * the honest value for a request made with the cranks stationary.
+	 * The shared ceilings are no longer applied here. ride_control.c runs the Walk request
+	 * through the SAME ap2_limits chain every other request passes - battery current, phase
+	 * current, undervoltage and controller temperature - as its own AP2_LIMIT_SOURCE_WALK,
+	 * which keeps Walk's own wheel-speed cut-off (inside walk_motor_update) and leaves the
+	 * legal pedal-assist taper out. One chain, one place, no per-caller copy.
 	 */
-	assist_limits_input_t wa_limits = {
-		.voltage_raw = voltage_raw_filtered,
-		.voltage_min_raw = MP.voltage_min,
-		.controller_temperature_c = MS.int_Temperature,
-		.source = ASSIST_LIMIT_SOURCE_NON_PEDAL,
-		.speed_x100 = MS.Speedx100,
-		.speed_limit_x100 = speedlimitx100_scaled,
-		.legal_enabled = MP.legalflag != 0,
-		.offroad = MS.offroadflag != RESET,
-		.walk_active = true
-	};
-	int32_t limited = assist_limits_apply(wa_iq, &wa_limits);
+	int32_t limited = wa_iq;
 	if(limited<0) limited=0;
 	if(limited>65535) limited=65535;
 

@@ -4,22 +4,39 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "assist_extended_boost.h"
-#include "assist_start.h"
-#include "rider_input.h"
+#include "ap2_profiles.h"
+#include "assist_bank_wire.h"
 
 typedef enum {
 	/* FW-094: wire value 0 used to select the pre-ride-core assist path per level. That path is
 	 * gone and 0 was never a supported ride-core mode, so it is now simply a reserved value:
-	 * a bank carrying it produces no assist (assist_modes_calculate returns unsupported). It
-	 * cannot be reused for a new mode — stored banks and older app builds still write it. */
+	 * a bank carrying it produces no assist. It cannot be reused for a new mode — stored banks
+	 * and older app builds still write it. */
 	ASSIST_MODE_RESERVED_0 = 0,
+	/*
+	 * WIRE VALUES 1..6 ARE HISTORY. The calculation behind each of them was removed with the
+	 * legacy assist pipeline, but the NUMBERS live in every stored bank and in every shipped
+	 * app build, so they cannot be reused or renumbered. A level carrying one of them is
+	 * MIGRATED to the closest V2 profile on read - see assist_modes_profile_for_level().
+	 */
 	ASSIST_MODE_POWER_LINEAR = 1,
 	ASSIST_MODE_POWER_PROGRESSIVE = 2,
 	ASSIST_MODE_EMTB = 3,
 	ASSIST_MODE_EMTB_CUSTOM = 4,
 	ASSIST_MODE_TORQUE = 5,
-	ASSIST_MODE_POWER_CURVE = 6 //FW-056
+	ASSIST_MODE_POWER_CURVE = 6,
+	/*
+	 * ASSIST PIPELINE V2 PROFILES. New wire values, so a controller running V2 and an app that
+	 * knows about V2 can name the same profile, while a stored bank written before V2 still
+	 * loads and migrates. They extend the existing byte - nothing about the 255 B blob layout
+	 * changes, which is why the whole configuration transport is untouched.
+	 */
+	ASSIST_MODE_V2_ECO = 7,
+	ASSIST_MODE_V2_TRAIL = 8,
+	ASSIST_MODE_V2_SPORT = 9,
+	ASSIST_MODE_V2_SPORT_PLUS = 10,
+	ASSIST_MODE_V2_AUTO = 11,
+	ASSIST_MODE_V2_AUTO_SPORT_PLUS = 12
 } assist_mode_type_t;
 
 /*
@@ -39,6 +56,12 @@ _Static_assert(ASSIST_MODE_EMTB == 3, "eMTB wire value must stay 3");
 _Static_assert(ASSIST_MODE_EMTB_CUSTOM == 4, "wire value must stay 4");
 _Static_assert(ASSIST_MODE_TORQUE == 5, "wire value must stay 5");
 _Static_assert(ASSIST_MODE_POWER_CURVE == 6, "wire value must stay 6");
+_Static_assert(ASSIST_MODE_V2_ECO == 7, "V2 profile wire value must stay 7");
+_Static_assert(ASSIST_MODE_V2_TRAIL == 8, "V2 profile wire value must stay 8");
+_Static_assert(ASSIST_MODE_V2_SPORT == 9, "V2 profile wire value must stay 9");
+_Static_assert(ASSIST_MODE_V2_SPORT_PLUS == 10, "V2 profile wire value must stay 10");
+_Static_assert(ASSIST_MODE_V2_AUTO == 11, "V2 profile wire value must stay 11");
+_Static_assert(ASSIST_MODE_V2_AUTO_SPORT_PLUS == 12, "V2 profile wire value must stay 12");
 
 typedef struct {
 	assist_mode_type_t mode_type;
@@ -103,64 +126,6 @@ typedef struct {
 	assist_extended_boost_config_t extended_boost;
 } assist_level_config_t;
 
-typedef struct {
-	/*
-	 * TWO DIFFERENT RIDER POWERS, and a log is unreadable if they are confused (FW-129 D11):
-	 *
-	 *   human_power_w        from the RAW per-tick pedal load (torque_load_centikg): no assist
-	 *                        deadband, no RUN averaging, no startup boost. It jumps with every
-	 *                        leg push, because that is what the rider is doing right now.
-	 *                        Telemetry only - no decision reads it.
-	 *   assist_basis_power_w from the load the modes ACTUALLY used: RUN-averaged over the
-	 *                        crank-angle window and boosted if the boost is running. This is
-	 *                        the number the support ratio and the request were computed from,
-	 *                        so this is the one to compare a motor power against.
-	 *
-	 * Reading motor_power_w against human_power_w and calling the quotient "support ratio"
-	 * gives a figure that swings by a factor of two within one pedal stroke. Use
-	 * assist_basis_power_w, or applied_support_ratio_pct, which the firmware computes itself.
-	 */
-	uint16_t human_power_w;
-	uint16_t assist_basis_power_w;
-	uint16_t raw_motor_power_w;
-	uint16_t motor_power_w;
-	uint16_t applied_support_ratio_pct;
-	uint32_t requested_battery_current_ma;
-	int32_t iq_request;
-	/* C0-PROOF, redefined by FW-129: the blended phase-current request BEFORE the level's own
-	 * max_iq_pct ceiling. There is no separate P/U ceiling any more - the P/U conversion IS
-	 * the request - so this is now the "pre-limit Iq" the card asks for. Measurement-only;
-	 * nothing reads it to make a decision. */
-	int32_t iq_before_pu;
-	/* FW-129 §15 diagnostics: the two anchors of the conversion and the crossfade between
-	 * them, so a ride log can show which one was carrying the request and prove the handover
-	 * was continuous. launch_blend_permille is the weight of the MEASURED-duty term:
-	 * 0 = pure launch anchor, 1000 = pure measured duty. */
-	int32_t iq_launch_request;
-	int32_t iq_normal_request;
-	uint16_t launch_blend_permille;
-	/* FW-129: the calibrated pedal load the assist was actually computed from (after the
-	 * RUN estimator and the startup boost), and its position on the normalized 0..160 axis
-	 * eMTB/Torque use. Both are physical - neither depends on the sensor calibration. */
-	uint16_t assist_load_centikg;
-	uint16_t assist_torque_x160;
-	uint8_t cadence_for_assist_rpm;
-	bool assist_without_rotation_active;
-	/* Native-unit view of assist_load_centikg, kept because 0x6029 has always reported this
-	 * field in native units. Diagnostics only. */
-	uint16_t torque_for_assist_mv;
-	uint16_t startup_boost_extra_pct;
-	bool startup_boost_active;
-	uint16_t emtb_denominator;
-	uint16_t emtb_target_x160;
-	/* FW-056: bench diagnostics only, not serialized to CAN. */
-	uint16_t curve_input_permille;
-	uint16_t curve_output_permille;
-	/* FW-057: cadence compensation, reported over 0x6029. */
-	uint16_t cadence_comp_permille;
-	uint16_t precomp_motor_power_w;
-} assist_mode_output_t;
-
 #define ASSIST_BANK_COUNT 2U
 /*
  * FW-084: 13 B header + 5x48 B + CRC = 255 B.
@@ -213,29 +178,46 @@ void assist_modes_seed_wa_defaults(uint8_t current_pct, uint16_t target_rpm);
 bool assist_modes_get_cadence_comp_enabled(void);
 
 /*
- * FW-084: the current ceiling of the active LEVEL — max_iq_pct plus max_motor_power_w
- * converted the same way the mode path converts it. Needed by any caller that substitutes a
- * pedal-only target after assist_modes_calculate() has already applied those two, which is
- * what Extended Boost does. Not for throttle: that keeps its own non-pedal path.
+ * THE BRIDGE FROM STORED CONFIGURATION TO THE PIPELINE.
+ *
+ * A level record says which PROFILE the rider chose and, optionally, overrides a few of that
+ * profile's numbers. Everything else in the record is wire ballast (see inc/assist_bank_wire.h)
+ * and is read by nothing.
+ *
+ * Wire values 1..6 name assist modes this firmware no longer implements. They are migrated to
+ * the nearest V2 profile rather than rejected, so a rider who updates does not lose their
+ * levels - a level saved as "Power progressive" comes back as SPORT, not as no assist.
  */
-int32_t assist_modes_profile_iq_ceiling(
-	const assist_level_config_t *config,
-	const rider_input_t *input,
-	uint32_t battery_voltage_mv,
-	int32_t iq_limit);
+ap2_profile_id_t assist_modes_profile_for_level(const assist_level_config_t *config);
+
+/*
+ * The per-level overrides the pipeline honours, and the ONLY fields of the level record that
+ * reach control. Every one of them is 0 for "use the profile value", so an old stored bank, a
+ * zeroed field and a fresh controller all behave identically.
+ *
+ *   support_ratio_pct  -> assist trim   100 = the profile as designed. Raising it makes the
+ *                                       motor reach full assist at a LOWER pedal force: more
+ *                                       assist for the same effort.
+ *   max_motor_power_w  -> power ceiling a CEILING only - it can tighten the profile envelope,
+ *                                       never widen it. Lowering it makes the motor stop
+ *                                       pulling harder sooner on a climb, and draw less.
+ *   iq_rise_fast_ms    -> attack        lowering it makes the motor answer a change in effort
+ *                                       sooner; too low feels twitchy. FIXED profiles only.
+ *   release_ms         -> release       lowering it makes the motor let go sooner when the
+ *                                       rider eases off; too low feels like it cuts out.
+ *                                       FIXED profiles only.
+ *   smooth_start.duration_ms -> start   raising it makes the first torque of a ride softer.
+ *                                       FIXED profiles only.
+ *
+ * The three dynamics overrides are ignored for AUTO and AUTO SPORT+ on purpose: choosing an
+ * adaptive profile IS choosing to let the pipeline pick the dynamics.
+ */
+void assist_modes_profile_override(const assist_level_config_t *config,
+	ap2_profile_override_t *out);
 
 uint16_t assist_modes_serialize_bank(uint8_t bank_index, uint8_t *buffer);
 bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length);
 
 void assist_modes_reset(void);
-
-bool assist_modes_calculate(
-	const rider_input_t *input,
-	const assist_level_config_t *config,
-	uint32_t battery_voltage_mv,
-	int32_t iq_limit,
-	assist_mode_output_t *output);
-
-const assist_mode_output_t *assist_modes_get_last_output(void);
 
 #endif /* ASSIST_MODES_H_ */

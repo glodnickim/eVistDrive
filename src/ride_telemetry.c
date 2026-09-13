@@ -52,13 +52,15 @@ static void build_data_frame(uint8_t index, const ride_telemetry_snapshot_t *s,
 {
     memset(d, 0, 8U);
     put_u16(&d[0], tick16(s));
-    *efid = RIDE_TELEMETRY_EFID_BASE + index;
+    /* Indices 0..6 sit at BASE+0..6. The two schema-2 frames step OVER META at BASE+7, which
+     * keeps every pre-existing frame at the identifier its decoder already knows. */
+    *efid = RIDE_TELEMETRY_EFID_BASE + ((index <= 6U) ? index : (index + 1U));
 
     switch (index) {
-    case 0U: /* rider input / torque conditioning */
+    case 0U: /* rider input: the measurement and the demand derived from it */
         put_u16(&d[2], s->load_centikg);
-        put_u16(&d[4], s->torque_fast_native);
-        put_u16(&d[6], s->torque_run_native);
+        put_u16(&d[4], s->torque_normalized_permille);
+        put_u16(&d[6], s->rider_demand_permille);
         break;
     case 1U: /* canonical Iq chain */
         put_i16(&d[2], s->iq_requested);
@@ -88,7 +90,23 @@ static void build_data_frame(uint8_t index, const ride_telemetry_snapshot_t *s,
                          ((s->qzero_state & 0x03U) << 6));
         d[5] = s->cadence_raw_rpm;
         d[6] = s->cadence_control_rpm;
-        d[7] = 0U;
+        /* SCHEMA 2: the low eight limit flags. Bit 8 (RELEASE) is recoverable from the reason
+         * byte in d[3], so the spare byte carries the eight that are not. */
+        d[7] = (uint8_t)(s->limit_flags & 0xFFU);
+        break;
+    case 7U: /* SCHEMA 2: the assist request, split into its two halves */
+        put_u16(&d[2], s->assist_base_permille);
+        put_u16(&d[4], s->assist_dynamic_permille);
+        put_u16(&d[6], s->assist_response_permille);
+        break;
+    case 8U: /* SCHEMA 2: the two estimators, the AUTO decision and the binding limit */
+        put_u16(&d[2], s->rider_aggression_permille);
+        put_u16(&d[4], s->load_state_permille);
+        /* auto_factor and the limit flags share the last word: the factor is permille (10 bits
+         * of range) and the flags are nine bits, so both fit only if they are split across the
+         * two frames they belong to - the factor stays whole here and the flags travel in the
+         * frame-5 spare byte plus this one. */
+        put_u16(&d[6], s->auto_factor_permille);
         break;
     case 6U: /* rotor estimator + PAS physical/direction facts */
         put_i16(&d[2], s->theta_q15);

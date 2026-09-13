@@ -57,10 +57,15 @@ void assist_pipeline_reset(void)
 	const ap2_profile_t *fallback = ap2_profile_base(AP2_PROFILE_TRAIL);
 	int i;
 	unsigned char *p = (unsigned char *)&ctx.tlm;
+	/* The engagement counter is an ANCHOR, not state: a reader detects a new engagement by
+	 * seeing it change, so restarting it at a Walk or calibration detour would make two
+	 * different engagements look like the same one. It is the only field that survives. */
+	uint16_t seq = ctx.tlm.engage_seq;
 
 	for (i = 0; i < (int)sizeof(ctx.tlm); i++) {
 		p[i] = 0U;
 	}
+	ctx.tlm.engage_seq = seq;
 	ctx.base_hold_ms = fallback->base_hold_ms;
 	ctx.start_ticks_left = 0U;
 	ctx.start_active = false;
@@ -85,6 +90,44 @@ const assist_pipeline_telemetry_t *assist_pipeline_telemetry(void)
 ap2_pas_state_t assist_pipeline_pas_state(void)
 {
 	return ap2_pas_state_get();
+}
+
+uint8_t assist_pipeline_reason_bits(void)
+{
+	const assist_pipeline_telemetry_t *t = &ctx.tlm;
+	uint8_t why = 0U;
+
+	if (!t->assist_permitted) {
+		why |= AP2_WHY_NOT_PERMITTED;
+	}
+	if (t->block_positive) {
+		why |= AP2_WHY_BLOCKED;
+	}
+	if (t->assist_permitted && t->assist_response_permille == 0) {
+		why |= AP2_WHY_NO_DEMAND;
+	}
+	if (t->power_limited || t->battery_limited || t->phase_limited ||
+		t->voltage_limited || t->thermal_limited || t->speed_limited) {
+		why |= AP2_WHY_LIMITED;
+	}
+	if (t->limiter_zeroed) {
+		why |= AP2_WHY_ZEROED_BY_LIMIT;
+	}
+	if (t->start_active) {
+		why |= AP2_WHY_START;
+	}
+	if (t->release_active) {
+		why |= AP2_WHY_RELEASE;
+	}
+	if (ap2_profile_is_auto((ap2_profile_id_t)t->profile_id)) {
+		why |= AP2_WHY_AUTO;
+	}
+	return why;
+}
+
+uint8_t assist_pipeline_state_byte(void)
+{
+	return (uint8_t)((ctx.tlm.pas_state & 0x0FU) | ((ctx.tlm.profile_id & 0x0FU) << 4));
 }
 
 bool assist_pipeline_battery_limited(void)
@@ -514,6 +557,13 @@ void assist_pipeline_update(const assist_pipeline_input_t *in, assist_pipeline_c
 	ctx.tlm.release_active = (cmd->slew_mode == FIS_MODE_RELEASE) ||
 		(cmd->slew_mode == FIS_MODE_SAFETY);
 	ctx.tlm.block_positive = pas.block_positive;
+	ctx.tlm.limiter_zeroed = (iq_request > 0) && (lim.final_iq == 0);
+	if (pas.engaged_edge) {
+		ctx.tlm.engage_seq++;
+	}
+	ctx.tlm.required_steps = pas_in.required_steps;
+	ctx.tlm.engage_threshold_centikg = pas_in.engage_load_centikg;
+	ctx.tlm.bike_rolling = bike_rolling;
 	ctx.tlm.rider_power_w = rider_power_w(in->torque_load_centikg, in->cadence_rpm);
 	ctx.tlm.motor_power_w = motor_power_w(lim.final_iq, in->battery_voltage_mv,
 		in->u_abs, in->cal_i);

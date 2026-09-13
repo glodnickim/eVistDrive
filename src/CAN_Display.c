@@ -26,7 +26,7 @@
 #include "pwm_geometry.h"
 #include "current_feedback.h"
 #include "current_sample_ctx.h"
-#include "assist_extended_boost.h"
+#include "assist_pipeline.h"
 #include "assist_modes.h"
 #include "tuning_config.h"
 #include "torque_input.h"
@@ -39,7 +39,6 @@
 #include "can_reply_effects.h"
 #include "stop_trace.h"
 #if CAN_DIAGNOSTICS_ENABLE
-#include "rolling_no_assist_dump.h"
 #include "qs_transition_diag.h"
 #include "qs_transition_dump.h"
 #endif
@@ -111,7 +110,7 @@ extern uint8_t ui_8_PWM_ON_Flag;
 extern FlagStatus BC_limit_flag; //FW-033: battery-current limiter active (diagnostics)
 extern volatile uint16_t diag_peak_torque, diag_peak_human_w, diag_peak_support, diag_peak_motor_w;
 extern volatile int32_t diag_peak_iq_req, diag_peak_iq_set;
-extern volatile uint16_t diag_peak_precomp_motor_w, diag_peak_cadence_comp, diag_peak_u_abs; //FW-057
+extern volatile uint16_t diag_peak_assist_dynamic, diag_peak_u_abs;
 extern int32_t i32_hall_order;
 extern int32_t Hall_13, Hall_32, Hall_26, Hall_64, Hall_45, Hall_51;
 extern uint8_t param_record_state; //FW-023: 0 = valid record, 1 = defaults, 2 = halls rejected
@@ -406,17 +405,11 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 				}
 #if CAN_DIAGNOSTICS_ENABLE
 				else if(Ext_ID_Rx.command==0x602C){
-					/* FW-123: explicit FROZEN rolling_no_assist replay. This is deliberately
-					 * a zero-byte WRITE rather than a READ: a READ must stay side-effect free
-					 * while this request arms a paced transport. The response is NORMAL_ACK
-					 * only when a frozen capture exists and no replay is already pending.
-					 *
-					 * CANable/BESST source=5, target=2, operation=WRITE, command=0x602C:
-					 *   EFID 0x0510602C, DLC 0
-					 */
-					uint8_t accepted = (Ext_ID_Rx.source == 5U && receive_message.rx_dlen == 0U &&
-					                    rolling_no_assist_dump_request()) ? 1U : 0U;
-					sendWriteResult(0x602C, accepted);
+					/* RETIRED: the frozen rolling no-assist replay observed the legacy assist
+					 * pipeline and went with it. The COMMAND is answered rather than dropped,
+					 * because a shipped tool that still asks for it must get a definite "not
+					 * accepted" instead of a timeout it cannot distinguish from a dead bus. */
+					sendWriteResult(0x602C, 0U);
 				}
 				else if(Ext_ID_Rx.command==0x6030){
 					/* QS-1: explicit replay of a complete, immutable FOC-rate capture. */
@@ -945,7 +938,7 @@ void sendCAN_Poll(MotorParams_t* MP, MotorState_t* MS, uint16_t command){
 #if CAN_DIAGNOSTICS_ENABLE
 			/* DIAG-only: live final Iq setpoint replaces calories in 0x3205 bytes 0-1.
 			 * MS.calories and int_Temperature are NOT modified — this only changes
-			 * what is serialized into this CAN frame. See rolling_no_assist_diag audit.
+			 * what is serialized into this CAN frame.
 			 * Range 0..700 (PH_CURRENT_MAX) fits uint16 LE directly. */
 			uint16_t cal_val = (uint16_t)(MS->i_q_setpoint);
 #else
@@ -1131,10 +1124,10 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 			break;
 		case 0x6029: //FW-015/017: read ride diagnostics v2 (peak-hold + current) (Canable only)
 			if(Ext_ID_Rx.operation==1 && Ext_ID_Rx.source==5){
-				const assist_mode_output_t* cur = assist_modes_get_last_output();
+				const assist_pipeline_telemetry_t* cur = assist_pipeline_telemetry();
 				const rider_input_t* rin = rider_input_get();
 				uint32_t pas_ms = pas_idle_ticks/4U; if(pas_ms>65535)pas_ms=65535; //~4 ticks/ms @4kHz
-				uint8_t flags = (cur->assist_without_rotation_active?0x01:0) |
+				uint8_t flags = (cur->assist_permitted?0x01:0) |
 				                (rin->pedaling_active?0x02:0) |
 				                (MS->brake_active_flag?0x04:0) |
 				                (torque_fault?0x08:0) |
@@ -1142,14 +1135,21 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 				                (torque_input_calibration_active()?0x20:0) |
 				                ((hmi_seen && hmi_lost_ticks>=COMM_CUT_TICKS)?0x40:0) |
 				                (ui_8_PWM_ON_Flag?0x80:0);
-				//FW-094: one pipeline, one source. The old ternary's other arm was the
-				//monolith's MS->i_q_setpoint_temp and was already unreachable.
-				int32_t cur_iqr = cur->iq_request;
+				//One pipeline, one source: the assist request before the limiter chain.
+				int32_t cur_iqr = cur->iq_request_before_limits;
 				if(cur_iqr<0)cur_iqr=0;
 				if(cur_iqr>32767)cur_iqr=32767;
 				int32_t cur_iqs = MS->i_q_setpoint; if(cur_iqs<0)cur_iqs=0; if(cur_iqs>32767)cur_iqs=32767;
 				uint8_t dg[72];
-				dg[0]=0x44; dg[1]=0x47; dg[2]=6; //'D''G' ver6 (71 B): FW-129 appended the unit-domain block
+				/*
+				 * 'D''G' ver7 (71 B). SAME LENGTH, SAME CRC, NEW MEANINGS for the slots whose
+				 * concepts went away with the legacy assist pipeline (Extended Boost state, the
+				 * launch/measured-duty crossfade, cadence compensation). The version byte is what
+				 * makes that a versioned change rather than a silent reinterpretation: a decoder
+				 * that knows only ver6 sees 7 and stops instead of reading Extended Boost numbers
+				 * out of the AUTO factor. See protocol/RIDE_DIAGNOSTICS_6029.md for the map.
+				 */
+				dg[0]=0x44; dg[1]=0x47; dg[2]=7;
 				dg[3]=DIAG_ENGINE_ID_RIDE_CORE; //deprecated protocol field, see the define
 				uint32_t bcur = diag_peak_motor_w ? ((uint32_t)diag_peak_motor_w*1000000UL)/(MS->Voltage?MS->Voltage:40000) : 0; if(bcur>65535)bcur=65535;
 				int32_t iqr = diag_peak_iq_req; if(iqr>32767)iqr=32767; else if(iqr<0)iqr=0;
@@ -1163,55 +1163,50 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 				dg[18]=diag_peak_iq_set&0xFF; dg[19]=(diag_peak_iq_set>>8)&0xFF; //peak setpoint reaching FOC
 				dg[20]=MS->Speedx100&0xFF; dg[21]=(MS->Speedx100>>8)&0xFF;
 				dg[22]=pas_ms&0xFF; dg[23]=(pas_ms>>8)&0xFF;                       //current pas_idle_ms
-				dg[24]=rin->torque_assist_filtered&0xFF; dg[25]=(rin->torque_assist_filtered>>8)&0xFF; //current fast pressure (raw)
+				dg[24]=cur->rider_demand_permille&0xFF; dg[25]=(cur->rider_demand_permille>>8)&0xFF; //v7: rider_demand [permille]
 				dg[26]=cur_iqr&0xFF; dg[27]=(cur_iqr>>8)&0xFF;                     //current iq request before final ramp (effective)
 				dg[28]=cur_iqs&0xFF; dg[29]=(cur_iqs>>8)&0xFF;                     //current iq_setpoint
-				dg[30]=rin->torque_run_filtered&0xFF; dg[31]=(rin->torque_run_filtered>>8)&0xFF; //FW-033: current RUN pressure (slow)
+				dg[30]=cur->assist_base_permille&0xFF; dg[31]=(cur->assist_base_permille>>8)&0xFF; //v7: assist_base [permille]
 				int32_t cur_iqm=MS->i_q; if(cur_iqm>32767)cur_iqm=32767; else if(cur_iqm<-32768)cur_iqm=-32768; //measured i_q (signed, actual FOC current)
 				dg[32]=cur_iqm&0xFF; dg[33]=(cur_iqm>>8)&0xFF;                     //FW-033: measured i_q (command vs actual test)
 				dg[34]=(BC_limit_flag?0x01:0);                                    //FW-033: bit0 = battery-current limiter active
-				//FW-057: cadence compensation diagnostics, peak-held like the rest of the block.
-				dg[35]=diag_peak_cadence_comp&0xFF; dg[36]=(diag_peak_cadence_comp>>8)&0xFF;       //multiplier applied [permille], 1000 = none
-				dg[37]=diag_peak_precomp_motor_w&0xFF; dg[38]=(diag_peak_precomp_motor_w>>8)&0xFF; //motor power BEFORE compensation [W]
+				dg[35]=cur->assist_dynamic_permille&0xFF; dg[36]=(cur->assist_dynamic_permille>>8)&0xFF; //v7: assist_dynamic [permille]
+				dg[37]=cur->rider_aggression_permille&0xFF; dg[38]=(cur->rider_aggression_permille>>8)&0xFF; //v7: rider_aggression [permille]
 				dg[39]=diag_peak_u_abs&0xFF; dg[40]=(diag_peak_u_abs>>8)&0xFF;                     //peak u_abs (saturates at _U_MAX)
 				uint16_t pack_mv=(MS->Voltage>65535)?65535:(uint16_t)MS->Voltage;
 				dg[41]=pack_mv&0xFF; dg[42]=(pack_mv>>8)&0xFF;                                     //pack voltage [mV]
 				dg[43]=rin->cadence_rpm;                                                           //current cadence (not peak-held)
-				dg[44]=assist_modes_get_cadence_comp_enabled()?0x01:0;                             //bank setting, so the log shows on/off
-				//FW-084/095: without these five fields a log cannot tell "never qualified"
-				//from "a limit trimmed it" from "timer done" from "the rider stopped".
-				//Bits 0x02 and 0x08 kept at their positions but never set since FW-095: the
-				//waiting-for-PAS-STOP state and its stale-arming flag no longer exist.
-				assist_extended_boost_diag_t eb; assist_extended_boost_get_diag(&eb);
-				int32_t eb_iq=eb.boost_iq; if(eb_iq<0)eb_iq=0; if(eb_iq>65535)eb_iq=65535;
-				dg[45]=(uint8_t)((eb.state==ASSIST_EXT_BOOST_QUALIFY?0x01:0) |
-				                 (eb.state==ASSIST_EXT_BOOST_ACTIVE?0x04:0));
-				dg[46]=eb.peak_load_centikg&0xFF; dg[47]=(eb.peak_load_centikg>>8)&0xFF; //latest/active peak pedal load [centikg]
-				dg[48]=eb_iq&0xFF; dg[49]=(eb_iq>>8)&0xFF;                               //boost current BEFORE the shared limits
-				dg[50]=eb.remaining_ms&0xFF; dg[51]=(eb.remaining_ms>>8)&0xFF;           //ACTIVE time left [ms]
-				dg[52]=eb.cancel_reason;                                                 //see assist_extended_boost_cancel_t
+				//v7: which stage of the ONE limiter chain was binding this tick.
+				dg[44]=(uint8_t)((cur->power_limited?0x01:0) | (cur->battery_limited?0x02:0) |
+				                 (cur->phase_limited?0x04:0) | (cur->voltage_limited?0x08:0) |
+				                 (cur->thermal_limited?0x10:0) | (cur->speed_limited?0x20:0) |
+				                 (cur->start_active?0x40:0) | (cur->release_active?0x80:0));
+				//v7: the pipeline lifecycle and the adaptive decision. These four answer
+				//"which profile was in force, how adaptive was it being, and how much of the
+				//request was sustained versus reactive" - the questions tuning actually asks.
+				dg[45]=cur->pas_state;                                                   //ap2_pas_state_t
+				dg[46]=cur->load_state_permille&0xFF; dg[47]=(cur->load_state_permille>>8)&0xFF; //terrain load [permille]
+				dg[48]=cur->auto_factor_permille&0xFF; dg[49]=(cur->auto_factor_permille>>8)&0xFF; //AUTO calm..strong [permille]
+				dg[50]=cur->assist_response_permille&0xFF; dg[51]=(cur->assist_response_permille>>8)&0xFF; //assist response [permille]
+				dg[52]=cur->profile_id;                                                  //ap2_profile_id_t
 				/*
-				 * FW-129 v6: the unit-domain block. Everything here is LIVE (not peak-held),
-				 * because what it has to answer is "at THIS operating point, which anchor was
-				 * carrying the request and did the handover stay continuous" - a peak-hold
-				 * would mix samples from different duties and make the crossfade unreadable.
-				 * u_abs and cadence appear together on purpose: their ratio is the motor's
-				 * volts-per-rpm, the one constant ASSIST_LAUNCH_REFERENCE_U_ABS is a
-				 * hypothesis about (see assist_modes.c).
+				 * v7: the tuning block. Everything here is LIVE (not peak-held): it has to
+				 * answer "at THIS operating point, what were the dynamics and the ceiling, and
+				 * what did the chain ask for before the limits" - a peak-hold would mix samples
+				 * from different profile states and make the answer unreadable.
 				 */
 				{
 					int32_t v;
 					uint16_t u16_uabs = (MS->u_abs<0) ? 0 :
 						((MS->u_abs>65535) ? 65535 : (uint16_t)MS->u_abs);
-					dg[53]=cur->assist_load_centikg&0xFF; dg[54]=(cur->assist_load_centikg>>8)&0xFF; //calibrated pedal load [centikg]
-					dg[55]=cur->assist_torque_x160&0xFF;  dg[56]=(cur->assist_torque_x160>>8)&0xFF;  //normalized torque 0..160
-					v=cur->iq_launch_request; if(v<0)v=0; if(v>65535)v=65535;
-					dg[57]=v&0xFF; dg[58]=(v>>8)&0xFF;                                              //launch-anchor Iq
-					v=cur->iq_normal_request; if(v<0)v=0; if(v>65535)v=65535;
-					dg[59]=v&0xFF; dg[60]=(v>>8)&0xFF;                                              //measured-duty Iq
-					dg[61]=cur->launch_blend_permille&0xFF; dg[62]=(cur->launch_blend_permille>>8)&0xFF; //0=launch, 1000=measured duty
-					v=cur->iq_before_pu; if(v<0)v=0; if(v>65535)v=65535;
-					dg[63]=v&0xFF; dg[64]=(v>>8)&0xFF;                                              //blended Iq BEFORE max_iq_pct
+					dg[53]=cur->torque_load_centikg&0xFF; dg[54]=(cur->torque_load_centikg>>8)&0xFF; //calibrated pedal load [centikg]
+					v=cur->torque_normalized_permille; if(v<0)v=0; if(v>65535)v=65535;
+					dg[55]=v&0xFF; dg[56]=(v>>8)&0xFF;                                              //normalized effort [permille]
+					dg[57]=cur->attack_ms&0xFF; dg[58]=(cur->attack_ms>>8)&0xFF;                    //attack in force [ms]
+					dg[59]=cur->release_ms&0xFF; dg[60]=(cur->release_ms>>8)&0xFF;                  //release in force [ms]
+					dg[61]=cur->max_power_w&0xFF; dg[62]=(cur->max_power_w>>8)&0xFF;                //power ceiling in force [W]
+					v=cur->iq_request_before_limits; if(v<0)v=0; if(v>65535)v=65535;
+					dg[63]=v&0xFF; dg[64]=(v>>8)&0xFF;                                              //Iq request BEFORE the limiter chain
 					dg[65]=cur->motor_power_w&0xFF; dg[66]=(cur->motor_power_w>>8)&0xFF;            //requested motor power [W], live
 					dg[67]=u16_uabs&0xFF; dg[68]=(u16_uabs>>8)&0xFF;                                //live u_abs, pairs with dg[43] cadence
 				}

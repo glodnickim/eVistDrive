@@ -450,8 +450,11 @@ def main() -> int:
         if not re.match(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,47}$", v):
             raise SystemExit(f"unsafe version string: {v}")
 
-    # Build both variants for auto mode, single variant otherwise
-    variants_to_build = [("normal",) if args.mode != "auto" else ("normal", "diagnostic")]
+    # Auto mode builds the canonical PAIR; every other mode builds the variant asked for.
+    # Honouring --variant here is not cosmetic: without it a diagnostic target build
+    # silently produced a normal binary, so the diagnostic variant was never compiled by
+    # any gate that passes --variant with --mode developer.
+    variants_to_build = [(args.variant,)]
     if args.mode == "auto":
         variants_to_build = [("normal",), ("diagnostic",)]
         if len(versions) < 2:

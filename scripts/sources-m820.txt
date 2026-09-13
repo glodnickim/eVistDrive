@@ -1,11 +1,12 @@
 # Product sources. Keep this list explicit so a clean build does not depend on
 # directory enumeration or accidentally include a newly copied experiment.
-src/assist_dynamics.c
-src/assist_extended_boost.c
-src/assist_limits.c
 src/assist_modes.c
-src/assist_start.c
-src/cadence_comp.c
+src/ap2_pas_state.c
+src/ap2_rider_demand.c
+src/ap2_estimators.c
+src/ap2_profiles.c
+src/ap2_limits.c
+src/assist_pipeline.c
 src/cadence_filter.c
 src/can_multiframe.c
 src/can_reply_effects.c
@@ -26,16 +27,11 @@ src/main.c
 src/motor_core.c
 src/parser.c
 src/diag_session.c
-src/fw112_ab.c
-src/fw112_diag.c
 src/fw117_trace.c
-src/rolling_no_assist_diag.c
-src/rolling_no_assist_dump.c
 src/qs_transition_diag.c
 src/qs_transition_dump.c
 src/pas_direction.c
 src/pas_liveness.c
-src/pedal_assist_gate.c
 src/pas_quadrature.c
 src/pas_sampler.c
 src/pas_cadence.c
@@ -45,16 +41,13 @@ src/soc_core.c
 src/fast_iq_slew.c
 src/pas_raw.c
 src/pas_trace.c
-src/power_curve.c
 src/quiet_zero.c
 src/stop_trace.c
 src/rotor_angle.c
 src/ride_control.c
 src/ride_episode.c
-src/ride_session.c
 src/ride_telemetry.c
 src/ride_wheel.c
-src/rearm_delay_diag.c
 src/rider_input.c
 src/systick.c
 src/torque_input.c

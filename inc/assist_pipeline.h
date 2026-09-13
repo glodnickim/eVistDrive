@@ -155,12 +155,54 @@ typedef struct {
 	bool start_active;
 	bool release_active;
 	bool block_positive;
+	/*
+	 * A non-zero request was taken all the way to zero by the limiter chain. The single fact
+	 * that separates "the rider was not asking" from "a limit took it away", which is the first
+	 * question any no-assist investigation has to answer.
+	 */
+	bool limiter_zeroed;
+	/*
+	 * Increments once per engagement (each STOPPED/STOPPING -> FORWARD transition). A reader
+	 * detects a new engagement by seeing this change, which is what anchors the episode timings
+	 * in main.c - the 40 ms diagnostic frame period is far too slow to see the transition
+	 * itself.
+	 */
+	uint16_t engage_seq;
+	/* The start gate as it stood THIS tick, from its one owner rather than re-derived by a
+	 * reader against a constant that may have drifted. */
+	uint8_t required_steps;
+	uint16_t engage_threshold_centikg;
+	bool bike_rolling;
 
 	/* rider power, for the existing support-ratio telemetry */
 	uint16_t rider_power_w;
 	uint16_t motor_power_w;
 	uint16_t applied_support_ratio_pct;
 } assist_pipeline_telemetry_t;
+
+/*
+ * WHY THE REQUEST IS WHAT IT IS, in one byte. Every bit is a fact the pipeline already
+ * decided this tick - nothing here is re-derived by a reader, and nothing reads it to decide.
+ * It exists because "the current is zero" on its own says nothing about who zeroed it, which
+ * is what turns a regression hunt into guesswork.
+ */
+#define AP2_WHY_NOT_PERMITTED  0x01U  /* the PAS lifecycle is not in FORWARD */
+#define AP2_WHY_BLOCKED        0x02U  /* reverse, illegal PAS, safety cut, or assist off */
+#define AP2_WHY_NO_DEMAND      0x04U  /* permitted, but the rider is asking for nothing */
+#define AP2_WHY_LIMITED        0x08U  /* a limiter stage is holding the request down */
+#define AP2_WHY_ZEROED_BY_LIMIT 0x10U /* a positive request was taken all the way to zero */
+#define AP2_WHY_START          0x20U  /* the start segment is in force */
+#define AP2_WHY_RELEASE        0x40U  /* a release or safety release is running */
+#define AP2_WHY_AUTO           0x80U  /* an adaptive profile is selected */
+
+uint8_t assist_pipeline_reason_bits(void);
+
+/*
+ * The lifecycle and the profile in one byte: low nibble = ap2_pas_state_t, high nibble =
+ * ap2_profile_id_t. Both are small closed enums, so one byte carries the whole answer to
+ * "which profile was in force and where in the pedalling lifecycle was it".
+ */
+uint8_t assist_pipeline_state_byte(void);
 
 void assist_pipeline_init(void);
 void assist_pipeline_reset(void);
