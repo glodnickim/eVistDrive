@@ -151,15 +151,41 @@
  * The 34 KB ceiling is NOT "free RAM". The controller has 48 KB in total and how much of it is
  * already spoken for is a question only the linker map answers - a separate, explicit step
  * before any ride, which this header does not and cannot replace.
+ *
+ * ASSIST PIPELINE V2 (2026-09-13): four recorders retired with the legacy assist pipeline -
+ * rearm_delay_diag, fw112_diag, fw112_ab and rolling_no_assist_diag/_dump - releasing 18656 B of
+ * reservation. Measured on the real link, arm-none-eabi-gcc 13.2.1, whole image: the DIAGNOSTIC
+ * variant now reports RAM 30424 B of 48 KB (61.90 %) against FLASH 142024 B (60.30 %); the
+ * NORMAL variant, which never allocated any of it, is RAM 39664 B (80.70 %) against 39888 B
+ * before - the small change there is the assist chain's own state, not the recorders.
+ *
+ * The diagnostic variant had NEVER been built before this measurement: --variant was ignored
+ * outside auto mode, so every "diagnostic" target build silently produced a normal binary. That
+ * is why this is the first entry here with a real DIAG=1 whole-image figure rather than an
+ * isolated per-object one.
  */
 
 #define DIAG_BUDGET_PAS_RAW_BYTES        4200U  /* measured 4136 B + 64 B headroom */
 #define DIAG_BUDGET_PAS_TRACE_BYTES      7308U  /* measured 7244 B + 64 B headroom (FW-111 v3) */
 #define DIAG_BUDGET_EPISODE_QUEUE_BYTES  2740U  /* measured 2676 B + 64 B headroom (FW-107) */
 #define DIAG_BUDGET_SESSION_BYTES        1788U  /* FW-121.0: measured 1660 B + 64 B headroom (DIAG_AGGREGATE_SNAPSHOT_MAX 14 -> 21); +64 B for 8th source (DIAG_SRC_ROLLING_NO_ASSIST) */
-#define DIAG_BUDGET_REARM_DELAY_BYTES    444U   /* FW-111 v5.1: measured 380 B + 64 B headroom */
-#define DIAG_BUDGET_FW112_DIAG_BYTES     976U   /* FW-112-STABILITY: measured 904 B + 64 B headroom (24 x (32 B record + 4 B edge meta) + episode counters) */
-#define DIAG_BUDGET_FW112_AB_BYTES       4728U  /* FW-112 A/B: measured 4664 B + 64 B headroom (144 x 32 B records + pre-grant table) */
+/*
+ * ASSIST PIPELINE V2: three recorders RETIRED, so their reservations are 0.
+ *
+ * rearm_delay_diag.c, fw112_diag.c and fw112_ab.c instrumented the legacy rearm machinery, the
+ * FW-112 permission chain and the rearm-episode lifecycle. Those mechanisms were replaced by one
+ * PAS lifecycle and one demand chain, so the recorders had nothing left to observe and were
+ * deleted with them. Their DIAG_SRC_* slots stay reserved (wire indices), but they allocate
+ * nothing.
+ *
+ * The names are kept at 0 rather than removed from the total expression: this header is an
+ * append-only ledger of what was measured when, and a line that reads "this used to cost 6148 B
+ * and now costs nothing" is the useful record. Deleting the term would leave the next reader
+ * unable to tell a retirement from an omission.
+ */
+#define DIAG_BUDGET_REARM_DELAY_BYTES    0U     /* retired with the legacy rearm machinery (was 444 B) */
+#define DIAG_BUDGET_FW112_DIAG_BYTES     0U     /* retired with the FW-112 permission chain (was 976 B) */
+#define DIAG_BUDGET_FW112_AB_BYTES       0U     /* retired with the rearm-episode logger (was 4728 B) */
 #if FW117_TRACE_ENABLE
 #define DIAG_BUDGET_FW117_TRACE_BYTES    3425U /* FW-126: 70 x 48 B compact start trace + state */
 #else
@@ -169,13 +195,11 @@
  * 450 B line item with it. What remains under this name is the FW-126.5 campaign probe: five
  * snapshots, two dark statistic sets and three ADC configuration captures. */
 #define DIAG_BUDGET_ADC_TRIGGER_BYTES    260U   /* FW-126.5 campaign probe state */
-#if ROLLING_NO_ASSIST_DIAG_ENABLE
-#define DIAG_BUDGET_ROLLING_NO_ASSIST_DIAG_BYTES 12380U /* FW-122.1: schema v3, measured arm-none-eabi-size bss=12316 B (256 x 48 B = 12288 B ring + 28 B state) + 64 B headroom; NORMAL object measured 0/0/0 (was 11356 B / 44 B samples at schema v2) */
-#define DIAG_BUDGET_ROLLING_NO_ASSIST_DUMP_BYTES 128U   /* FW-123: explicit replay cursor/transport + 64 B headroom */
-#else
-#define DIAG_BUDGET_ROLLING_NO_ASSIST_DIAG_BYTES 0U
-#define DIAG_BUDGET_ROLLING_NO_ASSIST_DUMP_BYTES 0U
-#endif
+/* Retired with the legacy assist pipeline, same reasoning as the three above. The rolling
+ * no-assist hunt was looking for a defect in a demand chain that no longer exists; its 12380 B
+ * ring was the single largest diagnostic allocation in the firmware. */
+#define DIAG_BUDGET_ROLLING_NO_ASSIST_DIAG_BYTES 0U     /* retired (was 12380 B) */
+#define DIAG_BUDGET_ROLLING_NO_ASSIST_DUMP_BYTES 0U     /* retired (was 128 B) */
 
 /*
  * pas_trace.c keeps ONE slot even in the production build (CAN_DIAGNOSTICS_ENABLE=0) - that slot

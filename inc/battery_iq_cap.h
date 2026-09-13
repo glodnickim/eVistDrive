@@ -42,7 +42,7 @@
  * ---------
  * This module ONLY produces an Iq-domain cap. It never writes PI_iq.setpoint or
  * PI_iq.recent_value. ride_control.c min-arbitrates the cap into the Iq_allowed demand
- * BEFORE the single final Iq slew (assist_dynamics_apply), so the normal runtime rule is
+ * BEFORE the single final Iq slew (fast_iq_slew.c), so the normal runtime rule is
  * PI_iq.setpoint = MS.i_q_setpoint. The inner PI_iq controller keeps:
  *     setpoint   = MS.i_q_setpoint (Iq domain, already capped upstream)
  *     recent_value = measured motor Iq
