@@ -22,6 +22,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "fast_iq_slew.h"
 #include <string.h>
 
 #include "assist_modes.h"
@@ -106,6 +107,23 @@ static void base_ride(ride_t *r)
 
 static uint32_t g_tick;
 
+/*
+ * THE REAL FINAL OWNER, not a model of it.
+ *
+ * Every scenario publishes its command to the production mailbox and advances the production
+ * 16 kHz owner four times - one 4 kHz control period. That matters for two reasons: the
+ * pipeline chooses RISE/FALL/HOLD by reading the owner's live accumulator, so without it the
+ * trajectory decisions in the test are not the ones the firmware makes; and a claim about what
+ * the current regulator is handed can only be checked where that value is actually produced.
+ */
+#define FOC_TICKS_PER_CONTROL 4U
+
+static fast_iq_slew_mailbox_t g_mb;
+static int32_t g_iq_ref;
+
+/* The Iq reference the current regulator saw on the FIRST ISR tick of the last control tick. */
+static int32_t g_iq_ref_first;
+
 static void pipeline_tick(const ride_t *r, assist_pipeline_command_t *cmd)
 {
 	assist_pipeline_input_t in;
@@ -141,6 +159,15 @@ static void pipeline_tick(const ride_t *r, assist_pipeline_command_t *cmd)
 	in.legal_enabled = r->legal;
 	in.elapsed_ticks = 1U;
 	assist_pipeline_update(&in, cmd);
+
+	fast_iq_slew_publish(&g_mb, cmd->final_iq_request, cmd->slew_mode, cmd->step_mag_8,
+		cmd->release_ticks_16k, cmd->zero_policy, cmd->iq_ceiling);
+	for (unsigned k = 0; k < FOC_TICKS_PER_CONTROL; k++) {
+		fast_iq_slew_tick(&g_mb, &g_iq_ref);
+		if (k == 0U) {
+			g_iq_ref_first = g_iq_ref;
+		}
+	}
 	g_tick++;
 }
 
@@ -212,6 +239,10 @@ static void reset_all(uint8_t bank)
 	assist_modes_init();
 	assist_modes_set_active_bank(bank);
 	assist_pipeline_init();
+	memset(&g_mb, 0, sizeof(g_mb));
+	fast_iq_slew_reset(&g_mb);
+	g_iq_ref = 0;
+	g_iq_ref_first = 0;
 	g_tick = 0U;
 }
 
@@ -330,13 +361,89 @@ static void scenario_load_estimator(void)
 		"S4: a low-cadence effort that is not producing speed reads as more load than a sprint");
 }
 
-static void scenario_stop_and_reverse(void)
+/*
+ * Reverse is checked from several starting states, because the contract is about the
+ * TRANSITION, not about one comfortable operating point. The audit's acceptance list: several
+ * positive Iq values, during the start segment, under an adaptive profile, while a limiter is
+ * binding, and after a resume.
+ */
+typedef struct {
+	const char *what;
+	uint8_t bank;
+	uint8_t level;
+	uint16_t peak_centikg;
+	uint32_t settle_ticks;
+	int32_t battery_current_ma;
+	bool resume_first;
+} reverse_case_t;
+
+static void reverse_case(const reverse_case_t *c)
 {
 	ride_t r;
 	assist_pipeline_command_t cmd;
 	uint32_t i;
 	int32_t iq_before;
-	bool zero_same_tick;
+	char label[160];
+
+	reset_all(c->bank);
+	base_ride(&r);
+	r.level = c->level;
+	r.peak_centikg = c->peak_centikg;
+	r.battery_current_ma = c->battery_current_ma;
+
+	for (i = 0; i < c->settle_ticks; i++) {
+		pipeline_tick(&r, &cmd);
+	}
+
+	if (c->resume_first) {
+		/* Stop briefly and pick the pedals up again, so the reverse lands on a resumed ride. */
+		r.forward = false;
+		for (i = 0; i < MS(150); i++) {
+			pipeline_tick(&r, &cmd);
+		}
+		r.forward = true;
+		for (i = 0; i < MS(800); i++) {
+			pipeline_tick(&r, &cmd);
+		}
+	}
+
+	iq_before = g_iq_ref;
+	snprintf(label, sizeof(label), "S5[%s]: setup - a positive reference exists", c->what);
+	CHECK(iq_before > 0, label);
+
+	/* The reverse crank step. */
+	r.reverse_step = true;
+	pipeline_tick(&r, &cmd);
+
+	snprintf(label, sizeof(label), "S5[%s]: the request is zero in the same tick", c->what);
+	CHECK(cmd.final_iq_request == 0, label);
+
+	snprintf(label, sizeof(label),
+		"S5[%s]: the REFERENCE the current regulator sees is zero on the FIRST ISR tick - "
+		"no 200 ms tail of positive reference after a reverse", c->what);
+	CHECK(g_iq_ref_first == 0 && g_iq_ref == 0, label);
+
+	snprintf(label, sizeof(label), "S5[%s]: the lifecycle names the reason", c->what);
+	CHECK(assist_pipeline_pas_state() == AP2_PAS_REVERSE, label);
+
+	/* And nothing creeps back while the reverse is held. */
+	for (i = 0; i < MS(1500); i++) {
+		pipeline_tick(&r, &cmd);
+		if (cmd.final_iq_request != 0 || g_iq_ref != 0) {
+			break;
+		}
+	}
+	snprintf(label, sizeof(label),
+		"S5[%s]: no hold, estimator or ramp re-raises request or reference while reversed",
+		c->what);
+	CHECK(cmd.final_iq_request == 0 && g_iq_ref == 0, label);
+}
+
+static void scenario_stop_and_reverse(void)
+{
+	ride_t r;
+	assist_pipeline_command_t cmd;
+	uint32_t i;
 
 	printf("S5 stop, and reverse\n");
 
@@ -356,35 +463,37 @@ static void scenario_stop_and_reverse(void)
 		"S5: and hands the CURRENT to a bounded release rather than cutting it");
 	CHECK(cmd.zero_policy == FIS_ZERO_POLICY_QUIET,
 		"S5: an ordinary end of pedalling is the case Quiet Zero exists for");
+	CHECK(g_iq_ref > 0,
+		"S5: a STOP is deliberately not a reverse - the current is still being retired, "
+		"which is what keeps an ordinary release smooth");
 
-	/* --- reverse: absolute, in the same tick, with no hold able to soften it --- */
+	/* --- a non-direction safety cut keeps the bounded release ------------------------- */
 	reset_all(0);
 	base_ride(&r);
 	for (i = 0; i < MS(3000); i++) {
 		pipeline_tick(&r, &cmd);
 	}
-	iq_before = cmd.final_iq_request;
-	CHECK(iq_before > 0, "S5: setup - a ride is established before the reverse step");
-
-	r.reverse_step = true;
+	r.safety_cut = true;
 	pipeline_tick(&r, &cmd);
-	zero_same_tick = (cmd.final_iq_request == 0);
-	CHECK(zero_same_tick,
-		"S5: a reverse crank step takes the request to zero in the SAME tick");
-	CHECK(cmd.slew_mode == FIS_MODE_SAFETY,
-		"S5: and the current is retired on the firmware-owned safety release");
-	CHECK(assist_pipeline_pas_state() == AP2_PAS_REVERSE,
-		"S5: the lifecycle names the reason");
+	CHECK(cmd.final_iq_request == 0 && cmd.slew_mode == FIS_MODE_SAFETY,
+		"S5: a brake / overtemperature / torque fault zeroes the request and uses the "
+		"firmware-owned safety release - it is a decision about the machine, not about direction");
 
-	/* Holding the reverse must not let anything creep back. */
-	for (i = 0; i < MS(2000); i++) {
-		pipeline_tick(&r, &cmd);
-		if (cmd.final_iq_request != 0) {
-			break;
+	/* --- reverse: absolute, and it removes the REFERENCE, not just the request -------- */
+	{
+		static const reverse_case_t cases[] = {
+			{ "steady ride",    0U, 3U,  900U, MS(3000), 4000,  false },
+			{ "hard effort",    0U, 4U, 2600U, MS(3000), 4000,  false },
+			{ "during start",   0U, 3U, 1400U, MS(120),  4000,  false },
+			{ "adaptive AUTO",  1U, 3U, 1800U, MS(6000), 4000,  false },
+			{ "battery limit",  0U, 4U, 2600U, MS(3000), 20000, false },
+			{ "after a resume", 0U, 3U, 1200U, MS(3000), 4000,  true  },
+		};
+		unsigned n;
+		for (n = 0; n < sizeof(cases) / sizeof(cases[0]); n++) {
+			reverse_case(&cases[n]);
 		}
 	}
-	CHECK(cmd.final_iq_request == 0,
-		"S5: nothing - no base hold, no estimator, no ramp - re-raises assist while reversed");
 }
 
 static void scenario_restart(void)
@@ -664,6 +773,194 @@ static void scenario_safety_and_level_zero(void)
 	CHECK(st.max == 0, "S12: assist level 0 produces no current at all, however hard the push");
 }
 
+static void scenario_limiter_state_survives_owner_change(void)
+{
+	ride_t r;
+	assist_pipeline_command_t cmd;
+	uint32_t i;
+	bool latched_before;
+	bool latched_after_reset;
+
+	printf("S14 a limiter latch belongs to the battery, not to the ride\n");
+
+	/*
+	 * AUDIT FINDING 2. Walk Assist resets the pipeline so a ride cannot survive the detour.
+	 * That reset used to clear the shared limiter chain too, which meant the battery limiter
+	 * forgot it was limiting - on every tick of a Walk. A pack sitting between the exit
+	 * hysteresis band and the entry threshold therefore saw the cap jump back to full scale
+	 * thousands of times a second.
+	 *
+	 * The limiter describes the BATTERY. Nothing the rider does with the pedals, or with the
+	 * Walk button, changes how much current the pack may deliver.
+	 */
+	reset_all(0);
+	base_ride(&r);
+	r.peak_centikg = 2400U;
+	r.battery_current_ma = 20000;          /* over the 15 A ceiling */
+	for (i = 0; i < MS(2000); i++) {
+		pipeline_tick(&r, &cmd);
+	}
+	latched_before = assist_pipeline_battery_limited();
+	CHECK(latched_before, "S14: setup - the battery limiter has latched");
+
+	/* Inside the hysteresis band: above the exit threshold, below the entry threshold. */
+	r.battery_current_ma = 14000;
+	for (i = 0; i < MS(200); i++) {
+		pipeline_tick(&r, &cmd);
+	}
+	CHECK(assist_pipeline_battery_limited(),
+		"S14: setup - inside the hysteresis band the latch is still held");
+
+	/* An owner change - Walk, calibration, anything - resets the pedalling lifecycle. */
+	assist_pipeline_reset();
+	latched_after_reset = assist_pipeline_battery_limited();
+	CHECK(latched_after_reset,
+		"S14: resetting the pedalling lifecycle does NOT clear the battery limiter latch");
+
+	/* And it still releases properly, on its own terms. */
+	reset_all(0);
+	base_ride(&r);
+	r.peak_centikg = 2400U;
+	r.battery_current_ma = 20000;
+	for (i = 0; i < MS(2000); i++) {
+		pipeline_tick(&r, &cmd);
+	}
+	r.battery_current_ma = 8000;           /* below the 90 % exit band */
+	for (i = 0; i < MS(500); i++) {
+		pipeline_tick(&r, &cmd);
+	}
+	CHECK(!assist_pipeline_battery_limited(),
+		"S14: the latch still releases when the measured current genuinely falls");
+}
+
+static void scenario_level_iq_ceiling(void)
+{
+	const assist_level_config_t *level;
+	ap2_profile_override_t ovr;
+	assist_level_config_t legacy;
+	int32_t full;
+	int32_t half;
+	int32_t fifth;
+	int32_t zero_pct;
+
+	printf("S15 the configured per-level Iq ceiling binds\n");
+
+	/*
+	 * AUDIT FINDING 3. max_iq_pct is a rider-visible per-level ceiling that has been stored and
+	 * round-tripped over CAN for a long time. It reached no control path at all: the pipeline
+	 * was handed the GLOBAL ceiling, so setting a level to 20 % changed nothing.
+	 */
+	assist_modes_init();
+	assist_modes_set_active_bank(0);
+	level = assist_modes_get_default_level(3U);
+
+	{
+		assist_level_config_t cfg = *level;
+		cfg.max_iq_pct = 100U;
+		full = assist_modes_level_iq_limit(&cfg, (int32_t)PH_CURRENT_MAX, (int32_t)PH_CURRENT_MAX);
+		cfg.max_iq_pct = 50U;
+		half = assist_modes_level_iq_limit(&cfg, (int32_t)PH_CURRENT_MAX, (int32_t)PH_CURRENT_MAX);
+		cfg.max_iq_pct = 20U;
+		fifth = assist_modes_level_iq_limit(&cfg, (int32_t)PH_CURRENT_MAX, (int32_t)PH_CURRENT_MAX);
+		cfg.max_iq_pct = 0U;
+		zero_pct = assist_modes_level_iq_limit(&cfg, (int32_t)PH_CURRENT_MAX, (int32_t)PH_CURRENT_MAX);
+	}
+
+	CHECK(full == (int32_t)PH_CURRENT_MAX, "S15: 100 % is the full ceiling");
+	CHECK(half == (int32_t)PH_CURRENT_MAX / 2, "S15: 50 % halves it");
+	CHECK(fifth == (int32_t)PH_CURRENT_MAX / 5, "S15: 20 % is a fifth of it");
+	CHECK(half < full && fifth < half, "S15: the ceilings are ordered");
+	CHECK(zero_pct == (int32_t)PH_CURRENT_MAX,
+		"S15: 0 %% means NO LEVEL CEILING - it is what an uninitialised or pre-v6 record "
+		"carries, and reading it as zero allowed current would disable assist on an old bank");
+
+	/* It can only tighten: a global limp-mode limit still wins when it is lower. */
+	{
+		assist_level_config_t cfg = *level;
+		cfg.max_iq_pct = 100U;
+		CHECK(assist_modes_level_iq_limit(&cfg, 200, (int32_t)PH_CURRENT_MAX) == 200,
+			"S15: the level ceiling never raises a lower global limit");
+	}
+
+	/*
+	 * ...and a migration must not RAISE a stored restriction. A level saved under a legacy
+	 * mode number keeps its configured power ceiling: watts did not change meaning with the
+	 * pipeline, and a firmware update that quietly lifted a rider's limit would be the one
+	 * direction a migration must never move one.
+	 */
+	legacy = *level;
+	legacy.mode_type = ASSIST_MODE_POWER_LINEAR;    /* a pre-V2 bank */
+	legacy.max_motor_power_w = 300U;
+	assist_modes_profile_override(&legacy, &ovr);
+	CHECK(ovr.max_power_w == 300U,
+		"S15: migrating a legacy level keeps its stored power ceiling");
+	CHECK(ovr.assist_trim_pct == 0U && ovr.attack_ms == 0U,
+		"S15: ...but does NOT carry its gain or dynamics across, because those numbers meant "
+		"something else in the removed request model");
+}
+
+static void scenario_ceiling_binds_the_reference(void)
+{
+	ride_t r;
+	assist_pipeline_command_t cmd;
+	uint32_t i;
+	int32_t ref_high;
+	int32_t ref_after;
+	uint32_t ticks_to_comply = 0U;
+
+	printf("S16 a limiter binds the reference, not only the request\n");
+
+	/*
+	 * AUDIT FINDING 4. The chain capped the TARGET, and the target is approached over the
+	 * rider-feel release time. With a 600 ms release, a limiter that started binding left the
+	 * current regulator holding a reference above the new cap for most of a second. Capping a
+	 * request is not the same thing as limiting a current.
+	 */
+	reset_all(0);
+	base_ride(&r);
+	r.level = 4U;                  /* SPORT+: the largest envelope, so the drop is visible */
+	r.peak_centikg = 2800U;
+	for (i = 0; i < MS(3000); i++) {
+		pipeline_tick(&r, &cmd);
+	}
+	ref_high = g_iq_ref;
+	CHECK(ref_high > 100, "S16: setup - a high reference is established");
+
+	/* A hard thermal derate: the protections now allow far less than the rider is asking. */
+	r.temperature_c = 88;
+	for (i = 0; i < MS(1000); i++) {
+		pipeline_tick(&r, &cmd);
+		if (ticks_to_comply == 0U && g_iq_ref <= cmd.iq_ceiling) {
+			ticks_to_comply = i + 1U;
+		}
+	}
+	ref_after = g_iq_ref;
+
+	CHECK(cmd.iq_ceiling < ref_high,
+		"S16: setup - the protections now allow less than the reference was");
+	CHECK(ref_after <= cmd.iq_ceiling,
+		"S16: the reference ends up at or below what the protections allow");
+	CHECK(ticks_to_comply > 0U && ticks_to_comply < MS(250),
+		"S16: and it gets there without waiting for a rider-feel release time");
+
+	/* Recovery is a ramp, not a jump: the ceiling opens gradually and the attack does the rest. */
+	{
+		int32_t prev = g_iq_ref;
+		int32_t worst_step = 0;
+		r.temperature_c = 30;
+		for (i = 0; i < MS(2000); i++) {
+			pipeline_tick(&r, &cmd);
+			if (g_iq_ref - prev > worst_step) {
+				worst_step = g_iq_ref - prev;
+			}
+			prev = g_iq_ref;
+		}
+		CHECK(g_iq_ref > ref_after, "S16: leaving the limit gives the assist back");
+		CHECK(worst_step <= 8,
+			"S16: ...and gives it back as a ramp - no step in the reference when a limit lifts");
+	}
+}
+
 static void scenario_no_torque_no_assist(void)
 {
 	ride_t r;
@@ -694,6 +991,9 @@ int main(void)
 	scenario_limits();
 	scenario_safety_and_level_zero();
 	scenario_no_torque_no_assist();
+	scenario_limiter_state_survives_owner_change();
+	scenario_level_iq_ceiling();
+	scenario_ceiling_binds_the_reference();
 
 	if (failures == 0) {
 		puts("Assist Pipeline V2 scenarios: ALL CHECKS PASSED");

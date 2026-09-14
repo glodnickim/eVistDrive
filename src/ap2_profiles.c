@@ -142,23 +142,44 @@ const ap2_profile_t *ap2_profile_base(ap2_profile_id_t id)
 	return &profiles[id];
 }
 
-int32_t ap2_profile_shape(ap2_curve_t curve, int32_t permille)
+int32_t ap2_profile_shape_blend(ap2_curve_t curve_a, ap2_curve_t curve_b, int32_t blend,
+	int32_t permille)
 {
 	int32_t x = ap2_clamp(permille, 0, AP2_PERMILLE);
 	int32_t seg;
 	int32_t lo;
 	int32_t hi;
 
-	if ((unsigned)curve >= (unsigned)AP2_CURVE_COUNT) {
-		curve = AP2_CURVE_LINEAR;
+	if ((unsigned)curve_a >= (unsigned)AP2_CURVE_COUNT) {
+		curve_a = AP2_CURVE_LINEAR;
 	}
+	if ((unsigned)curve_b >= (unsigned)AP2_CURVE_COUNT) {
+		curve_b = curve_a;
+	}
+	blend = ap2_clamp(blend, 0, AP2_PERMILLE);
+
 	seg = x / 250;
 	if (seg > 3) {
 		seg = 3;
 	}
-	lo = curve_knots[curve][seg];
-	hi = curve_knots[curve][seg + 1];
+	/*
+	 * Interpolate the KNOTS, then evaluate. Blending the two curves' outputs would give the
+	 * same answer here - both are piecewise linear on the same knot grid - but blending the
+	 * knots says what is actually meant: at any factor there is ONE characteristic in force,
+	 * and it is a real curve, not the average of two answers.
+	 */
+	lo = curve_knots[curve_a][seg] +
+		(((int32_t)curve_knots[curve_b][seg] - (int32_t)curve_knots[curve_a][seg]) * blend) /
+		AP2_PERMILLE;
+	hi = curve_knots[curve_a][seg + 1] +
+		(((int32_t)curve_knots[curve_b][seg + 1] - (int32_t)curve_knots[curve_a][seg + 1]) * blend) /
+		AP2_PERMILLE;
 	return ap2_map(x, seg * 250, (seg + 1) * 250, lo, hi);
+}
+
+int32_t ap2_profile_shape(ap2_curve_t curve, int32_t permille)
+{
+	return ap2_profile_shape_blend(curve, curve, 0, permille);
 }
 
 static uint16_t blend_u16(uint16_t calm, uint16_t strong, int32_t factor)
@@ -258,13 +279,20 @@ void ap2_profiles_resolve(ap2_profile_id_t id, const ap2_profile_override_t *ovr
 		p.load_influence_pct = blend_u8(calm->load_influence_pct,
 			strong->load_influence_pct, factor);
 		/*
-		 * The characteristic is a SHAPE, not a number, so it switches at the midpoint rather
-		 * than being interpolated into a curve neither endpoint defines. The gain and the
-		 * dynamic terms already move continuously, so the handover is not a step in behaviour.
+		 * The characteristic moves with everything else. It used to switch at factor 500,
+		 * which put a step of up to 200 permille in the response for one count of factor
+		 * movement - right in the middle of the range AUTO spends most of its time in. Nothing
+		 * downstream turns a step into a ramp, so the fix belongs here.
 		 */
-		p.characteristic = (factor >= 500) ? strong->characteristic : calm->characteristic;
+		p.characteristic = calm->characteristic;
+		out->curve_a = calm->characteristic;
+		out->curve_b = strong->characteristic;
+		out->curve_blend = factor;
 	} else {
 		p = profiles[id];
+		out->curve_a = p.characteristic;
+		out->curve_b = p.characteristic;
+		out->curve_blend = 0;
 		/* A fixed profile must not leave a stale AUTO decision behind for the next time the
 		 * rider selects an adaptive one. */
 		ctx.auto_q16 = 0;

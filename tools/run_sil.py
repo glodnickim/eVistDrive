@@ -2,6 +2,8 @@
 from __future__ import annotations
 import argparse, os, subprocess, sys
 from pathlib import Path
+# Audit finding 9: link to, and launch, the platform's real executable name.
+EXE_SUFFIX='.exe' if os.name=='nt' else ''
 
 R=Path(__file__).resolve().parents[1]
 mods=[
@@ -44,14 +46,14 @@ def main():
     a=ap.parse_args()
 
     out=R/'.build/sil'; out.mkdir(parents=True,exist_ok=True)
-    exe=out/'evist_sil'; build(exe)
+    exe=out/('evist_sil'+EXE_SUFFIX); build(exe)
     fixed=run(exe,[])
     fuzz=run(exe,['--fuzz',str(a.fuzz),a.seed])
     report=fixed+'\n'+fuzz
 
     if a.sanitize:
         sout=R/'.build/sil-asan'; sout.mkdir(parents=True,exist_ok=True)
-        sexe=sout/'evist_sil_asan'; build(sexe,True)
+        sexe=sout/('evist_sil_asan'+EXE_SUFFIX); build(sexe,True)
         env=os.environ.copy(); env['ASAN_OPTIONS']='detect_leaks=1:halt_on_error=1'; env['UBSAN_OPTIONS']='halt_on_error=1'
         san=run(sexe,['--fuzz',str(a.sanitize_fuzz),a.seed],env)
         report += '\nSANITIZERS ASan+UBSan\n'+san

@@ -93,13 +93,44 @@ static inline int32_t ap2_scale_pct(int32_t value, int32_t pct)
 }
 
 /*
+ * How finely the lag integrates a long elapsed span.
+ *
+ * A single Euler step is only first-order accurate, so the answer it gives for one call of N
+ * ticks drifts away from N calls of one tick as N grows - and at N >= tau it used to jump
+ * straight to the target, which is a completely different response to the same elapsed time.
+ * Integrating in sub-steps of at most tau/16 bounds that difference to about 2 % of the step,
+ * for at most sixteen iterations, and costs exactly one iteration in the ordinary case where
+ * the foreground is on time.
+ *
+ * THIS IS THE STATED TOLERANCE. "Elapsed-time invariant" means the response to a given elapsed
+ * time is the same to within this bound however the time is divided into calls - not that it is
+ * bit-identical.
+ */
+#define AP2_LPF_SUBSTEP_DIV 16U
+
+/*
+ * When a stall stops being worth integrating, in time constants.
+ *
+ * There has to be SOME point past which the state is simply set to the target - integrating an
+ * arbitrarily long absence costs iterations for an answer that is already decided. The old code
+ * put that point at exactly one time constant, where 37 % of the step is still outstanding: the
+ * same elapsed time then gave 634 tick-by-tick and 1000 in one call, which is not a tolerance,
+ * it is a different filter.
+ *
+ * Five time constants leaves under 0.7 % outstanding - below the resolution of everything this
+ * pipeline carries - so the shortcut is genuinely indistinguishable from continuing.
+ */
+#define AP2_LPF_CATCHUP_TAUS 5U
+
+/*
  * ESTIMATOR LAG. Advance a Q16 first-order state toward `target` with time constant
  * `tau_ms`, for `elapsed_ticks` 4 kHz periods.
  *
  *   tau_ms == 0            -> no lag, the state becomes the target
- *   elapsed >= tau_ticks   -> fully caught up (a long foreground stall must not leave the
- *                             estimator lagging by an amount that depends on how the stall
- *                             was split into calls)
+ *   elapsed >= tau_ticks   -> fully caught up. Past one time constant the remaining error is
+ *                             under 37 % and shrinking, and continuing to integrate a stall
+ *                             that long tells us nothing about riding: the foreground has been
+ *                             away for longer than the filter's own memory.
  *
  * Returns the new Q16 state. Read it with ap2_q16_value().
  */
@@ -109,6 +140,8 @@ static inline int32_t ap2_lpf_step(int32_t state_q16, int32_t target,
 	int32_t clamped = ap2_clamp(target, AP2_Q16_INPUT_MIN, AP2_Q16_INPUT_MAX);
 	int32_t target_q16 = clamped << AP2_Q16_SHIFT;
 	uint32_t tau_ticks;
+	uint32_t remaining;
+	uint32_t max_substep;
 
 	if (tau_ms == 0U) {
 		return target_q16;
@@ -117,13 +150,24 @@ static inline int32_t ap2_lpf_step(int32_t state_q16, int32_t target,
 		elapsed_ticks = 1U;
 	}
 	tau_ticks = tau_ms * AP2_TICKS_PER_MS;
-	if (elapsed_ticks >= tau_ticks) {
+	if (tau_ticks == 0U || elapsed_ticks >= tau_ticks * AP2_LPF_CATCHUP_TAUS) {
 		return target_q16;
 	}
-	{
-		int64_t err = (int64_t)target_q16 - (int64_t)state_q16;
-		return (int32_t)((int64_t)state_q16 + (err * (int64_t)elapsed_ticks) / (int64_t)tau_ticks);
+
+	max_substep = tau_ticks / AP2_LPF_SUBSTEP_DIV;
+	if (max_substep == 0U) {
+		max_substep = 1U;
 	}
+
+	remaining = elapsed_ticks;
+	while (remaining > 0U) {
+		uint32_t step = (remaining < max_substep) ? remaining : max_substep;
+		int64_t err = (int64_t)target_q16 - (int64_t)state_q16;
+		state_q16 = (int32_t)((int64_t)state_q16 +
+			(err * (int64_t)step) / (int64_t)tau_ticks);
+		remaining -= step;
+	}
+	return state_q16;
 }
 
 static inline int32_t ap2_q16_value(int32_t state_q16)

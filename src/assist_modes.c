@@ -320,6 +320,26 @@ ap2_profile_id_t assist_modes_profile_for_level(const assist_level_config_t *con
 	}
 }
 
+int32_t assist_modes_level_iq_limit(const assist_level_config_t *config,
+	int32_t global_limit, int32_t phase_current_max)
+{
+	int32_t ceiling = global_limit;
+
+	if (phase_current_max < 0) {
+		phase_current_max = 0;
+	}
+	if (ceiling <= 0 || ceiling > phase_current_max) {
+		ceiling = phase_current_max;
+	}
+	if (config != 0 && config->max_iq_pct != 0U && config->max_iq_pct < 100U) {
+		int32_t level_cap = (phase_current_max * (int32_t)config->max_iq_pct) / 100;
+		if (level_cap < ceiling) {
+			ceiling = level_cap;
+		}
+	}
+	return ceiling;
+}
+
 void assist_modes_profile_override(const assist_level_config_t *config,
 	ap2_profile_override_t *out)
 {
@@ -336,18 +356,28 @@ void assist_modes_profile_override(const assist_level_config_t *config,
 	}
 
 	/*
-	 * A level that still carries a LEGACY mode number is migrated as a whole: it gets the
+	 * A CEILING IS HONOURED WHATEVER THE MODE NUMBER SAYS.
+	 *
+	 * max_motor_power_w is a limit the rider set on how much the motor may spend. Its meaning
+	 * did not change with the pipeline - watts are watts - and a migration that dropped it
+	 * would RAISE a stored restriction as a side effect of a firmware update. That is the one
+	 * direction a migration must never move a limit, so it is applied before the legacy check
+	 * below.
+	 */
+	out->max_power_w = config->max_motor_power_w;
+
+	/*
+	 * Everything else is migrated as a whole: a level carrying a LEGACY mode number gets the
 	 * migrated profile's own numbers, not the old mode's. support_ratio_pct meant "percent of
 	 * rider power" in a request model this firmware no longer has, so carrying that number
-	 * across as an assist gain would silently reinterpret it - the very thing the wire-value
-	 * rules exist to prevent. Only a level explicitly saved as a V2 profile may override.
+	 * across as an assist trim would silently reinterpret it - the very thing the wire-value
+	 * rules exist to prevent. Only a level explicitly saved as a V2 profile may override these.
 	 */
 	if (config->mode_type < ASSIST_MODE_V2_ECO) {
 		return;
 	}
 
 	out->assist_trim_pct = config->support_ratio_pct;
-	out->max_power_w = config->max_motor_power_w;
 	out->attack_ms = config->iq_rise_fast_ms;
 	out->release_ms = config->release_ms;
 	out->start_ms = config->smooth_start.duration_ms;

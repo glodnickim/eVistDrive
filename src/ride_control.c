@@ -1,6 +1,7 @@
 #include "ride_control.h"
 
 #include "ap2_limits.h"
+#include "assist_modes.h"
 #include "assist_pipeline.h"
 #include "config.h"
 #include "fast_iq_slew.h"
@@ -41,6 +42,30 @@ static volatile int32_t final_iq_requested;
  * fade out through the assist release: it is cut in the same tick. */
 static bool walk_was_active;
 
+/*
+ * Which owner had the motor on the previous tick. The pipeline's pedalling state is dropped on
+ * the EDGE into another owner, not on every tick of it: an owner change is an event, and
+ * repeating the reset thousands of times a second only creates opportunities for shared state
+ * to be cleared as a side effect (see the battery limiter, audit finding 2).
+ */
+typedef enum {
+	RIDE_OWNER_ASSIST = 0,
+	RIDE_OWNER_WALK = 1,
+	RIDE_OWNER_CALIBRATION = 2
+} ride_owner_t;
+
+static ride_owner_t ride_owner_prev;
+
+static void ride_enter_owner(ride_owner_t owner)
+{
+	if (ride_owner_prev != owner) {
+		ride_owner_prev = owner;
+		if (owner != RIDE_OWNER_ASSIST) {
+			assist_pipeline_reset();
+		}
+	}
+}
+
 bool ride_control_battery_limit_active(void)
 {
 	return assist_pipeline_battery_limited();
@@ -61,7 +86,8 @@ static void ride_publish_final_iq(
 	fis_mode_t mode,
 	uint16_t step_mag_8,
 	uint32_t release_ticks_16k,
-	fis_zero_policy_t zero_policy)
+	fis_zero_policy_t zero_policy,
+	int32_t iq_ceiling)
 {
 	fast_iq_slew_publish(
 		&final_iq_slew_mailbox,
@@ -69,14 +95,16 @@ static void ride_publish_final_iq(
 		mode,
 		step_mag_8,
 		release_ticks_16k,
-		zero_policy);
+		zero_policy,
+		iq_ceiling);
 	final_iq_requested = target;
 }
 
 void ride_control_force_final_iq_zero(void)
 {
-	/* A forced zero is never a rider release - NONE keeps the ordinary zero-current PI. */
-	ride_publish_final_iq(0, FIS_MODE_FORCE_ZERO, 0U, 0U, FIS_ZERO_POLICY_NONE);
+	/* A forced zero is never a rider release - NONE keeps the ordinary zero-current PI.
+	 * Ceiling 0: nothing may flow until a real command says otherwise. */
+	ride_publish_final_iq(0, FIS_MODE_FORCE_ZERO, 0U, 0U, FIS_ZERO_POLICY_NONE, 0);
 }
 
 void ride_control_request_service_iq(int32_t iq_target)
@@ -84,8 +112,9 @@ void ride_control_request_service_iq(int32_t iq_target)
 	if (iq_target < 0) {
 		iq_target = 0;
 	}
-	/* Service and Walk own their own trajectory; they never arm Quiet Zero. */
-	ride_publish_final_iq(iq_target, FIS_MODE_BYPASS, 0U, 0U, FIS_ZERO_POLICY_NONE);
+	/* Service and Walk own their own trajectory; they never arm Quiet Zero. The ceiling is
+	 * the request itself: a BYPASS owner has already passed whatever limits apply to it. */
+	ride_publish_final_iq(iq_target, FIS_MODE_BYPASS, 0U, 0U, FIS_ZERO_POLICY_NONE, iq_target);
 }
 
 uint8_t ride_control_get_session_state(void)
@@ -101,6 +130,7 @@ uint8_t ride_control_get_pas_state(void)
 void ride_control_init(void)
 {
 	walk_was_active = false;
+	ride_owner_prev = RIDE_OWNER_ASSIST;
 	assist_pipeline_init();
 	iq_chain_reset();
 	fast_iq_slew_reset(&final_iq_slew_mailbox);
@@ -177,13 +207,14 @@ void ride_control_update(const ride_control_input_t *input)
 		if (cal_iq < 0) {
 			cal_iq = 0;
 		}
-		assist_pipeline_reset();
+		ride_enter_owner(RIDE_OWNER_CALIBRATION);
 		requested = cal_iq;
 		cmd.final_iq_request = cal_iq;
 		cmd.slew_mode = FIS_MODE_BYPASS;
 		cmd.step_mag_8 = 0U;
 		cmd.release_ticks_16k = 0U;
 		cmd.zero_policy = FIS_ZERO_POLICY_NONE;
+		cmd.iq_ceiling = cal_iq;
 	} else if (input->walk_active) {
 		/*
 		 * WALK ASSIST. A separate demand owner, not an assist mode with different numbers: it
@@ -191,19 +222,21 @@ void ride_control_update(const ride_control_input_t *input)
 		 * loop would only make it less stable. It does pass the shared ceilings.
 		 */
 		int32_t walk_raw = (int32_t)walk_assist_iq_request();
-		assist_pipeline_reset();
+		ride_enter_owner(RIDE_OWNER_WALK);
 		requested = walk_raw;
 		cmd.final_iq_request = walk_iq_through_shared_limits(input, walk_raw);
 		cmd.slew_mode = FIS_MODE_BYPASS;
 		cmd.step_mag_8 = 0U;
 		cmd.release_ticks_16k = 0U;
 		cmd.zero_policy = FIS_ZERO_POLICY_NONE;
+		cmd.iq_ceiling = cmd.final_iq_request;
 	} else if (walk_release_cut) {
 		/*
 		 * Leaving Walk: the walk current must not be handed to the assist release as if the
 		 * rider had just stopped pedalling. It is zeroed in the same tick, and the pipeline
 		 * starts the next ride from zero.
 		 */
+		ride_owner_prev = RIDE_OWNER_ASSIST;
 		assist_pipeline_reset();
 		requested = 0;
 		cmd.final_iq_request = 0;
@@ -211,8 +244,10 @@ void ride_control_update(const ride_control_input_t *input)
 		cmd.step_mag_8 = 0U;
 		cmd.release_ticks_16k = 0U;
 		cmd.zero_policy = FIS_ZERO_POLICY_NONE;
+		cmd.iq_ceiling = 0;
 	} else {
 		/* ---- PEDAL ASSIST: the one rider-facing path ---------------------------------- */
+		ride_owner_prev = RIDE_OWNER_ASSIST;
 		rider = rider_input_get();
 
 		pipe_in.torque_load_centikg = rider->torque_load_centikg;
@@ -242,7 +277,14 @@ void ride_control_update(const ride_control_input_t *input)
 		pipe_in.battery_current_max = input->battery_current_max;
 		pipe_in.u_abs = input->u_abs;
 		pipe_in.cal_i = input->cal_i;
-		pipe_in.level_iq_limit = input->ride_core_iq_limit;
+		/*
+		 * The ceiling this assist LEVEL may command: the global limit (limp mode, hardware)
+		 * tightened by the level's own max_iq_pct. Passing the global limit alone is what made
+		 * a configured per-level ceiling do nothing at all.
+		 */
+		pipe_in.level_iq_limit = assist_modes_level_iq_limit(
+			assist_modes_get_default_level(input->assist_level_index),
+			input->ride_core_iq_limit, input->phase_current_max);
 		pipe_in.phase_current_max = input->phase_current_max;
 		pipe_in.voltage_raw = input->voltage_raw;
 		pipe_in.voltage_min_raw = input->voltage_min_raw;
@@ -265,7 +307,7 @@ void ride_control_update(const ride_control_input_t *input)
 	iq_chain_note_allowed(cmd.final_iq_request);
 
 	ride_publish_final_iq(cmd.final_iq_request, cmd.slew_mode, cmd.step_mag_8,
-		cmd.release_ticks_16k, cmd.zero_policy);
+		cmd.release_ticks_16k, cmd.zero_policy, cmd.iq_ceiling);
 
 	/* Iq is owned exclusively by fast_iq_slew_tick(); motor_core owns only Id here. */
 	motor_core_set_id_target(input->current_id);

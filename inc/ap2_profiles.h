@@ -86,6 +86,18 @@ typedef struct {
 typedef struct {
 	ap2_profile_t p;
 	ap2_profile_id_t id;
+	/*
+	 * The characteristic in force is a BLEND of two curves, not one of them.
+	 *
+	 * Every other AUTO parameter moves continuously with the factor; a curve that switched at
+	 * a threshold would put a step in the response in the middle of the range the factor spends
+	 * most of its time in. `curve_blend` is the weight of `curve_b`, in permille.
+	 *
+	 * For a fixed profile both curves are the same and the blend is irrelevant.
+	 */
+	uint8_t curve_a;
+	uint8_t curve_b;
+	int32_t curve_blend;
 	/* 0..1000. For AUTO profiles, where between calm and strong the pipeline currently sits.
 	 * For fixed profiles it is reported as 0 and nothing reads it. */
 	int32_t auto_factor;
@@ -157,6 +169,15 @@ void ap2_profiles_resolve(ap2_profile_id_t id, const ap2_profile_override_t *ovr
 
 /* The assist characteristic: 0..1000 effort in, 0..1000 response out. */
 int32_t ap2_profile_shape(ap2_curve_t curve, int32_t permille);
+
+/*
+ * The same, for a characteristic that is moving between two shapes: the curves' KNOTS are
+ * interpolated by `blend` (permille of curve_b) and the result is evaluated on the blended
+ * curve. Interpolating the knots rather than the two outputs keeps the result a genuine
+ * piecewise-linear characteristic at every blend, which is what makes it monotonic.
+ */
+int32_t ap2_profile_shape_blend(ap2_curve_t curve_a, ap2_curve_t curve_b, int32_t blend,
+	int32_t permille);
 
 /* True when this profile id is one of the two adaptive ones. */
 bool ap2_profile_is_auto(ap2_profile_id_t id);

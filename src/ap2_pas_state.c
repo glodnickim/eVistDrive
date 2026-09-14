@@ -61,6 +61,7 @@ void ap2_pas_state_update(const ap2_pas_input_t *in, ap2_pas_output_t *out)
 		out->engaged_edge = false;
 		out->resumed = false;
 		out->block_positive = true;
+		out->direction_block = false;
 		out->stopping = false;
 		out->stop_grace_ticks = 0U;
 		return;
@@ -167,6 +168,7 @@ void ap2_pas_state_update(const ap2_pas_input_t *in, ap2_pas_output_t *out)
 	 * tick it is detected.
 	 */
 	out->block_positive = terminal;
+	out->direction_block = in->direction_inhibit;
 	if (engaged_edge) {
 		ctx.resume_pending = false;
 	}

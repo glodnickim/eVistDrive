@@ -105,6 +105,16 @@ typedef struct {
 
 typedef struct {
 	int32_t final_iq;
+	/*
+	 * WHAT THE PROTECTIONS ALLOW, independently of what the rider asked for.
+	 *
+	 * final_iq is the rider's request after the chain. iq_ceiling is the same chain applied to
+	 * a request of full scale: the largest current the protections would permit right now. They
+	 * differ whenever the rider is asking for less than the limits allow, which is most of the
+	 * time - and that difference is the point. The target is approached over rider-feel times;
+	 * the ceiling is a protection and must bind without waiting for one.
+	 */
+	int32_t iq_ceiling;
 	/* Which stages were binding this tick, and what each of them allowed. Observation only:
 	 * nothing reads these to make a decision, they exist so a ride log can name the limit
 	 * instead of leaving a tuner to guess which one took the current away. */

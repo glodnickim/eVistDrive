@@ -106,6 +106,8 @@ typedef struct {
 	uint16_t step_mag_8;
 	uint32_t release_ticks_16k;
 	fis_zero_policy_t zero_policy;
+	/* The hard ceiling the single reference owner must clamp to - see fast_iq_slew_command_t. */
+	int32_t iq_ceiling;
 } assist_pipeline_command_t;
 
 /*
@@ -142,6 +144,9 @@ typedef struct {
 	int32_t iq_request_before_limits;
 	int32_t final_iq_request;
 
+	/* the protection ceiling in force, after its own rate limit */
+	int32_t iq_ceiling;
+
 	/* limiter states */
 	bool power_limited;
 	bool battery_limited;
@@ -155,6 +160,9 @@ typedef struct {
 	bool start_active;
 	bool release_active;
 	bool block_positive;
+	/* The DIRECTION subset of block_positive: a reverse crank step or an illegal PAS
+	 * transition. It is the case that removes the Iq reference itself, not only the request. */
+	bool direction_block;
 	/*
 	 * A non-zero request was taken all the way to zero by the limiter chain. The single fact
 	 * that separates "the rider was not asking" from "a limit took it away", which is the first

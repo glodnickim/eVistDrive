@@ -17,6 +17,8 @@ R = Path(__file__).resolve().parents[1]
 OUT = R / '.build' / 'electrical-sil'
 OUT.mkdir(parents=True, exist_ok=True)
 CC = os.environ.get('CC', 'gcc')
+# Audit finding 9: link to, and launch, the platform's real executable name.
+EXE_SUFFIX = '.exe' if os.name == 'nt' else ''
 
 SUPERVISORY_MODULES = [
     'src/torque_input.c','src/rider_input.c','src/assist_modes.c','src/cadence_filter.c',
@@ -102,18 +104,18 @@ def main() -> None:
     ap.add_argument('--jobs',type=int,default=min(4,os.cpu_count() or 1),help='parallel deterministic fuzz shards')
     a=ap.parse_args()
 
-    standalone=OUT/'foc_electrical_sil'
+    standalone=OUT/('foc_electrical_sil'+EXE_SUFFIX)
     build(standalone,['sim/foc_electrical_sil.c',*FOC_MODULES])
     report='STANDALONE REAL FOC / PMSM\n'+run(standalone,[])
 
-    full=OUT/'evist_full_foc_sil'
+    full=OUT/('evist_full_foc_sil'+EXE_SUFFIX)
     build(full,['sim/evist_sil.c',*SUPERVISORY_MODULES,*FOC_MODULES,*FULL_EXTRA],full=True)
     fixed=run(full,[])
     fuzz=run_sharded(full,a.full_fuzz,a.seed,a.jobs)
     report += '\nEND-TO-END ASSIST -> REAL FOC -> PMSM -> HALL\n'+fixed+'\n'+fuzz
 
     if a.sanitize:
-        san=OUT/'evist_full_foc_sil_asan'
+        san=OUT/('evist_full_foc_sil_asan'+EXE_SUFFIX)
         build(san,['sim/evist_sil.c',*SUPERVISORY_MODULES,*FOC_MODULES,*FULL_EXTRA],full=True,sanitize=True)
         env=os.environ.copy()
         env['ASAN_OPTIONS']='detect_leaks=1:halt_on_error=1'

@@ -549,3 +549,7 @@ right.
   before tuning anything else.
 - `ASSIST_LEVEL` → profile mapping for banks saved before V2 is a migration by *character*
   (§`assist_modes_profile_for_level`). A rider who had tuned a legacy mode will need to re-pick.
+
+## Review and external reference (2026-09-14)
+
+Before further tuning, read the [V2 audit including correction K1](AUDIT_ASSIST_PIPELINE_V2_2026-09-14_PL.md) and the [G5300 reference intake](reference/g5300/README.md). The latter preserves a user-supplied reverse summary for a different controller, with provenance, internal corrections and an explicit mapping to M820. It is not a specification for copying stock constants or a request to replace V2 again.

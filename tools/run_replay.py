@@ -4,6 +4,8 @@ import argparse, os, subprocess
 from pathlib import Path
 R=Path(__file__).resolve().parents[1]; OUT=R/'.build/replay'; OUT.mkdir(parents=True,exist_ok=True)
 CC=os.environ.get('CC','gcc')
+# Audit finding 9: link to, and launch, the platform's real executable name.
+EXE_SUFFIX='.exe' if os.name=='nt' else ''
 PROD=['src/torque_input.c','src/rider_input.c','src/assist_modes.c','src/cadence_filter.c',
       'src/tuning_config.c','src/ride_control.c',
       'src/ap2_pas_state.c','src/ap2_rider_demand.c','src/ap2_estimators.c',
@@ -18,7 +20,7 @@ def main():
     # finish_power_request(); see the long comment in sim/replay/replay_fw.c. Not a default to
     # change casually: sim/replay/cases/*/manifest.json pin accepted_output_sha256.
     ap.add_argument('--u-abs',type=int,default=None,help='0..2048; sweep it, do not guess one value')
-    a=ap.parse_args(); exe=OUT/'replay_fw'; out=a.output or OUT/(a.input.stem+'.replayed.csv')
+    a=ap.parse_args(); exe=OUT/('replay_fw'+EXE_SUFFIX); out=a.output or OUT/(a.input.stem+'.replayed.csv')
     cmd=[CC,'-std=c11','-O2','-Wall','-Wextra','-Werror','-Wno-error=type-limits','-Wno-error=unused-parameter',
          '-Isim/full_host_stubs','-Iinc','-Itests/host/common','-o',str(exe),'sim/replay/replay_fw.c',*PROD,'-lm']
     subprocess.run(cmd,cwd=R,check=True)

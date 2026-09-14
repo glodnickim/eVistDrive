@@ -62,6 +62,21 @@ typedef struct {
 	uint32_t release_ticks_16k;
 	uint32_t release_recip_q32;
 	uint32_t zero_policy;
+	/*
+	 * HARD CEILING ON THE REFERENCE. The accumulator is clamped to this on every tick, in
+	 * every mode.
+	 *
+	 * The target says what the rider is asking for and is approached over the rider-feel
+	 * attack/release times. That is the wrong instrument for a protection: when a limiter
+	 * starts binding, lowering the target alone leaves the reference above the new cap for as
+	 * long as a 600 ms release allows, and the current regulator is handed that reference the
+	 * whole time. The ceiling is the protection's own channel to the one reference owner, and
+	 * it binds immediately.
+	 *
+	 * The producer rate-limits how fast the ceiling itself may move (see AP2_CEILING_*_MS), so
+	 * "immediately" here means "without waiting for a ride-feel ramp", not "as a step".
+	 */
+	int32_t  iq_ceiling;
 } fast_iq_slew_command_t;
 
 /* Every published field is a naturally aligned Cortex-M4 atomic word access. */
@@ -73,6 +88,7 @@ typedef struct {
 	volatile uint32_t release_ticks_16k;
 	volatile uint32_t release_recip_q32;
 	volatile uint32_t zero_policy;
+	volatile int32_t  iq_ceiling;
 } fast_iq_slew_mailbox_t;
 
 /* Producer API (called from 4 kHz ride/control domain). */
@@ -83,7 +99,8 @@ void fast_iq_slew_publish(
 	fis_mode_t mode,
 	uint16_t step_mag_8,
 	uint32_t release_ticks_16k,
-	fis_zero_policy_t zero_policy);
+	fis_zero_policy_t zero_policy,
+	int32_t iq_ceiling);
 
 /* Consumer API (called from 16 kHz FOC ISR). */
 
@@ -106,6 +123,8 @@ int32_t fast_iq_slew_tick(
 
 /* Read-only word-sized observations used by diagnostics and deterministic tests. */
 int32_t fast_iq_slew_current_target(void);
+/* The ceiling the ISR is currently clamping the reference to. Observation only. */
+int32_t fast_iq_slew_current_ceiling(void);
 fis_mode_t fast_iq_slew_current_mode(void);
 uint32_t fast_iq_slew_current_step_mag_8(void);
 uint32_t fast_iq_slew_current_release_ticks_16k(void);
@@ -132,6 +151,7 @@ typedef enum {
 	FIS_PUBLISH_AFTER_RELEASE_TICKS,
 	FIS_PUBLISH_AFTER_RELEASE_RECIP,
 	FIS_PUBLISH_AFTER_ZERO_POLICY,
+	FIS_PUBLISH_AFTER_CEILING,
 	FIS_PUBLISH_BEFORE_SEQ_EVEN,
 	FIS_PUBLISH_AFTER_SEQ_EVEN
 } fis_publish_stage_t;

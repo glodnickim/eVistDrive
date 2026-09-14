@@ -35,12 +35,16 @@
 #define FIS_ACC_SHIFT 10        /* Q10 accumulator (2 extra bits make /4 exact) */
 #define FIS_Q_SHIFT   8         /* input step (Q8) matches IQ_RAMP_Q_SHIFT */
 
-_Static_assert(sizeof(fast_iq_slew_mailbox_t) == 28U,
-	"mailbox must contain exactly seven 32-bit words");
+/* The eighth word is the protection ceiling. Every member stays a naturally aligned
+ * single-word access, which is what the seqlock relies on. */
+_Static_assert(sizeof(fast_iq_slew_mailbox_t) == 32U,
+	"mailbox must contain exactly eight 32-bit words");
 _Static_assert(offsetof(fast_iq_slew_mailbox_t, seq) == 0U,
 	"sequence word must lead the mailbox");
 _Static_assert(offsetof(fast_iq_slew_mailbox_t, target) == 4U,
 	"payload words must be naturally aligned");
+_Static_assert(offsetof(fast_iq_slew_mailbox_t, iq_ceiling) == 28U,
+	"the ceiling is the last payload word and must stay single-word aligned");
 
 #ifdef __GNUC__
 #if defined(__arm__) || defined(__thumb__) || defined(__aarch64__)
@@ -85,6 +89,7 @@ static bool fis_command_equal(
 		a->mode == b->mode &&
 		a->release_ticks_16k == b->release_ticks_16k &&
 		a->release_recip_q32 == b->release_recip_q32 &&
+		a->iq_ceiling == b->iq_ceiling &&
 		a->zero_policy == b->zero_policy;
 }
 
@@ -107,6 +112,7 @@ static bool fis_mailbox_read_verified(
 		candidate.mode = mb->mode;
 		candidate.release_ticks_16k = mb->release_ticks_16k;
 		candidate.release_recip_q32 = mb->release_recip_q32;
+		candidate.iq_ceiling = mb->iq_ceiling;
 		candidate.zero_policy = mb->zero_policy;
 
 		FIS_MEMORY_BARRIER();
@@ -260,6 +266,36 @@ int32_t fast_iq_slew_tick(
 		fis.accumulator_q10 = 0;
 		fis.rate = 0;
 	}
+
+	/*
+	 * THE HARD CEILING, applied last and in every mode.
+	 *
+	 * This is the protection channel described in fast_iq_slew_command_t. It binds on the
+	 * ACCUMULATOR, not only on the published value, so a reference held above a newly lowered
+	 * cap cannot resume from the old state when the cap is raised again - it resumes from where
+	 * it was actually allowed to be, and climbs back under the ordinary attack ramp.
+	 *
+	 * It can only ever LOWER the reference. A ceiling above the current reference does nothing,
+	 * so raising one never produces a step; that is what makes recovering from a limit bumpless
+	 * without a second mechanism to manage it.
+	 *
+	 * A ceiling of 0 is honoured literally: zero allowed current. The producer never publishes
+	 * a negative one, and a negative value would be meaningless here, so it is treated as zero.
+	 */
+	{
+		int32_t ceiling = fis.command.iq_ceiling;
+		if (ceiling < 0) {
+			ceiling = 0;
+		}
+		if (iq_ref > ceiling) {
+			iq_ref = ceiling;
+			fis.accumulator_q10 = ceiling << FIS_ACC_SHIFT;
+			if (fis.rate > 0) {
+				fis.rate = 0;
+			}
+		}
+	}
+
 	*iq_out = iq_ref;
 	return iq_ref;
 }
@@ -270,7 +306,8 @@ void fast_iq_slew_publish(
 	fis_mode_t mode,
 	uint16_t step_mag_8,
 	uint32_t release_ticks_16k,
-	fis_zero_policy_t zero_policy)
+	fis_zero_policy_t zero_policy,
+	int32_t iq_ceiling)
 {
 	uint32_t release_recip_q32 = 0U;
 	if (release_ticks_16k > 1U) {
@@ -297,6 +334,8 @@ void fast_iq_slew_publish(
 	FIS_TEST_HOOK(FIS_PUBLISH_AFTER_RELEASE_RECIP, mb);
 	mb->zero_policy = (uint32_t)zero_policy;
 	FIS_TEST_HOOK(FIS_PUBLISH_AFTER_ZERO_POLICY, mb);
+	mb->iq_ceiling = iq_ceiling;
+	FIS_TEST_HOOK(FIS_PUBLISH_AFTER_CEILING, mb);
 
 	/* DMB + compiler clobber: all payload stores complete before stable publication. */
 	FIS_MEMORY_BARRIER();
@@ -315,6 +354,7 @@ void fast_iq_slew_reset(fast_iq_slew_mailbox_t *mb)
 	fis.command.mode = (uint32_t)FIS_MODE_FORCE_ZERO;
 	fis.command.release_ticks_16k = 0U;
 	fis.command.release_recip_q32 = 0U;
+	fis.command.iq_ceiling = 0;
 	fis.command.zero_policy = (uint32_t)FIS_ZERO_POLICY_NONE;
 
 	/* Reset is exclusive with the consumer, but still leave a normal stable generation. */
@@ -325,6 +365,7 @@ void fast_iq_slew_reset(fast_iq_slew_mailbox_t *mb)
 	mb->mode = (uint32_t)FIS_MODE_FORCE_ZERO;
 	mb->release_ticks_16k = 0U;
 	mb->release_recip_q32 = 0U;
+	mb->iq_ceiling = 0;
 	mb->zero_policy = (uint32_t)FIS_ZERO_POLICY_NONE;
 	FIS_MEMORY_BARRIER();
 	mb->seq = 2U;
@@ -336,6 +377,11 @@ void fast_iq_slew_cold_prepare(
 {
 	fast_iq_slew_reset(mb);
 	*iq_out = 0;
+}
+
+int32_t fast_iq_slew_current_ceiling(void)
+{
+	return fis.command.iq_ceiling;
 }
 
 int32_t fast_iq_slew_current_target(void)

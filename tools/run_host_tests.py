@@ -102,10 +102,12 @@ if len(suites)!=declared:
           file=sys.stderr);sys.exit(3)
 
 cc=os.environ.get('CC','gcc')
+# Audit finding 9: link to, and launch, the platform's real executable name.
+EXE_SUFFIX='.exe' if os.name=='nt' else ''
 failed=[]; skipped=[]; passed=[]
 outdir=ROOT/'.build/host-linux';outdir.mkdir(parents=True,exist_ok=True)
 for idx,s in enumerate(suites,1):
-    exe=outdir/f'suite_{idx:02d}'
+    exe=outdir/f'suite_{idx:02d}{EXE_SUFFIX}'
     cmd=[cc,'-std=c11','-Wall','-Wextra','-Werror']+s['defines']
     for d in s['incdirs']:cmd+=['-I',str(d)]
     cmd+=['-I',str(INC),'-o',str(exe),str(s['harness'])]+[str(x) for x in s['modules']]+['-lm']

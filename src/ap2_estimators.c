@@ -42,9 +42,14 @@ void ap2_estimators_reset(void)
  * 4 kHz signal is dominated by quantisation of the sensor least significant bit; a window
  * difference measures the gesture the rider actually made. Returns true on the tick the
  * window closed, and then writes the difference to *delta.
+ *
+ * *closed_ticks receives the time the window ACTUALLY spanned, which is not the nominal length:
+ * a late foreground can overshoot it by however much it coalesced. Dividing the difference by
+ * the nominal length would then report a rate higher than the rider produced - the change is
+ * real, the time it took is simply longer than assumed - so the caller normalises by this.
  */
 static bool window_delta(uint32_t *window_ticks, int32_t *reference, int32_t value,
-	uint32_t window_ms, uint32_t elapsed_ticks, int32_t *delta)
+	uint32_t window_ms, uint32_t elapsed_ticks, int32_t *delta, uint32_t *closed_ticks)
 {
 	uint32_t limit = window_ms * AP2_TICKS_PER_MS;
 
@@ -54,6 +59,7 @@ static bool window_delta(uint32_t *window_ticks, int32_t *reference, int32_t val
 	}
 	*delta = value - *reference;
 	*reference = value;
+	*closed_ticks = *window_ticks;
 	*window_ticks = 0U;
 	return true;
 }
@@ -68,6 +74,7 @@ void ap2_estimators_update(const ap2_estimator_input_t *in, ap2_estimator_output
 	int32_t cadence_load_evidence;
 	int32_t load_raw;
 	int32_t delta;
+	uint32_t span;
 
 	if (out == 0) {
 		return;
@@ -89,8 +96,10 @@ void ap2_estimators_update(const ap2_estimator_input_t *in, ap2_estimator_output
 
 	/* 1. How fast the rider raised the demand, in permille per 100 ms. */
 	if (window_delta(&ctx.rate_window_ticks, &ctx.rate_ref_permille,
-		in->demand_permille, AP2_AGGR_RATE_WINDOW_MS, in->elapsed_ticks, &delta)) {
-		int32_t per_100ms = (delta * 100) / (int32_t)AP2_AGGR_RATE_WINDOW_MS;
+		in->demand_permille, AP2_AGGR_RATE_WINDOW_MS, in->elapsed_ticks, &delta, &span)) {
+		/* Normalised by the time that actually passed, not by the nominal window. */
+		int32_t span_ms = (int32_t)(span / AP2_TICKS_PER_MS);
+		int32_t per_100ms = (span_ms > 0) ? (delta * 100) / span_ms : 0;
 		ctx.rate_per_100ms = (per_100ms > 0) ? per_100ms : 0;
 	}
 	rate_evidence = ap2_map(ctx.rate_per_100ms,
@@ -112,8 +121,9 @@ void ap2_estimators_update(const ap2_estimator_input_t *in, ap2_estimator_output
 
 	/* 3. How fast the cadence is being wound up, in rpm per second. */
 	if (window_delta(&ctx.cadence_window_ticks, &ctx.cadence_ref_rpm,
-		(int32_t)in->cadence_rpm, AP2_AGGR_CADENCE_WINDOW_MS, in->elapsed_ticks, &delta)) {
-		int32_t per_s = (delta * 1000) / (int32_t)AP2_AGGR_CADENCE_WINDOW_MS;
+		(int32_t)in->cadence_rpm, AP2_AGGR_CADENCE_WINDOW_MS, in->elapsed_ticks, &delta, &span)) {
+		int32_t span_ms = (int32_t)(span / AP2_TICKS_PER_MS);
+		int32_t per_s = (span_ms > 0) ? (delta * 1000) / span_ms : 0;
 		ctx.cadence_rate_per_s = (per_s > 0) ? per_s : 0;
 	}
 	cadence_evidence = ap2_map(ctx.cadence_rate_per_s,
@@ -154,8 +164,15 @@ void ap2_estimators_update(const ap2_estimator_input_t *in, ap2_estimator_output
 		AP2_LOAD_CADENCE_HI_RPM, AP2_LOAD_CADENCE_LO_RPM, 0, AP2_PERMILLE);
 
 	if (window_delta(&ctx.speed_window_ticks, &ctx.speed_ref_x100,
-		(int32_t)in->speed_x100, AP2_LOAD_SPEED_WINDOW_MS, in->elapsed_ticks, &delta)) {
-		ctx.speed_stagnant = delta < AP2_LOAD_SPEED_FLAT_X100;
+		(int32_t)in->speed_x100, AP2_LOAD_SPEED_WINDOW_MS, in->elapsed_ticks, &delta, &span)) {
+		/* The flat-speed threshold is stated for the nominal window, so scale it to the window
+		 * that actually elapsed rather than comparing against a mismatched span. */
+		int32_t limit = (int32_t)(((int64_t)AP2_LOAD_SPEED_FLAT_X100 * (int64_t)span) /
+			(int64_t)(AP2_LOAD_SPEED_WINDOW_MS * AP2_TICKS_PER_MS));
+		if (limit < 1) {
+			limit = 1;
+		}
+		ctx.speed_stagnant = delta < limit;
 	}
 
 	/*

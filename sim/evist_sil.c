@@ -1002,7 +1002,7 @@ static void walk_sil_ctrl_tick(MotorState_t *ms, plant_t *p, uint32_t ctrl_tick,
     if (iq > 65535) iq = 65535;
 
     fast_iq_slew_publish(ride_control_final_iq_slew_mailbox(), iq,
-                         FIS_MODE_BYPASS, 0U, 0U, FIS_ZERO_POLICY_NONE);
+                         FIS_MODE_BYPASS, 0U, 0U, FIS_ZERO_POLICY_NONE, iq);
     for (unsigned k = 0; k < INNER_PER_CTRL; k++) {
         plant_inner_tick(p, ms, iq, ctrl_tick);
     }

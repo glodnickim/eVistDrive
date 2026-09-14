@@ -28,6 +28,10 @@
 #include "../common/check.h"
 
 #include "../../inc/fast_iq_slew.h"
+
+/* These suites exercise the TRAJECTORY, not the protections, so every publish carries a
+ * ceiling above anything they command - the clamp must never be what ends a test. */
+#define QZ_TEST_IQ_CEILING 32767
 #include "../../inc/quiet_zero.h"
 
 #include <math.h>
@@ -597,12 +601,12 @@ static void mailbox_integration_checks(void)
 		int32_t iq_out = 0;
 
 		/* Ride up to a real live accumulator first - the release rate is derived from it. */
-		fast_iq_slew_publish(&mb, START_IQ, FIS_MODE_BYPASS, 0U, 0U, FIS_ZERO_POLICY_NONE);
+		fast_iq_slew_publish(&mb, START_IQ, FIS_MODE_BYPASS, 0U, 0U, FIS_ZERO_POLICY_NONE, QZ_TEST_IQ_CEILING);
 		(void)fast_iq_slew_tick(&mb, &iq_out);
 		CHECK(iq_out == START_IQ, "T10: setup - the real slew owner is holding a non-zero reference");
 
 		fast_iq_slew_publish(&mb, 0, FIS_MODE_RELEASE, 0U,
-			(uint32_t)RELEASE_MS * FOC_TICKS_PER_MS, FIS_ZERO_POLICY_QUIET);
+			(uint32_t)RELEASE_MS * FOC_TICKS_PER_MS, FIS_ZERO_POLICY_QUIET, QZ_TEST_IQ_CEILING);
 
 		quiet_zero_t qz; quiet_zero_reset(&qz);
 		quiet_zero_action_t out;
@@ -643,11 +647,11 @@ static void mailbox_integration_checks(void)
 		memset(&mb, 0, sizeof(mb));
 		fast_iq_slew_reset(&mb);
 		int32_t iq_out = 0;
-		fast_iq_slew_publish(&mb, START_IQ, FIS_MODE_BYPASS, 0U, 0U, FIS_ZERO_POLICY_NONE);
+		fast_iq_slew_publish(&mb, START_IQ, FIS_MODE_BYPASS, 0U, 0U, FIS_ZERO_POLICY_NONE, QZ_TEST_IQ_CEILING);
 		(void)fast_iq_slew_tick(&mb, &iq_out);
 		/* A brisk fall: full scale over 70 ms, i.e. the fast Ramp Down end of the range. */
 		uint16_t step_q8 = (uint16_t)((700 << 8) / (70 * 4));
-		fast_iq_slew_publish(&mb, 0, FIS_MODE_FALL, step_q8, 0U, FIS_ZERO_POLICY_NONE);
+		fast_iq_slew_publish(&mb, 0, FIS_MODE_FALL, step_q8, 0U, FIS_ZERO_POLICY_NONE, QZ_TEST_IQ_CEILING);
 
 		quiet_zero_t qz; quiet_zero_reset(&qz);
 		quiet_zero_action_t out;
@@ -669,9 +673,9 @@ static void mailbox_integration_checks(void)
 		memset(&mb, 0, sizeof(mb));
 		fast_iq_slew_reset(&mb);
 		int32_t iq_out = 0;
-		fast_iq_slew_publish(&mb, 60, FIS_MODE_BYPASS, 0U, 0U, FIS_ZERO_POLICY_NONE);
+		fast_iq_slew_publish(&mb, 60, FIS_MODE_BYPASS, 0U, 0U, FIS_ZERO_POLICY_NONE, QZ_TEST_IQ_CEILING);
 		(void)fast_iq_slew_tick(&mb, &iq_out);
-		fast_iq_slew_publish(&mb, 0, FIS_MODE_RELEASE, 0U, 32U, FIS_ZERO_POLICY_QUIET);
+		fast_iq_slew_publish(&mb, 0, FIS_MODE_RELEASE, 0U, 32U, FIS_ZERO_POLICY_QUIET, QZ_TEST_IQ_CEILING);
 
 		quiet_zero_t qz; quiet_zero_reset(&qz);
 		quiet_zero_action_t out;
@@ -683,7 +687,7 @@ static void mailbox_integration_checks(void)
 		CHECK(out.state == (uint32_t)QZERO_BLEND && qz.entries == 1U,
 			"T10: setup - a short release is still mid-fade when the rider pushes again");
 
-		fast_iq_slew_publish(&mb, 60, FIS_MODE_BYPASS, 0U, 0U, FIS_ZERO_POLICY_NONE);
+		fast_iq_slew_publish(&mb, 60, FIS_MODE_BYPASS, 0U, 0U, FIS_ZERO_POLICY_NONE, QZ_TEST_IQ_CEILING);
 		(void)fast_iq_slew_tick(&mb, &iq_out);
 		quiet_zero_input_t in = make_input(iq_out, false, 800.0f, 0.0f);
 		quiet_zero_tick(&qz, &in, &out);
@@ -1004,21 +1008,43 @@ static void production_wiring_checks(void)
 			"T13: one state object, one include - no second copy of the state anywhere in main.c");
 	}
 
-	/* ---- T14: the producer grants QUIET in exactly one place, and defaults to NONE ---- */
+	/* ---- T14: the producer grants QUIET for rider-caused zeroes only, and defaults to NONE -- */
 	{
-		CHECK(pipe_c && count_all(pipe_c, "FIS_ZERO_POLICY_QUIET") == 1 &&
+		/*
+		 * TWO rider-caused zeroes, and only two.
+		 *
+		 * Quiet Zero exists for a zero the RIDER caused, and there are exactly two of those: a
+		 * reverse crank step, which removes the reference outright, and the ordinary end of
+		 * pedalling, which releases it over the profile time. Every other zero - a limiter, a
+		 * service mode, Walk, a force-zero - keeps the ordinary zero-current PI.
+		 *
+		 * Both grants live in the trajectory decision. The layer that merely publishes the
+		 * command must not be able to invent a policy of its own, which is what the
+		 * ride_control count proves.
+		 */
+		CHECK(pipe_c && count_all(pipe_c, "FIS_ZERO_POLICY_QUIET") == 2 &&
 			count_all(ride_c, "FIS_ZERO_POLICY_QUIET") == 0,
-			"T14: exactly one place in the whole assist chain can grant Quiet Zero, and it is in the trajectory decision - not in the layer that merely publishes it");
-		const char *grant = pipe_c ? strstr(pipe_c, "FIS_ZERO_POLICY_QUIET") : NULL;
+			"T14: Quiet Zero is granted in exactly the two rider-caused cases, both inside the trajectory decision - never in the layer that only publishes it");
+		const char *direction_branch = pipe_c ? strstr(pipe_c, "if (direction_block) {") : NULL;
+		const char *direction_grant = direction_branch ?
+			strstr(direction_branch, "FIS_ZERO_POLICY_QUIET") : NULL;
+		const char *direction_return = direction_branch ?
+			strstr(direction_branch, "return FIS_MODE_FORCE_ZERO;") : NULL;
+		CHECK(direction_branch && direction_grant && direction_return &&
+			direction_grant < direction_return,
+			"T14: the direction grant sits inside the direction branch, above its own return");
 		const char *release_branch = pipe_c ?
 			strstr(pipe_c, "if (iq_target == 0 && (block_positive || !permitted)) {") : NULL;
-		const char *release_return = pipe_c ?
-			strstr(pipe_c, "return block_positive ? FIS_MODE_SAFETY : FIS_MODE_RELEASE;") : NULL;
-		CHECK(grant && release_branch && release_return &&
-			release_branch < grant && grant < release_return,
-			"T14: and it is inside the release branch, above its own return");
-		CHECK(pipe_c && strstr(pipe_c, "*out_zero_policy = service_cut ? FIS_ZERO_POLICY_NONE : FIS_ZERO_POLICY_QUIET;") != NULL,
-			"T14: the pedal-load calibration is excluded at the grant itself");
+		const char *release_grant = release_branch ?
+			strstr(release_branch, "FIS_ZERO_POLICY_QUIET") : NULL;
+		const char *release_return = release_branch ?
+			strstr(release_branch, "return block_positive ? FIS_MODE_SAFETY : FIS_MODE_RELEASE;") : NULL;
+		CHECK(release_branch && release_grant && release_return &&
+			release_grant < release_return,
+			"T14: and the release grant sits inside the release branch, above its own return");
+		CHECK(pipe_c && count_all(pipe_c,
+			"*out_zero_policy = service_cut ? FIS_ZERO_POLICY_NONE : FIS_ZERO_POLICY_QUIET;") == 2,
+			"T14: BOTH grants exclude the pedal-load calibration - a workshop procedure is not a rider event, whichever way the zero was reached");
 		CHECK(pipe_c && strstr(pipe_c, "*out_zero_policy = FIS_ZERO_POLICY_NONE;") != NULL,
 			"T14: the policy is default-deny - every other path leaves the ordinary PI in charge");
 		CHECK(count_all(ride_c, "fast_iq_slew_publish(") == 1,

@@ -83,6 +83,7 @@ static int32_t power_cap_iq(uint16_t max_power_w, uint32_t battery_voltage_mv,
 void ap2_limits_apply(const ap2_limits_input_t *in, ap2_limits_output_t *out)
 {
 	int32_t iq;
+	int32_t ceiling;
 	int32_t phase_max;
 	int32_t cap;
 
@@ -91,6 +92,7 @@ void ap2_limits_apply(const ap2_limits_input_t *in, ap2_limits_output_t *out)
 	}
 	if (in == 0) {
 		out->final_iq = 0;
+		out->iq_ceiling = 0;
 		out->power_limited = false;
 		out->battery_limited = false;
 		out->phase_limited = false;
@@ -110,6 +112,12 @@ void ap2_limits_apply(const ap2_limits_input_t *in, ap2_limits_output_t *out)
 	if (iq < 0) {
 		iq = 0;
 	}
+	/*
+	 * The ceiling walks the SAME chain, from full scale. Every stage below therefore applies
+	 * twice: once to the rider's request and once to the ceiling. Running the chain a second
+	 * time instead would double-drive the battery limiter's latch, which is stateful.
+	 */
+	ceiling = phase_max;
 
 	out->power_limited = false;
 	out->battery_limited = false;
@@ -125,6 +133,9 @@ void ap2_limits_apply(const ap2_limits_input_t *in, ap2_limits_output_t *out)
 		iq = cap;
 		out->power_limited = true;
 	}
+	if (cap < ceiling) {
+		ceiling = cap;
+	}
 
 	/* ---- 2. BATTERY CURRENT ---------------------------------------------------------- */
 	battery_iq_cap_update(in->battery_current_ma, in->battery_current_max, phase_max,
@@ -133,6 +144,9 @@ void ap2_limits_apply(const ap2_limits_input_t *in, ap2_limits_output_t *out)
 	if (battery_cap_state.iq_battery_cap < iq) {
 		iq = battery_cap_state.iq_battery_cap;
 		out->battery_limited = true;
+	}
+	if (battery_cap_state.iq_battery_cap < ceiling) {
+		ceiling = battery_cap_state.iq_battery_cap;
 	}
 
 	/* ---- 3. PHASE / Iq CEILING -------------------------------------------------------
@@ -148,6 +162,9 @@ void ap2_limits_apply(const ap2_limits_input_t *in, ap2_limits_output_t *out)
 		iq = cap;
 		out->phase_limited = true;
 	}
+	if (cap < ceiling) {
+		ceiling = cap;
+	}
 
 	/* ---- 4. UNDERVOLTAGE DERATE ------------------------------------------------------ */
 	{
@@ -159,6 +176,10 @@ void ap2_limits_apply(const ap2_limits_input_t *in, ap2_limits_output_t *out)
 			out->voltage_limited = true;
 		}
 		iq = derated;
+		ceiling = ap2_map((int32_t)in->voltage_raw,
+			(int32_t)in->voltage_min_raw,
+			(int32_t)in->voltage_min_raw + AP2_UNDERVOLTAGE_SPAN_RAW,
+			0, ceiling);
 	}
 	out->after_voltage = iq;
 
@@ -170,6 +191,8 @@ void ap2_limits_apply(const ap2_limits_input_t *in, ap2_limits_output_t *out)
 			out->thermal_limited = true;
 		}
 		iq = derated;
+		ceiling = ap2_map((int32_t)in->controller_temperature_c,
+			AP2_THERMAL_DERATE_START_C, AP2_THERMAL_DERATE_END_C, ceiling, 0);
 	}
 	out->after_thermal = iq;
 
@@ -193,10 +216,23 @@ void ap2_limits_apply(const ap2_limits_input_t *in, ap2_limits_output_t *out)
 			out->speed_limited = true;
 		}
 		iq = derated;
+		if (in->source == AP2_LIMIT_SOURCE_PEDAL) {
+			ceiling = ap2_map((int32_t)in->speed_x100,
+				(int32_t)in->speed_limit_x100,
+				(int32_t)in->speed_limit_x100 + AP2_SPEED_TAPER_SPAN_X100,
+				ceiling, 0);
+		} else {
+			ceiling = ap2_map((int32_t)in->speed_x100,
+				AP2_NON_PEDAL_SPEED_LO_X100, AP2_NON_PEDAL_SPEED_HI_X100, ceiling, 0);
+		}
 	}
 
 	if (iq < 0) {
 		iq = 0;
 	}
+	if (ceiling < 0) {
+		ceiling = 0;
+	}
 	out->final_iq = iq;
+	out->iq_ceiling = ceiling;
 }

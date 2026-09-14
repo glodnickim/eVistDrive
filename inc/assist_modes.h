@@ -191,6 +191,28 @@ bool assist_modes_get_cadence_comp_enabled(void);
 ap2_profile_id_t assist_modes_profile_for_level(const assist_level_config_t *config);
 
 /*
+ * THE LEVEL'S OWN PHASE-CURRENT CEILING, resolved against the ceiling the rest of the firmware
+ * already imposes.
+ *
+ * `max_iq_pct` is a per-level percentage of the hardware phase-current maximum, stored in the
+ * bank and round-tripped over CAN since long before Assist Pipeline V2. It reached no control
+ * path at all: the pipeline was handed the GLOBAL ceiling instead, so setting a level to 20 %
+ * changed nothing. It is a rider-visible setting and it now binds.
+ *
+ *   pct == 0    means NO LEVEL CEILING, not "no current".
+ *
+ * That reading is forced by the data, not chosen for convenience: 0 is what an uninitialised
+ * or pre-v6 record carries, and every shipped default is 100. Treating it as "zero allowed
+ * current" would make a stored bank from an older firmware silently disable assist. A rider who
+ * wants no assist has assist level 0, which is a different and explicit control.
+ *
+ *   global_limit  the ceiling already in force (limp mode, hardware) - the result never
+ *                 exceeds it, so this can only tighten.
+ */
+int32_t assist_modes_level_iq_limit(const assist_level_config_t *config,
+	int32_t global_limit, int32_t phase_current_max);
+
+/*
  * The per-level overrides the pipeline honours, and the ONLY fields of the level record that
  * reach control. Every one of them is 0 for "use the profile value", so an old stored bank, a
  * zeroed field and a fresh controller all behave identically.

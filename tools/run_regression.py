@@ -20,6 +20,7 @@ OBJ = OUT / 'obj'
 OUT.mkdir(parents=True, exist_ok=True)
 OBJ.mkdir(parents=True, exist_ok=True)
 CC = os.environ.get('CC', 'gcc')
+EXE_SUFFIX = '.exe' if os.name == 'nt' else ''
 
 TYPE_LIMITS = {'torque_input.c', 'assist_modes.c'}
 
@@ -47,7 +48,12 @@ def build(name, harness_rel, common_files, modules, use_stubs=False):
         o=OBJ/f'{name}.common.{Path(cf).name}.o'; compile_obj(C/cf,o,incdirs); objs.append(o)
     for m in modules:
         o=OBJ/f'{name}.src.{m}.o'; compile_obj(S/m,o,incdirs,m in TYPE_LIMITS); objs.append(o)
-    exe=OBJ/name
+    # The linker output must carry the platform's executable extension, and the runner must
+    # launch EXACTLY the path it linked. Without this, a Windows gcc writes name.exe while the
+    # runner tries to execute a stale extensionless `name` left behind by a Linux build in the
+    # same directory - which fails with WinError 193 and stops the whole gate before SIL,
+    # Level-4 and replay ever run. Correctness must not depend on remembering to clean.
+    exe=OBJ/(name+EXE_SUFFIX)
     run([CC,'-o',str(exe),*[str(x) for x in objs],'-lm'])
     return exe
 

@@ -11,6 +11,8 @@ from pathlib import Path
 R=Path(__file__).resolve().parents[1]
 OUT=R/'.build/level4'; OUT.mkdir(parents=True,exist_ok=True)
 CC=os.environ.get('CC','gcc')
+# Audit finding 9: link to, and launch, the platform's real executable name.
+EXE_SUFFIX='.exe' if os.name=='nt' else ''
 PROD=[
  'src/torque_input.c','src/rider_input.c','src/assist_modes.c','src/cadence_filter.c',
  'src/tuning_config.c',
@@ -46,12 +48,12 @@ def main():
     ap.add_argument('--fuzz',type=int,default=None)
     ap.add_argument('--sanitize',action='store_true')
     a=ap.parse_args()
-    exe=OUT/'virtual_bike_l4'; build(exe)
+    exe=OUT/('virtual_bike_l4'+EXE_SUFFIX); build(exe)
     report=run(exe,[])
     n=a.fuzz if a.fuzz is not None else (25 if a.quick else 100)
     report+='\n'+run(exe,['--fuzz',str(n)])
     if a.sanitize:
-        san=OUT/'virtual_bike_l4_asan'; build(san,True)
+        san=OUT/('virtual_bike_l4_asan'+EXE_SUFFIX); build(san,True)
         env=os.environ.copy(); env['ASAN_OPTIONS']='detect_leaks=1:halt_on_error=1'; env['UBSAN_OPTIONS']='halt_on_error=1'
         report+='\nSANITIZERS\n'+run(san,['--fuzz','10' if a.quick else '25'],env)
     (OUT/'REPORT.txt').write_text(report)

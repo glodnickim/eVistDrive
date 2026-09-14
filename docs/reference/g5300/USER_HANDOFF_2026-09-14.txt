@@ -1,0 +1,998 @@
+Wznowiłem analizę i domknąłem brakujący reverse START/STOP korby. Informacje są już dopisane do obu plików MD. Najważniejsze jest to, że teraz dokument nie opisuje zatrzymania jako jednego release_ms, tylko pokazuje osobno detekcję fizycznego ruchu korby, torque-state, envelope, wygaszanie demandu i finalny Iq.
+
+Najważniejsze nowe ustalenia z BIN-a:
+
+Timebase stocku jest potwierdzony: główny tick = 1 ms. PAS/cadence jest analizowany co 1 ms, natomiast torque-state, AUTO/envelope i główny assist pracują nominalnie co 10 ms.
+Czujnik korby jest dwukanałowy i stock sprawdza prawidłową sekwencję Gray:
+0 → 1 → 3 → 2 → 0. Nie wystarcza pojedynczy impuls.
+Kierunek jest wykrywany z kolejności stanów. Forward zwiększa evidence, reverse natychmiast zeruje forward evidence.
+Po pełnym stopie/reseed pierwsza prawidłowa kadencja wymaga co najmniej 3 zgodnych przejść oraz poprawnego kierunku.
+AUTO ma dodatkowy warunek wejścia:
+forward_evidence >= 4 OR effort_envelope >= 2500.
+To otwiera estimator AUTO, ale nie jest zgodą na torque-only start silnika.
+Prawdziwy stop korby ma osobny watchdog:
+timeout = 180000 / (144 × cadence + 1),
+z clampem 25…208 ms.
+Jest dodatkowy parametr per-level wydłużający wykrycie stopu o 350/300/250/200/150/100/50/0 ms, ale w analizowanym fabrycznym BIN-ie L1–L9 mają kod 8 = +0 ms. I bardzo ważne: to nie jest Acceleration 1–8.
+Dzięki temu wielosekundowy AUTO torque-envelope nie powoduje wielosekundowego ciągnięcia po zatrzymaniu. Envelope służy do zasypywania martwych punktów pedałowania, a prawdziwy stop wykrywa szybki tor PAS.
+Reverse jest klasyfikowany w domenie 1 ms, a AUTO czyści adaptive state na następnym swoim slocie, maks. około 0–9 ms później. Nie oznacza to jednak automatycznie, że fizyczny Iq stocku jest zerowy w 10 ms — to kolejna warstwa.
+Odtworzyłem również osobną 6-stanową maszynę torque 0–5. Ma fabryczne wewnętrzne progi m.in. 10/15/20/30/40, kroki 10 / 10 ms, jeden gate około 50 ms i drugi guard/debounce około 250–260 ms. To jest conditioning/validity torque, a nie motorowa Acceleration.
+P0[54]=10 przy potwierdzonym D7EC = 10 ms oznacza maksymalny wzrost AUTO Assist Ratio 10 punktów procentowych / 10 ms = 1000 pp/s. Przejście 1% → 525% zajmuje więc około 0,53 s, jeśli target cały czas wymaga maksimum.
+
+Cały start jest teraz opisany mniej więcej tak:
+
+pierwszy fizyczny ruch korby
+        ↓
+PAS sample @1 ms
+        ↓
+2-bit state
+        ↓
+0→1→3→2 validation
+        ↓
+direction = FORWARD
+        ↓
+transition_count
+        ↓
+>=3 poprawne transitions
+        ↓
+signed cadence valid
+        ↓
+forward evidence
+        ↓
+AUTO:
+evidence >=4
+LUB effort >=2500
+        ↓
+rider effort envelope
+        ↓
+rider output
+        ↓
+Assist Ratio / AUTO
+        ↓
+motor demand
+        ↓
+Acceleration
+        ↓
+limits
+        ↓
+final Iq trajectory
+        ↓
+PI / FOC
+
+A zatrzymanie:
+
+ostatnie poprawne przejście PAS
+        ↓
+no_transition_ms++ co 1 ms
+        ↓
+dynamic timeout
+25...208 ms default
+        ↓
+CRANK STOP
+        ↓
+movement = 0
+transition_count = 0
+cadence estimator reset/reseed
+        ↓
+rider permission/demand przestaje być aktywne
+        ↓
+normal pedal-stop release
+        ↓
+final Iq -> 0
+        ↓
+FOC/PI nie muszą być wyłączane
+
+To jest bardzo ważne dla EVistDrive: agent dostał teraz wprost zakaz zastępowania tego jednym wolnym filtrem. Docelowo mają pozostać osobnymi ownerami:
+
+PAS activity/direction
+≠ torque validity
+≠ dead-spot envelope
+≠ AUTO characteristic
+≠ Acceleration
+≠ normal fall
+≠ pedal-stop release
+≠ reverse/safety release
+≠ FOC
+
+Pozostawiłem uczciwie dwa otwarte elementy: dokładne byte-for-byte przypisanie wszystkich nazw Parameter2 (start pulse, torque decay, current decay, itd.) do konsumentów w tym konkretnym G5300 oraz dokładny stockowy czas brake/fault → physical Iq=0. Nie pozwalam agentowi zgadywać tych elementów ani tworzyć na ich podstawie dodatkowych timerów.
+
+Zaktualizowane pliki:
+
+Pełny G5300 → EVistDrive Agent Handoff — z START/STOP
+
+SPORT+/AUTO Reverse — z dokładnym START/STOP
+
+Aktualny SHA-256 głównego dokumentu:
+
+ff94fefe127467812be19bfa5fc3f27d6619f0c50b1546b1f833f156ebb8c66e
+
+W tej chwili detekcja ruchu korby, kierunku, start cadence, true-stop timeout, timebase 1/10 ms, AUTO readiness oraz torque-state są opisane na poziomie umożliwiającym agentowi poprawne odwzorowanie architektury, bez wpychania wszystkiego w jedną rampę Iq.
+
+G5300_FULL_ASSIST_AUTO_ACCELERATION_TO_EVISTDRIVE_AGENT_HANDOFF.md
+Dokument
+SPORTPLUS_AUTO_REVERSE_G5300.md
+Dokument
+
+Tak. Teraz pełna obsługa PAS jest już zreversowana i dopisana do dokumentów, łącznie z poprawkami do wcześniejszych uproszczeń.
+
+Najważniejsze jest to, że PAS w G5300 jest osobnym podsystemem. Nie działa na zasadzie „impuls = wspomaganie”. Najpierw ustala czy korba się porusza, w którą stronę, czy ruch jest wiarygodny, jaka jest kadencja i kiedy korba naprawdę się zatrzymała. Dopiero te informacje dostaje tor wspomagania.
+
+Jak działa fabryczny PAS
+
+W tym konkretnym BIN-ie domyślnie działa prawdziwy PAS dwukanałowy. Firmware czyta dwa wejścia i tworzy stan 2-bitowy:
+
+A B
+
+0 0
+0 1
+1 1
+1 0
+
+Fabryczna kolejność do przodu:
+
+00
+ ↓
+01
+ ↓
+11
+ ↓
+10
+ ↓
+00
+
+czyli:
+
+00 → 01 → 11 → 10 → 00
+
+Wstecz jest dokładnie odwrotnie:
+
+00 → 10 → 11 → 01 → 00
+
+Firmware nie zgaduje kierunku z czasu impulsu. Porównuje kolejność stanów.
+
+Wewnętrznie:
+
+delta +1 albo -3 → FORWARD
+
+delta +3 albo -1 → REVERSE
+
+delta ±2
+→ zgubione/niesąsiednie przejście
+→ NIE uznawaj nowego kierunku
+→ zachowaj ostatni pewny kierunek
+→ nie zwiększaj forward_evidence
+
+To ostatnie jest istotne. Przykładowo:
+
+00 → 11
+
+nie powoduje od razu:
+
+STOP
+
+ani:
+
+REVERSE
+
+Stock toleruje pojedynczy zgubiony edge.
+
+Kiedy PAS w ogóle pracuje
+
+Główna funkcja:
+
+0x080182F2
+
+jest obsługiwana co:
+
+1 ms
+
+ale wcześniej init sprawdza selektor G+0x13E.
+
+Dla:
+
+G+0x13E == 2
+
+ten subsystem PAS/cadence zostaje wyłączony:
+
+movement = 0
+cadence = 0
+PAS runtime disabled
+
+Dokładnej publicznej nazwy tego pola jeszcze nie przypisuję, bo nie chcę zgadywać.
+
+Co ważne, PAS decoder nie jest uzależniony od tego, czy assist level >0. Może nadal mierzyć ruch korby przy level 0. Poziom wspomagania wpływa natomiast m.in. na dodatkową tolerancję zatrzymania. Sama zgoda na pracę silnika jest wyższą warstwą.
+
+Start korby
+
+Tutaj znalazłem ważną korektę względem wcześniejszego reverse'u.
+
+Po pełnym zatrzymaniu mamy:
+
+remembered_direction = 0
+cadence = 0
+transition_count = 0
+measurement_span = 3
+
+Pierwsze prawidłowe przejście:
+
+EDGE #1
+    ↓
+wykryto FORWARD
+    ↓
+direction = +1
+forward_evidence = 1
+    ↓
++1 != remembered_direction 0
+    ↓
+RESET starego:
+cadence
+cadence filter
+transition_count
+elapsed
+    ↓
+remembered_direction = +1
+
+Czyli pierwszy edge tylko ustala kierunek.
+
+Dopiero potem:
+
+EDGE #2
+measurement_count = 1
+
+EDGE #3
+measurement_count = 2
+
+EDGE #4
+measurement_count = 3
+        ↓
+można policzyć pierwszą raw cadence
+
+Zatem:
+
+PEŁNY STOP
+   ↓
+1 edge ustala kierunek
++
+3 kolejne tworzą pomiar
+   ↓
+PIERWSZA CADENCE
+
+= 4 fizyczne transitions total
+
+To jest teraz poprawione w plikach. Wcześniejsze stwierdzenie „3 przejścia od stopu” było zbyt uproszczone.
+
+Co ciekawe, dokładnie na czwartym poprawnym forward transition mamy też naturalnie:
+
+forward_evidence = 4
+
+a fabryczny AUTO ma próg:
+
+forward_evidence >= 4
+OR
+effort_envelope >= 2500
+
+Czyli geometria startu PAS i readiness AUTO bardzo ładnie się ze sobą zazębiają.
+
+Co się dzieje podczas normalnego pedałowania
+
+Każde przejście ustawia:
+
+movement = 1
+no_transition_ms = 0
+
+Forward dodatkowo robi:
+
+forward_evidence++
+
+Cadence nie jest mierzona cały czas z jednego interwału. Stock posiada dynamiczne okno kilku przejść.
+
+Przy małej kadencji:
+
+span = 3
+
+a przy większej może rosnąć mniej więcej:
+
+40 rpm  → 3
+60 rpm  → 4
+80 rpm  → 6
+100 rpm → 7
+120 rpm → 8
+
+W efekcie przy normalnej jeździe okno pomiarowe jest często rzędu:
+
+~28–31 ms
+
+To jest bardzo sensowne rozwiązanie, bo przy szybkiej korbie firmware nie reaguje nerwowo na jeden event.
+
+Filtr kadencji
+
+Tutaj też znalazłem ważną korektę.
+
+Sam decoder pracuje:
+
+1 kHz
+
+ale filtr:
+
+0x08019A84
+
+nie jest liczony co 1 ms.
+
+Jest aktualizowany tylko po zmianie stanu PAS.
+
+Czyli:
+
+nie:
+
+IIR
+IIR
+IIR
+IIR
+co 1ms
+
+tylko:
+
+PAS EDGE → filter step
+
+brak edge → brak filter step
+
+PAS EDGE → filter step
+
+Fabrycznie:
+
+coefficient = 1638
+shift = 12
+
+co daje około:
+
+alpha ≈ 0.10 / transition
+
+czyli stałą około:
+
+9.5 transition events
+
+Nie 9.5 ms.
+
+W przybliżeniu przy konfiguracji 72T:
+
+20 rpm  → tau ~198 ms
+40 rpm  → ~99 ms
+60 rpm  → ~66 ms
+80 rpm  → ~49 ms
+120 rpm → ~33 ms
+
+Czyli wraz ze wzrostem kadencji filtr staje się fizycznie szybszy.
+
+To jest bardzo ciekawy mechanizm do wykorzystania w EVistDrive.
+
+Kiedy uznaje, że korba się zatrzymała
+
+Nie czeka na filtr momentu ani AUTO envelope.
+
+Ma osobny:
+
+no_transition_ms
+
+zwiększany:
+
++1 co 1 ms
+
+Jeżeli nie przyjdzie następny stan PAS, liczy dynamiczny timeout:
+
+timeout =
+180000 /
+(144 × cadence + 1)
+
+następnie clamp:
+
+25 ms ≤ timeout ≤ 208 ms
+
+Fabrycznie wychodzi około:
+
+Kadencja	STOP po braku kolejnego transition
+bardzo wolno / ≤6 rpm	~208 ms
+10 rpm	~124 ms
+20 rpm	~62 ms
+30 rpm	~41 ms
+40 rpm	~31 ms
+≥50 rpm	25 ms
+
+Jest jeszcze osobny parametr per-level:
+
+code 0/1 → +350 ms
+2 → +300 ms
+3 → +250 ms
+4 → +200 ms
+5 → +150 ms
+6 → +100 ms
+7 → +50 ms
+8 → +0 ms
+
+Ale w tym BIN-ie fabrycznie L1–L9 = 8, więc:
+
+extra = 0 ms
+
+Czyli normalnie ten G5300 wykrywa zatrzymanie korby po:
+
+25–208 ms
+
+zależnie od ostatniej kadencji.
+
+I to nie jest Acceleration 1–8. To zupełnie inny parametr.
+
+Co robi dokładnie przy STOP
+
+Gdy timer dojdzie do progu:
+
+TRUE STOP
+   ↓
+movement = 0
+cadence magnitude = 0
+raw signed cadence = 0
+cadence filter = RESET
+transition_count = 0
+elapsed = 0
+remembered_direction = 0
+measurement span = 3
+
+Czyli nie ma:
+
+cadence:
+60 → 55 → 49 → 42 → 35 → ...
+
+Po uznaniu prawdziwego stopu jest:
+
+60
+ ↓
+TRUE STOP
+ ↓
+0
+
+Dzięki temu długi envelope momentu używany do zasypywania martwych punktów korby nie powoduje kilkusekundowego ciągnięcia silnika.
+
+Co się dzieje gdy zaczynasz kręcić wstecz
+
+Załóżmy:
+
+FORWARD
+cadence = +80
+remembered_direction = +1
+
+Pojawia się pierwszy pewny reverse transition:
+
+np. zamiast:
+00 → 01
+
+dostajemy:
+00 → 10
+
+W następnym przebiegu 1-ms:
+
+direction = -1
+forward_evidence = 0
+
+Ponieważ:
+
+nowy direction -1
+!=
+stary +1
+
+firmware natychmiast resetuje:
+
+stare positive raw cadence
+cadence filter
+measurement count
+elapsed
+
+Czyli bardzo ważne:
+
+pierwszy pewny reverse edge
+        ↓
+STARA DODATNIA CADENCE = 0
+
+Nie czeka, aż jej filtr powoli przejdzie:
+
++80 → +70 → +50 → 0 → -20...
+Ale ujemna kadencja nie pojawia się od razu
+
+Pierwszy reverse edge tylko:
+
+ustala kierunek = -1
+
+Następnie trzeba zebrać nowe okno reverse.
+
+Przy niskim span:
+
+reverse edge #1 → ustala -1
+reverse #2 → count1
+reverse #3 → count2
+reverse #4 → count3
+             ↓
+negative cadence
+
+Ale jeśli wcześniej jechaliśmy z większą kadencją, dynamiczny span może wynosić:
+
+4
+5
+6
+7
+8
+
+i wtedy trzeba zebrać odpowiednio więcej reverse transitions.
+
+Dopiero gdy ujemna cadence zostanie opublikowana:
+
+cadence < 0
+   ↓
+AUTO D7EC
+   ↓
+explicit adaptive-state clear
+
+D7EC działa co 10 ms, więc dochodzi:
+
+0–9 ms
+
+od dostępności ujemnej cadence.
+
+Nie od pierwszego reverse edge.
+
+Jednocześnie dla EVistDrive nadal zalecam:
+
+pierwszy wiarygodny reverse direction event
+→ immediate pedal-assist inhibit
+
+czyli nie czekać z bezpieczeństwem aż wyliczymy dokładną ujemną rpm.
+
+Kołysanie korbą przód–tył
+
+Stock ma jeszcze osobny detector:
+
+forward edge
+reverse edge
+forward edge
+reverse edge
+...
+
+czyli zachowania typowego dla:
+
+bujania korbą
+drgań
+cofania roweru
+krótkich ruchów wokół jednego miejsca
+
+Śledzi m.in.:
+
+current transition delta
+previous delta
+accumulator
+history/baseline
+plausibility state
+anti-rock flag
+
+Jeśli wykryje taki wzorzec, może:
+
+zablokować / zresetować pomiar cadence
+
+zamiast wygenerować fałszywe pedałowanie.
+
+To jest osobny mechanizm od zwykłego direction detect.
+
+Jeszcze jeden tryb: PAS jednoprzewodowy
+
+Stock ma obsługę również pojedynczego sygnału PAS.
+
+Ale wtedy robi coś bardzo istotnego:
+
+jeden fizyczny sygnał
+       ↓
+debounce
+       ↓
+syntetyczny kanał A+B
+       ↓
+00 → 01 → 11 → 10 → 00
+
+Czyli firmware sam produkuje sekwencję forward.
+
+W takim trybie z jednego przewodu nie da się fizycznie określić reverse.
+
+To oznacza:
+
+dual-channel mode
+→ real forward/reverse sensing
+
+single-wire mode
+→ synthetic forward
+→ brak prawdziwej informacji o kierunku
+
+W naszym analizowanym G5300 fabryczny default to właśnie dual-channel, więc mamy pełną detekcję kierunku.
+
+Cały PAS jako jedna maszyna
+                    PAS ENABLED?
+                         |
+             +-----------+-----------+
+             |                       |
+            NO                      YES
+             |                       |
+         cadence=0                read A/B
+         movement=0                  |
+                                     v
+                              build 2-bit state
+                                     |
+                              state changed?
+                           /                     \
+                         NO                       YES
+                         |                         |
+                  no_transition++             movement=1
+                         |                    no_transition=0
+                         |                         |
+                    timeout?                 rank delta
+                   /       \             /       |       \
+                 NO        YES       FORWARD   REVERSE   ±2
+                 |          |           |         |       |
+              keep       TRUE STOP   evidence++ evidence=0 remembered
+              state         |          dir=+1    dir=-1  direction
+                            |
+                       hard PAS reseed
+
+A później:
+
+accepted direction
+      ↓
+direction changed?
+      ↓ YES
+reset old cadence/filter/count
+      ↓
+collect measurement span
+      ↓
+raw signed cadence
+      ↓
+event-driven cadence filter
+      ↓
+signed cadence + activity + evidence
+      ↓
+AUTO / normal assist
+
+To jest już dużo bliżej pełnego odwzorowania PAS 1:1, a nie tylko „start/stop”.
+
+Zaktualizowane pliki
+
+Stworzyłem też osobny dokument tylko o PAS, żeby agent nie musiał wydłubywać tego z 4600 linii całego reverse'u:
+
+G5300 — FULL PAS REVERSE.md
+
+Główny handoff dostał nową autorytatywną sekcję #36 FULL PAS LIFECYCLE:
+
+G5300 Full Assist/AUTO/Acceleration → EVistDrive — Agent Handoff
+
+Poprawiłem też czysty reverse AUTO:
+
+SPORTPLUS_AUTO_REVERSE_G5300.md
+
+Aktualny SHA-256 pełnego PAS:
+
+f83b1d80d842dee4f74c091928a99a6dc6aa97bd29aaaf324f36f05015b0ce0f
+
+Z rzeczy stricte PAS otwarte zostały już głównie oryginalne nazwy kilku pól konfiguracyjnych, dokładny czas debounce w alternatywnym trybie jednoprzewodowym oraz osobny downstream czas pierwszy reverse edge → fizyczne Iq=0. Sama logika wykrywania ruchu, forward, reverse, stop, evidence, cadence, dynamicznego okna i filtrowania jest już rozpisana.
+
+G5300_PAS_FULL_REVERSE.md
+Dokument
+G5300_FULL_ASSIST_AUTO_ACCELERATION_TO_EVISTDRIVE_AGENT_HANDOFF.md
+Dokument
+SPORTPLUS_AUTO_REVERSE_G5300.md
+Dokument
+Zreversuj resztę i dodaj do pliku 
+czy z tych dancyh mozna napisac od nowa tor przygotowani iq dla silnika?
+
+Tak — z tych danych da się napisać od nowa cały tor przygotowania Iq dla jazdy, bez ruszania szybkiego PI/FOC. I moim zdaniem to będzie bezpieczniejsze niż dalsze dokładanie kolejnych filtrów do obecnego toru.
+
+Mamy już wystarczająco dużo, żeby zaprojektować nowy pipeline:
+
+TORQUE ADC
+   ↓
+krótki sensor conditioning
+   ↓
+PAS / direction / cadence truth
+   ↓
+RIDER EFFORT ESTIMATOR
+   │
+   ├─ dead-spot bridging / envelope
+   └─ prawdziwy stop wykrywany osobno przez PAS
+   ↓
+RIDER POWER
+   ↓
+ASSIST CHARACTERISTIC
+   ├─ zwykły fixed Assist Ratio
+   └─ AUTO → dynamic Assist Ratio
+   ↓
+DESIRED MOTOR POWER / TORQUE
+   ↓
+CURRENT / POWER / SPEED LIMITS
+   ↓
+DESIRED Iq
+   ↓
+JEDEN trajectory generator
+   ├─ START
+   ├─ RUN RISE / Acceleration 1–8
+   ├─ RUN FALL
+   ├─ PEDAL RELEASE
+   ├─ REVERSE
+   └─ SAFETY ZERO
+   ↓
+MS.i_q_setpoint
+   ↓
+PI Iq
+   ↓
+FOC / SVPWM
+
+Kluczowe jest to, że nie pisałbym od nowa FOC. Obecny EVistDrive ma już właściwie uporządkowaną końcówkę:
+
+fast_iq_slew_tick()
+→ MS.i_q_setpoint
+→ PI_iq.setpoint
+→ PI
+→ FOC
+
+i to powinno zostać.
+
+Od nowa napisałbym przede wszystkim część:
+
+torque + PAS
+        ↓
+rider intent
+        ↓
+assist characteristic
+        ↓
+limits
+        ↓
+desired Iq
+
+oraz uporządkował fast_iq_slew, żeby był jedynym właścicielem dynamiki fizycznego Iq.
+
+Co możemy już odwzorować
+
+Mamy wystarczające dane dla:
+
+dwukanałowego PAS z prawdziwym forward/reverse;
+startu po poprawnej sekwencji stanów;
+dynamicznego wykrywania stopu około 25–208 ms;
+osobnego true-stop zamiast czekania na torque filter;
+filtrowania kadencji event-driven;
+torque sensor conditioning;
+6-stanowej logiki torque;
+dead-spot envelope zależnego od cadence;
+rider output torque × cadence;
+AUTO/Sport+;
+Assist Ratio;
+AUTO reference power;
+AUTO ratio rise;
+Acceleration 1–8;
+osobnego normal fall/shedding;
+Current Limit;
+Speed Limit;
+power/current ceilings;
+reverse jako osobnej szybkiej ścieżki.
+
+I teraz mamy nawet realne czasy stockowej Acceleration:
+
+Acceleration 1 → ~2.50 s full-scale
+...
+Acceleration 8 → ~0.26 s full-scale
+
+normal stock fall
+→ ~0.20 s full-scale
+
+To jest bardzo dużo informacji.
+
+Największa różnica względem obecnego EVistDrive
+
+Nie robiłbym już:
+
+FAST filter
+→ RUN 120/250
+→ hold
+→ boost
+→ smooth start
+→ adaptive slew
+→ final slew
+
+bo wtedy każda warstwa ma trochę własnej pamięci.
+
+Nowy tor powinien mieć zasadniczo dwa miejsca z pamięcią:
+
+1. RIDER EFFORT STATE
+   służy wyłącznie do:
+   - wygładzenia fizycznego pedałowania,
+   - mostkowania martwych punktów,
+   - rozpoznania faktycznego wysiłku.
+
+2. FINAL Iq TRAJECTORY STATE
+   służy wyłącznie do:
+   - Acceleration,
+   - normal fall,
+   - release,
+   - safety release.
+
+I tyle.
+
+To jest najważniejszy punkt całej przebudowy.
+
+Czyli np. nacisk:
+0 → 40 kg → 0 → 42 kg → 0 → 39 kg
+
+nie powinien powodować:
+
+Iq:
+0 → 15 A → 0 → 16 A → 0 → 14 A
+
+Rider estimator powinien stworzyć coś w rodzaju:
+
+effort:
+0 → 40 → 37 → 42 → 39 → 39 kg-equivalent
+
+a później Assist/AUTO liczy z tego właściwy target.
+
+Natomiast gdy PAS powie:
+
+TRUE PEDAL STOP
+
+nie czekamy, aż envelope przez sekundę czy dwie sam zejdzie do zera.
+
+Robimy:
+
+TRUE STOP
+   ↓
+rider intent no longer permitted
+   ↓
+final Iq trajectory enters RELEASE
+   ↓
+Iq → 0
+
+To rozwiązuje jednocześnie:
+
+pompowanie między naciskami;
+długi overrun;
+leniwy ponowny start;
+konieczność stosowania wielu filtrów.
+Warto też oddzielić pięć rodzajów zmian Iq
+
+Nowy final trajectory generator powinien dostać jawny mode:
+
+IQ_TRAJ_RUN_RISE
+IQ_TRAJ_RUN_FALL
+IQ_TRAJ_START
+IQ_TRAJ_PEDAL_RELEASE
+IQ_TRAJ_SAFETY_RELEASE
+IQ_TRAJ_FORCE_ZERO
+
+Bo stock pokazuje, że to nie są równoważne sytuacje.
+
+Przykładowo:
+
+rider daje mocniej
+→ Acceleration 1–8
+
+rider daje lżej, ale dalej kręci
+→ normal fall ~200 ms full-scale
+
+rider całkiem przestaje kręcić
+→ pedal release
+
+reverse
+→ immediate inhibit / safety release
+
+brake/fault
+→ safety release / force zero
+
+Nie używałbym jednego ramp_down_ms do wszystkich pięciu przypadków.
+
+Co zrobiłbym z trybami
+
+Na tym samym nowym torze mogą działać wszystkie tryby:
+
+TORQUE
+POWER
+PROGRESSIVE
+eMTB
+BAFANG_AUTO
+
+Zmienia się tylko funkcja:
+
+desired_motor_power =
+    mode_characteristic(rider_effort, cadence, config);
+
+Dalszy tor jest wspólny:
+
+desired motor power
+→ limits
+→ desired Iq
+→ final trajectory
+→ FOC
+
+To bardzo uprości późniejszy rozwój.
+
+AUTO
+
+Dla stock-like AUTO:
+
+rider_power = calculate_rider_power(
+    effort_envelope,
+    cadence
+);
+
+assist_ratio =
+    auto_ratio(
+        rider_power,
+        base_ratio,
+        max_ratio,
+        reference_power
+    );
+
+motor_power =
+    rider_power * assist_ratio / 100;
+
+Przykładowo:
+
+Base Ratio        1%
+Max Ratio         525%
+Reference Power   200 W
+
+i około:
+
+0 W   →   1%
+50 W  → 132%
+100 W → 263%
+150 W → 394%
+200 W → 525%
+
+Potem już normalna konwersja EVistDrive:
+
+motor power
+→ phase Iq
+
+Nie kopiowałbym drugi raz stockowego power/cadence → current-like, skoro EVistDrive ma własną fizyczną konwersję.
+
+Czy da się wyrzucić część obecnego kodu?
+
+Tak — ale dopiero po audycie consumerów.
+
+Docelowo prawdopodobnie do usunięcia albo ograniczenia będą kandydować:
+
+RUN asymmetric 120/250 ms
+min-Iq hold
+część smooth-start
+stare adaptive ramp blending
+legacy assist_dynamics
+historyczne workaroundy rider-demand
+
+Nie znaczy to „wywalić wszystko od razu”.
+
+Najpierw nowy tor powinien pracować równolegle jako:
+
+OLD PIPELINE
+vs
+NEW PIPELINE
+
+i w Level4 logujemy oba:
+
+old_iq_request
+new_iq_request
+
+bez sterowania silnikiem nowym torem.
+
+Dopiero gdy porównania są poprawne:
+
+shadow
+→ selectable A/B
+→ hardware A/B
+→ default new
+→ usunięcie legacy
+
+To jest najlepszy sposób, żeby nie powtórzyć sytuacji, w której częściowy port rozwala zachowanie całego silnika.
+
+Moja odpowiedź więc brzmi: tak, zdecydowanie.
+
+Co więcej, po tym reverse mamy już wystarczająco dużo, żeby nie portować kawałków G5300, tylko zaprojektować czysty EVistDrive Ride Pipeline v3, który zachowuje najlepsze mechanizmy stocku, ale pasuje do szybkiego prądowego FOC EVistDrive.
+
+Nie kopiowałbym stocku bit-po-bicie tam, gdzie jego architektura wynika z innego kontrolera. Kopiowałbym zachowanie i matematykę rider-intent, a pozostawił obecny szybki Iq → PI → FOC.
+
+I właśnie z takiego podejścia może powstać znacznie czystszy tor niż obecny.

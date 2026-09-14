@@ -32,6 +32,21 @@
 
 #define AP2_FOC_TICKS_PER_MS 16U
 
+/*
+ * HOW FAST THE PROTECTION CEILING ITSELF MAY MOVE, in milliseconds for a full-scale move.
+ *
+ * The ceiling is a protection, so it must not wait for a rider-feel release: falling is
+ * deliberately much faster than the slowest profile release (600 ms). It is not instant either,
+ * because the one case that genuinely steps - the battery limiter latching - would otherwise
+ * drop the reference in a single tick, and a torque step is the thing §22 of the brief forbids.
+ *
+ * Rising is slower than falling and slower than any attack, so recovering from a limit can
+ * never overshoot into a surge: the ceiling opens gradually and the ordinary attack ramp does
+ * the rest. Asymmetry here is the whole point - quick to protect, unhurried to give back.
+ */
+#define AP2_CEILING_FALL_MS 120U
+#define AP2_CEILING_RISE_MS 400U
+
 /* Rider power per (0.01 kg x rpm), in mW, at the 165 mm reference crank:
  * P = m g L 2 pi n / 60. Telemetry only - no control decision reads rider power. */
 #define AP2_HUMAN_POWER_NUM 1694U
@@ -63,6 +78,9 @@ typedef struct {
 	 */
 	uint16_t release_latched_ms;
 	bool release_latched;
+	/* The rate-limited protection ceiling, in the Iq domain. */
+	int32_t ceiling;
+	bool ceiling_valid;
 	assist_pipeline_telemetry_t tlm;
 } ap2_pipeline_ctx_t;
 
@@ -87,17 +105,37 @@ void assist_pipeline_reset(void)
 	ctx.start_active = false;
 	ctx.release_latched_ms = 0U;
 	ctx.release_latched = false;
+	/*
+	 * The ceiling is NOT cleared to zero here: a pipeline reset happens when another owner
+	 * takes the motor, and starting the next ride from "no current allowed" would be a fresh
+	 * limit nothing asked for. It is re-seeded from the first limiter evaluation instead.
+	 */
+	ctx.ceiling_valid = false;
 
+	/*
+	 * PEDALLING STATE ONLY. ap2_limits is deliberately NOT reset here.
+	 *
+	 * This function runs whenever another owner takes the motor - Walk Assist, the position
+	 * calibration - so that a ride cannot survive the detour and fire on the way out. The
+	 * limiter chain is not part of that ride: the battery limiter carries an entry latch and an
+	 * exit hysteresis band that describe the BATTERY, which does not stop existing because the
+	 * rider pressed Walk. Clearing it here made the limiter forget it was limiting on every
+	 * tick of a Walk, so a pack sitting just under the entry threshold saw the cap jump back to
+	 * full scale each time.
+	 *
+	 * The protections are reset exactly once, at boot, by assist_pipeline_init().
+	 */
 	ap2_pas_state_reset();
 	ap2_rider_demand_reset();
 	ap2_estimators_reset();
 	ap2_profiles_reset();
-	ap2_limits_reset();
 }
 
 void assist_pipeline_init(void)
 {
 	assist_pipeline_reset();
+	/* The one place the shared protections start from nothing: a cold controller. */
+	ap2_limits_reset();
 }
 
 const assist_pipeline_telemetry_t *assist_pipeline_telemetry(void)
@@ -201,7 +239,7 @@ static uint16_t rider_power_w(uint16_t load_centikg, uint8_t cadence_rpm)
  */
 static fis_mode_t trajectory(int32_t iq_target, int32_t iq_full_scale,
 	uint16_t attack_ms, uint16_t release_ms, bool permitted, bool block_positive,
-	bool service_cut, bool coast_zero,
+	bool direction_block, bool service_cut, bool coast_zero,
 	uint16_t *out_step_mag, uint32_t *out_release_ticks_16k,
 	fis_zero_policy_t *out_zero_policy)
 {
@@ -222,9 +260,29 @@ static fis_mode_t trajectory(int32_t iq_target, int32_t iq_full_scale,
 	}
 
 	/*
+	 * DIRECTION. A reverse crank step or an illegal PAS transition removes the REFERENCE, not
+	 * only the request: the single final owner zeroes its accumulator on the first tick that
+	 * consumes this command, so the current regulator is never handed a positive reference
+	 * after the rider started turning the cranks backwards. A bounded release would still feed
+	 * it one for the whole release duration, which is the thing the direction contract forbids.
+	 *
+	 * This is NOT a bridge shutdown and must not be turned into one: the PI keeps regulating
+	 * toward zero under its ordinary clamps and Quiet Zero fades its integral, which is why the
+	 * policy below is QUIET rather than NONE. What is removed is the command to make torque.
+	 *
+	 * The pedal-load calibration is excluded from Quiet Zero here for the same reason it is
+	 * excluded from the release branch: it is a workshop procedure, not a rider event.
+	 */
+	if (direction_block) {
+		*out_zero_policy = service_cut ? FIS_ZERO_POLICY_NONE : FIS_ZERO_POLICY_QUIET;
+		return FIS_MODE_FORCE_ZERO;
+	}
+
+	/*
 	 * A RELEASE is the end of a demand: the rider stopped pedalling, or the drive is no
-	 * longer permitted. It is the only branch that may grant Quiet Zero, and the pedal-load
-	 * calibration is excluded from it because that is a workshop procedure, not a release.
+	 * longer permitted for a reason that is not direction. It is the branch that grants Quiet
+	 * Zero for an ordinary release, and the pedal-load calibration is excluded from it because
+	 * that is a workshop procedure, not a release.
 	 */
 	if (iq_target == 0 && (block_positive || !permitted)) {
 		ms = block_positive ? AP2_SAFETY_RELEASE_MS : release_ms;
@@ -311,6 +369,7 @@ void assist_pipeline_update(const assist_pipeline_input_t *in, assist_pipeline_c
 		cmd->step_mag_8 = 0U;
 		cmd->release_ticks_16k = 0U;
 		cmd->zero_policy = FIS_ZERO_POLICY_NONE;
+		cmd->iq_ceiling = 0;
 		return;
 	}
 
@@ -399,7 +458,8 @@ void assist_pipeline_update(const assist_pipeline_input_t *in, assist_pipeline_c
 	 * excess above that sustained level, so putting it through the same curve a second time
 	 * would apply the profile shape twice to the same pedal force.
 	 */
-	base_shaped = ap2_profile_shape((ap2_curve_t)prof.p.characteristic, demand.base_permille);
+	base_shaped = ap2_profile_shape_blend((ap2_curve_t)prof.curve_a, (ap2_curve_t)prof.curve_b,
+		prof.curve_blend, demand.base_permille);
 
 	assist_base = ap2_scale_pct(base_shaped, (int32_t)prof.p.assist_gain_pct);
 	assist_base = ap2_scale_pct(assist_base, (int32_t)prof.p.base_share_pct);
@@ -552,10 +612,25 @@ void assist_pipeline_update(const assist_pipeline_input_t *in, assist_pipeline_c
 		lim.final_iq = 0;
 	}
 
+	/* ---- PROTECTION CEILING -----------------------------------------------------------
+	 * Rate-limited, then handed to the single reference owner. This is what makes a limiter
+	 * bind on the CURRENT rather than only on the request: without it, a lowered target is
+	 * approached over the rider-feel release time and the regulator keeps the old reference for
+	 * the whole of it.
+	 */
+	if (!ctx.ceiling_valid) {
+		ctx.ceiling = lim.iq_ceiling;
+		ctx.ceiling_valid = true;
+	} else {
+		ctx.ceiling = ap2_slew_step(ctx.ceiling, lim.iq_ceiling, iq_full_scale,
+			AP2_CEILING_RISE_MS, AP2_CEILING_FALL_MS, used_ticks);
+	}
+
 	/* ---- TRAJECTORY ------------------------------------------------------------------- */
+	cmd->iq_ceiling = ctx.ceiling;
 	cmd->final_iq_request = lim.final_iq;
 	cmd->slew_mode = trajectory(lim.final_iq, iq_full_scale, attack_ms, release_ms,
-		pas.assist_permitted, pas.block_positive, in->service_cut,
+		pas.assist_permitted, pas.block_positive, pas.direction_block, in->service_cut,
 		in->motor_erps < AP2_COAST_RELEASE_ERPS,
 		&cmd->step_mag_8, &cmd->release_ticks_16k, &cmd->zero_policy);
 
@@ -579,6 +654,7 @@ void assist_pipeline_update(const assist_pipeline_input_t *in, assist_pipeline_c
 	ctx.tlm.assist_response_permille = response;
 	ctx.tlm.iq_request_before_limits = iq_request;
 	ctx.tlm.final_iq_request = lim.final_iq;
+	ctx.tlm.iq_ceiling = ctx.ceiling;
 	ctx.tlm.power_limited = lim.power_limited;
 	ctx.tlm.battery_limited = lim.battery_limited;
 	ctx.tlm.phase_limited = lim.phase_limited;
@@ -589,6 +665,7 @@ void assist_pipeline_update(const assist_pipeline_input_t *in, assist_pipeline_c
 	ctx.tlm.start_active = ctx.start_active;
 	ctx.tlm.release_active = (cmd->slew_mode == FIS_MODE_RELEASE) ||
 		(cmd->slew_mode == FIS_MODE_SAFETY);
+	ctx.tlm.direction_block = pas.direction_block;
 	ctx.tlm.block_positive = pas.block_positive;
 	ctx.tlm.limiter_zeroed = (iq_request > 0) && (lim.final_iq == 0);
 	if (pas.engaged_edge) {

@@ -378,6 +378,16 @@ $suites = @(
        Modules = @()
        IncludeDirs = @(Join-Path $PSScriptRoot 'common')
        Defines = @("-DMAIN_C_PATH=$mainCPathForward", "-DCURRENT_CAL_C_PATH=$currentCalCPathForward") },
+    @{ Name = 'Assist Pipeline V2 elapsed-time invariance (real ap2_math/demand/estimators)'
+       # inc/ap2_math.h promises a response that depends on elapsed TIME, not on how many times
+       # the foreground called. A promise like that is worth its measurement: the same signal
+       # over the same total time, divided 1/2/4/8/16/40/80 ticks and jittered, must land in the
+       # same state within the tolerance the header states.
+       Harness = Join-Path $PSScriptRoot 'ap2_timebase_host.c'
+       Modules = @((Join-Path $root 'src\ap2_rider_demand.c'),
+                   (Join-Path $root 'src\ap2_estimators.c'))
+       IncludeDirs = @(Join-Path $PSScriptRoot 'common')
+       Defines = @('-Wno-type-limits') },
     @{ Name = 'Assist Pipeline V2 behavioural scenarios (real ap2_*/assist_pipeline/limits chain)'
        # Drives the SHIPPED assist chain with a pulsating pedal model and checks the rider-facing
        # invariants: the sustained term survives the dead spot, a reverse step zeroes the request

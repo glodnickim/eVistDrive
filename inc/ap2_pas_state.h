@@ -99,6 +99,26 @@ typedef struct {
 	/* Assist must be exactly zero this tick and no downstream state may hold a positive
 	 * request: reverse, illegal PAS transition, safety cut or assist off. */
 	bool block_positive;
+	/*
+	 * The DIRECTION subset of block_positive: a reverse crank step or an illegal PAS
+	 * transition, and nothing else.
+	 *
+	 * It is separate because the two groups earn different treatment of the CURRENT, not just
+	 * of the request. A brake or an overtemperature cut is a decision about the machine, and
+	 * retiring the current over a short bounded release is both safe and kinder to the
+	 * drivetrain. A reverse crank step is a decision about DIRECTION: the rider is turning the
+	 * cranks backwards and the contract is that nothing - no hold, no filter, no ramp-down -
+	 * may keep pulling the motor. A bounded release still feeds the current regulator a
+	 * positive reference for the whole of its duration, which is exactly what that contract
+	 * forbids, so this case removes the reference itself on the first tick that consumes the
+	 * command.
+	 *
+	 * Removing the REFERENCE is not the same as switching the bridge off. The PI and PWM
+	 * lifecycle is untouched: the regulator keeps regulating toward a zero reference under its
+	 * ordinary clamps, and Quiet Zero handles the fade of its integral. What disappears is the
+	 * command to produce torque, not the controller.
+	 */
+	bool direction_block;
 	/* A controlled stop is in progress (the release window). */
 	bool stopping;
 	/* Remaining STOPPING grace, in 4 kHz ticks. Observation only. */
