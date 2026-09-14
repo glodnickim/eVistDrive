@@ -378,14 +378,30 @@ PI lifecycle / neutral PWM lifecycle  (unchanged, main.c)
 ```
 
 Time to zero **equals `release_ms`**, whatever the current was releasing from: the 16 kHz owner
-derives the release rate once, at the command edge, from its live accumulator.
+derives the release rate once, at the **edge into the release**, from its live accumulator.
 
-> **The release time is latched when the release begins.** Aggression shortens the release, and
-> aggression decays *during* the release — so without the latch the published command changed on
-> almost every tick, re-triggering the rate derivation and turning a bounded ramp into an
-> exponential tail. Measured before the fix: 1331 ms to zero against a 380 ms setting. After:
-> 386 ms. It is also the right behaviour on its own — how fast the motor lets go is decided when
-> the rider stops, not renegotiated while it is happening.
+Re-deriving it later is the failure mode, and it has bitten twice from two directions. Each
+derivation is individually correct; the *sequence* of them is Zeno, and the reference approaches
+zero instead of arriving at it. Both halves of the rule are needed:
+
+> **1. The release time is latched by the producer when the release begins.** Aggression shortens
+> the release, and aggression decays *during* the release — so without the latch the published
+> command changed on almost every tick. Measured before the fix: 1331 ms to zero against a 380 ms
+> setting. After: 386 ms. It is also the right behaviour on its own — how fast the motor lets go
+> is decided when the rider stops, not renegotiated while it is happening.
+>
+> **2. The consumer re-derives only on the release's own edge, not on any command change.** The
+> command also carries the rate-limited protection ceiling, which moves every tick by design, so
+> "the command changed" is not the same question as "this is a new release". Measured before the
+> fix, with the ceiling in the command: **831 ms** to zero against a 190 ms setting, in the
+> electrical SIL. After: **187 ms**. The rate is still re-derived when the release duration itself
+> changes, and when the ceiling clamp has cancelled the rate — a protection cutting in mid-release
+> must take effect at once.
+
+`S17` pins both: it runs one stop with the ceiling deliberately moving and one with it still, and
+requires the *same* time to zero. It also asserts that the ceiling really moved, because the first
+version of that scenario drifted a signal outside the derate band and so passed against the defect
+it was written for.
 
 A zero commanded below `RIDE_COAST_RELEASE_ERPS` finishes immediately instead of trickling current
 through the commutation-angle handover, which is the click heard at a standstill.
@@ -516,7 +532,7 @@ Two compact bytes summarise it:
 
 | Layer | What it proves |
 |---|---|
-| `tests/host/ap2_pipeline_scenarios_host.c` | 16 rider-describable scenarios against the shipped chain: calm riding, a harder push, an aggressive burst, a climb, stop, reverse, restart, the profile ordering, SPORT+ still being ramped, AUTO moving continuously, AUTO SPORT+ reaching further, every limiter binding **and releasing**, safety cut, level 0, no-torque-no-assist, the limiter latch surviving an owner change, the per-level Iq ceiling and its migration, and the ceiling binding the reference inside the ISR. |
+| `tests/host/ap2_pipeline_scenarios_host.c` | 17 rider-describable scenarios against the shipped chain: calm riding, a harder push, an aggressive burst, a climb, stop, reverse, restart, the profile ordering, SPORT+ still being ramped, AUTO moving continuously, AUTO SPORT+ reaching further, every limiter binding **and releasing**, safety cut, level 0, no-torque-no-assist, the limiter latch surviving an owner change, the per-level Iq ceiling and its migration, the ceiling binding the reference inside the ISR, and a release keeping its timing while the ceiling moves under it. |
 | `tools/analyze_assist_ripple.py` | The one property the pipeline exists for, measured across **14 scenarios** — 20/40/60/80/100 rpm against ECO/TRAIL/SPORT/SPORT+: Iq does not reproduce pedal ripple. |
 | `tests/test_ripple_analyzer_rejects.py` | That the analyzer above **refuses** seven kinds of unusable evidence rather than passing on them. |
 | `tools/run_regression.py` | Deterministic whole-chain traces over the RUN/CADENCE_RAMP/CRUISE scenarios, byte-identical on rerun. |
@@ -525,6 +541,49 @@ Two compact bytes summarise it:
 | `tools/run_level4.py` | Virtual rider + bicycle + battery/SOC around the production controller. |
 | `sim/replay/cases/w1-*` | Six fragments of a **real recorded ride** through the production chain, each with stated behaviour criteria. |
 | `tests/test_replay_behavior.py` | That every one of those criteria can reject, not only accept. |
+| `AXIS stop` / `AXIS reverse` in both SIL backends | The **whole stop and reverse axis**, timed end to end — see below. |
+
+### The stop and reverse axis, measured end to end
+
+Every other check looks at one link. Audit correction K1 asked for the whole chain on one axis,
+because a fast reference means nothing if the crank event took 400 ms to be noticed, and a fast
+detection means nothing if current keeps flowing. `run_stop_reverse_axis` in `sim/evist_sil.c`
+times all of it, in the backend where every stage is the production article: real
+`pas_sampler`/`pas_quadrature`/`pas_direction`/`pas_liveness` consuming physical quadrature edges
+from a crank the harness turns, the real pipeline, the real final-Iq owner, and — under
+`EVD_SIL_REAL_FOC` — production `FOC.c` driving a PMSM plant whose dq currents are integrated. The
+current it reports is the modelled machine's, not a copy of the command.
+
+| Stage | stop | reverse |
+|---|---|---|
+| physical crank event → detection | 197.75 ms | 0.00 ms |
+| detection → permission withdrawn | 0.00 ms | 0.00 ms |
+| permission → request zero | 0.00 ms | 0.00 ms |
+| permission → reference zero | 187.00 ms (`release_ms` = 190) | 0.00 ms |
+| reference zero → drive current gone | −178.50 ms | 0.50 ms |
+| **physical event → no drive current** | **206.25 ms** | **0.50 ms** |
+
+The stop's negative last row is not a missing measurement: the drive current is gone *before* the
+reference finishes, because the last few counts of reference are too small to move the machine.
+
+The bounds are derived, never fitted to the result:
+
+- stop detection is allowed the production true-stop window, `PAS_STOP_TICKS`..`PAS_STOP_TICKS_MAX`
+  = 200..500 ms. That window is a deliberate setting — it is what stops a slow stroke being read
+  as a stop — and K1 is explicit that a smaller constant from another manufacturer's controller is
+  not a reason to change it;
+- reverse detection is bounded by the quadrature itself, not a timer;
+- reference-to-zero is bounded by the profile's own `release_ms`, read from telemetry;
+- current-to-zero is the electrical decay of the modelled machine, and the bound is one-sided.
+
+**Drive and braking are counted separately.** Quiet Zero deliberately drives *negative* current to
+bring the rotor down; a magnitude would score that as the motor overrunning. What §19 forbids is
+the motor continuing to **pull**, so the criterion is that the positive current never exceeds what
+the rider was already getting — on reverse, 34.8 counts against 173 at the event.
+
+**What this still does not prove:** that there is no audible click, and that the real M820 behaves
+like the modelled machine. Those need the bike. The numbers above are printed on every gate run so
+a bench session has something to compare against.
 
 No scenario check pins an exact Iq count. The numbers here are ride-feel settings expected to move
 during tuning; a test that froze them would turn every tuning change into a test failure. What is
@@ -585,3 +644,5 @@ behaviour is right.
 ## Review and external reference (2026-09-14)
 
 Before further tuning, read the [V2 audit including correction K1](AUDIT_ASSIST_PIPELINE_V2_2026-09-14_PL.md) and the [G5300 reference intake](reference/g5300/README.md). The latter preserves a user-supplied reverse summary for a different controller, with provenance, internal corrections and an explicit mapping to M820. It is not a specification for copying stock constants or a request to replace V2 again.
+
+The [G5300 closure qualification and audit K2](reference/g5300/CLOSURE_REVIEW_2026-09-14_PL.md) supersedes the initial intake's open alpha question and records the newly documented downstream current-command trajectory. It also tracks remaining gaps, including current scaling, limiter coverage and the 72/144 event-rate discrepancy. The original audit targets `9dc0b0a`; subsequent implementation fixes require their own review.

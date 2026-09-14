@@ -22,7 +22,7 @@
  *   62.5 us increments. Total rise/fall/release timing is unchanged.
  *
  * The 4 kHz producer precomputes S (Q8); the ISR does no division and no float.
- * A release command carries a duration and reciprocal. At the command edge the ISR
+ * A release command carries a duration and reciprocal. At the edge INTO the release the ISR
  * computes ceil(live_accumulator / duration) with multiply/shift/remainder only.
  * The seqlock read is bounded and retains the last verified command on failure.
  */
@@ -163,6 +163,13 @@ int32_t fast_iq_slew_tick(
 {
 	fast_iq_slew_command_t candidate;
 	bool command_changed = false;
+	/*
+	 * Captured BEFORE the command is replaced, so the release branch below can tell a new
+	 * release from a release whose command merely moved in some other field.
+	 */
+	fis_mode_t prev_mode = (fis_mode_t)fis.command.mode;
+	uint32_t prev_release_ticks = fis.command.release_ticks_16k;
+	uint32_t prev_release_recip = fis.command.release_recip_q32;
 	if (fis_mailbox_read_verified(mb, &candidate)) {
 		command_changed = !fis_command_equal(&candidate, &fis.command);
 		if (command_changed) {
@@ -188,12 +195,36 @@ int32_t fast_iq_slew_tick(
 			fis.rate = 0;
 			break;
 		case FIS_MODE_RELEASE:
-		case FIS_MODE_SAFETY:
-			/* This is the critical live-state edge: target history is irrelevant. */
-			fis.rate = -(int32_t)fis_live_release_rate(
-				(uint32_t)((fis.accumulator_q10 > 0) ? fis.accumulator_q10 : 0),
-				&fis.command);
+		case FIS_MODE_SAFETY: {
+			/*
+			 * This is the critical live-state edge: target history is irrelevant.
+			 *
+			 * But it is the RELEASE's edge, not the command's. The command carries
+			 * fields that move on their own during a release - the protection
+			 * ceiling is rate-limited and changes every tick - and re-deriving
+			 * "reach zero in release_ms" on each of those turns one linear ramp
+			 * into a sequence of ever-smaller ones that approaches zero instead of
+			 * arriving at it. Measured before this guard existed: 831 ms to zero
+			 * against a 190 ms setting.
+			 *
+			 * So derive when the release begins, when its own duration changes, or
+			 * when the rate has been cancelled - the ceiling clamp zeroes it when it
+			 * binds, and a protection cutting in mid-release must take effect at
+			 * once. Otherwise keep the rate that was derived at the edge.
+			 */
+			bool was_release = (prev_mode == FIS_MODE_RELEASE) ||
+				(prev_mode == FIS_MODE_SAFETY);
+			bool contract_changed =
+				(prev_release_ticks != fis.command.release_ticks_16k) ||
+				(prev_release_recip != fis.command.release_recip_q32);
+			if (!was_release || contract_changed || fis.rate >= 0) {
+				fis.rate = -(int32_t)fis_live_release_rate(
+					(uint32_t)((fis.accumulator_q10 > 0) ?
+						fis.accumulator_q10 : 0),
+					&fis.command);
+			}
 			break;
+		}
 		case FIS_MODE_FORCE_ZERO:
 		case FIS_MODE_BYPASS:
 		default:

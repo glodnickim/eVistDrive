@@ -273,6 +273,10 @@ typedef struct {
     bool inject_bounce;
     uint32_t forward_edges;
     bool active;
+    /* +1 normal pedalling, -1 the crank being turned backwards. The rider keeps pushing while
+     * it happens - that is the case §19 is about, not a coast. */
+    int8_t direction;
+    bool edge_this_tick;
     double torque_mean_ckg;
     double torque_ripple_ckg;
 } rider_plant_t;
@@ -459,10 +463,12 @@ static void rider_init(rider_plant_t *r, double rpm, double cadence_ripple_fract
     r->next_pas_edge_rev = 1.0 / (double)PAS_TRANSITIONS_PER_REV;
     r->inject_bounce = bounce;
     r->active = true;
+    r->direction = 1;
 }
 
 static uint8_t rider_pas_tick(rider_plant_t *r)
 {
+    r->edge_this_tick = false;
     if (!r->active) {
         r->bounce_ticks = 0U;
         return r->ab;
@@ -485,11 +491,16 @@ static uint8_t rider_pas_tick(rider_plant_t *r)
     r->crank_rev += inst_rpm / (60.0 * CTRL_HZ);
     if (r->crank_rev >= r->next_pas_edge_rev) {
         r->next_pas_edge_rev += 1.0 / (double)PAS_TRANSITIONS_PER_REV;
-        r->state_index = (uint8_t)((r->state_index + 1U) & 3U);
+        /* Walking the raw ring the other way is what a backwards crank physically does to the
+         * sensor. Nothing downstream is told; pas_quadrature has to work it out from the edges. */
+        uint8_t step = (r->direction < 0) ? 3U : 1U;
+        r->state_index = (uint8_t)((r->state_index + step) & 3U);
         r->ab = FWD_AB[r->state_index];
-        r->forward_edges++;
+        r->edge_this_tick = true;
+        if (r->direction > 0) r->forward_edges++;
         /* deterministic bounce on every 7th physical edge */
-        if (r->inject_bounce && (r->forward_edges % 7U) == 0U) r->bounce_ticks = 1U;
+        if (r->inject_bounce && r->direction > 0 && (r->forward_edges % 7U) == 0U)
+            r->bounce_ticks = 1U;
     }
     return r->ab;
 }
@@ -888,6 +899,168 @@ static int run_stop_restart_scenario(void)
     return ok ? 0 : 1;
 }
 
+/*
+ * K1: the whole stop/reverse axis, timed at every stage that exists in production.
+ *
+ * "Measured current" means the plant's own current, which under EVD_SIL_REAL_FOC is integrated
+ * from the voltages production FOC.c actually commanded. `iq_actual` is in Iq counts in both
+ * backends, so one threshold reads the same in each.
+ */
+#define AXIS_CURRENT_ZERO_COUNTS 2   /* ~0.19 A in the modelled machine: electrically down */
+
+typedef struct {
+    const char *name;
+    bool reverse;             /* true: crank turned backwards. false: pedalling simply stops. */
+    uint32_t event_tick;      /* the physical crank event */
+    uint32_t last_edge_tick;  /* last physical quadrature transition before it */
+    uint32_t detect_tick;     /* production said so: liveness stop, or direction inhibit */
+    uint32_t permission_tick; /* the pipeline's PAS owner left FORWARD */
+    uint32_t target_tick;     /* the pipeline's request reached zero */
+    uint32_t ref_tick;        /* the single final-Iq owner's reference reached zero */
+    uint32_t current_tick;    /* the motor's own current reached zero */
+    int32_t iq_at_event;
+    uint16_t release_ms;
+    /* The motor still PULLING is the thing §19 forbids. Quiet Zero deliberately drives negative
+     * current to bring the rotor down, so the two are counted separately - a magnitude would
+     * score that braking as overrun. */
+    double peak_drive_after_detect;
+    double peak_brake_after_detect;
+} axis_result_t;
+
+static double axis_ms(uint32_t from, uint32_t to)
+{
+    if (from == 0U || to == 0U || to < from) return -1.0;
+    return 1000.0 * (double)(to - from) / CTRL_HZ;
+}
+
+/* Signed: a stage that completed BEFORE the one it is measured from is a real, and good,
+ * measurement - not a missing one. */
+static double axis_ms_signed(uint32_t from, uint32_t to)
+{
+    if (from == 0U || to == 0U) return -1e9;
+    return 1000.0 * ((double)to - (double)from) / CTRL_HZ;
+}
+
+static int run_stop_reverse_axis(bool reverse, axis_result_t *out)
+{
+    sim_t s;
+    sim_init(&s, 60.0, 0.20, 1800.0, 400.0, false, 8.0, true);
+    memset(out, 0, sizeof(*out));
+    out->name = reverse ? "reverse" : "stop";
+    out->reverse = reverse;
+
+    for (uint32_t i = 0U; i < 2U * CTRL_HZ; i++) sim_ctrl_tick(&s, NULL);
+    if (s.MS.i_q_setpoint <= 0 || assist_pipeline_pas_state() != AP2_PAS_FORWARD) {
+        fprintf(stderr, "AXIS %s FAIL: did not establish an ACTIVE ride\n", out->name);
+        return 1;
+    }
+    out->iq_at_event = s.MS.i_q_setpoint;
+    out->release_ms = assist_pipeline_telemetry()->release_ms;
+    out->last_edge_tick = pas_sampler_last_transition_tick();
+    out->event_tick = s.tick;
+
+    if (reverse) {
+        /* The rider is still pushing. Only the crank's direction changes. */
+        s.rider.direction = -1;
+    } else {
+        s.rider.active = false;
+    }
+
+    uint32_t physical_tick = 0U;   /* for reverse: the first backwards quadrature transition */
+    for (uint32_t i = 0U; i < 4U * CTRL_HZ; i++) {
+        sim_ctrl_tick(&s, NULL);
+        if (reverse && !physical_tick && s.rider.edge_this_tick) physical_tick = s.tick;
+
+        bool detected = reverse ? pas_direction_direction_inhibit_active()
+                                : pas_liveness_stopped();
+        if (!out->detect_tick && detected) out->detect_tick = s.tick;
+        if (!out->permission_tick && assist_pipeline_pas_state() != AP2_PAS_FORWARD)
+            out->permission_tick = s.tick;
+        if (!out->target_tick && assist_pipeline_telemetry()->final_iq_request == 0)
+            out->target_tick = s.tick;
+        if (!out->ref_tick && s.MS.i_q_setpoint == 0) out->ref_tick = s.tick;
+        if (out->detect_tick) {
+            double i = s.plant.iq_actual;
+            if (i > out->peak_drive_after_detect) out->peak_drive_after_detect = i;
+            if (-i > out->peak_brake_after_detect) out->peak_brake_after_detect = -i;
+            /* "The motor is no longer being driven" - not "the machine is electrically idle",
+             * which a braking phase deliberately is not. */
+            if (!out->current_tick && i <= (double)AXIS_CURRENT_ZERO_COUNTS)
+                out->current_tick = s.tick;
+        }
+        if (out->current_tick && out->ref_tick && out->target_tick) break;
+    }
+    if (reverse && physical_tick) out->event_tick = physical_tick;
+    return 0;
+}
+
+static int report_axis(const axis_result_t *a)
+{
+    int bad = 0;
+    double to_detect = axis_ms(a->event_tick, a->detect_tick);
+    double to_perm = axis_ms(a->detect_tick, a->permission_tick);
+    double to_target = axis_ms(a->permission_tick, a->target_tick);
+    double to_ref = axis_ms(a->permission_tick, a->ref_tick);
+    double to_current = axis_ms_signed(a->ref_tick, a->current_tick);
+    double total = axis_ms(a->event_tick, a->current_tick);
+
+    if (!a->detect_tick || !a->permission_tick || !a->ref_tick || !a->current_tick) bad = 1;
+
+    if (a->reverse) {
+        /*
+         * §19: no filter, no sustained term and no ramp-down may keep pulling the motor once the
+         * crank is going backwards. The software criterion is that the reference is gone in the
+         * first control tick that consumes the inhibit - the same contract scenario S5 asserts,
+         * measured here from the physical edge instead of from inside the pipeline.
+         *
+         * Detection itself is bounded by the quadrature, not by a timer: pas_direction needs
+         * physical reverse steps before it will call it a reverse, which at this cadence is a
+         * few tens of milliseconds. 120 ms is that bound with margin; it is a statement about
+         * how many edges the crank must produce, not a copied constant.
+         */
+        if (to_detect > 120.0) bad = 1;
+        if (to_perm > 0.25 + 1e-9) bad = 1;            /* one control tick */
+        if (to_ref > 0.25 + 1e-9) bad = 1;             /* the reference goes with it */
+        /* Not one count more drive than the rider was already getting: no kick, no lurch. */
+        if (a->peak_drive_after_detect > (double)a->iq_at_event) bad = 1;
+    } else {
+        /*
+         * A stop is allowed to take the true-stop window: production stretches it adaptively
+         * between PAS_STOP_TICKS and PAS_STOP_TICKS_MAX so a slow stroke is not misread as a
+         * stop. That window is the reason a stop is not instant, and it is a deliberate setting.
+         */
+        if (to_detect > 1000.0 * (double)PAS_STOP_TICKS_MAX / CTRL_HZ + 0.25) bad = 1;
+        if (to_perm > 0.25 + 1e-9) bad = 1;
+        /* Time to zero is the profile's release_ms - the contract the trajectory states about
+         * itself - not a number chosen to fit the result. */
+        if (to_ref > (double)a->release_ms + 1.0) bad = 1;
+    }
+    /* The motor's drive current must follow the reference down, in both cases. This is the
+     * electrical decay of the modelled machine, not a control setting. The bound is one-sided:
+     * arriving early is the normal case on a stop, because the last few counts of reference are
+     * too small to drive the machine. */
+    if (to_current > 20.0) bad = 1;
+
+    printf("AXIS %-8s iqAtEvent=%d | edge->detect=%.2fms detect->permission=%.2fms "
+           "permission->target=%.2fms permission->ref0=%.2fms ref0->drive0=%.2fms "
+           "TOTAL=%.2fms | releaseMs=%u peakDrive=%.1f peakBrake=%.1f %s\n",
+           a->name, a->iq_at_event, to_detect, to_perm, to_target, to_ref, to_current,
+           total, a->release_ms, a->peak_drive_after_detect, a->peak_brake_after_detect,
+           bad ? "FAIL" : "PASS");
+    return bad;
+}
+
+static int run_stop_reverse_axis_scenarios(void)
+{
+    axis_result_t a;
+    int bad = 0;
+    if (run_stop_reverse_axis(false, &a) != 0) return 1;
+    bad |= report_axis(&a);
+    if (run_stop_reverse_axis(true, &a) != 0) return 1;
+    bad |= report_axis(&a);
+    return bad;
+}
+
 static void run_scenario(const char *name, double rpm, double cadence_ripple_fraction,
                          double mean_ckg, double ripple_ckg, bool bounce,
                          double breakaway_iq, bool filtered_cadence, double seconds)
@@ -1186,5 +1359,6 @@ int main(int argc, char **argv)
     if (run_walk_foc_matrix() != 0) return 1;
 #endif
     if (run_stop_restart_scenario() != 0) return 1;
+    if (run_stop_reverse_axis_scenarios() != 0) return 1;
     return 0;
 }

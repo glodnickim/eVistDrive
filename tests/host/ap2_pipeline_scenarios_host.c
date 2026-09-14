@@ -961,6 +961,111 @@ static void scenario_ceiling_binds_the_reference(void)
 	}
 }
 
+/*
+ * Run one stop and return how many ticks the REFERENCE took to reach zero.
+ * `drift` moves the controller temperature every tick, which moves the thermal derate, which
+ * moves the protection ceiling carried in the same command as the release.
+ */
+static uint32_t stop_ticks_to_zero(bool drift, uint16_t *out_release_ms,
+	int32_t *out_ceiling_spread)
+{
+	ride_t r;
+	assist_pipeline_command_t cmd;
+	uint32_t i;
+	uint32_t zero_tick = 0U;
+	int32_t ceil_min = INT32_MAX;
+	int32_t ceil_max = INT32_MIN;
+	int32_t ref_at_stop;
+
+	reset_all(0);
+	base_ride(&r);
+	r.level = 3U;
+	r.peak_centikg = 900U;
+	/* Start inside the thermal band in BOTH runs, so the only difference between them is
+	 * whether the ceiling moves - not whether a derate is active at all. */
+	r.temperature_c = 76;
+	for (i = 0; i < MS(3000); i++) {
+		pipeline_tick(&r, &cmd);
+	}
+	if (g_iq_ref <= 0) {
+		return 0U;
+	}
+	*out_release_ms = assist_pipeline_telemetry()->release_ms;
+	ref_at_stop = g_iq_ref;
+
+	r.forward = false;            /* the rider stops pedalling */
+	for (i = 0; i < MS(3000); i++) {
+		if (drift) {
+			/*
+			 * Inside AP2_THERMAL_DERATE_START_C..END_C so the ceiling really moves,
+			 * but in the low part of the band so it stays well above the reference:
+			 * this scenario is about release TIMING, and a ceiling that cut into the
+			 * reference would be measuring S16's clamp instead.
+			 */
+			r.temperature_c = (int16_t)(76 + (int16_t)(i % 5U));
+		}
+		pipeline_tick(&r, &cmd);
+		if (cmd.iq_ceiling < ceil_min) {
+			ceil_min = cmd.iq_ceiling;
+		}
+		if (cmd.iq_ceiling > ceil_max) {
+			ceil_max = cmd.iq_ceiling;
+		}
+		if (zero_tick == 0U && g_iq_ref == 0) {
+			zero_tick = i + 1U;
+			break;
+		}
+	}
+	*out_ceiling_spread = (ceil_max > ceil_min) ? (ceil_max - ceil_min) : 0;
+	/* The premise of the drift run: the ceiling moved, and never bound. */
+	if (drift && ceil_min <= ref_at_stop) {
+		printf("   S17 note: ceiling fell to %d against a reference of %d at the stop\n",
+			ceil_min, ref_at_stop);
+	}
+	return zero_tick;
+}
+
+static void scenario_release_owns_its_timing(void)
+{
+	uint16_t release_ms_quiet = 0U;
+	uint16_t release_ms_drift = 0U;
+	int32_t ceiling_spread_quiet = 0;
+	int32_t ceiling_spread_drift = 0;
+	uint32_t quiet;
+	uint32_t drift;
+	uint32_t spread;
+
+	printf("S17 a release takes release_ms whatever else is moving in the command\n");
+	quiet = stop_ticks_to_zero(false, &release_ms_quiet, &ceiling_spread_quiet);
+	drift = stop_ticks_to_zero(true, &release_ms_drift, &ceiling_spread_drift);
+
+	CHECK(quiet > 0U && drift > 0U,
+		"S17: setup - both stops established a ride and then reached zero");
+	CHECK(release_ms_quiet > 0U && release_ms_quiet == release_ms_drift,
+		"S17: setup - the same release time was in force in both runs");
+	/*
+	 * The scenario checks its own premise. Without this, drifting a signal that turns out not to
+	 * reach the command leaves a test that passes against the defect it was written for - which
+	 * is exactly what the first version of S17 did.
+	 */
+	CHECK(ceiling_spread_drift > 0,
+		"S17: setup - the protection ceiling really did move during the drifting release");
+
+	/* The stated contract: time to zero IS the release time. */
+	CHECK(quiet <= MS(release_ms_quiet) + MS(20),
+		"S17: an undisturbed release reaches zero in its release time");
+	CHECK(drift <= MS(release_ms_drift) + MS(20),
+		"S17: and so does one with the protection ceiling moving every tick");
+
+	/* The guard that matters: an unrelated field moving must not change the timing at all.
+	 * Before the release rate was latched at the release's own edge, this run took several
+	 * times as long as the quiet one. */
+	spread = (drift > quiet) ? (drift - quiet) : (quiet - drift);
+	CHECK(spread <= MS(5),
+		"S17: a moving ceiling does not lengthen the release - the rate is derived at the "
+		"edge into the release, not on every command change");
+}
+
 static void scenario_no_torque_no_assist(void)
 {
 	ride_t r;
@@ -994,6 +1099,7 @@ int main(void)
 	scenario_limiter_state_survives_owner_change();
 	scenario_level_iq_ceiling();
 	scenario_ceiling_binds_the_reference();
+	scenario_release_owns_its_timing();
 
 	if (failures == 0) {
 		puts("Assist Pipeline V2 scenarios: ALL CHECKS PASSED");
