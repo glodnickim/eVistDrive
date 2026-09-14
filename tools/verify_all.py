@@ -84,6 +84,9 @@ def main():
     # The one property the assist pipeline exists for: the motor must not reproduce the
     # pedal ripple. Measured from the traces the step above just produced.
     step('assist ripple attenuation',[sys.executable,'tools/analyze_assist_ripple.py'])
+    # ... and the analyzer that reports it must refuse evidence that cannot support the claim.
+    step('ripple analyzer refuses unusable evidence',
+         [sys.executable,'tests/test_ripple_analyzer_rejects.py'])
     san_ok=(not a.quick) and sanitizers_available()
     if a.quick:
         san_tag=''
@@ -100,7 +103,10 @@ def main():
     level4=[sys.executable,'tools/run_level4.py','--fuzz','25' if a.quick else '100']
     if san_ok: level4 += ['--sanitize']
     step('Level-4 virtual rider + bicycle + battery/SOC + real FOC'+san_tag,level4)
-    step('recorded-ride import/replay deterministic regression',[sys.executable,'tools/run_replay_regression.py'])
+    # Prints REPLAY_EXECUTED, BEHAVIOR_ACCEPTED and OUTPUT_PINNED separately - running a replay
+    # is infrastructure, behaving correctly on it is not the same claim.
+    step('recorded-ride replay + stated ride behaviour',[sys.executable,'tools/run_replay_regression.py'])
+    step('every ride behaviour criterion can reject',[sys.executable,'tests/test_replay_behavior.py'])
     step('CANable FW145 raw-log decode -> canonical -> native replay',[sys.executable,'tests/test_canable_ride_decode.py'])
     if a.target or a.require_target: target_build(a.require_target, a.target_variant)
     print('\n==================================================')

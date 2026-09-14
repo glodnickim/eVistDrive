@@ -10,5 +10,10 @@
   ],
   "created_utc": "2026-09-13T21:19:42.541093+00:00",
   "accepted_output_sha256": null,
-  "accepted_output_note": "not pinned until validated on the physical bike"
+  "accepted_output_note": "not pinned until validated on the physical bike",
+  "behavior": {
+    "produces_assist": true,
+    "responds_to_load": "falling",
+    "note": "the rider eases off through the fragment and the assist has to follow down; no attenuation criterion - the request is at its ceiling for 13 % of the samples"
+  }
 }

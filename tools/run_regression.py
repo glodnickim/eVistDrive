@@ -94,7 +94,10 @@ burst=build('missed_tick_burst',Path('scenarios/missed_tick_burst_host.c'),['cra
 scenarios=['RUN_60','RUN_80','RUN_100','RUN_110','RUN_120','CADENCE_RAMP_50_120']
 # Cruise scenarios exist to measure ripple attenuation and run only on the assist layer:
 # the torque and ride layers have nothing extra to say about them.
-assist_only=['CRUISE_60','CRUISE_80','CRUISE_100']
+assist_only=['CRUISE_20_ECO','CRUISE_20_TRAIL','CRUISE_20_SPORT','CRUISE_20_SPORTPLUS',
+             'CRUISE_40_ECO','CRUISE_40_TRAIL','CRUISE_40_SPORT','CRUISE_40_SPORTPLUS',
+             'CRUISE_60_ECO','CRUISE_60_TRAIL','CRUISE_60_SPORT','CRUISE_60_SPORTPLUS',
+             'CRUISE_80_SPORT','CRUISE_100_SPORT']
 files={}
 for sc in scenarios:
     for exe,tag in ((torque,'torque'),(assist,'assist'),(ride,'ride')):

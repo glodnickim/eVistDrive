@@ -516,26 +516,58 @@ Two compact bytes summarise it:
 
 | Layer | What it proves |
 |---|---|
-| `tests/host/ap2_pipeline_scenarios_host.c` | 13 rider-describable scenarios against the shipped chain: calm riding, a harder push, an aggressive burst, a climb, stop, reverse, restart, the profile ordering, SPORT+ still being ramped, AUTO moving continuously, AUTO SPORT+ reaching further, every limiter binding **and releasing**, safety cut, level 0, no-torque-no-assist. |
-| `tools/analyze_assist_ripple.py` | The one property the pipeline exists for, measured: Iq does not reproduce pedal ripple. Refuses to report a result when the response is saturated, because a clipped signal is smooth for the wrong reason. |
+| `tests/host/ap2_pipeline_scenarios_host.c` | 16 rider-describable scenarios against the shipped chain: calm riding, a harder push, an aggressive burst, a climb, stop, reverse, restart, the profile ordering, SPORT+ still being ramped, AUTO moving continuously, AUTO SPORT+ reaching further, every limiter binding **and releasing**, safety cut, level 0, no-torque-no-assist, the limiter latch surviving an owner change, the per-level Iq ceiling and its migration, and the ceiling binding the reference inside the ISR. |
+| `tools/analyze_assist_ripple.py` | The one property the pipeline exists for, measured across **14 scenarios** — 20/40/60/80/100 rpm against ECO/TRAIL/SPORT/SPORT+: Iq does not reproduce pedal ripple. |
+| `tests/test_ripple_analyzer_rejects.py` | That the analyzer above **refuses** seven kinds of unusable evidence rather than passing on them. |
 | `tools/run_regression.py` | Deterministic whole-chain traces over the RUN/CADENCE_RAMP/CRUISE scenarios, byte-identical on rerun. |
 | `tools/run_sil.py` | Closed-loop supervisory SIL plus deterministic fuzz. |
 | `tools/run_electrical_sil.py` | The real FOC/PMSM/Hall path behind the pipeline. |
 | `tools/run_level4.py` | Virtual rider + bicycle + battery/SOC around the production controller. |
-| `sim/replay/cases/w1-*` | Six fragments of a **real recorded ride** through the production chain. |
+| `sim/replay/cases/w1-*` | Six fragments of a **real recorded ride** through the production chain, each with stated behaviour criteria. |
+| `tests/test_replay_behavior.py` | That every one of those criteria can reject, not only accept. |
 
 No scenario check pins an exact Iq count. The numbers here are ride-feel settings expected to move
 during tuning; a test that froze them would turn every tuning change into a test failure. What is
 asserted are invariants and orderings, which stay true across tuning and stop being true the moment
 the architecture regresses.
 
-### The real-ride cases are deliberately not pinned
+### Running a replay and behaving correctly on it are two different claims
 
-`accepted_output_sha256` is `null` for every `w1-*` case. Pinning would freeze an untuned,
-never-ridden output as the definition of correct. The cases still earn their place: the real
-recorded sensor history runs through the production chain on every gate, so a crash, a hang, a NaN
-or a lost column is caught. Pin the output only after a ride on the bike says the behaviour is
-right.
+`tools/run_replay_regression.py` prints three verdicts per case, because they answer three
+questions and merging them into one `CASE PASS` promised more than had been checked:
+
+| Verdict | What it means |
+|---|---|
+| `REPLAY_EXECUTED` | The production chain consumed a real recorded sensor history and produced a trace. Infrastructure only — it catches a crash, a hang, a NaN, a lost column, and says nothing about the assist. |
+| `BEHAVIOR_ACCEPTED` | The trace satisfies criteria stated in that case's `manifest.json`. A case with no criteria reports `BEHAVIOR_NOT_ASSESSED` and is never called a pass. |
+| `OUTPUT_PINNED` | The bytes match a hash a human accepted after validating that ride. |
+
+The criteria are quantitative and each is carried only by the fragments that can support it:
+
+| Criterion | Asks | Carried by |
+|---|---|---|
+| `produces_assist` | Did any current come out at all? | all six |
+| `responds_to_load` | When the pedal force moved one way, did the assist follow? | f03, f05, f06 |
+| `pause_releases` | When the rider stopped, did the current actually reach and hold zero? | f07, f08 |
+| `restart_recovers` | And did it come back when the rider did? | f07, f08 |
+| `max_attenuation` | Did the current swing proportionally less than the pedal? | f01, f07, f08 |
+
+**Why not all six carry `max_attenuation`.** In f05 and f06 the request sits on its ceiling for
+52 % and 44 % of the fragment, and in f03 for 13 %. A clipped signal is smooth because it is
+clipped, so an attenuation number measured there would pass for entirely the wrong reason. The
+criterion refuses such a fragment rather than reporting the flattering value, and those fragments
+carry `responds_to_load` instead — which is what they can actually settle.
+
+The limit is `0.60`, the same number and the same meaning as `tools/analyze_assist_ripple.py`:
+one standard, not two. Measured today: f01 `0.318`, f07 `0.372`, f08 `0.302`.
+
+### The real-ride outputs are deliberately not pinned
+
+`accepted_output_sha256` is `null` for every `w1-*` case, so `OUTPUT_PINNED` is `0/6`. Pinning
+would freeze an untuned, never-ridden output as the definition of correct. That is a separate
+question from behaviour: the criteria above hold the ride to stated properties while leaving the
+exact numbers free to move during tuning. Pin the bytes only after a ride on the bike says the
+behaviour is right.
 
 ---
 

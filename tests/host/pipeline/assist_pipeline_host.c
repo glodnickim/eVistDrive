@@ -84,19 +84,45 @@ typedef struct {
 	double ramp_end_rpm;
 	double ramp_duration_s;
 	const crank_torque_shape_t *shape;
+	/* Which assist level of bank 0 to run. 0 uses ASSIST_LEVEL_INDEX. */
+	unsigned level;
 } scenario_def_t;
 
+/*
+ * Ripple attenuation is measured across the CADENCE range and across the PROFILES, not at one
+ * comfortable point.
+ *
+ * 20 and 40 rpm matter most: the dead spot between leg pushes is longest there, which is exactly
+ * where a sustained term that collapses shows up, and exactly where the legacy path felt worst.
+ * The profiles differ in how much of the request is reactive, so each one has to be shown to
+ * absorb the pulsation on its own terms - a result for SPORT says nothing about ECO.
+ *
+ * Level indices in bank 0: 1 = ECO, 2 = TRAIL, 3 = SPORT, 4 = SPORT+.
+ */
+#define CRUISE(rpm, lvl, nm) { nm, (double)(rpm), 8.0, 0, 0, 0, 0, &CRUISE_SHAPE, (lvl) }
+
 static const scenario_def_t SCENARIOS[] = {
-	{ "RUN_60",  60.0,  6.0, 0, 0, 0, 0, &SHARED_SHAPE },
-	{ "RUN_80",  80.0,  6.0, 0, 0, 0, 0, &SHARED_SHAPE },
-	{ "RUN_100", 100.0, 6.0, 0, 0, 0, 0, &SHARED_SHAPE },
-	{ "RUN_110", 110.0, 6.0, 0, 0, 0, 0, &SHARED_SHAPE },
-	{ "RUN_120", 120.0, 6.0, 0, 0, 0, 0, &SHARED_SHAPE },
-	{ "CADENCE_RAMP_50_120", 0.0, 14.0, 1, 50.0, 120.0, 10.0, &SHARED_SHAPE },
-	/* Ripple attenuation, at an effort that does not saturate - see CRUISE_SHAPE. */
-	{ "CRUISE_60",  60.0,  8.0, 0, 0, 0, 0, &CRUISE_SHAPE },
-	{ "CRUISE_80",  80.0,  8.0, 0, 0, 0, 0, &CRUISE_SHAPE },
-	{ "CRUISE_100", 100.0, 8.0, 0, 0, 0, 0, &CRUISE_SHAPE },
+	{ "RUN_60",  60.0,  6.0, 0, 0, 0, 0, &SHARED_SHAPE, 0U },
+	{ "RUN_80",  80.0,  6.0, 0, 0, 0, 0, &SHARED_SHAPE, 0U },
+	{ "RUN_100", 100.0, 6.0, 0, 0, 0, 0, &SHARED_SHAPE, 0U },
+	{ "RUN_110", 110.0, 6.0, 0, 0, 0, 0, &SHARED_SHAPE, 0U },
+	{ "RUN_120", 120.0, 6.0, 0, 0, 0, 0, &SHARED_SHAPE, 0U },
+	{ "CADENCE_RAMP_50_120", 0.0, 14.0, 1, 50.0, 120.0, 10.0, &SHARED_SHAPE, 0U },
+
+	CRUISE(20,  1U, "CRUISE_20_ECO"),
+	CRUISE(20,  2U, "CRUISE_20_TRAIL"),
+	CRUISE(20,  3U, "CRUISE_20_SPORT"),
+	CRUISE(20,  4U, "CRUISE_20_SPORTPLUS"),
+	CRUISE(40,  1U, "CRUISE_40_ECO"),
+	CRUISE(40,  2U, "CRUISE_40_TRAIL"),
+	CRUISE(40,  3U, "CRUISE_40_SPORT"),
+	CRUISE(40,  4U, "CRUISE_40_SPORTPLUS"),
+	CRUISE(60,  1U, "CRUISE_60_ECO"),
+	CRUISE(60,  2U, "CRUISE_60_TRAIL"),
+	CRUISE(60,  3U, "CRUISE_60_SPORT"),
+	CRUISE(60,  4U, "CRUISE_60_SPORTPLUS"),
+	CRUISE(80,  3U, "CRUISE_80_SPORT"),
+	CRUISE(100, 3U, "CRUISE_100_SPORT"),
 };
 #define SCENARIO_COUNT (sizeof(SCENARIOS) / sizeof(SCENARIOS[0]))
 
@@ -165,7 +191,7 @@ int main(int argc, char **argv)
 		in.pas_sensor_valid = true;
 		in.forward_steps = 250U;
 		in.required_steps = 4U;
-		in.assist_level_index = ASSIST_LEVEL_INDEX;
+		in.assist_level_index = (uint8_t)(sc->level ? sc->level : ASSIST_LEVEL_INDEX);
 		in.battery_voltage_mv = BATTERY_VOLTAGE_MV;
 		in.battery_current_max = 15000;
 		in.u_abs = U_ABS_FIXED;

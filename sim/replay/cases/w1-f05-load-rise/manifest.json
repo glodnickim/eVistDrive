@@ -10,5 +10,10 @@
   ],
   "created_utc": "2026-09-13T21:19:42.542094+00:00",
   "accepted_output_sha256": null,
-  "accepted_output_note": "not pinned until validated on the physical bike"
+  "accepted_output_note": "not pinned until validated on the physical bike",
+  "behavior": {
+    "produces_assist": true,
+    "responds_to_load": "rising",
+    "note": "pedal force rising into a sustained effort; no attenuation criterion - the request is pinned at its ceiling for about half the fragment"
+  }
 }

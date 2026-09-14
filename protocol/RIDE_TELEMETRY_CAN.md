@@ -1,4 +1,21 @@
-# FW145 — EVistDrive continuous Level-4 ride telemetry over CAN
+# EVistDrive continuous Level-4 ride telemetry over CAN
+
+## Schema versions
+
+| Schema | Data frames | Introduced with | What changed |
+|---|---|---|---|
+| 1 | 7 (`0x10400..0x10406`) | FW145 | the original block |
+| 2 | 9 (`0x10400..0x10406`, `0x10408`, `0x10409`) | Assist Pipeline V2 | CORE bytes 4..7 changed meaning; the STATE spare byte carries limiter flags; two frames added |
+
+**Schema 2 added its frames ABOVE META, not in place of it.** `0x10407` stays META and every
+schema-1 frame keeps the identifier its decoder already knows, so a decoder that understands only
+schema 1 sees a version byte of 2 and can stop cleanly instead of misreading. `tools/decode_canable_ride_log.py`
+decodes both and records which one each capture used.
+
+The one field that changed meaning without changing position is CORE bytes 4..7. Under schema 1
+they are the removed native torque filters; under schema 2 they are the demand model in permille.
+The decoder keeps them in SEPARATE output columns for exactly that reason - a mixed archive must
+never compare an ADC delta against a permille demand.
 
 ## Purpose
 
@@ -23,7 +40,8 @@ cannot enable it when diagnostics are globally disabled.
   QZERO state-machine object.
 - The foreground builds one coherent snapshot about every 84 control ticks (~21 ms / ~47.6 Hz).
 - The main loop serializes at most one telemetry CAN frame every 12 control ticks (~3 ms).
-- Seven data frames make one coherent snapshot; every data frame carries the same `tick16`.
+- A snapshot is seven data frames under schema 1 and nine under schema 2; every data frame in
+  it carries the same `tick16`, which is what identifies the snapshot.
 - META is inserted at most once per second between complete snapshots.
 - Critical CAN queue, HMI multiframe traffic and existing diagnostic dumps have priority.
 - If no CAN mailbox is free, the telemetry step returns immediately. There is no busy-wait.
@@ -46,6 +64,8 @@ The range is compile-time checked against all other EVistDrive diagnostic blocks
 0x00010405 STATE
 0x00010406 ROTOR/PAS
 0x00010407 META
+0x00010408 ASSIST     schema 2
+0x00010409 RIDER      schema 2
 ```
 
 `0x10300..0x10307` remains owned by STOP_TRACE and must not be reused.
@@ -54,21 +74,27 @@ All 16/32-bit numeric fields below are **big-endian** on the telemetry wire.
 
 ## Common data-frame prefix
 
-Frames `0x10400..0x10406`:
+Every data frame:
 
 ```text
 byte 0..1  control_tick low 16 bits (4 kHz timebase)
 ```
 
-The same value on all seven IDs identifies one coherent snapshot.
+The same value on all data frames of a snapshot identifies it.
 
 ### 0x10400 CORE
 
 ```text
 0..1 tick16
-2..3 load_centikg
-4..5 torque FAST native delta
-6..7 torque RUN native delta
+2..3 load_centikg              calibrated pedal force, 0.01 kgf   (both schemas)
+
+schema 1:
+4..5 torque FAST native delta  removed assist path, native ADC units
+6..7 torque RUN native delta   removed assist path, native ADC units
+
+schema 2:
+4..5 torque_normalized         permille of the rider-effort full scale
+6..7 rider_demand              permille - the rider's intent after conditioning
 ```
 
 ### 0x10401 DEMAND
@@ -137,8 +163,27 @@ bits 13..15 bridge lifecycle (0..7)
      bits 6..7 QZERO state
 5    raw cadence rpm
 6    conditioned control cadence rpm
-7    reserved = 0
+7    schema 1: reserved = 0
+     schema 2: limiter flags, low 8 bits (see below)
 ```
+
+`limit_flags` (schema 2, STATE byte 7) - which stage of the one limiter chain was binding:
+
+```text
+bit 0 power ceiling
+bit 1 battery current
+bit 2 phase / level Iq ceiling
+bit 3 undervoltage derate
+bit 4 thermal derate
+bit 5 speed / legal taper
+bit 6 a non-zero request was taken all the way to zero by a limit
+bit 7 the start segment is in force
+```
+
+Byte 2 (`permission_bits`) and byte 3 (`debug_flags`) keep their positions but, under schema 2,
+carry the assist chain's own answers: byte 2 is the lifecycle and profile
+(low nibble `ap2_pas_state_t`, high nibble `ap2_profile_id_t`) and byte 3 is the
+`AP2_WHY_*` reason bitfield.
 
 ### 0x10406 ROTOR/PAS
 
@@ -162,17 +207,49 @@ Important: the PAS A/B value in this ~48 Hz stream is a **state snapshot, not a 
 transition recorder**. It must not be presented as `PAS_RAW` evidence. Short high-resolution PAS /
 START/STOP investigations still use the existing PAS/QS/STOP recorders.
 
+### 0x10408 ASSIST (schema 2)
+
+The request, split into the two halves the demand model produces. All permille.
+
+```text
+0..1 tick16
+2..3 assist_base       the sustained term - what survives the pedal dead spot
+4..5 assist_dynamic    the reactive term - the excess above that sustained level
+6..7 assist_response   the combined response, before it is scaled to Iq
+```
+
+### 0x10409 RIDER (schema 2)
+
+The two estimators and the adaptive decision. All permille, all confidences with no physical
+dimension.
+
+```text
+0..1 tick16
+2..3 rider_aggression  fast: how sharply the bike is being ridden
+4..5 load_state        slow: how hard the bike is working (climb, headwind, soft ground)
+6..7 auto_factor       where an adaptive profile currently sits between calm and strong
+```
+
 ## 0x10407 META
 
 At most once per second:
 
 ```text
-byte 0     telemetry schema version (=1)
+byte 0     telemetry schema version (1 or 2)
 byte 1     active assist-profile bank
 byte 2..5  full 32-bit 4 kHz control tick
 byte 6     failed telemetry-frame counter, saturated to 255
-byte 7     number of data frames per snapshot (=7)
+byte 7     number of data frames per snapshot (7 for schema 1, 9 for schema 2)
 ```
+
+### Captures that begin before the first META
+
+META is sent at most once a second, so a capture joined mid-ride has data frames before any
+version is known. The decoder does not guess: it reads every snapshot under the version of the
+nearest PRECEDING META, and snapshots before the first META take the version of the first one in
+the capture. That is an inference and it is recorded as one - `schema_before_first_meta` in the
+metadata says how many rows were read that way, so a reader can discount them if the capture
+spans a firmware change.
 
 The full tick is an epoch anchor. The raw CANable monotonic timestamp is retained independently by
 the decoder, so missed telemetry frames remain real time gaps rather than compressed time.

@@ -42,9 +42,23 @@ from pathlib import Path
 from typing import Iterable
 
 BASE = 0x00010400
-CORE, DEMAND, MOTOR, BATT, LIMITS, STATE, ROTOR, META = range(8)
-DATA_FRAME_COUNT = 7
+# Frame INDEX, which is also the identifier offset for 0..7. Schema 2 added two data frames
+# ABOVE META rather than renumbering anything, so ASSIST and RIDER are 8 and 9 - the whole
+# point being that every schema-1 frame keeps the identifier its decoder already knows.
+CORE, DEMAND, MOTOR, BATT, LIMITS, STATE, ROTOR, META, ASSIST, RIDER = range(10)
+
+# Data frames per schema version. Frame 7 is META in both and is never a data frame.
+DATA_FRAMES_V1 = (CORE, DEMAND, MOTOR, BATT, LIMITS, STATE, ROTOR)
+DATA_FRAMES_V2 = DATA_FRAMES_V1 + (ASSIST, RIDER)
+SUPPORTED_SCHEMAS = (1, 2)
 CONTROL_HZ = 4000.0
+
+# Which stage of the one limiter chain was binding. Schema 2 only: the low eight bits travel in
+# the STATE frame's spare byte, which schema 1 left zero.
+LIMIT_FLAG_NAMES = [
+    (0, "lim_power"), (1, "lim_battery"), (2, "lim_phase"), (3, "lim_voltage"),
+    (4, "lim_thermal"), (5, "lim_speed"), (6, "lim_zeroed"), (7, "lim_start"),
+]
 
 LINE_RE = re.compile(
     r"^\[(?P<wall>[^\]]+)\]\s+\[[^\]]+\]\s+"
@@ -61,7 +75,17 @@ FLAG_NAMES = [
 
 DECODED_FIELDS = [
     "time_s", "capture_time_s", "control_tick", "tick16", "frame_mask", "complete",
-    "load_centikg", "torque_fast_native", "torque_run_native",
+    "schema_version",
+    "load_centikg",
+    # SCHEMA 1 ONLY - the removed native torque filters. Left as distinct column names rather
+    # than reused, so a mixed archive never silently compares a native ADC delta against a
+    # permille demand.
+    "torque_fast_native", "torque_run_native",
+    # SCHEMA 2 - the demand model, in permille of the rider-effort full scale.
+    "torque_normalized_permille", "rider_demand_permille",
+    "assist_base_permille", "assist_dynamic_permille", "assist_response_permille",
+    "rider_aggression_permille", "load_state_permille", "auto_factor_permille",
+    "limit_flags_hex", *[name for _, name in LIMIT_FLAG_NAMES],
     "cadence_raw_rpm", "cadence_control_rpm",
     "iq_requested", "iq_allowed", "iq_ref", "iq_actual", "id_actual", "motor_erps",
     "battery_voltage_v", "battery_current_a", "soc_display_pct",
@@ -120,18 +144,28 @@ class Snapshot:
     capture_first: int
     capture_last: int
     frames: dict[int, bytes] = field(default_factory=dict)
+    # The schema this snapshot is read under. A capture that starts before its first META frame
+    # has no version yet; see resolve_schema() for why that is inferred rather than assumed.
+    schema: int = 1
+
+    @property
+    def expected_frames(self) -> tuple:
+        return DATA_FRAMES_V2 if self.schema >= 2 else DATA_FRAMES_V1
 
     @property
     def mask(self) -> int:
         m = 0
         for idx in self.frames:
-            if 0 <= idx < DATA_FRAME_COUNT:
+            if idx != META and 0 <= idx < RIDER + 1:
                 m |= 1 << idx
         return m
 
     @property
     def complete(self) -> bool:
-        return self.mask == (1 << DATA_FRAME_COUNT) - 1
+        want = 0
+        for idx in self.expected_frames:
+            want |= 1 << idx
+        return (self.mask & want) == want
 
     @property
     def replayable(self) -> bool:
@@ -203,8 +237,17 @@ def decode_row(s: Snapshot, t0: int, capture0: int, capture_hz: float) -> dict[s
         "frame_mask": f"0x{s.mask:02X}",
         "complete": s.complete,
     })
+    row["schema_version"] = s.schema
     if CORE in s.frames:
-        d=s.frames[CORE]; row.update(load_centikg=u16(d,2), torque_fast_native=u16(d,4), torque_run_native=u16(d,6))
+        d=s.frames[CORE]
+        row.update(load_centikg=u16(d,2))
+        if s.schema >= 2:
+            # SCHEMA 2 redefined these two words. Decoding them under their schema-1 names would
+            # report a permille demand as a native ADC delta - the exact confusion the version
+            # byte exists to prevent.
+            row.update(torque_normalized_permille=u16(d,4), rider_demand_permille=u16(d,6))
+        else:
+            row.update(torque_fast_native=u16(d,4), torque_run_native=u16(d,6))
     if DEMAND in s.frames:
         d=s.frames[DEMAND]; row.update(iq_requested=i16(d,2), iq_allowed=i16(d,4), iq_ref=i16(d,6))
     if MOTOR in s.frames:
@@ -220,6 +263,19 @@ def decode_row(s: Snapshot, t0: int, capture0: int, capture_hz: float) -> dict[s
         row.update(permission_bits_hex=f"0x{d[2]:02X}", debug_flags_hex=f"0x{d[3]:02X}",
                    assist_level=packed&0x0F, session_state=(packed>>4)&3, qzero_state=(packed>>6)&3,
                    cadence_raw_rpm=d[5], cadence_control_rpm=d[6])
+        if s.schema >= 2:
+            lim = d[7]
+            row["limit_flags_hex"] = f"0x{lim:02X}"
+            for bit, name in LIMIT_FLAG_NAMES:
+                row[name] = bool(lim & (1 << bit))
+    if ASSIST in s.frames:
+        d=s.frames[ASSIST]
+        row.update(assist_base_permille=u16(d,2), assist_dynamic_permille=u16(d,4),
+                   assist_response_permille=u16(d,6))
+    if RIDER in s.frames:
+        d=s.frames[RIDER]
+        row.update(rider_aggression_permille=u16(d,2), load_state_permille=u16(d,4),
+                   auto_factor_permille=u16(d,6))
     if ROTOR in s.frames:
         d=s.frames[ROTOR]; rr=d[6]; pp=d[7]
         row.update(theta_q15=i16(d,2), hall_age_ticks=u16(d,4), hall_state=rr&7,
@@ -285,7 +341,7 @@ def main() -> int:
     for fr in iter_canable(args.input):
         total_frames += 1
         if capture_first_all is None: capture_first_all=fr.capture_tick
-        if not (BASE <= fr.can_id <= BASE+META):
+        if not (BASE <= fr.can_id <= BASE+RIDER):
             continue
         telem_frames += 1
         if capture_first_telem is None: capture_first_telem=fr.capture_tick
@@ -309,6 +365,34 @@ def main() -> int:
         s.frames[idx]=fr.data
 
     ordered=sorted(snaps.values(),key=lambda x:x.tick)
+
+    # ---- schema resolution -----------------------------------------------------------------
+    #
+    # META carries the version and is sent at most once a second, so a capture that starts
+    # mid-stream has data frames before its first META. Guessing a version for those would be
+    # exactly the failure this whole mechanism exists to prevent, so they are not guessed at:
+    # every snapshot is read under the version of the NEAREST PRECEDING META, and snapshots
+    # before the first META take the version of the first one in the capture. That is an
+    # inference, and it is recorded as one - `schema_before_first_meta` in the metadata says how
+    # many rows were read that way, so a reader can discount them if the capture is a mixture.
+    meta_schemas = [m["schema_version"] for m in meta_records]
+    first_schema = meta_schemas[0] if meta_schemas else 1
+    meta_by_capture = sorted(
+        ((m["capture_tick"], m["schema_version"]) for m in meta_records), key=lambda x: x[0])
+    rows_before_first_meta = 0
+    for snap in ordered:
+        chosen = first_schema
+        seen_meta = False
+        for cap, ver in meta_by_capture:
+            if cap <= snap.capture_first:
+                chosen = ver
+                seen_meta = True
+            else:
+                break
+        if not seen_meta:
+            rows_before_first_meta += 1
+        snap.schema = chosen
+
     epoch_offset = 0
     if meta_epoch_offsets:
         # Every valid offset is an integer number of 16-bit wraps. Pick the most common anchor;
@@ -338,9 +422,10 @@ def main() -> int:
         w=csv.DictWriter(f,fieldnames=CANONICAL_FIELDS); w.writeheader(); w.writerows(replay_rows)
 
     complete=sum(s.complete for s in ordered); replayable=sum(s.replayable for s in ordered)
-    missing_counts={str(i):sum(i not in s.frames for s in ordered) for i in range(DATA_FRAME_COUNT)}
+    missing_counts={str(i):sum(i not in s.expected_frames or i not in s.frames for s in ordered)
+                    for i in range(RIDER + 1) if i != META}
     schemas=sorted({m["schema_version"] for m in meta_records})
-    bad_schema=[v for v in schemas if v != 1]
+    bad_schema=[v for v in schemas if v not in SUPPORTED_SCHEMAS]
     # Coverage is deliberately conservative: PAS_AB here is only a sparse snapshot, not PAS_RAW.
     coverage=["CORE","INTERNAL"] if replayable else []
     if any(BATT in s.frames and LIMITS in s.frames for s in ordered): coverage.append("LIMITS")
@@ -359,7 +444,9 @@ def main() -> int:
         "total_can_frames":total_frames,"telemetry_frames":telem_frames,"malformed_telemetry_frames":malformed_telem,
         "snapshots":len(ordered),"complete_snapshots":complete,"replayable_snapshots":replayable,
         "snapshot_complete_ratio":complete/len(ordered),"missing_frame_counts":missing_counts,
-        "schema_versions":schemas,"unsupported_schema_versions":bad_schema,"meta_records":meta_records,
+        "schema_versions":schemas,"supported_schema_versions":list(SUPPORTED_SCHEMAS),
+        "unsupported_schema_versions":bad_schema,
+        "schema_before_first_meta":rows_before_first_meta,"meta_records":meta_records,
         "meta_epoch_offsets":meta_epoch_offsets,"selected_epoch_offset":epoch_offset,
         "coverage":coverage,"time_source":"firmware_control_tick_4khz","capture_timestamp_hz":args.capture_hz,
         "long_gaps_over_100ms":gaps,

@@ -10,5 +10,12 @@
   ],
   "created_utc": "2026-09-13T21:19:42.544094+00:00",
   "accepted_output_sha256": null,
-  "accepted_output_note": "not pinned until validated on the physical bike"
+  "accepted_output_note": "not pinned until validated on the physical bike",
+  "behavior": {
+    "produces_assist": true,
+    "pause_releases": 0.95,
+    "restart_recovers": true,
+    "max_attenuation": 0.6,
+    "note": "a long pause: the current must reach and hold zero for all but the ramp-down, and come back when the rider does"
+  }
 }

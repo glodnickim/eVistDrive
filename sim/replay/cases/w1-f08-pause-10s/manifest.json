@@ -10,5 +10,12 @@
   ],
   "created_utc": "2026-09-13T21:19:42.546094+00:00",
   "accepted_output_sha256": null,
-  "accepted_output_note": "not pinned until validated on the physical bike"
+  "accepted_output_note": "not pinned until validated on the physical bike",
+  "behavior": {
+    "produces_assist": true,
+    "pause_releases": 0.95,
+    "restart_recovers": true,
+    "max_attenuation": 0.6,
+    "note": "a short pause - the same contract on a timescale where a sustained term that refused to let go would still be visible"
+  }
 }
