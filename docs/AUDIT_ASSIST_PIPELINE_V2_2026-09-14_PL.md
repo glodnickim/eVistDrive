@@ -1,5 +1,9 @@
 # Audyt Assist Pipeline V2 — wytyczne do poprawek
 
+> **Nowszy audyt dla agenta (2026-09-14, 13:36):** [konfiguracja V2, CANable i gotowość wydania](AUDIT_CONFIG_CANABLE_RELEASE_2026-09-14_PL.md). Obejmuje poprawki na `226cb54`, wyniki bramki i nowe blokery C1–C7. To aktualne wytyczne dalszej pracy; poniższe ustalenia pozostają historią wcześniejszego stanu.
+
+> **Zakres historyczny:** findings poniżej dotyczą `9dc0b0a`. Po audycie pojawiły się commity poprawek; stan bieżącej implementacji wymaga ponownego review. K1/K2 uzupełniają wiedzę referencyjną, nie nadają PASS późniejszemu kodowi. Aktualny stan reverse: [kwalifikacja closure G5300](reference/g5300/CLOSURE_REVIEW_2026-09-14_PL.md).
+
 REPORT_TIMESTAMP: 2026-09-14T08:33:06+02:00
 
 EXECUTION_ID: EXEC-EVD-ASSIST-V2-AUDIT-001  
@@ -151,3 +155,23 @@ EXECUTION_ID: EXEC-EVD-ASSIST-V2-AUDIT-K1; AUTHORISED_BY: USER; TASK_ID: NONE. F
 Weryfikacja K1: odczyt przekazanego tekstu, sprawdzenie jego wewnętrznych korekt i arytmetyki, porównanie lokalnych PAS/cadence/liveness oraz trajectory, zachowanie źródła z SHA256 i kontrola diff. BUILD/TEST RUNTIME: NOT_RUN (wyłącznie dokumentacja); HW: NOT_RUN; niezależny BIN reverse: NOT_RUN. Produkcja bez zmian. Pliki dotknięte: ten raport, katalog `docs/reference/g5300`, lokalny i globalny indeks historii.
 
 NEXT EXACT ACTION K1: realizując poprawki audytu, dodać pomiar pełnej osi stop/reverse od fizycznego PAS do referencji i rzeczywistego prądu; wykorzystywać G5300 jako referencję architektury, a stałe dopiero po kwalifikacji dla M820.
+
+## Korekta K2 — pełniejszy closure G5300 i appendix adresowy
+
+Timestamp: 2026-09-14T11:49:20+02:00. Wykonanie i dowody: [EXEC-EVD-G5300-CLOSURE-REVIEW-001](reference/g5300/CLOSURE_REVIEW_2026-09-14_PL.md). Źródła kanoniczne pozostają w `external/datasheets`; notatka zawiera ich hashe, matrycę kompletności i priorytety dalszego reverse.
+
+**Co zostało wyjaśnione względem K1:**
+
+- D7EC nie jest ostatnią trajektorią current-command. Opisano E1E8 (`H+CE`→`M+2A2`→`F+16`) z osobnymi krokami +256/−16 na slot 10 ms. To skala wewnętrzna; nie dowód amperów lub czasu zaniku fizycznego Iq.
+- 200 ms RUN FALL należy do pełnej skali D7EC. True stop/negative cadence mogą hard-clearować jego stan, a downstream może kontynuować inną trajektorię. Nie kopiować 200 ms jako release M820.
+- Wyjaśniono brakujący czynnik 4 w filtrze: efektywne alpha≈1638/16384≈0,10 dzięki dodatkowej skali akumulatora. Pytanie K1 o samo alpha jest zamknięte na poziomie dostarczonego opisu. **Czas w ms pozostaje warunkowy**: poprzedni tekst zakładał 144 events/rev, nowy daje tabelę dla 72.
+- AUTO 1…525% oraz denominator 200 opisano równaniem. Jednostka rider_output=200 **nie jest potwierdzona jako 200 W**; wcześniejszego przykładu w watach nie używać jako stockowej kalibracji.
+- Istnieją opisane warstwy ograniczeń poza comfort slew: Q12 factor i hard MOE. Ich istnienie nie jest dowodem kompletnego przypisania kanałów battery/thermal/speed ani bezpośredniego clampowania referencji Iq. Nadal potrzebny pełny dataflow.
+
+**Czego K2 nie zamyka:** brake input→konkretny inhibit, first reverse→MOE/prąd, current-command→A, dokładne Hz szybkiej ISR, pełne równania i recovery limiterów, pokrycie Walk/calibration, kompletny torque state4/state5 i seedy E1E8, wszystkie nazwy Parameter2. Listing adresowy jest mocniejszym materiałem niż streszczenie, ale bez BIN-a nie został niezależnie zdisasemblowany w tej sesji.
+
+**Korekta liczbowa do źródła:** ratio 1→525% przy +10 pp/slot wymaga 53 aktualizacji, czyli budżetu 530 ms przy 10 ms/slot; 0,524 s jest modelem ciągłym. Opóźnienie od zdarzenia wymaga uwzględnienia fazy schedulera.
+
+**Wpływ na review kodu:** obserwowany HEAD to `5b251b2`, poprzedzony `48194d2`; są także niezacommitowane zmiany w `src/fast_iq_slew.c` i `sim/evist_sil.c`. To wykonanie nie jest ponownym audytem tych poprawek. Historyczne CHANGES_REQUIRED ani opisane objawy z `9dc0b0a` nie powinny być automatycznie przenoszone na aktualny kod. Odbiór poprawek wymaga oddzielnego sprawdzenia ich implementacji i testów.
+
+NEXT EXACT ACTION K2: wykorzystać nową matrycę reverse przy dalszej pracy; dla kodu M820 ponowić review poprawek na konkretnym HEAD/working tree, szczególnie końcowego Iq i aktualnych ograniczeń. Nie zlecać ponownego przepisania V2 na podstawie architektury innego kontrolera.

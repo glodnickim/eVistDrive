@@ -87,15 +87,22 @@ enums:
     power_linear: 1
     power_progressive: 2
     emtb: 3
-    # FW-129 D12: RESERVED / INACTIVE / NOT SELECTABLE. There is no dispatcher for this value
-    # in assist_modes_calculate() and bank_mode_valid() rejects it, so a bank carrying 4
-    # produces no assist. It must NOT be silently mapped onto plain eMTB, and the app must not
-    # offer it, until a real algorithm exists behind it. The wire value stays 4 either way.
+    # Accepted by the bank validator and migrated to SPORT like the rest of 1..6. It is
+    # NOT SELECTABLE - no app may offer it as a new choice - but refusing a stored 4 would
+    # throw away the other four levels of the same bank with it.
     emtb_custom: 4
-    # FW-129 D12: these two have been active in firmware since FW-046 / FW-056 and were simply
-    # missing here - the schema stopped at 4 while assist_modes.h went to 6.
     torque: 5
     power_curve: 6
+    # ASSIST PIPELINE V2. The six profiles, and the only values an app should write today.
+    # 1..6 above are still accepted and still migrated, so a bank saved before V2 keeps
+    # working; a stored number is never rewritten on read. >= 13 is unknown and refuses the
+    # WHOLE bank. See docs/ASSIST_PIPELINE_V2.md, the stored-configuration contract.
+    v2_eco: 7
+    v2_trail: 8
+    v2_sport: 9
+    v2_sport_plus: 10
+    v2_auto: 11
+    v2_auto_sport_plus: 12
   startup_boost_mode:
     cadence: 0
     speed: 1
@@ -114,13 +121,22 @@ rules:
     expression: ramp_speed_low_kph <= ramp_speed_high_kph
   - id: ramp_cadence_order
     expression: ramp_cadence_low_rpm <= ramp_cadence_high_rpm
-  - id: inactive_ride_core_modes
-    # FW-094: a bank carrying the reserved value 0 yields no assist (assist_modes_calculate
-    # reports unsupported). The app must never offer it as a selectable mode.
-    # FW-129 D12: emtb_custom (4) is in exactly the same position - accepted nowhere, no
-    # algorithm behind it - so it belongs in the same rule rather than looking selectable
-    # just because it has a name.
-    expression: mode_type in [reserved_0, emtb_custom]
+  - id: not_selectable_ride_core_modes
+    # NOT SELECTABLE, which is a different statement from NOT ACCEPTED. A bank carrying
+    # either value loads normally - 0 leaves that level producing no assist, 4 migrates to
+    # SPORT with the rest of the legacy numbers. What no app may do is OFFER them as a new
+    # choice for a rider to pick.
+    expression: mode_type not in [reserved_0, emtb_custom]
+  - id: level_off_is_a_zero_torque_ceiling
+    # One meaning for one byte, at both ends of the wire: 0 switches the level off. A
+    # ceiling of the level's own that changes nothing is 100, not 0. A request with no
+    # assist level behind it says so with AP2_LIMITS_NO_LEVEL_CEILING instead.
+    expression: max_iq_pct == 0 implies the level produces no assist
+  - id: zero_dynamics_means_use_the_profile
+    # A per-level override of 0 leaves the PROFILE's value in force. Neither end may clamp
+    # a stored 0 up to the 20 ms ramp floor - every shipped level stores 0, so one clamp
+    # turns a read -> save with no edit at all into a real change of behaviour.
+    expression: iq_rise_fast_ms, release_ms or smooth_start_duration_ms of 0 means the profile value
   - id: no_rotation_safe_default
     expression: assist_without_rotation == false
   - id: torque_public_scale
@@ -137,8 +153,8 @@ profile_fields:
     since: 1
     access: persistent_rw
     per_level: true
-    value: {type: enum8, enum: mode_type, scale: 1, unit: none, min: 0, max: 6, default: power_linear}
-    implementation: active_five_modes_1_2_3_5_6
+    value: {type: enum8, enum: mode_type, scale: 1, unit: none, min: 0, max: 12, default: v2_trail}
+    implementation: active_v2_profiles_7_12_with_migration_of_0_6
     ui_group: characteristic
 
   - key: support_ratio_pct
@@ -200,8 +216,9 @@ profile_fields:
     since: 1
     access: persistent_rw
     per_level: true
-    value: {type: u8, scale: 1, unit: percent_phase_limit, min: 0, max: 100, default: null}
-    implementation: active_compile_time_default_protocol_planned
+    value: {type: u8, scale: 1, unit: percent_phase_limit, min: 0, max: 100, default: 100}
+    zero_means: level_switched_off
+    implementation: active_level_ceiling_and_off_switch
     legacy_binding: Para1_level_current_slots
     ui_group: limits
 

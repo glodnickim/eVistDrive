@@ -497,6 +497,40 @@ read by no control path. See `inc/assist_bank_wire.h`. Do not wire a new feature
 fields — a reader would have no way to tell a value set for the old meaning from one set for the
 new one.
 
+### The stored-configuration contract
+
+A bank blob crosses two codebases, so its meaning has to be written down once and obeyed at both
+ends. These three rules were each broken in a different way before they were stated here, and
+every one of them is now pinned by `tests/host/assist_bank_contract_host.c`.
+
+**Supported mode numbers.** The stored `mode_type` byte is the rider's profile choice. This
+firmware interprets:
+
+| Stored value | Meaning |
+|---|---|
+| 0 | reserved — the level produces no assist |
+| 1..6 | a legacy mode. Accepted and **migrated** to the closest V2 profile on read; the blob keeps the original number, so a downgrade still finds what it wrote |
+| 7..12 | the six V2 profiles: ECO, TRAIL, SPORT, SPORT+, AUTO, AUTO SPORT+ |
+| ≥ 13 | unknown. The **whole bank** is refused, before any part of it has been applied |
+
+An app must not silently rewrite a stored number it does not recognise: keep it, show it as
+unsupported, and let the rider decide. A validator that accepts less than this list rejects the
+firmware's own default bank — which is exactly what happened, on the boot restore path, where it
+turned a correctly saved configuration back into compiled defaults at every power-up.
+
+**Zero in `max_iq_pct` means the level is switched off.** Not "no extra limit". 100 is the
+compiled default and always has been, so a stored 0 cannot have come from a default — it came
+from somebody who set it, in an app that has always described it as switching assist off at that
+level. 1..99 is an ordinary ceiling, that percentage of the phase-current maximum. A request with
+no assist level behind it — Walk — says so with `AP2_LIMITS_NO_LEVEL_CEILING`, not with 0.
+
+**Zero in a dynamics field means "the profile decides".** `iq_rise_fast_ms` (attack),
+`release_ms` and `smooth_start.duration_ms` are per-level **overrides**: 0 leaves the profile's
+own value in force. Neither end may clamp a stored 0 up to the 20 ms ramp floor — every shipped
+level stores 0, so a single clamp turns a plain read → save with no edit at all into a real change
+of behaviour on all five levels. A non-zero value is a rider's number and is still held to the
+floor.
+
 ---
 
 ## 14. Telemetry

@@ -1,5 +1,7 @@
 # G5300 — materiał referencyjny dla dalszego rozwoju EVistDrive
 
+> **Aktualizacja 2026-09-14, 11:49 +02:00:** dostarczono pełniejszy raport closure i appendix adresowy w `external/datasheets`. Bieżący stan wiedzy, domknięcia i korekty zawiera [CLOSURE_REVIEW_2026-09-14_PL.md](CLOSURE_REVIEW_2026-09-14_PL.md) — **czytaj go najpierw**. Poniższy intake zachowuje wcześniejszy stan źródeł. Alpha≈0,10 zostało wyjaśnione dodatkowym skalowaniem; nadal nie rozstrzygnięto 72/144 accepted events na obrót. Nowe dokumenty opisują downstream E1E8 i wycofują fizyczną interpretację AUTO „200 W”. Sam BIN i pomiary HW nie zostały dostarczone w tym pakiecie.
+
 Zapis: 2026-09-14T08:38:46+02:00. Zakres: przyjęcie materiału i analiza porównawcza, bez portowania kodu.
 
 ## Najpierw przeczytaj to

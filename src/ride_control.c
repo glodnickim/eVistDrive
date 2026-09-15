@@ -159,7 +159,9 @@ static int32_t walk_iq_through_shared_limits(const ride_control_input_t *input, 
 	lim_in.cal_i = input->cal_i;
 	lim_in.battery_current_ma = input->battery_current_mA;
 	lim_in.battery_current_max = input->battery_current_max;
-	lim_in.level_iq_limit = 0;   /* the assist level ceiling is not a Walk concept */
+	/* Walk has no assist level, so no level ceiling applies to it. Said with the named value,
+	 * not with 0 - 0 is now a ceiling of zero, which would stop Walk outright. */
+	lim_in.level_iq_limit = AP2_LIMITS_NO_LEVEL_CEILING;
 	lim_in.phase_current_max = input->phase_current_max;
 	lim_in.voltage_raw = input->voltage_raw;
 	lim_in.voltage_min_raw = input->voltage_min_raw;

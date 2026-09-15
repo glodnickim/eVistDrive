@@ -1158,6 +1158,8 @@ static void walk_sil_ctrl_tick(MotorState_t *ms, plant_t *p, uint32_t ctrl_tick,
     memset(&lim, 0, sizeof(lim));
     lim.iq_request = iq;
     lim.source = AP2_LIMIT_SOURCE_WALK;
+    /* memset left this 0, which now means a ceiling of zero. Walk has no assist level. */
+    lim.level_iq_limit = AP2_LIMITS_NO_LEVEL_CEILING;
     lim.battery_voltage_mv = 42000U;
     lim.u_abs = 1024;
     lim.cal_i = 95;

@@ -154,7 +154,7 @@ void ap2_limits_apply(const ap2_limits_input_t *in, ap2_limits_output_t *out)
 	 * ceiling are the same kind of fact, so they are one stage.
 	 */
 	cap = phase_max;
-	if (in->level_iq_limit > 0 && in->level_iq_limit < cap) {
+	if (in->level_iq_limit >= 0 && in->level_iq_limit < cap) {
 		cap = in->level_iq_limit;
 	}
 	out->phase_cap = cap;

@@ -349,6 +349,7 @@ void assist_pipeline_update(const assist_pipeline_input_t *in, assist_pipeline_c
 	bool assist_off;
 	bool bike_rolling;
 	int32_t iq_full_scale;
+	int32_t iq_ramp_scale;
 	int32_t base_shaped;
 	int32_t assist_base;
 	int32_t assist_dynamic;
@@ -377,8 +378,11 @@ void assist_pipeline_update(const assist_pipeline_input_t *in, assist_pipeline_c
 
 	/* ---- LEVEL AND PROFILE SELECTION -------------------------------------------------- */
 	level = assist_modes_get_default_level(in->assist_level_index);
+	/* Level 0, the reserved mode, and a level the rider capped at zero torque are one fact:
+	 * this level does nothing. Taking the third one here rather than only at the ceiling means
+	 * the request is zero at its source and the release is the ordinary one. */
 	assist_off = (in->assist_level_index == 0U) ||
-		(level->mode_type == ASSIST_MODE_RESERVED_0);
+		assist_modes_level_disables_assist(level);
 	profile_id = assist_modes_profile_for_level(level);
 	assist_modes_profile_override(level, &ovr);
 
@@ -483,12 +487,28 @@ void assist_pipeline_update(const assist_pipeline_input_t *in, assist_pipeline_c
 	 * finite at a standstill, where a power-domain request divides by a duty that has gone
 	 * to zero. POWER is a separate ceiling and is applied in the limiter chain.
 	 */
+	/*
+	 * The level's ceiling IS the full scale of its request: 100 % effort on a level capped at
+	 * 20 % asks for 20 % of the phase current, not for 100 % clipped down to it. A negative
+	 * value means no assist level applies at all, and only then does the hardware ceiling stand
+	 * in; a ceiling of exactly ZERO is a real answer - the level is switched off and can ask
+	 * for nothing.
+	 */
 	iq_full_scale = in->level_iq_limit;
-	if (iq_full_scale < 1) {
+	if (iq_full_scale < 0) {
 		iq_full_scale = in->phase_current_max;
 	}
-	if (iq_full_scale < 1) {
+	if (iq_full_scale < 0) {
 		iq_full_scale = PH_CURRENT_MAX;
+	}
+	/*
+	 * A RATE needs a positive full scale even when the level may command nothing. A switched-off
+	 * level still has to bring an existing reference down, and a step scaled by zero never
+	 * moves - that is the difference between releasing the current and stranding it.
+	 */
+	iq_ramp_scale = (iq_full_scale > 0) ? iq_full_scale : in->phase_current_max;
+	if (iq_ramp_scale < 1) {
+		iq_ramp_scale = PH_CURRENT_MAX;
 	}
 
 	if (pas.assist_permitted && !pas.block_positive) {
@@ -622,14 +642,14 @@ void assist_pipeline_update(const assist_pipeline_input_t *in, assist_pipeline_c
 		ctx.ceiling = lim.iq_ceiling;
 		ctx.ceiling_valid = true;
 	} else {
-		ctx.ceiling = ap2_slew_step(ctx.ceiling, lim.iq_ceiling, iq_full_scale,
+		ctx.ceiling = ap2_slew_step(ctx.ceiling, lim.iq_ceiling, iq_ramp_scale,
 			AP2_CEILING_RISE_MS, AP2_CEILING_FALL_MS, used_ticks);
 	}
 
 	/* ---- TRAJECTORY ------------------------------------------------------------------- */
 	cmd->iq_ceiling = ctx.ceiling;
 	cmd->final_iq_request = lim.final_iq;
-	cmd->slew_mode = trajectory(lim.final_iq, iq_full_scale, attack_ms, release_ms,
+	cmd->slew_mode = trajectory(lim.final_iq, iq_ramp_scale, attack_ms, release_ms,
 		pas.assist_permitted, pas.block_positive, pas.direction_block, in->service_cut,
 		in->motor_erps < AP2_COAST_RELEASE_ERPS,
 		&cmd->step_mag_8, &cmd->release_ticks_16k, &cmd->zero_policy);

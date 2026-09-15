@@ -199,18 +199,37 @@ ap2_profile_id_t assist_modes_profile_for_level(const assist_level_config_t *con
  * path at all: the pipeline was handed the GLOBAL ceiling instead, so setting a level to 20 %
  * changed nothing. It is a rider-visible setting and it now binds.
  *
- *   pct == 0    means NO LEVEL CEILING, not "no current".
+ *   pct == 0    the level is SWITCHED OFF. Zero allowed current.
+ *   pct 1..99   a ceiling: that percentage of the phase-current maximum.
+ *   pct == 100  the phase-current maximum, i.e. no ceiling of the level's own.
  *
- * That reading is forced by the data, not chosen for convenience: 0 is what an uninitialised
- * or pre-v6 record carries, and every shipped default is 100. Treating it as "zero allowed
- * current" would make a stored bank from an older firmware silently disable assist. A rider who
- * wants no assist has assist level 0, which is a different and explicit control.
+ * Zero used to be read here as "no level ceiling", on the reasoning that an uninitialised
+ * record carries 0 while every shipped default is 100. The second half of that is exactly why
+ * it does not hold: a stored 0 cannot have come from a default, so it came from somebody who
+ * set it - and the app they set it in has always described it as "Assist is switched off at
+ * this level". Two ends of one wire cannot hold two meanings for the same byte, and between a
+ * rider's stated intent and a convenience reading, the rider's wins.
+ *
+ * "No level ceiling at all" is a different statement and does not share this value. It has its
+ * own, on the limiter input: AP2_LIMITS_NO_LEVEL_CEILING, for Walk, which has no assist level.
  *
  *   global_limit  the ceiling already in force (limp mode, hardware) - the result never
  *                 exceeds it, so this can only tighten.
  */
 int32_t assist_modes_level_iq_limit(const assist_level_config_t *config,
 	int32_t global_limit, int32_t phase_current_max);
+
+/*
+ * Is this level configured to produce no assist at all?
+ *
+ * True for a level stored as the reserved mode 0, and for one whose torque ceiling the rider
+ * set to zero. Both are the same rider-facing fact - "this level does nothing" - so both take
+ * the same route: the pipeline treats the level as OFF, the request is zero at its source, and
+ * an existing current is released the ordinary way rather than cut. A ceiling of zero applied
+ * only at the end of the limiter chain would produce the same number by a worse road, with the
+ * whole demand model still running behind it.
+ */
+bool assist_modes_level_disables_assist(const assist_level_config_t *config);
 
 /*
  * The per-level overrides the pipeline honours, and the ONLY fields of the level record that

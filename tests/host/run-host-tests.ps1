@@ -226,6 +226,16 @@ $suites = @(
        Modules = @()
        IncludeDirs = @(Join-Path $PSScriptRoot 'common')
        Defines = @("-DMAIN_C_PATH=$mainCPathForward") },
+    @{ Name = 'standstill rotor seed wiring guard (main.c get_standstill_position)'
+       Harness = Join-Path $PSScriptRoot 'main_standstill_wiring_host.c'
+       # Guards the Hall/rotor startup seed, which the Assist Pipeline V2 rebuild did not touch
+       # and was told to keep. It briefly went missing from this list: it carried an FW-111 name
+       # and sat among the FW-111 rearm suites, every one of which had to go because they linked
+       # modules the rebuild deleted. This one links nothing - it reads src/main.c's source text -
+       # so it had no reason to go with them.
+       Modules = @()
+       IncludeDirs = @(Join-Path $PSScriptRoot 'common')
+       Defines = @("-DMAIN_C_PATH=$mainCPathForward") },
     @{ Name = 'FW-110 CAN blocking-wait guard (main.c / CAN_Display.c)'
        Harness = Join-Path $PSScriptRoot 'fw110_can_blocking_guard_host.c'
        # Same reasoning as the pas_direction_init wiring guard above: neither file can be linked
@@ -406,6 +416,19 @@ $suites = @(
                    (Join-Path $root 'src\tuning_config.c'),
                    (Join-Path $root 'src\battery_iq_cap.c'),
                    (Join-Path $root 'src\fast_iq_slew.c'))
+       IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common'))
+       Defines = @('-Wno-type-limits') },
+    @{ Name = 'stored assist bank contract (round trip, restart, and the meaning of zero)'
+       # The path the app writes through and the controller restores through at every boot. It
+       # had no test at all, which is how the firmware came to REJECT ITS OWN DEFAULT BANK:
+       # the validator listed the five legacy mode numbers while every shipped V2 bank is made
+       # of 7..12, so a saved configuration came back as compiled defaults after a power cycle.
+       # Bytes and restarts, not ride feel - those are S1..S18 above.
+       Harness = Join-Path $PSScriptRoot 'assist_bank_contract_host.c'
+       Modules = @((Join-Path $root 'src\assist_modes.c'),
+                   (Join-Path $root 'src\ap2_profiles.c'),
+                   (Join-Path $root 'src\torque_input.c'),
+                   (Join-Path $root 'src\tuning_config.c'))
        IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common'))
        Defines = @('-Wno-type-limits') },
     @{ Name = 'FW-144 SOC core exact-production parity + randomized 1 Hz transitions'

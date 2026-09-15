@@ -150,7 +150,11 @@ static void pipeline_tick(const ride_t *r, assist_pipeline_command_t *cmd)
 	in.battery_current_max = 15000;
 	in.u_abs = 1024;
 	in.cal_i = 95;
-	in.level_iq_limit = (int32_t)PH_CURRENT_MAX;
+	/* Derived the way ride_control does it in production, from the LEVEL that is selected -
+	 * otherwise every scenario here would silently run with a ceiling no rider configured. */
+	in.level_iq_limit = assist_modes_level_iq_limit(
+		assist_modes_get_default_level(r->level),
+		(int32_t)PH_CURRENT_MAX, (int32_t)PH_CURRENT_MAX);
 	in.phase_current_max = (int32_t)PH_CURRENT_MAX;
 	in.voltage_raw = 4000U;
 	in.voltage_min_raw = 2800;
@@ -870,9 +874,9 @@ static void scenario_level_iq_ceiling(void)
 	CHECK(half == (int32_t)PH_CURRENT_MAX / 2, "S15: 50 % halves it");
 	CHECK(fifth == (int32_t)PH_CURRENT_MAX / 5, "S15: 20 % is a fifth of it");
 	CHECK(half < full && fifth < half, "S15: the ceilings are ordered");
-	CHECK(zero_pct == (int32_t)PH_CURRENT_MAX,
-		"S15: 0 %% means NO LEVEL CEILING - it is what an uninitialised or pre-v6 record "
-		"carries, and reading it as zero allowed current would disable assist on an old bank");
+	CHECK(zero_pct == 0,
+		"S15: 0 %% switches the level off - the app has always said so, and a stored 0 "
+		"cannot have come from a default, because every shipped default is 100");
 
 	/* It can only tighten: a global limp-mode limit still wins when it is lower. */
 	{
@@ -1080,6 +1084,81 @@ static void scenario_no_torque_no_assist(void)
 		"S13: a freewheeling crank with no pedal force never produces current");
 }
 
+static void scenario_level_switched_off_mid_ride(void)
+{
+	ride_t r;
+	assist_pipeline_command_t cmd;
+	uint32_t i;
+	int32_t ref_high;
+	uint32_t ticks_to_zero = 0U;
+
+	printf("S18 a level switched off releases the current it already has\n");
+
+	/*
+	 * CONFIG AUDIT C2. A torque ceiling of 0 % is how the app has always expressed "assist is
+	 * switched off at this level", while the firmware read the same byte as "no extra limit".
+	 * Now that it means what it says, the interesting case is the TRANSITION: the rider is
+	 * already drawing current when the level stops being allowed to produce any.
+	 *
+	 * What must happen is a RELEASE, not a step and not a stranded reference. The level going
+	 * off is a rider's decision, not a fault, so it is not entitled to the safety ramp - but it
+	 * must still reach zero, and a step scaled by a zero full scale would never move at all.
+	 */
+	reset_all(0);
+	base_ride(&r);
+	r.level = 3U;
+	r.peak_centikg = 2000U;
+	for (i = 0; i < MS(3000); i++) {
+		pipeline_tick(&r, &cmd);
+	}
+	ref_high = g_iq_ref;
+	CHECK(ref_high > 100, "S18: setup - the level is producing real current");
+
+	{
+		assist_level_config_t off = *assist_modes_get_default_level(3U);
+		uint8_t blob[ASSIST_BANK_BLOB_LEN];
+
+		(void)off;
+		/* Through the STORED CONFIGURATION, the way the rider's change actually arrives. */
+		assist_modes_serialize_bank(0, blob);
+		blob[13 + 2 * 48 + 17] = 0U;      /* level 3, max_iq_pct */
+		{
+			uint16_t crc = 0xFFFFU;
+			uint16_t n;
+			uint8_t bit;
+			for (n = 0; n < ASSIST_BANK_BLOB_LEN - 2U; n++) {
+				crc ^= (uint16_t)blob[n] << 8;
+				for (bit = 0; bit < 8; bit++) {
+					crc = (crc & 0x8000U) ?
+						(uint16_t)((crc << 1) ^ 0x1021U) :
+						(uint16_t)(crc << 1);
+				}
+			}
+			blob[ASSIST_BANK_BLOB_LEN - 2U] = (uint8_t)(crc & 0xFFU);
+			blob[ASSIST_BANK_BLOB_LEN - 1U] = (uint8_t)(crc >> 8);
+		}
+		CHECK(assist_modes_apply_bank_blob(blob, ASSIST_BANK_BLOB_LEN),
+			"S18: the bank switching the level off is accepted");
+		assist_modes_set_active_bank(0);
+	}
+
+	for (i = 0; i < MS(3000); i++) {
+		pipeline_tick(&r, &cmd);
+		if (ticks_to_zero == 0U && g_iq_ref == 0) {
+			ticks_to_zero = i + 1U;
+		}
+	}
+
+	CHECK(cmd.final_iq_request == 0,
+		"S18: a switched-off level asks for nothing");
+	CHECK(ticks_to_zero != 0U,
+		"S18: the current it already had reaches zero - a rate scaled by a zero ceiling "
+		"would leave the reference stranded where it was");
+	CHECK(ticks_to_zero > MS(5),
+		"S18: ...and it is released rather than stepped off, because the rider switching a "
+		"level off is not a fault");
+}
+
 int main(void)
 {
 	puts("Assist Pipeline V2 behavioural scenarios");
@@ -1100,6 +1179,7 @@ int main(void)
 	scenario_level_iq_ceiling();
 	scenario_ceiling_binds_the_reference();
 	scenario_release_owns_its_timing();
+	scenario_level_switched_off_mid_ride();
 
 	if (failures == 0) {
 		puts("Assist Pipeline V2 scenarios: ALL CHECKS PASSED");

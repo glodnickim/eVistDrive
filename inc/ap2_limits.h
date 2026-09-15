@@ -71,6 +71,10 @@ typedef enum {
 #define AP2_NON_PEDAL_SPEED_LO_X100 500
 #define AP2_NON_PEDAL_SPEED_HI_X100 700
 
+/* "This request has no assist level behind it, so no level ceiling applies" - see
+ * level_iq_limit below. Negative on purpose: it cannot be arrived at by accident. */
+#define AP2_LIMITS_NO_LEVEL_CEILING (-1)
+
 typedef struct {
 	int32_t iq_request;           /* demand before any limit, Iq domain */
 	ap2_limit_source_t source;
@@ -86,7 +90,16 @@ typedef struct {
 	int32_t battery_current_max;
 
 	/* PHASE / Iq */
-	int32_t level_iq_limit;       /* the assist level ceiling, Iq domain */
+	/*
+	 * The assist level's own ceiling, Iq domain. >= 0 is a real ceiling, and 0 is a real
+	 * ceiling of zero - the level is switched off (assist_modes_level_iq_limit).
+	 *
+	 * A source that has no assist level, and therefore no ceiling from one, says so with
+	 * AP2_LIMITS_NO_LEVEL_CEILING rather than with 0. That way round a forgotten or
+	 * zero-initialised field reads as "no current", which is the direction a limiter is
+	 * allowed to be wrong in; the other way round it read as "unlimited".
+	 */
+	int32_t level_iq_limit;
 	int32_t phase_current_max;    /* hardware ceiling, Iq domain */
 
 	/* VOLTAGE */

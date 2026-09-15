@@ -54,8 +54,16 @@ typedef struct {
 } assist_extended_boost_config_t;
 
 /* Wire bounds and defaults, kept so a stored blob still validates identically. */
+/*
+ * The trigger load is stored in ONE byte at 0.1 kg per unit, so the wire cannot carry more than
+ * 25.5 kg however large the value in RAM is. The maximum used to say 50.0 kg, which no stored
+ * blob could ever hold: 5000 / 10 = 500 truncated to a byte would have come back as 24.4 kg.
+ * Nothing could reach it - the only sources are a wire byte and the 20.0 kg default - but a
+ * bound that cannot be encoded is a trap for whoever sets one next, so it now states the real
+ * one. Values already stored are untouched: every one of them is at most 255 wire units.
+ */
 #define ASSIST_EXT_BOOST_TRIGGER_MIN_CENTIKG 500U
-#define ASSIST_EXT_BOOST_TRIGGER_MAX_CENTIKG 5000U
+#define ASSIST_EXT_BOOST_TRIGGER_MAX_CENTIKG 2550U
 #define ASSIST_EXT_BOOST_TRIGGER_WIRE_STEP_CENTIKG 10U
 #define ASSIST_EXT_BOOST_TRIGGER_DEFAULT_CENTIKG 2000U
 #define ASSIST_EXT_BOOST_STRENGTH_DEFAULT_PCT 100U

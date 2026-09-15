@@ -73,6 +73,11 @@
 #define DEFAULT_IDLE_LEVEL { \
 	.mode_type = ASSIST_MODE_V2_TRAIL, \
 	.reference_power_w = 200, \
+	/* Level 0 never assists, and the level INDEX is what decides that - not this field. \
+	 * It is written out explicitly because 0 here now means "this level is switched off", \
+	 * which would take the throttle down with it; the throttle is not an assist level's to \
+	 * switch off. Level 0 is never serialized into a bank, so this never reaches the wire. */ \
+	.max_iq_pct = 100, \
 	.curve_exponent_x10 = POWER_CURVE_EXP_DEFAULT_X10, \
 	.curve_exponent_high_x10 = POWER_CURVE_EXP_DEFAULT_X10, \
 	.emtb_based_on_power = true, \
@@ -194,7 +199,21 @@ static uint8_t bank_cadence_comp_enabled[ASSIST_BANK_COUNT];
  * strength (u8) take over the two bytes FW-077 left reserved at [36..37]; the duration
  * (u16 LE) is the growth at [46..47]. That puts the blob at exactly 255 B — the ceiling. */
 #define BANK_BLOB_VERSION_V8 8U
-#define BANK_BLOB_VERSION BANK_BLOB_VERSION_V8
+/*
+ * v9 GROWS NOTHING. Header, record and blob are byte for byte the v8 layout; what the number
+ * says is that the PROFILES ARE ASSIST PIPELINE V2 - this controller understands mode ids 7..12
+ * and every field means what the V2 contract says it means.
+ *
+ * That is what a version byte is for here, and there is precedent: v4 had v3's exact layout and
+ * existed only to tell the app that the controller understood Power Curve. Without it the app
+ * cannot tell a V2 controller from a pre-V2 one - both report 8 and both accept 255 B - so it
+ * has to guess the generation from the stored mode numbers, which says nothing at all about a
+ * V2 controller whose bank was migrated from legacy ids.
+ *
+ * Older blobs are still accepted and still load: a rider's stored v1..v8 bank is not lost.
+ */
+#define BANK_BLOB_VERSION_V9 9U
+#define BANK_BLOB_VERSION BANK_BLOB_VERSION_V9
 #define BANK_BLOB_HEADER_LEN_V1 8U
 #define BANK_BLOB_HEADER_LEN_V2 10U
 #define BANK_BLOB_HEADER_LEN_V3 12U
@@ -223,13 +242,32 @@ static uint16_t bank_blob_crc16(const uint8_t *buffer, uint16_t length)
 	return crc;
 }
 
+/*
+ * WHICH STORED MODE NUMBERS THIS FIRMWARE CAN INTERPRET.
+ *
+ * The validator exists to refuse a blob this build cannot READ - not one whose numbers it did
+ * not itself write. While the five legacy modes were the only numbers in existence those were
+ * the same thing. V2 ships banks made of 7..12, so that list refused THIS FIRMWARE'S OWN
+ * DEFAULT BANK: serialize the shipped bank, hand it straight back, and the whole bank was
+ * rejected - on the CAN apply path and on the boot restore path alike, so a correctly stored
+ * configuration came back as compiled defaults after every restart, the Walk parameters that
+ * share the bank with it.
+ *
+ * The policy is stated once, here, and the app mirrors it:
+ *
+ *   0       reserved. The level commands nothing - assist_modes_level_disables_assist().
+ *   1..6    legacy numbers. Accepted and MIGRATED on read by assist_modes_profile_for_level();
+ *           the blob keeps the original number, so a downgrade still finds what it wrote.
+ *   7..12   the V2 profiles.
+ *   >= 13   unknown. The WHOLE bank is refused, before any of it has been applied: the check
+ *           below is its own pass over every record, ahead of the pass that mutates state.
+ *
+ * 4 is accepted for the same reason as the rest of 1..6 - it is a number an older app could
+ * already have stored, and refusing it throws away the rider's other four levels with it.
+ */
 static bool bank_mode_valid(uint8_t mode)
 {
-	return mode == ASSIST_MODE_POWER_LINEAR ||
-		mode == ASSIST_MODE_POWER_PROGRESSIVE ||
-		mode == ASSIST_MODE_EMTB ||
-		mode == ASSIST_MODE_TORQUE ||
-		mode == ASSIST_MODE_POWER_CURVE; //FW-056
+	return mode <= (uint8_t)ASSIST_MODE_V2_AUTO_SPORT_PLUS;
 }
 
 static uint16_t clamp_u16(uint16_t value, uint16_t min, uint16_t max)
@@ -244,6 +282,22 @@ static uint8_t valid_curve_exponent_x10(uint8_t value) //FW-056
 {
 	return (value < POWER_CURVE_EXP_MIN_X10 || value > POWER_CURVE_EXP_MAX_X10) ?
 		POWER_CURVE_EXP_DEFAULT_X10 : value;
+}
+
+/*
+ * A RAMP TIME OF ZERO IS NOT A RAMP TIME - it is "the profile decides" (see the override rules
+ * in inc/ap2_profiles.h). Clamping it up to the 20 ms floor is what turned a plain read -> save
+ * with no edit into a real change of behaviour: every shipped level stores 0 in all four ramp
+ * fields, so one trip through this parser replaced the profile's own attack time with 20 ms on
+ * all five of them. A NON-zero value is still held to the floor - that one is a rider's number,
+ * and a ramp shorter than the floor is a step, not a ramp.
+ */
+static uint16_t valid_ramp_ms(uint16_t value)
+{
+	if (value == 0U) {
+		return 0U;
+	}
+	return clamp_u16(value, ASSIST_RAMP_MS_MIN, ASSIST_RAMP_MS_MAX);
 }
 
 static uint8_t valid_wa_current_pct(uint8_t value)
@@ -320,6 +374,31 @@ ap2_profile_id_t assist_modes_profile_for_level(const assist_level_config_t *con
 	}
 }
 
+bool assist_modes_level_disables_assist(const assist_level_config_t *config)
+{
+	if (config == 0) {
+		return false;
+	}
+	return config->mode_type == ASSIST_MODE_RESERVED_0 || config->max_iq_pct == 0U;
+}
+
+/*
+ * ZERO MEANS SWITCHED OFF - the one meaning it has ever had to a rider.
+ *
+ * The app has always described max_iq_pct = 0 as "Assist is switched off at this level", while
+ * this function read it as "no extra limit" and returned the full global ceiling. Both cannot
+ * be true, and the rider's is the one that was chosen deliberately: 100 is the compiled default
+ * and always has been, so a stored 0 is a setting somebody made on purpose.
+ *
+ *   0        the level is off. Zero allowed current, and assist_modes_level_disables_assist()
+ *            reports the same fact to the pipeline so the level is off for real and not merely
+ *            clamped at the end of the chain.
+ *   1..99    a ceiling, that percentage of the phase-current limit.
+ *   100      the phase-current limit itself, i.e. no ceiling of the level's own.
+ *
+ * "No level ceiling at all" is a DIFFERENT statement and has its own value on the limiter
+ * input, AP2_LIMITS_NO_LEVEL_CEILING - Walk, which has no assist level, is what needs it.
+ */
 int32_t assist_modes_level_iq_limit(const assist_level_config_t *config,
 	int32_t global_limit, int32_t phase_current_max)
 {
@@ -331,7 +410,10 @@ int32_t assist_modes_level_iq_limit(const assist_level_config_t *config,
 	if (ceiling <= 0 || ceiling > phase_current_max) {
 		ceiling = phase_current_max;
 	}
-	if (config != 0 && config->max_iq_pct != 0U && config->max_iq_pct < 100U) {
+	if (assist_modes_level_disables_assist(config)) {
+		return 0;
+	}
+	if (config != 0 && config->max_iq_pct < 100U) {
 		int32_t level_cap = (phase_current_max * (int32_t)config->max_iq_pct) / 100;
 		if (level_cap < ceiling) {
 			ceiling = level_cap;
@@ -585,9 +667,12 @@ uint16_t assist_modes_serialize_bank(uint8_t bank_index, uint8_t *buffer)
 			cfg->riding_start_load_centikg,
 			ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG);
 		/* FW-084: the two bytes FW-077 reserved. Only a v8 reader may interpret
-		 * them — v6/v7 gave them a different meaning. Byte 36 is 0.5 kg per unit,
-		 * NOT the 0.1 kg of the other kg fields: that is what buys the full 60 kg
-		 * range out of one byte, at one exact decimal place. 2 = 1.0 kg, 120 = 60.0 kg. */
+		 * them — v6/v7 gave them a different meaning. Byte 36 is 0.1 kg per unit,
+		 * the same step as every other kg field here: 50 = 5.0 kg (the floor),
+		 * 200 = 20.0 kg (the default), 255 = 25.5 kg, which is all one byte reaches.
+		 * The comment here used to claim 0.5 kg per unit and a 60 kg range; the code
+		 * never did that, and the configurator believed the comment - so a plain
+		 * read -> save turned every stored 20.0 kg trigger into 60.0 kg. */
 		record[36] = (uint8_t)(valid_ext_boost_trigger_centikg(
 			cfg->extended_boost.trigger_load_centikg) /
 			ASSIST_EXT_BOOST_TRIGGER_WIRE_STEP_CENTIKG);
@@ -640,7 +725,8 @@ bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length)
 	} else if (version == BANK_BLOB_VERSION_V5 ||
 		version == BANK_BLOB_VERSION_V6 ||
 		version == BANK_BLOB_VERSION_V7 || //FW-077 keeps the v6 header/stride
-		version == BANK_BLOB_VERSION_V8) { //FW-084 grows only the record
+		version == BANK_BLOB_VERSION_V8 || //FW-084 grows only the record
+		version == BANK_BLOB_VERSION_V9) { //v9 == v8 layout, V2 profiles
 		header_len = BANK_BLOB_HEADER_LEN;
 	} else {
 		return false;
@@ -649,7 +735,8 @@ bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length)
 	if (version == BANK_BLOB_VERSION_V7 && record_len != BANK_RECORD_LEN_V7) {
 		return false;
 	}
-	if (version == BANK_BLOB_VERSION_V8 && record_len != BANK_RECORD_LEN_V8) {
+	if ((version == BANK_BLOB_VERSION_V8 || version == BANK_BLOB_VERSION_V9) &&
+		record_len != BANK_RECORD_LEN_V8) {
 		return false;
 	}
 	expected_len = header_len + (uint16_t)ASSIST_LEVEL_COUNT * record_len + 2U;
@@ -774,14 +861,10 @@ bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length)
 					torque_input_native_delta_to_centikg(rolling_threshold_mv),
 					ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG);
 			}
-			cfg->iq_rise_slow_ms = clamp_u16(get_u16(&record[38]),
-				ASSIST_RAMP_MS_MIN, ASSIST_RAMP_MS_MAX);
-			cfg->iq_rise_fast_ms = clamp_u16(get_u16(&record[40]),
-				ASSIST_RAMP_MS_MIN, ASSIST_RAMP_MS_MAX);
-			cfg->iq_fall_slow_ms = clamp_u16(get_u16(&record[42]),
-				ASSIST_RAMP_MS_MIN, ASSIST_RAMP_MS_MAX);
-			cfg->iq_fall_fast_ms = clamp_u16(get_u16(&record[44]),
-				ASSIST_RAMP_MS_MIN, ASSIST_RAMP_MS_MAX);
+			cfg->iq_rise_slow_ms = valid_ramp_ms(get_u16(&record[38]));
+			cfg->iq_rise_fast_ms = valid_ramp_ms(get_u16(&record[40]));
+			cfg->iq_fall_slow_ms = valid_ramp_ms(get_u16(&record[42]));
+			cfg->iq_fall_fast_ms = valid_ramp_ms(get_u16(&record[44]));
 		} else {
 			const assist_level_config_t *fallback =
 				&bank_defaults[bank_index][level];
