@@ -13,7 +13,7 @@
 | Working baseline (last known good) | `1d6c6ba3b1a3a494446135550d03f49817bfaf11` |
 | Input HEAD (broken state) | `6ce18aa0ba6d1e05f7ff84910d616bf83ebd0b77` |
 | Main faulty commit | `2091c2a9f67df1d26082a95aea788343d18f3974` |
-| Final commit (this fix) | *to be filled after commit* |
+| Final commit (this fix) | `e4f2b8872e10128a54c228dae01cbd7a568b41dc` |
 
 ---
 
@@ -151,7 +151,13 @@ The only difference upstream is the sensor curve (FW-150), which is a deliberate
 
 ---
 
-## I. VERIFICATION SUMMARY
+## H. PUSH STATUS
+
+**PUSHED: TIMED OUT** — `git push origin feature/assist-pipeline-v2` timed out (network). Commit is ready locally at `e4f2b8872e10128a54c228dae01cbd7a568b41dc`. Manual push required.
+
+---
+
+## I. VERIFICATION SUMMARY (after first fix, commit e4f2b88)
 
 - ✅ Pipeline 2 does not use 6-state torque gate as demand owner
 - ✅ `ap2_rider_demand` realizes rider demand
@@ -166,3 +172,37 @@ The only difference upstream is the sensor curve (FW-150), which is a deliberate
 - ✅ All production test suites pass (56/56 host, regression, SIL, electrical SIL, Level-4)
 - ✅ Audit report saved
 - ✅ Dead code removed (`ap2_torque_chain.c/h`)
+
+---
+
+## J. REWORK 2 — ADDITIONAL FIXES (this task)
+
+| Issue | Fix | Files |
+|-------|-----|-------|
+| Torque calibration migration: v2 records (pre-FW-150 curve) were accepted but incompatible | Bump persist version to 3 (v3 = FW-150 compatible); reject v1 (pre-FW-129) and v2 (pre-FW-150) with `cal_legacy_record_rejected` flag | `src/torque_input.c`, `inc/torque_input.h` |
+| V7-V9 bank migration: v9 (current V2 profile version) not tested in migration suite | Added v9 to `b7_older_banks_still_load` loop (5..9) | `tests/host/assist_bank_contract_host.c` |
+| Start thresholds: regression raised from 0.70/0.30 kg to 2.50/1.10 kg | Restored to baseline: 0.70 kg standing, 0.30 kg rolling | `inc/assist_modes.h`, `protocol/evistdrive_config_schema.yaml`, `motor-controller-firmware-AP02-blind-baseline/protocol/evistdrive_config_schema.yaml` |
+| Missing migration tests | Added `torque_cal_migration_host.c` (v1/v2 rejected, v3 accepted, new writes v3, unknown/bad CRC/range/magic rejected) | `tests/host/torque/torque_cal_migration_host.c`, `tests/host/run-host-tests.ps1` |
+
+### Test additions
+- `tests/host/torque/torque_cal_migration_host.c` — 8 test cases covering all persist versions and error paths
+- `b7_older_banks_still_load` now iterates v5..v9 (was v5..v8)
+
+### Documentation updates
+- `inc/assist_modes.h`: Comments on start thresholds now state "RESTORED to baseline"
+- `protocol/evistdrive_config_schema.yaml`: Defaults updated to 0.7 / 0.3 kg with "RESTORED to baseline" notes
+- Schema in `motor-controller-firmware-AP02-blind-baseline` also corrected (riding default 0.3 kg)
+
+---
+
+## K. REWORK 2 VERIFICATION SUMMARY
+
+- ✅ Torque calibration v1 (pre-FW-129) rejected with legacy flag
+- ✅ Torque calibration v2 (pre-FW-150, old curve) rejected with legacy flag
+- ✅ Torque calibration v3 (FW-150 compatible) accepted
+- ✅ New calibrations write v3
+- ✅ Unknown versions, bad CRC, out-of-range span, wrong magic all rejected
+- ✅ Assist bank v9 (current V2 profile version) loads and round-trips correctly
+- ✅ Start thresholds restored to 0.70 kg (standing) / 0.30 kg (rolling)
+- ✅ All schema defaults consistent with firmware defaults
+- ✅ New migration test suite added and registered in host test runner

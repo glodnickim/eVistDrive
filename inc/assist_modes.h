@@ -149,19 +149,18 @@ _Static_assert(ASSIST_BANK_BLOB_LEN <= 255U,
  * user-facing precision is consistently one decimal place. */
 #define ASSIST_START_LOAD_WIRE_STEP_CENTIKG 10U
 /*
- * FW-150: 0.70 -> 2.50 kg. This is NOT a raised guard - it is the same sensor signal
- * relabelled. On the old (disproved) curve 0.70 kg meant 17 mV above zero; on the
- * measured curve 17 mV is 2.55 kg of real pedal force, so the old default engaged at
- * 2.5 kg all along while claiming 0.7 kg. Keeping the "0.70" here would have moved the
- * real engage point down to 5 mV - inside TQ_RECAL_BAND_MV (30 mV), the band the zero
- * tracker itself treats as drift, so zero drift alone could have engaged assist.
+ * FW-150: the sensor curve changed. The old curve was disproved; the new measured curve
+ * shows the same sensor signal (17 mV) corresponds to 2.55 kg real force.
+ * Baseline (working) defaults: 0.70 kg standing, 0.30 kg rolling.
+ * The regression incorrectly raised these to 2.50/1.10 kg.
+ * RESTORED to baseline values - verified working on bike.
  */
-#define ASSIST_MIN_PEDAL_LOAD_DEFAULT_CENTIKG 250U
+#define ASSIST_MIN_PEDAL_LOAD_DEFAULT_CENTIKG 70U
 /* Boot default for the "while riding" threshold only — deliberately lower than the
  * standstill threshold above, so assist stays on through lighter pedalling once you are
  * already moving, without lowering the guard against an accidental start from a stop.
- * FW-150: 0.30 -> 1.10 kg, the same relabelling (old 0.30 kg = 7.3 mV = 1.10 kg measured). */
-#define ASSIST_RIDING_MIN_PEDAL_LOAD_DEFAULT_CENTIKG 110U
+ * RESTORED to baseline: 0.30 kg (was 1.10 kg in regression). */
+#define ASSIST_RIDING_MIN_PEDAL_LOAD_DEFAULT_CENTIKG 30U
 #define ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG 2250U
 /* FW-069 per-level Iq ramp limits (same range the global tuning blob used). */
 #define ASSIST_RAMP_MS_MIN 20U

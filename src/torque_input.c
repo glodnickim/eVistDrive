@@ -898,6 +898,11 @@ uint8_t torque_input_calibration_source(void)
 	return calibration_source;
 }
 
+bool torque_input_legacy_record_rejected(void)
+{
+	return cal_legacy_record_rejected;
+}
+
 bool torque_input_set_user_span(uint16_t value)
 {
 	if (!span_in_range(value)) {
@@ -1122,19 +1127,6 @@ void torque_input_cal_tick(int16_t torque_corrected_native, bool stationary)
 	cal_state = TORQUE_CAL_STATE_PREVIEW;
 }
 
-#define TORQUE_CAL_PERSIST_MAGIC 0x7C41U
-/*
- * FW-129 D8: v1 records were written by the OLD capture, which stored
- * delta_ref * 6000 / reference instead of the sensor gain. The number in a v1 record is not
- * the same quantity v2 reads, and there is no way to convert it - the reference weight it was
- * taken with is not part of the record. Rather than reinterpret it (which would silently shift
- * every reading by a few percent with no way for the rider to know), a v1 record is DROPPED:
- * the controller falls back to the factory characteristic, which is honest and correct for an
- * uncalibrated sensor, and raises cal_legacy_record_rejected so the tool can say "recalibrate".
- */
-#define TORQUE_CAL_PERSIST_VERSION 2U
-#define TORQUE_CAL_PERSIST_VERSION_LEGACY 1U
-
 static uint16_t torque_cal_crc16(uint8_t version, uint16_t span)
 {
 	uint8_t buffer[3] = { version, (uint8_t)(span & 0xFFU),
@@ -1163,11 +1155,17 @@ bool torque_input_restore_persist(uint16_t magic, uint8_t version,
 		cal_legacy_record_rejected = true;
 		return false;
 	}
+	if (version == TORQUE_CAL_PERSIST_VERSION_V2_OLD_CURVE) {
+		/* Intact, but written against the pre-FW-150 curve - see the version comment. */
+		cal_legacy_record_rejected = true;
+		return false;
+	}
 	if (version != TORQUE_CAL_PERSIST_VERSION) {
 		return false;
 	}
 	span_native = span_stored;
 	calibration_source = TORQUE_CAL_SOURCE_USER;
+	cal_legacy_record_rejected = false; /* a valid v3 record resolves the legacy condition */
 	return true;
 }
 

@@ -385,4 +385,20 @@ typedef enum {
 uint16_t torque_input_centikg_to_native_delta(uint16_t centikg);
 uint16_t torque_input_native_delta_to_centikg(uint16_t delta_native);
 
+/*
+ * FW-129 D8 / FW-150: calibration persist versions.
+ * v1 = pre-FW-129 (delta_ref * 6000 / reference)
+ * v2 = pre-FW-150 (old curve, same units as v3 but incompatible curve)
+ * v3 = FW-150 compatible (gain relative to factory characteristic)
+ * These are exposed for host tests and tooling.
+ */
+#define TORQUE_CAL_PERSIST_MAGIC 0x7C41U
+#define TORQUE_CAL_PERSIST_VERSION_LEGACY 1U
+#define TORQUE_CAL_PERSIST_VERSION_V2_OLD_CURVE 2U
+#define TORQUE_CAL_PERSIST_VERSION 3U
+
+/* FW-129 D8 / FW-150: whether the last restore attempt dropped a legacy record.
+ * Read by the tool to prompt "recalibrate" instead of silently using a wrong curve. */
+bool torque_input_legacy_record_rejected(void);
+
 #endif /* TORQUE_INPUT_H_ */

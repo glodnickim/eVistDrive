@@ -294,11 +294,16 @@ $suites = @(
        Modules = @(Join-Path $root 'src\cadence_filter.c')
        IncludeDirs = @(Join-Path $PSScriptRoot 'common')
        Defines = @("-DMAIN_C_PATH=$mainCPathForward") },
-    @{ Name = 'FW-141 torque filters use elapsed hardware time (real torque_input.c + main wiring)'
-       Harness = Join-Path $PSScriptRoot 'fw141_torque_elapsed_time_host.c'
-       Modules = @(Join-Path $root 'src\torque_input.c')
-       IncludeDirs = @(Join-Path $PSScriptRoot 'common')
-       Defines = @('-Wno-type-limits') },
+@{ Name = 'FW-141 torque filters use elapsed hardware time (real torque_input.c + main wiring)'
+        Harness = Join-Path $PSScriptRoot 'fw141_torque_elapsed_time_host.c'
+        Modules = @(Join-Path $root 'src\torque_input.c')
+        IncludeDirs = @(Join-Path $PSScriptRoot 'common')
+        Defines = @('-Wno-type-limits') },
+    @{ Name = 'Torque calibration persistence migration (v1/v2 rejected, v3 accepted, new writes v3)'
+        Harness = Join-Path $PSScriptRoot 'torque\torque_cal_migration_host.c'
+        Modules = @(Join-Path $root 'src\torque_input.c')
+        IncludeDirs = @(Join-Path $PSScriptRoot 'common')
+        Defines = @('-Wno-type-limits') },
     @{ Name = 'QZERO Quiet Zero PI integral fade at Iq_ref=0 (real quiet_zero.c + real 16 kHz slew owner + PI_control replica + wiring guards)'
        Harness = Join-Path $PSScriptRoot 'qzero_quiet_zero_host.c'
        # Links the REAL state machine and the REAL 16 kHz slew owner, so the entry edge is the

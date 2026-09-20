@@ -454,8 +454,9 @@ static void b7_older_banks_still_load(void)
 	printf("B7 banks written by older firmware still load\n");
 
 	/* v8 is the layout this firmware still writes; v9 only renames it - see the version
-	 * comment in src/assist_modes.c. A rider's v5/v6/v7 bank has to keep loading too. */
-	for (version = 5U; version <= 8U; version++) {
+	 * comment in src/assist_modes.c. A rider's v5/v6/v7 bank has to keep loading too.
+	 * v9 is the current version (V2 profiles), included here to verify round-trip. */
+	for (version = 5U; version <= 9U; version++) {
 		stride = (version >= 8U) ? RECORD_LEN_V8 :
 			((version >= 6U) ? RECORD_LEN_V7 : RECORD_LEN_V5);
 

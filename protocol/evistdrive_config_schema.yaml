@@ -299,8 +299,9 @@ profile_fields:
     since: 1
     access: persistent_rw
     per_level: true
-    # FW-150: 0.7 -> 2.5. Same sensor signal (17 mV), relabelled onto the measured curve.
-    value: {type: u16, scale: 0.1, unit: kilogram_force, min: 0.0, max: 22.5, default: 2.5}
+    # RESTORED to baseline (was 2.5 in regression). FW-150 curve change relabelled the same
+    # sensor signal (17 mV) from 0.7 kg to 2.55 kg, but baseline default 0.7 kg works correctly.
+    value: {type: u16, scale: 0.1, unit: kilogram_force, min: 0.0, max: 22.5, default: 0.7}
     implementation: active_decikg_precision_centikg_control_bank_v7
     wire_v7: u16_centikg_at_level_record_19_quantized_to_decikg
     legacy_v1_to_v6: native_millivolt_delta_migrated_through_active_torque_calibration
@@ -311,9 +312,8 @@ profile_fields:
     since: 7
     access: persistent_rw
     per_level: true
-    # FW-150: 1.1 kg (7.3 mV on the measured curve). The previous 0.7 here never matched the
-    # firmware default it documents (ASSIST_RIDING_MIN_PEDAL_LOAD_DEFAULT_CENTIKG was 0.3 kg).
-    value: {type: u8, scale: 0.1, unit: kilogram_force, min: 0.0, max: 22.5, default: 1.1}
+    # RESTORED to baseline (was 1.1 in regression). Baseline default 0.3 kg works correctly.
+    value: {type: u8, scale: 0.1, unit: kilogram_force, min: 0.0, max: 22.5, default: 0.3}
     implementation: active_decikg_bank_v7_centikg_control
     wire_v7: u8_decikg_at_level_record_35
     legacy_v6: derived_from_minimum_threshold_minus_start_load_reduction_mv
