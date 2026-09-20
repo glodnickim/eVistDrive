@@ -16,10 +16,10 @@
  *
  *      TORQUE + PAS + CADENCE + SPEED + MOTOR STATE
  *              |
- *              v   INPUT VALIDATION            ap2_torque_chain.c
- *              v   TORQUE ZERO / NORMALIZATION ap2_torque_chain.c
- *              v   RIDER DEMAND                ap2_torque_chain.c
- *              v   PEDAL CYCLE: BASE + DYNAMIC ap2_torque_chain.c
+ *              v   INPUT VALIDATION            ap2_rider_demand.c
+ *              v   TORQUE ZERO / NORMALIZATION ap2_rider_demand.c
+ *              v   RIDER DEMAND                ap2_rider_demand.c
+ *              v   PEDAL CYCLE: BASE + DYNAMIC ap2_rider_demand.c
  *              v   RIDER AGGRESSION + LOAD     ap2_estimators.c
  *              v   PAS / DIRECTION LIFECYCLE   ap2_pas_state.c
  *              v   PROFILE / AUTO              ap2_profiles.c

@@ -406,7 +406,7 @@ $suites = @(
        # those are ride-feel settings meant to be tuned on the bike.
        Harness = Join-Path $PSScriptRoot 'ap2_pipeline_scenarios_host.c'
 Modules = @((Join-Path $root 'src\ap2_pas_state.c'),
-                    (Join-Path $root 'src\ap2_torque_chain.c'),
+                    (Join-Path $root 'src\ap2_rider_demand.c'),
                     (Join-Path $root 'src\ap2_estimators.c'),
                     (Join-Path $root 'src\ap2_profiles.c'),
                     (Join-Path $root 'src\ap2_limits.c'),

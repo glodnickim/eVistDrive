@@ -26,7 +26,7 @@ varmap={
  'assistPipelineCPathForward': ROOT/'src/assist_pipeline.c',
 'ap2LimitsCPathForward': ROOT/'src/ap2_limits.c',
   'ap2PasStateCPathForward': ROOT/'src/ap2_pas_state.c',
-  'ap2TorqueChainCPathForward': ROOT/'src/ap2_torque_chain.c',
+  'ap2TorqueChainCPathForward': ROOT/'src/ap2_rider_demand.c',
   'motorCoreCPathForward': ROOT/'src/motor_core.c',
  'focCPathForward': ROOT/'src/FOC.c',
  'focCurrentLoopCPathForward': ROOT/'src/foc_current_loop.c',

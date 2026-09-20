@@ -23,7 +23,7 @@ EXE_SUFFIX = '.exe' if os.name == 'nt' else ''
 SUPERVISORY_MODULES = [
     'src/torque_input.c','src/rider_input.c','src/assist_modes.c','src/cadence_filter.c',
     'src/tuning_config.c',
-    'src/ap2_pas_state.c','src/ap2_torque_chain.c','src/ap2_estimators.c',
+    'src/ap2_pas_state.c','src/ap2_rider_demand.c','src/ap2_estimators.c',
     'src/ap2_profiles.c','src/ap2_limits.c','src/assist_pipeline.c',
     'src/ride_control.c','src/fast_iq_slew.c','src/battery_iq_cap.c',
     'src/iq_chain.c',

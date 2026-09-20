@@ -8,7 +8,7 @@ CC=os.environ.get('CC','gcc')
 EXE_SUFFIX='.exe' if os.name=='nt' else ''
 PROD=['src/torque_input.c','src/rider_input.c','src/assist_modes.c','src/cadence_filter.c',
       'src/tuning_config.c','src/ride_control.c',
-      'src/ap2_pas_state.c','src/ap2_torque_chain.c','src/ap2_estimators.c',
+      'src/ap2_pas_state.c','src/ap2_rider_demand.c','src/ap2_estimators.c',
       'src/ap2_profiles.c','src/ap2_limits.c','src/assist_pipeline.c',
       'src/fast_iq_slew.c','src/battery_iq_cap.c','src/iq_chain.c',
       'src/motor_core.c','src/walk_assist_motor.c','src/walk_speed_controller.c',

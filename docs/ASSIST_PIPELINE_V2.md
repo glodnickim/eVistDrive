@@ -16,16 +16,16 @@ machinery and the per-caller limiters are gone, and what is here was designed as
           +------------------------+--------------------+-------------+-------------+
                                    |
                                    v
-INPUT VALIDATION                      ap2_torque_chain.c
+INPUT VALIDATION                      ap2_rider_demand.c
                                        |
                                        v
-                         TORQUE ZERO / NORMALIZATION           ap2_torque_chain.c
+                         TORQUE ZERO / NORMALIZATION           ap2_rider_demand.c
                                        |
                                        v
-                         RIDER DEMAND                          ap2_torque_chain.c
+                         RIDER DEMAND                          ap2_rider_demand.c
                                        |
                                        v
-                         PEDAL CYCLE: BASE + DYNAMIC           ap2_torque_chain.c
+                         PEDAL CYCLE: BASE + DYNAMIC           ap2_rider_demand.c
                                    |
               +--------------------+--------------------+
               |                                         |
@@ -122,7 +122,7 @@ the block it sits in is modelled wrongly.
 
 ## 5. Input validation, normalization, rider demand
 
-`ap2_torque_chain.c`, 4 kHz.
+`ap2_rider_demand.c`, 4 kHz.
 
 | In | Out |
 |---|---|

@@ -41,7 +41,7 @@ Production ownership rules:
 - cadence used by control: `cadence_filter.c`
 - rider torque conditioning (zero, calibration, physical kg): `torque_input.c`
 - pedal-assist permission and lifecycle: `ap2_pas_state.c` - the ONE owner
-- rider demand and the pedal-cycle base/dynamic split: `ap2_torque_chain.c`
+- rider demand and the pedal-cycle base/dynamic split: `ap2_rider_demand.c`
 - rider aggression and terrain load: `ap2_estimators.c`
 - profiles, the assist characteristic and AUTO: `ap2_profiles.c`
 - the one limiter chain: `ap2_limits.c`

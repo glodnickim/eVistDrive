@@ -54,7 +54,7 @@ Sprawdzono HEAD `9dc0b0a`; przyszły agent powinien najpierw sprawdzić, czy kod
 - `pas_direction.c` blokuje po kwalifikowanym reverse/invalid, niezależnie od publikacji ujemnej rpm. To właściwa granica zgody na wspomaganie; stockowe opóźnienie clear AUTO jej nie zastępuje.
 - `pas_liveness.c` już oddziela activity od kierunku i opiera się na rzeczywistych timestampach. `main.c:2952–2969` dobiera timeout jako 2×ostatni odstęp, ograniczony do **200…500 ms**, i resetuje kadencję przy true stop. Nie twierdzić, że EVistDrive nie posiada tego mechanizmu.
 - `main.c:2839` aktualizuje `cadence_filter` po świeżym pomiarze PAS, nie co tick. Aktualnie jest to IIR 1/8, seedowany pierwszym pomiarem; pomiar obejmuje 4 transitions przy skonfigurowanych 96 transitions/rev. Event-driven już istnieje, ale ma inną geometrię niż opisane G5300.
-- `ap2_torque_chain.c` realizuje base/dynamic + 6-state engagement gating, a `ap2_pas_state.c` odebranie permission. Zachować tę separację.
+- `ap2_rider_demand.c` realizuje base/dynamic, a `ap2_pas_state.c` odebranie permission. Zachować tę separację.
 - `assist_pipeline.c:trajectory()` używa `release_ms` zarówno dla opadania podczas jazdy, jak i zatrzymania. RUN FALL liczy czas pełnej skali, RELEASE czas do zera z aktualnego stanu. Tryby są już odróżnione, lecz jedno ustawienie steruje dwiema różnymi wielkościami czasowymi.
 
 ## Wytyczne do wykorzystania

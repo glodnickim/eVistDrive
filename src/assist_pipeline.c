@@ -1,7 +1,7 @@
 #include "assist_pipeline.h"
 
 #include "ap2_math.h"
-#include "ap2_torque_chain.h"
+#include "ap2_rider_demand.h"
 #include "assist_modes.h"
 #include "config.h"
 #include "tuning_config.h"
@@ -127,7 +127,7 @@ void assist_pipeline_reset(void)
 	 * The protections are reset exactly once, at boot, by assist_pipeline_init().
 	 */
 	ap2_pas_state_reset();
-	ap2_torque_chain_reset();
+	ap2_rider_demand_reset();
 	ap2_estimators_reset();
 	ap2_profiles_reset();
 }
@@ -353,6 +353,7 @@ void assist_pipeline_update(const assist_pipeline_input_t *in, assist_pipeline_c
 	int32_t iq_ramp_scale;
 	int32_t assist_base;
 	int32_t assist_dynamic;
+	int32_t base_shaped;
 	int32_t response;
 	int32_t iq_request;
 	int32_t throttle_iq;
@@ -413,7 +414,7 @@ void assist_pipeline_update(const assist_pipeline_input_t *in, assist_pipeline_c
 	pas_in.elapsed_ticks = used_ticks;
 	ap2_pas_state_update(&pas_in, &pas);
 
-	/* ---- TORQUE CHAIN + PEDAL CYCLE --------------------------------------------------- */
+	/* ---- RIDER DEMAND + PEDAL CYCLE --------------------------------------------------- */
 	demand_in.load_centikg = in->torque_load_centikg;
 	demand_in.torque_valid = in->torque_sensor_valid;
 	demand_in.pedaling = (pas.state == AP2_PAS_FORWARD) ||
@@ -422,16 +423,16 @@ void assist_pipeline_update(const assist_pipeline_input_t *in, assist_pipeline_c
 	demand_in.full_scale_centikg = tuning_config_assist_torque_full_scale_centikg();
 	demand_in.base_hold_ms = ctx.base_hold_ms;
 	demand_in.elapsed_ticks = used_ticks;
-	ap2_torque_chain_update(&demand_in, &demand);
+	ap2_rider_demand_update(&demand_in, &demand);
 
 	/*
-	 * At the engagement edge the torque chain state is seeded to what the rider is pressing
-	 * RIGHT NOW, so the first stroke of a ride (or of a resumed ride) is answered at its
-	 * real magnitude instead of being walked up from zero by the gate time. This is a seed,
+	 * At the engagement edge the sustained base is seeded to what the rider is pressing RIGHT
+	 * NOW, so the first stroke of a ride (or of a resumed ride) is answered at its real
+	 * magnitude instead of being walked up from zero by the base rise time. This is a seed,
 	 * not a floor: it cannot produce assist the rider is not asking for.
 	 */
 	if (pas.engaged_edge) {
-		ap2_torque_chain_seed(demand.demand_permille);
+		ap2_rider_demand_seed_base(demand.demand_permille);
 		demand.base_permille = demand.demand_permille;
 		demand.dynamic_permille = 0;
 	}
@@ -457,23 +458,30 @@ void assist_pipeline_update(const assist_pipeline_input_t *in, assist_pipeline_c
 	ap2_profiles_resolve(profile_id, &ovr, &auto_in, &prof);
 	ctx.base_hold_ms = prof.p.base_hold_ms;
 
-	/* ---- ASSIST CHARACTERISTIC ---------------------------------------------------------
-	 * The torque chain outputs a single demand signal (base=d, dynamic=0).
-	 * Apply the profile characteristic directly to this demand.
+	/* ---- ASSIST CHARACTERISTIC + BASE / DYNAMIC COMPONENT -----------------------------
+	 * The characteristic shapes the SUSTAINED term only. The dynamic term is already an
+	 * excess above that sustained level, so putting it through the same curve a second time
+	 * would apply the profile shape twice to the same pedal force.
 	 */
-	{
-		int32_t shaped = ap2_profile_shape_blend((ap2_curve_t)prof.curve_a,
-			(ap2_curve_t)prof.curve_b, prof.curve_blend, demand.demand_permille);
-		assist_base = ap2_scale_pct(shaped, (int32_t)prof.p.assist_gain_pct);
-		assist_base = ap2_scale_pct(assist_base, (int32_t)prof.p.base_share_pct);
-		/* Terrain load lifts the SUSTAINED pull - that is what a climb needs, and it is the one
-		 * thing a slow estimator is entitled to change. */
-		assist_base = ap2_scale_permille(assist_base,
-			AP2_PERMILLE + ap2_scale_pct(est.load_permille, (int32_t)prof.p.load_influence_pct));
-		assist_dynamic = 0;
-	}
+	base_shaped = ap2_profile_shape_blend((ap2_curve_t)prof.curve_a, (ap2_curve_t)prof.curve_b,
+		prof.curve_blend, demand.base_permille);
 
-	response = ap2_clamp(assist_base, 0, AP2_PERMILLE);
+	assist_base = ap2_scale_pct(base_shaped, (int32_t)prof.p.assist_gain_pct);
+	assist_base = ap2_scale_pct(assist_base, (int32_t)prof.p.base_share_pct);
+	/* Terrain load lifts the SUSTAINED pull - that is what a climb needs, and it is the one
+	 * thing a slow estimator is entitled to change. */
+	assist_base = ap2_scale_permille(assist_base,
+		AP2_PERMILLE + ap2_scale_pct(est.load_permille, (int32_t)prof.p.load_influence_pct));
+
+	assist_dynamic = ap2_scale_pct(demand.dynamic_permille, (int32_t)prof.p.assist_gain_pct);
+	assist_dynamic = ap2_scale_pct(assist_dynamic, (int32_t)prof.p.dynamic_gain_pct);
+	/* Rider aggression lifts the REACTIVE pull and nothing else. It never multiplies the
+	 * whole request: a sharp rider gets a sharper answer, not a permanently stronger motor. */
+	assist_dynamic = ap2_scale_permille(assist_dynamic,
+		AP2_PERMILLE + ap2_scale_pct(est.aggression_permille,
+			(int32_t)prof.p.aggression_influence_pct));
+
+	response = ap2_clamp(assist_base + assist_dynamic, 0, AP2_PERMILLE);
 
 	/* ---- ASSIST -> Iq ----------------------------------------------------------------
 	 * ASSIST is a torque-domain characteristic, so it converts to current directly and is
