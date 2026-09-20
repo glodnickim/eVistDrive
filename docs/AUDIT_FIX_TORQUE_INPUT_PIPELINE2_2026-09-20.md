@@ -137,13 +137,45 @@ Was **preserved unchanged**. This is a measurement, not a tuning knob. The regre
 | Risk | Description | Mitigation |
 |------|-------------|------------|
 | Auto-zero physical bands | `TQ_RECAL_BAND_MV` (30 mV), `TQ_REACQUIRE_MAX_MV` (40 mV) on new progressive curve may correspond to several kg of force | **FOLLOW-UP / REQUIRES RIDE TEST** — audit and adjust if needed |
-| Start thresholds | Standing 0.70 kg / rolling 0.30 kg (baseline) vs 2.50 kg / 1.10 kg (regression) | **KEPT BASELINE** — restored to working values; verify on bike |
+| Start thresholds | Standing 0.70 kg / rolling 0.30 kg (baseline) vs 2.50 kg / 1.10 kg (regression) | ~~**KEPT BASELINE** — restored to working values; verify on bike~~ **WRONG — see §H.** Restoring the NUMBERS did not restore the behaviour: on the FW-150 table 0.70/0.30 kg are 5/2 mV, not the 17/8 mV the bike was verified at. The values called "the regression" (2.50/1.10 kg) were in fact the sensor-signal-preserving ones. Corrected in FW-151 by storing thresholds in the control domain. |
 | Replay max_attenuation | w1-f07, w1-f08 fail on pause/restart ripple | **FOLLOW-UP** — requires physical bike validation to determine if criterion or recording is at fault |
 | Sensor calibration gain | User calibration applies as gain on FW-150 curve (FW-129 D8) | Verified working; no change |
 
 ---
 
-## H. DOWNSTREAM EQUIVALENCE
+## H. DOWNSTREAM EQUIVALENCE — **SUPERSEDED, AND THE CLAIM WAS WRONG**
+
+> **CORRECTED 2026-09-20 by [AUDIT_FINAL_TORQUE_DOMAIN_PIPELINE2_2026-09-20.md](AUDIT_FINAL_TORQUE_DOMAIN_PIPELINE2_2026-09-20.md).**
+> The section below is kept verbatim as history. Its central claim is not a valid contract.
+
+**What this section claimed:** that "identical `torque_load_centikg` → identical downstream
+behaviour" establishes equivalence with the bike-verified baseline.
+
+**Why that is not a contract.** `torque_load_centikg` is not a stable quantity. It is the output
+of a MEASUREMENT of the sensor — the kilogram table — and FW-150 changed that measurement. So
+"the same centikg" describes two different pedal forces before and after FW-150, and the
+equivalence it establishes is empty:
+
+| stored threshold | pre-FW-150 sensor signal | post-FW-150 sensor signal |
+|---|---|---|
+| standing 0.70 kg | 17 mV | **5 mV** |
+| rolling 0.30 kg | 8 mV | **2 mV** |
+| effort deadband | 3.65 mV (0.15 kg) | 3.65 mV (0.55 kg) |
+
+The deadband was migrated by preserving the sensor signal; the two start thresholds were
+"restored" by preserving the NUMBER. The bike therefore did not come back to its verified
+behaviour — the standing gate became 3.4x more sensitive, landing inside the sensor's own rest
+noise (`TQ_RECAL_STABLE_MV` = 10 mV), where assist permission can be granted by noise alone.
+
+**The corrected contract:** the internal/control torque domain is stable, and the physical kg
+representation is a projection for humans whose correction cannot by itself change control
+behaviour. Equivalence is stated in the CONTROL domain and measured as a sensor trip point,
+never as a kilogram label. See the report named above, and
+`tests/host/torque/torque_control_domain_host.c`, which enforces it.
+
+---
+
+### Original text (history)
 
 **VERIFIED:** For identical `torque_load_centikg` input, the downstream Pipeline 2 behavior (PAS state, assist_permitted, rider effort, rider demand, base, dynamic, profile response, desired Iq, trajectory target, final Iq request) is now **equivalent to baseline `1d6c6ba`**.
 
@@ -166,8 +198,8 @@ The only difference upstream is the sensor curve (FW-150), which is a deliberate
 - ✅ No hidden saturation at ~4.5 kg
 - ✅ Light pedaling does not cycle assist on/off
 - ✅ Start/stop/reverse not rebuilt
-- ✅ Sensor conversion isolated before `torque_load_centikg` contract
-- ✅ Identical `torque_load_centikg` → downstream equivalence
+- ⚠️ Sensor conversion isolated before `torque_load_centikg` contract — TRUE but insufficient: `torque_load_centikg` is itself a measurement, so isolating *behind* it does not isolate control from the measurement. Superseded by FW-151.
+- ❌ ~~Identical `torque_load_centikg` → downstream equivalence~~ — **NOT A VALID CONTRACT.** See §H.
 - ✅ Build passes (no new warnings from this change)
 - ✅ All production test suites pass (56/56 host, regression, SIL, electrical SIL, Level-4)
 - ✅ Audit report saved

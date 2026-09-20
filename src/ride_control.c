@@ -252,6 +252,7 @@ void ride_control_update(const ride_control_input_t *input)
 		ride_owner_prev = RIDE_OWNER_ASSIST;
 		rider = rider_input_get();
 
+		pipe_in.torque_load_ctrl = rider->torque_load_ctrl;
 		pipe_in.torque_load_centikg = rider->torque_load_centikg;
 		pipe_in.torque_sensor_valid = rider->torque_sensor_valid;
 		pipe_in.cadence_rpm = input->cadence_rpm;

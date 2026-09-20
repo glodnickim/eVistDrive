@@ -182,6 +182,7 @@ int main(int argc, char **argv)
 		assist_pipeline_input_t in;
 		assist_pipeline_command_t cmd;
 		memset(&in, 0, sizeof(in));
+		in.torque_load_ctrl = snap->load_ctrl;
 		in.torque_load_centikg = snap->load_centikg;
 		in.torque_sensor_valid = true;
 		in.cadence_rpm = (uint8_t)(cadence_rpm > 255.0 ? 255 : cadence_rpm);

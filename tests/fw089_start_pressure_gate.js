@@ -30,33 +30,35 @@ const num = (src, name) => {
     return m[1].split('+').reduce((a, b) => a + Number(b.trim()), 0);
 };
 const ZERO = num(tq, 'TORQUE_ZERO_TARGET_NATIVE');            // 740
-// FW-150: first segment of the three-point default curve (origin -> P1). Every load
-// this test exercises (0.3-0.7 kg) sits inside it, so the first segment is the whole
-// conversion here.
-const LOW_NATIVE = num(tq, 'TORQUE_CURVE_P1_NATIVE');         // 20
-const LOW_CENTIKG = num(tq, 'TORQUE_CURVE_P1_CENTIKG');       // 300
-const SPAN = num(tq, 'TORQUE_DEFAULT_SPAN_NATIVE');           // 3047
+// FW-151: this test is about the PERMISSION GATE, so it works in the CONTROL domain - the
+// domain the gate actually compares in. Every load it exercises (70/30 CLU) sits inside the
+// first segment of the frozen control characteristic, so that segment is the whole conversion.
+const LOW_NATIVE = num(tq, 'TORQUE_CTRL_BREAK_NATIVE');       // 146
+const LOW_CTRL = num(tq, 'TORQUE_CTRL_BREAK_CLU');            // 600
+const SPAN = num(tq, 'TORQUE_GAIN_REFERENCE_NATIVE');         // 3047
 const GATE_MIN = num(cfg, 'TQ_GATE_MIN');                     // 18
 // The removed gate was TQ_PRESSURE_FLOOR_START_MV = 750 + TQ_GATE_MIN. Note the 750 is its
 // own baseline, NOT the sensor zero (740) — the two differ, which is precisely why the
 // effective threshold in kg was never obvious from reading the constant.
 const FLOOR_BASE = Number(cfg.match(/#define\s+TQ_PRESSURE_FLOOR_START_MV\s+\((\d+)\s*\+\s*TQ_GATE_MIN\)/)[1]);
 const HIDDEN_GATE = FLOOR_BASE + GATE_MIN;                    // 768
-const STAND_CENTIKG = num(am, 'ASSIST_MIN_PEDAL_LOAD_DEFAULT_CENTIKG');        // 70
-const ROLL_CENTIKG = num(am, 'ASSIST_RIDING_MIN_PEDAL_LOAD_DEFAULT_CENTIKG');  // 30
+const STAND_CTRL = num(am, 'ASSIST_MIN_PEDAL_LOAD_DEFAULT_CTRL');        // 70
+const ROLL_CTRL = num(am, 'ASSIST_RIDING_MIN_PEDAL_LOAD_DEFAULT_CTRL');  // 30
 const START_STEPS = num(cfg, 'START_PHASE_STEPS');
 const LATCH_STEPS = 4; // tuning_config start_steps default
 
-// kg conversions on the two characteristics the bike can be running.
-const nativeToCentikgDefault = (delta) => Math.round(delta * LOW_CENTIKG / LOW_NATIVE);
-const nativeToCentikgUser = (delta) => Math.round(delta * 6000 / SPAN);
+// Control-domain conversions on the two gains the bike can be running.
+const nativeToCtrlDefault = (delta) => Math.round(delta * LOW_CTRL / LOW_NATIVE);
+const nativeToCtrlUser = (delta) => Math.round(delta * 6000 / SPAN);
 
-console.log(`zero ${ZERO}, TQ_GATE_MIN ${GATE_MIN}, configured start ${STAND_CENTIKG / 100} kg / rolling ${ROLL_CENTIKG / 100} kg`);
+console.log(`zero ${ZERO}, TQ_GATE_MIN ${GATE_MIN}, configured start ${STAND_CTRL} CLU / ` +
+    `rolling ${ROLL_CTRL} CLU (trip points ${LOW_NATIVE * STAND_CTRL / LOW_CTRL | 0} / ` +
+    `${LOW_NATIVE * ROLL_CTRL / LOW_CTRL | 0} mV)`);
 
 // --- the chain, modelled with and without the removed hidden gate ---
 // hidden: main.c also required torque_on_crank > ZERO + GATE_MIN before the start phase.
-function ride({ hidden, loadCentikg, steps, rolling, threshCentikg }) {
-    const rawNative = ZERO + Math.round(loadCentikg * LOW_NATIVE / LOW_CENTIKG);
+function ride({ hidden, loadCtrl, steps, rolling, threshCtrl }) {
+    const rawNative = ZERO + Math.round(loadCtrl * LOW_NATIVE / LOW_CTRL);
     const fwdRun = steps;
 
     // main.c: start phase
@@ -74,45 +76,45 @@ function ride({ hidden, loadCentikg, steps, rolling, threshCentikg }) {
     const required = rolling ? LATCH_STEPS - 1 : LATCH_STEPS;
     const crankOk = fwdRun >= required;
     if (!crankOk) return { iq: 0, startPhase, reason: 'crank steps' };
-    if (loadCentikg < threshCentikg) return { iq: 0, startPhase, reason: 'below kg threshold' };
+    if (loadCtrl < threshCtrl) return { iq: 0, startPhase, reason: 'below load threshold' };
     return { iq: 1, startPhase, reason: 'assisting' };
 }
 
-// 1. The audit's case: 0.8 kg against a 0.7 kg threshold, no cadence, four PAS steps.
+// 1. The audit's case: a push just above the standing gate, no cadence, four PAS steps.
 {
-    const args = { loadCentikg: 80, steps: 4, rolling: false, threshCentikg: STAND_CENTIKG };
+    const args = { loadCtrl: STAND_CTRL + 10, steps: 4, rolling: false, threshCtrl: STAND_CTRL };
     const before = ride({ ...args, hidden: true });
     const after = ride({ ...args, hidden: false });
-    check(before.iq === 0, `1. before FW-089 a 0.8 kg push gave no assist (blocked by: ${before.reason})`);
-    check(after.iq > 0, '1. after FW-089 a 0.8 kg push against a 0.7 kg threshold assists');
+    check(before.iq === 0, `1. before FW-089 a push just over the gate gave no assist (blocked by: ${before.reason})`);
+    check(after.iq > 0, '1. after FW-089 a push just over the standing gate assists');
 }
 
-// 2. Rolling restart: 0.4 kg against the 0.3 kg rolling threshold, three steps.
+// 2. Rolling restart: just above the rolling gate, three steps.
 {
-    const args = { loadCentikg: 40, steps: 3, rolling: true, threshCentikg: ROLL_CENTIKG };
-    check(ride({ ...args, hidden: true }).iq === 0, '2. before FW-089 a rolling 0.4 kg restart gave no assist');
+    const args = { loadCtrl: ROLL_CTRL + 10, steps: 3, rolling: true, threshCtrl: ROLL_CTRL };
+    check(ride({ ...args, hidden: true }).iq === 0, '2. before FW-089 a rolling restart gave no assist');
     check(ride({ ...args, hidden: false }).iq > 0, '2. after FW-089 it assists');
 }
 
 // 3. The gate must not become a rubber stamp: below the configured threshold, still nothing.
 {
-    const below = ride({ hidden: false, loadCentikg: 50, steps: 4, rolling: false, threshCentikg: STAND_CENTIKG });
-    check(below.iq === 0 && below.reason === 'below kg threshold',
-        '3. 0.5 kg against a 0.7 kg threshold still does not assist');
-    const rollingBelow = ride({ hidden: false, loadCentikg: 20, steps: 3, rolling: true, threshCentikg: ROLL_CENTIKG });
-    check(rollingBelow.iq === 0, '3. 0.2 kg against the 0.3 kg rolling threshold still does not assist');
+    const below = ride({ hidden: false, loadCtrl: STAND_CTRL - 20, steps: 4, rolling: false, threshCtrl: STAND_CTRL });
+    check(below.iq === 0 && below.reason === 'below load threshold',
+        '3. a push below the standing gate still does not assist');
+    const rollingBelow = ride({ hidden: false, loadCtrl: ROLL_CTRL - 10, steps: 3, rolling: true, threshCtrl: ROLL_CTRL });
+    check(rollingBelow.iq === 0, '3. a push below the rolling gate still does not assist');
 }
 
 // 4. The start phase may now rise without pressure — and that alone must yield no current.
 {
-    const noPush = ride({ hidden: false, loadCentikg: 0, steps: 4, rolling: false, threshCentikg: STAND_CENTIKG });
+    const noPush = ride({ hidden: false, loadCtrl: 0, steps: 4, rolling: false, threshCtrl: STAND_CTRL });
     check(noPush.startPhase === true, '4. the start phase rises on crank movement alone');
     check(noPush.iq === 0, '4. ...but with no pedal load the latch still gives zero current');
 }
 
 // 5. Crank jiggle: any reverse step resets fwd_run, so it never accumulates into a start.
 {
-    const jiggle = ride({ hidden: false, loadCentikg: 80, steps: 0, rolling: false, threshCentikg: STAND_CENTIKG });
+    const jiggle = ride({ hidden: false, loadCtrl: STAND_CTRL + 10, steps: 0, rolling: false, threshCtrl: STAND_CTRL });
     check(jiggle.iq === 0, '5. a reset step count cannot start assist even with load');
     // Matched on the CODE, not on a comment that happened to sit on the same line: FW-098
     // moved that comment into a block above and this check failed while the behaviour was
@@ -129,21 +131,34 @@ function ride({ hidden, loadCentikg, steps, rolling, threshCentikg }) {
         '6. the start phase depends on crank movement alone');
     // Check the CONDITION, not the whole block — the comment above it legitimately
     // explains what was removed and names the old term.
-    const condition = block.match(/if\(MS\.cadence==0[^)]*\)\{/)[0];
-    check(!/torque_on_crank/.test(condition),
-        '6. no raw-ADC pressure term remains in the start-phase condition');
+    //
+    // The match is GUARDED. Checks 5 and 6 are source-text guards over main.c shapes that
+    // Assist Pipeline V2 replaced, and both already failed before FW-151 (verified by running
+    // this file at 3ccfb9d). Dereferencing a null match crashed the process here, which hid
+    // every check after this point - that is how a stale guard quietly becomes no guard at all.
+    // The staleness is recorded as its own finding; it is not FW-151's to fix.
+    const conditionMatch = block.match(/if\(MS\.cadence==0[^)]*\)\{/);
+    check(conditionMatch !== null,
+        '6. the start-phase condition is still recognizable in main.c (STALE since V2)');
+    if (conditionMatch) {
+        check(!/torque_on_crank/.test(conditionMatch[0]),
+            '6. no raw-ADC pressure term remains in the start-phase condition');
+    }
 }
 
 // 7. Keep the arithmetic that justified this card honest: if any constant moves, the
-//    documented kg figures must be recomputed rather than quietly drifting.
+//    documented figures must be recomputed rather than quietly drifting.
+//    FW-151: restated in the CONTROL domain, which is where the gate lives. The claim the
+//    card rests on is unchanged - the removed hidden raw-ADC gate demanded MORE pressure than
+//    the rider's own configured standing threshold, so it silently overrode the setting.
 {
     const above = (HIDDEN_GATE + 1) - ZERO; // strictly greater than -> +1
     check(above === 29, `7. the old gate sat ${above} counts above zero`);
-    check(nativeToCentikgDefault(above) === 119,
-        `7. that is ${nativeToCentikgDefault(above)} centikg on the default curve (expected 119)`);
-    check(nativeToCentikgUser(above) === 153,
-        `7. and ${nativeToCentikgUser(above)} centikg after a user calibration (expected 153)`);
-    check(nativeToCentikgDefault(above) > STAND_CENTIKG,
+    check(nativeToCtrlDefault(above) === 119,
+        `7. that is ${nativeToCtrlDefault(above)} CLU on the default gain (expected 119)`);
+    check(nativeToCtrlUser(above) === 57,
+        `7. and ${nativeToCtrlUser(above)} CLU at a full-scale user gain (expected 57)`);
+    check(nativeToCtrlDefault(above) > STAND_CTRL,
         '7. the hidden gate really was above the configured standing threshold');
 }
 

@@ -666,7 +666,12 @@
                                   // that is ~6.0 kg, not the ~1.5 kg this comment used to claim - see TQ_RECAL_BAND_MV.
 #define TQ_REST_RAW_MIN     300   // absolute plausible UNLOADED raw baseline window (mV, pre-normalization): re-zero only within...
 #define TQ_REST_RAW_MAX     1500  // ...this window (anti-infinite-drift); outside => pedal pressed/sensor fault -> Error 25, no re-zero
-#define TQ_STUCK_CENTIKG    5600  // load held at/above ~56 kg counts toward stuck-high detection (domain: 0.01 kg, scale-independent)
+#define TQ_STUCK_CENTIKG    5600  // HUMAN/diagnostic label only: the stuck-high level as the kg table reads it
+                                  // FW-151: the GATE itself is TQ_STUCK_CTRL below. This constant is retained for
+                                  // diagnostics and documentation; no control decision reads it.
+#define TQ_STUCK_CTRL       5600  // FW-151: stuck-high sensor fault, in the frozen CONTROL domain (CLU). Numerically
+                                  // the bike-verified value, so the fault trips at the same sensor signal as before.
+                                  // A re-measured kg table must never move a fault threshold - see inc/torque_input.h.
 #define TQ_STUCK_TICKS      80000U// ~20 s @4kHz continuously above TQ_STUCK_CENTIKG -> sensor fault (real pedaling always dips between legs)
 #define TQ_FAULT_HOLD_TICKS 20000U// ~5 s minimum hold of torque_fault after the cause clears (no Error 25 flicker / assist chatter)
 

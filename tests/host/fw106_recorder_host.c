@@ -76,7 +76,7 @@ static ride_episode_input_t ep_input(int32_t iq, int32_t pre_ramp, uint16_t arm_
 	in.iq_pre_ramp = pre_ramp;
 	in.arm_seq = arm_seq;
 	in.required_steps = 4;
-	in.load_threshold_centikg = 70;
+	in.load_threshold_ctrl = 70;
 	return in;
 }
 
@@ -97,7 +97,7 @@ static pas_trace_input_t clean(uint16_t gap, uint16_t disc_pos)
 	in.to_state = 1;
 	in.gap_ticks = gap;
 	in.disc_pos = disc_pos;
-	in.load_centikg = 100;
+	in.load_ctrl = 100;
 	in.torque_raw_mv = 900;
 	in.iq_setpoint = 30;
 	return in;

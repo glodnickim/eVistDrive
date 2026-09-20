@@ -84,12 +84,18 @@ typedef struct {
 	uint16_t max_motor_power_w;
 	uint8_t max_iq_pct;
 	bool assist_without_rotation;
-	/* FW-077: every rider-facing start-load setting is entered in 0.1 kg.
-	 * Control stays in centikg, but configured thresholds are quantized to
-	 * decikg. Native mV stays confined to torque_input, where the active sensor
-	 * calibration is applied. This threshold is shared by a normal standstill
-	 * start and the optional assist-without-rotation path. */
-	uint16_t minimum_pedal_load_centikg;
+	/*
+	 * FW-151: the stored start-load thresholds live in the CONTROL domain (CLU), not in
+	 * kilograms. The rider still enters them in 0.1 kg; the conversion happens ONCE, at the
+	 * configuration boundary (torque_input_centikg_to_ctrl), and what is stored, compared and
+	 * migrated is the control value. That is what makes re-measuring the sensor's kilogram
+	 * table a display-only change: a stored threshold keeps its sensor trip point, and only
+	 * the number shown next to it moves.
+	 *
+	 * This threshold is shared by a normal standstill start and the optional
+	 * assist-without-rotation path. Native mV stays confined to torque_input.c.
+	 */
+	uint16_t minimum_pedal_load_ctrl;
 	assist_startup_boost_config_t startup_boost;
 	assist_smooth_start_config_t smooth_start;
 	uint16_t release_ms;
@@ -112,8 +118,8 @@ typedef struct {
 	uint16_t power_rise_filter_ms;
 	uint16_t power_fall_filter_ms;
 	/* FW-077: direct minimum while already rolling, not an mV reduction the
-	 * rider has to subtract mentally. */
-	uint16_t riding_start_load_centikg;
+	 * rider has to subtract mentally. FW-151: control domain, see above. */
+	uint16_t riding_start_load_ctrl;
 	/* FW-069: Iq ramps, moved here from the global tuning blob. They decide the character
 	 * of how power builds, so they belong next to release_ms/power_*_filter_ms, which were
 	 * already per level. Per level in a per-bank store also gives per-bank for free. */
@@ -144,24 +150,34 @@ _Static_assert(ASSIST_BANK_BLOB_LEN == 255U,
 	"FW-084 bank blob is exactly 255 B: 13 B header + 5x48 B record + 2 B CRC");
 _Static_assert(ASSIST_BANK_BLOB_LEN <= 255U,
 	"bank blob length must fit the single length byte of the multiframe protocol");
-/* FW-077 per-level start-load limits in the centikg control domain. Every
- * configured value is rounded to ASSIST_START_LOAD_WIRE_STEP_CENTIKG so the
- * user-facing precision is consistently one decimal place. */
-#define ASSIST_START_LOAD_WIRE_STEP_CENTIKG 10U
+/* FW-077/151 per-level start-load limits in the CONTROL domain (CLU). Every configured value
+ * is rounded to ASSIST_START_LOAD_WIRE_STEP_CTRL, which is what gives the rider-facing
+ * precision of one decimal place in kg. */
+#define ASSIST_START_LOAD_WIRE_STEP_CTRL 10U
 /*
- * FW-150: the sensor curve changed. The old curve was disproved; the new measured curve
- * shows the same sensor signal (17 mV) corresponds to 2.55 kg real force.
- * Baseline (working) defaults: 0.70 kg standing, 0.30 kg rolling.
- * The regression incorrectly raised these to 2.50/1.10 kg.
- * RESTORED to baseline values - verified working on bike.
+ * FW-151: THE BOOT DEFAULTS, in the frozen control domain.
+ *
+ * 70 / 30 CLU are the values the bike was last verified on (1d6c6ba), and in CLU they keep
+ * their sensor trip points for good: 17 mV standing, 8 mV rolling.
+ *
+ * The history is worth keeping, because it is the whole reason this domain exists. These
+ * numbers were 70/30 CENTIKG in the bike-verified build, where the then-current kg table put
+ * them at 17/8 mV. FW-150 re-measured that table and the SAME stored numbers became 5/2 mV -
+ * inside the sensor's own rest noise (TQ_RECAL_STABLE_MV = 10), so assist could be permitted by
+ * noise. An intermediate build raised them to 250/110 centikg, which did restore 17/8 mV but
+ * only by chasing the table; the next build "restored the baseline values" 70/30 and silently
+ * reintroduced the 5/2 mV gates. Stored in CLU, the gate is 17/8 mV regardless of what any
+ * future kg measurement says.
+ *
+ * Do not "convert these to kg to make them readable". The kg equivalent is a DISPLAY, computed
+ * on the current table by torque_input_ctrl_to_centikg().
  */
-#define ASSIST_MIN_PEDAL_LOAD_DEFAULT_CENTIKG 70U
+#define ASSIST_MIN_PEDAL_LOAD_DEFAULT_CTRL 70U
 /* Boot default for the "while riding" threshold only — deliberately lower than the
  * standstill threshold above, so assist stays on through lighter pedalling once you are
- * already moving, without lowering the guard against an accidental start from a stop.
- * RESTORED to baseline: 0.30 kg (was 1.10 kg in regression). */
-#define ASSIST_RIDING_MIN_PEDAL_LOAD_DEFAULT_CENTIKG 30U
-#define ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG 2250U
+ * already moving, without lowering the guard against an accidental start from a stop. */
+#define ASSIST_RIDING_MIN_PEDAL_LOAD_DEFAULT_CTRL 30U
+#define ASSIST_MIN_PEDAL_LOAD_MAX_CTRL 2250U
 /* FW-069 per-level Iq ramp limits (same range the global tuning blob used). */
 #define ASSIST_RAMP_MS_MIN 20U
 #define ASSIST_RAMP_MS_MAX 5000U

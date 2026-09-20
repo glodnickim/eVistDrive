@@ -129,7 +129,7 @@ static void pipeline_tick(const ride_t *r, assist_pipeline_command_t *cmd)
 	assist_pipeline_input_t in;
 
 	memset(&in, 0, sizeof(in));
-	in.torque_load_centikg = r->forward ?
+	in.torque_load_ctrl = r->forward ?
 		pedal_force_centikg(g_tick, r->cadence_rpm, r->peak_centikg) : 0U;
 	in.torque_sensor_valid = true;
 	in.cadence_rpm = r->forward ? r->cadence_rpm : 0U;

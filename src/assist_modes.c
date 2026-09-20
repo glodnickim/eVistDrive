@@ -9,8 +9,9 @@
 #define ASSIST_SUPPORT_RATIO_MAX_PCT 1000U
 /*
  * Bounds for the OLD BANK WIRE FORMAT (blob versions v1..v6), which stored start loads as a
- * calibrated sensor delta in mV instead of the kg used since v7. They are only ever applied
- * while migrating a stored bank on load — nothing to do with the removed Legacy engine.
+ * calibrated sensor delta in mV - v7..v9 used kg, v10 uses the control domain. They are only
+ * ever applied while migrating a stored bank on load — nothing to do with the removed Legacy
+ * engine.
  */
 #define ASSIST_V6_WIRE_MIN_PEDAL_LOAD_MAX_MV 300U
 #define ASSIST_V6_WIRE_START_LOAD_REDUCTION_MAX_MV 100U
@@ -52,13 +53,13 @@
 	.max_motor_power_w = 0, \
 	.max_iq_pct = 100, \
 	.assist_without_rotation = false, \
-	.minimum_pedal_load_centikg = ASSIST_MIN_PEDAL_LOAD_DEFAULT_CENTIKG, \
+	.minimum_pedal_load_ctrl = ASSIST_MIN_PEDAL_LOAD_DEFAULT_CTRL, \
 	.startup_boost = {false, ASSIST_STARTUP_BOOST_CADENCE, 100, 27}, \
 	.smooth_start = {false, 0}, \
 	.release_ms = 0, \
 	.power_rise_filter_ms = 0, \
 	.power_fall_filter_ms = 0, \
-	.riding_start_load_centikg = ASSIST_RIDING_MIN_PEDAL_LOAD_DEFAULT_CENTIKG, \
+	.riding_start_load_ctrl = ASSIST_RIDING_MIN_PEDAL_LOAD_DEFAULT_CTRL, \
 	.iq_rise_slow_ms = 0, \
 	.iq_rise_fast_ms = 0, \
 	.iq_fall_slow_ms = 0, \
@@ -82,10 +83,10 @@
 	.curve_exponent_high_x10 = POWER_CURVE_EXP_DEFAULT_X10, \
 	.emtb_based_on_power = true, \
 	.emtb_reference_voltage_mv = 36000, \
-	.minimum_pedal_load_centikg = ASSIST_MIN_PEDAL_LOAD_DEFAULT_CENTIKG, \
+	.minimum_pedal_load_ctrl = ASSIST_MIN_PEDAL_LOAD_DEFAULT_CTRL, \
 	.startup_boost = {false, ASSIST_STARTUP_BOOST_CADENCE, 0, 45}, \
 	.smooth_start = {false, 300}, \
-	.riding_start_load_centikg = ASSIST_RIDING_MIN_PEDAL_LOAD_DEFAULT_CENTIKG, \
+	.riding_start_load_ctrl = ASSIST_RIDING_MIN_PEDAL_LOAD_DEFAULT_CTRL, \
 	/* FW-069: level 0 never assists, but the shared Iq ramp still runs through it while \
 	 * the current fades out after a level change to 0. Zero here would mean "no ramp". */ \
 	.iq_rise_slow_ms = 300, \
@@ -213,7 +214,25 @@ static uint8_t bank_cadence_comp_enabled[ASSIST_BANK_COUNT];
  * Older blobs are still accepted and still load: a rider's stored v1..v8 bank is not lost.
  */
 #define BANK_BLOB_VERSION_V9 9U
-#define BANK_BLOB_VERSION BANK_BLOB_VERSION_V9
+/*
+ * FW-151: v10 GROWS NOTHING EITHER - header, record and blob are byte for byte the v8 layout,
+ * which they have to be: the blob is already at the hard 255 B ceiling.
+ *
+ * What v10 says is that THE TWO START-LOAD FIELDS ARE IN THE CONTROL DOMAIN. Bytes [19..20] and
+ * [35] carry CLU (still quantized by ASSIST_START_LOAD_WIRE_STEP_CTRL), not 0.01/0.1 kg. That is
+ * a change of MEANING with no change of layout, so it needs a version byte the way v4 and v9 did
+ * - a reader cannot tell the two apart from the bytes.
+ *
+ * WHY. Up to v9 the stored threshold was a kilogram value, compared against a kilogram reading.
+ * When FW-150 re-measured the sensor's kg table, every stored bank silently changed what it
+ * asked the rider to press: 0.70 kg standing went from 17 mV of sensor signal to 5 mV. A stored
+ * configuration must mean the same thing to the motor for as long as it exists, so from v10 the
+ * control domain is what is stored and kilograms are a display computed on the current table.
+ *
+ * Older blobs still load - see the migration in assist_modes_deserialize_bank().
+ */
+#define BANK_BLOB_VERSION_V10 10U
+#define BANK_BLOB_VERSION BANK_BLOB_VERSION_V10
 #define BANK_BLOB_HEADER_LEN_V1 8U
 #define BANK_BLOB_HEADER_LEN_V2 10U
 #define BANK_BLOB_HEADER_LEN_V3 12U
@@ -562,21 +581,21 @@ static uint16_t get_u16(const uint8_t *buffer)
 	return (uint16_t)buffer[0] | ((uint16_t)buffer[1] << 8);
 }
 
-static uint16_t round_start_load_centikg(uint16_t centikg,
-	uint16_t maximum_centikg)
+/* FW-151: quantization of a stored start-load threshold, in the CONTROL domain. */
+static uint16_t round_start_load_ctrl(uint16_t ctrl, uint16_t maximum_ctrl)
 {
-	if (centikg > maximum_centikg) {
-		centikg = maximum_centikg;
+	if (ctrl > maximum_ctrl) {
+		ctrl = maximum_ctrl;
 	}
-	return (uint16_t)(((centikg + ASSIST_START_LOAD_WIRE_STEP_CENTIKG / 2U) /
-		ASSIST_START_LOAD_WIRE_STEP_CENTIKG) *
-		ASSIST_START_LOAD_WIRE_STEP_CENTIKG);
+	return (uint16_t)(((ctrl + ASSIST_START_LOAD_WIRE_STEP_CTRL / 2U) /
+		ASSIST_START_LOAD_WIRE_STEP_CTRL) *
+		ASSIST_START_LOAD_WIRE_STEP_CTRL);
 }
 
-static uint8_t centikg_to_wire_decikg(uint16_t centikg, uint16_t maximum_centikg)
+static uint8_t ctrl_to_wire_step(uint16_t ctrl, uint16_t maximum_ctrl)
 {
-	return (uint8_t)(round_start_load_centikg(centikg, maximum_centikg) /
-		ASSIST_START_LOAD_WIRE_STEP_CENTIKG);
+	return (uint8_t)(round_start_load_ctrl(ctrl, maximum_ctrl) /
+		ASSIST_START_LOAD_WIRE_STEP_CTRL);
 }
 
 /*
@@ -650,9 +669,9 @@ uint16_t assist_modes_serialize_bank(uint8_t bank_index, uint8_t *buffer)
 		put_u16(&record[15], cfg->max_motor_power_w);
 		record[17] = cfg->max_iq_pct;
 		record[18] = cfg->assist_without_rotation ? 1U : 0U;
-		put_u16(&record[19], round_start_load_centikg(
-			cfg->minimum_pedal_load_centikg,
-			ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG));
+		put_u16(&record[19], round_start_load_ctrl(
+			cfg->minimum_pedal_load_ctrl,
+			ASSIST_MIN_PEDAL_LOAD_MAX_CTRL));
 		record[21] = cfg->startup_boost.enabled ? 1U : 0U;
 		record[22] = (uint8_t)cfg->startup_boost.mode;
 		put_u16(&record[23], cfg->startup_boost.strength_pct);
@@ -662,10 +681,10 @@ uint16_t assist_modes_serialize_bank(uint8_t bank_index, uint8_t *buffer)
 		put_u16(&record[29], cfg->release_ms);
 		put_u16(&record[31], cfg->power_rise_filter_ms);
 		put_u16(&record[33], cfg->power_fall_filter_ms);
-		/* FW-077: both public start loads use 0.1 kg precision. */
-		record[35] = centikg_to_wire_decikg(
-			cfg->riding_start_load_centikg,
-			ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG);
+		/* FW-077/151: both start loads use the same control-domain wire step. */
+		record[35] = ctrl_to_wire_step(
+			cfg->riding_start_load_ctrl,
+			ASSIST_MIN_PEDAL_LOAD_MAX_CTRL);
 		/* FW-084: the two bytes FW-077 reserved. Only a v8 reader may interpret
 		 * them — v6/v7 gave them a different meaning. Byte 36 is 0.1 kg per unit,
 		 * the same step as every other kg field here: 50 = 5.0 kg (the floor),
@@ -726,7 +745,8 @@ bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length)
 		version == BANK_BLOB_VERSION_V6 ||
 		version == BANK_BLOB_VERSION_V7 || //FW-077 keeps the v6 header/stride
 		version == BANK_BLOB_VERSION_V8 || //FW-084 grows only the record
-		version == BANK_BLOB_VERSION_V9) { //v9 == v8 layout, V2 profiles
+		version == BANK_BLOB_VERSION_V9 || //v9 == v8 layout, V2 profiles
+		version == BANK_BLOB_VERSION_V10) { //FW-151: v10 == v8 layout, control-domain loads
 		header_len = BANK_BLOB_HEADER_LEN;
 	} else {
 		return false;
@@ -735,8 +755,8 @@ bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length)
 	if (version == BANK_BLOB_VERSION_V7 && record_len != BANK_RECORD_LEN_V7) {
 		return false;
 	}
-	if ((version == BANK_BLOB_VERSION_V8 || version == BANK_BLOB_VERSION_V9) &&
-		record_len != BANK_RECORD_LEN_V8) {
+	if ((version == BANK_BLOB_VERSION_V8 || version == BANK_BLOB_VERSION_V9 ||
+		version == BANK_BLOB_VERSION_V10) && record_len != BANK_RECORD_LEN_V8) {
 		return false;
 	}
 	expected_len = header_len + (uint16_t)ASSIST_LEVEL_COUNT * record_len + 2U;
@@ -807,19 +827,32 @@ bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length)
 			0, ASSIST_MOTOR_POWER_HARD_MAX_W);
 		cfg->max_iq_pct = (record[17] > 100U) ? 100U : record[17];
 		cfg->assist_without_rotation = record[18] != 0;
+		/*
+		 * FW-151: START-LOAD MIGRATION INTO THE CONTROL DOMAIN. One pass, on load, no
+		 * round trip through kilograms - the point of the exercise is that control does
+		 * not depend on the kg table, so the migration must not either.
+		 *
+		 *   v10      already CLU. Taken as stored.
+		 *   v7..v9   stored 0.01 kg on the PRE-FW-150 characteristic, which is the very
+		 *            characteristic the control domain is frozen to. The stored number is
+		 *            therefore ALREADY the CLU value and the migration is the identity -
+		 *            that is not a coincidence, it is why this domain was seeded from that
+		 *            curve, and it is what keeps every rider's stored threshold at the
+		 *            sensor trip point they configured.
+		 *   v1..v6   stored a calibrated sensor delta in mV. Read straight onto the frozen
+		 *            control characteristic: native -> CLU, never native -> kg -> CLU.
+		 */
 		if (version >= BANK_BLOB_VERSION_V7) {
-			cfg->minimum_pedal_load_centikg = round_start_load_centikg(
+			cfg->minimum_pedal_load_ctrl = round_start_load_ctrl(
 				get_u16(&record[19]),
-				ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG);
+				ASSIST_MIN_PEDAL_LOAD_MAX_CTRL);
 		} else {
-			/* v1..v6 stored a calibrated sensor delta in mV. Convert it
-			 * once while loading so the physical threshold is preserved. */
 			uint16_t v6_threshold_mv = clamp_u16(
 				get_u16(&record[19]), 0,
 				ASSIST_V6_WIRE_MIN_PEDAL_LOAD_MAX_MV);
-			cfg->minimum_pedal_load_centikg = round_start_load_centikg(
-				torque_input_native_delta_to_centikg(v6_threshold_mv),
-				ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG);
+			cfg->minimum_pedal_load_ctrl = round_start_load_ctrl(
+				torque_input_native_delta_to_ctrl(v6_threshold_mv),
+				ASSIST_MIN_PEDAL_LOAD_MAX_CTRL);
 		}
 		cfg->startup_boost.enabled = record[21] != 0;
 		cfg->startup_boost.mode = (record[22] > ASSIST_STARTUP_BOOST_AUTO) ?
@@ -842,13 +875,14 @@ bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length)
 		 * whatever happens to sit past the end of the record.
 		 */
 		if (record_len >= BANK_RECORD_LEN_V7) {
+			/* FW-151: same migration as the standstill threshold above. */
 			if (version >= BANK_BLOB_VERSION_V7) {
-				cfg->riding_start_load_centikg = clamp_u16(
-					(uint16_t)record[35] * ASSIST_START_LOAD_WIRE_STEP_CENTIKG,
-					0, ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG);
+				cfg->riding_start_load_ctrl = clamp_u16(
+					(uint16_t)record[35] * ASSIST_START_LOAD_WIRE_STEP_CTRL,
+					0, ASSIST_MIN_PEDAL_LOAD_MAX_CTRL);
 			} else {
 				/* v6 carried a reduction in mV. Convert it to the direct
-				 * rolling threshold used by v7; its rise fields are ignored. */
+				 * rolling threshold used from v7 on; its rise fields are ignored. */
 				uint16_t v6_threshold_mv = clamp_u16(
 					get_u16(&record[19]), 0,
 					ASSIST_V6_WIRE_MIN_PEDAL_LOAD_MAX_MV);
@@ -857,9 +891,9 @@ bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length)
 				uint16_t rolling_threshold_mv =
 					(v6_reduction_mv >= v6_threshold_mv) ? 0U :
 					(uint16_t)(v6_threshold_mv - v6_reduction_mv);
-				cfg->riding_start_load_centikg = round_start_load_centikg(
-					torque_input_native_delta_to_centikg(rolling_threshold_mv),
-					ASSIST_MIN_PEDAL_LOAD_MAX_CENTIKG);
+				cfg->riding_start_load_ctrl = round_start_load_ctrl(
+					torque_input_native_delta_to_ctrl(rolling_threshold_mv),
+					ASSIST_MIN_PEDAL_LOAD_MAX_CTRL);
 			}
 			cfg->iq_rise_slow_ms = valid_ramp_ms(get_u16(&record[38]));
 			cfg->iq_rise_fast_ms = valid_ramp_ms(get_u16(&record[40]));
@@ -868,8 +902,8 @@ bool assist_modes_apply_bank_blob(const uint8_t *buffer, uint16_t length)
 		} else {
 			const assist_level_config_t *fallback =
 				&bank_defaults[bank_index][level];
-			cfg->riding_start_load_centikg =
-				cfg->minimum_pedal_load_centikg;
+			cfg->riding_start_load_ctrl =
+				cfg->minimum_pedal_load_ctrl;
 			cfg->iq_rise_slow_ms = fallback->iq_rise_slow_ms;
 			cfg->iq_rise_fast_ms = fallback->iq_rise_fast_ms;
 			cfg->iq_fall_slow_ms = fallback->iq_fall_slow_ms;

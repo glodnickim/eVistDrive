@@ -394,7 +394,7 @@ static void l4_tick(l4_t *s,FILE *csv)
     r.torque_raw_mv=raw; r.torque_corrected_mv=torque_input_correct(raw);
     r.torque_filtered=ts->delta_native; r.torque_assist_now_native=ts->assist_delta_native;
     r.torque_assist_filtered=ts->assist_delta_filtered_native; r.torque_run_filtered=ts->assist_delta_run_native;
-    r.torque_load_centikg=ts->load_centikg; r.cadence_rpm=control_cadence; r.wheel_speed_x100=speed_x100;
+    r.torque_load_ctrl=ts->load_ctrl; r.torque_load_centikg=ts->load_centikg; r.cadence_rpm=control_cadence; r.wheel_speed_x100=speed_x100;
     r.motor_erps=(uint16_t)((s->motor.erps>65535.0)?65535.0:llround(s->motor.erps));
     r.motor_erps_age_ticks=s->motor.hall_age_ticks; r.motor_voltage_utilization=(uint16_t)((s->ms.u_abs<0)?0:s->ms.u_abs);
     r.pas_forward=pedaling; r.pedaling_active=pedaling; r.crank_forward_steps=pas_direction_fwd_run();

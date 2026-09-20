@@ -149,6 +149,44 @@ static uint16_t default_native_delta_to_centikg(uint16_t delta_native)
 		TORQUE_INPUT_MAX_CENTIKG : (uint16_t)load;
 }
 
+/*
+ * FW-151: THE FROZEN CONTROL CHARACTERISTIC. Two segments, the second one doubling as the
+ * extrapolation slope, exactly like the kg table above - and deliberately NOT sharing code with
+ * it, because the two are allowed to diverge and a shared implementation would invite someone
+ * to "unify" them again. See inc/torque_input.h for why these numbers must not be re-measured.
+ */
+static uint16_t default_native_delta_to_ctrl(uint16_t delta_native)
+{
+	uint32_t ctrl;
+
+	if (delta_native <= TORQUE_CTRL_BREAK_NATIVE) {
+		ctrl = interpolate(delta_native, 0U, TORQUE_CTRL_BREAK_NATIVE,
+			0U, TORQUE_CTRL_BREAK_CLU);
+	} else {
+		ctrl = interpolate(delta_native,
+			TORQUE_CTRL_BREAK_NATIVE, TORQUE_CTRL_HIGH_NATIVE,
+			TORQUE_CTRL_BREAK_CLU, TORQUE_CTRL_HIGH_CLU);
+	}
+	return (ctrl > TORQUE_CTRL_MAX_CLU) ?
+		TORQUE_CTRL_MAX_CLU : (uint16_t)ctrl;
+}
+
+static uint16_t default_ctrl_to_native_delta(uint16_t ctrl)
+{
+	uint32_t delta;
+
+	if (ctrl <= TORQUE_CTRL_BREAK_CLU) {
+		delta = interpolate(ctrl, 0U, TORQUE_CTRL_BREAK_CLU,
+			0U, TORQUE_CTRL_BREAK_NATIVE);
+	} else {
+		delta = interpolate(ctrl,
+			TORQUE_CTRL_BREAK_CLU, TORQUE_CTRL_HIGH_CLU,
+			TORQUE_CTRL_BREAK_NATIVE, TORQUE_CTRL_HIGH_NATIVE);
+	}
+	return (delta > TORQUE_SPAN_MAX_NATIVE) ?
+		TORQUE_SPAN_MAX_NATIVE : (uint16_t)delta;
+}
+
 static uint16_t default_centikg_to_native_delta(uint16_t centikg)
 {
 	uint32_t delta;
@@ -192,17 +230,44 @@ static uint16_t default_centikg_to_native_delta(uint16_t centikg)
  * 6000/reference alone only reproduces the calibration point when the curve is proportional,
  * which this one is not. See the span computation there.
  */
+/*
+ * FW-151: THE GAIN, factored out. It is a property of the SENSOR, so both projections apply
+ * exactly the same correction and neither can drift from the other.
+ *
+ * canonical_native(): what the FACTORY sensor would have produced for this force - the
+ * CANONICAL INTERNAL TORQUE both characteristics are read on.
+ * apply_gain(): the inverse, for turning a characteristic value back into a delta THIS sensor
+ * will actually produce.
+ */
+static uint16_t canonical_native(uint16_t delta_native)
+{
+	uint32_t corrected;
+
+	if (calibration_source == TORQUE_CAL_SOURCE_DEFAULT) {
+		return delta_native;
+	}
+	corrected = ((uint32_t)delta_native * TORQUE_GAIN_REFERENCE_NATIVE +
+		span_native / 2U) / span_native;
+	return (corrected > TORQUE_SPAN_MAX_NATIVE) ?
+		(uint16_t)TORQUE_SPAN_MAX_NATIVE : (uint16_t)corrected;
+}
+
+static uint16_t apply_gain(uint16_t base_native)
+{
+	uint32_t delta;
+
+	if (calibration_source == TORQUE_CAL_SOURCE_DEFAULT) {
+		return base_native;
+	}
+	delta = ((uint32_t)base_native * span_native +
+		TORQUE_GAIN_REFERENCE_NATIVE / 2U) / TORQUE_GAIN_REFERENCE_NATIVE;
+	return (delta > TORQUE_SPAN_MAX_NATIVE) ?
+		(uint16_t)TORQUE_SPAN_MAX_NATIVE : (uint16_t)delta;
+}
+
 static uint16_t native_delta_to_centikg(uint16_t delta_native)
 {
-	if (calibration_source == TORQUE_CAL_SOURCE_DEFAULT) {
-		return default_native_delta_to_centikg(delta_native);
-	}
-	uint32_t corrected = ((uint32_t)delta_native * TORQUE_DEFAULT_SPAN_NATIVE +
-		span_native / 2U) / span_native;
-	if (corrected > TORQUE_SPAN_MAX_NATIVE) {
-		corrected = TORQUE_SPAN_MAX_NATIVE;
-	}
-	return default_native_delta_to_centikg((uint16_t)corrected);
+	return default_native_delta_to_centikg(canonical_native(delta_native));
 }
 
 static uint16_t centikg_to_native_delta(uint16_t centikg)
@@ -210,14 +275,21 @@ static uint16_t centikg_to_native_delta(uint16_t centikg)
 	if (centikg > TORQUE_INPUT_MAX_CENTIKG) {
 		centikg = TORQUE_INPUT_MAX_CENTIKG;
 	}
-	if (calibration_source == TORQUE_CAL_SOURCE_DEFAULT) {
-		return default_centikg_to_native_delta(centikg);
+	return apply_gain(default_centikg_to_native_delta(centikg));
+}
+
+/* FW-151: the CONTROL projection - same gain, frozen characteristic. */
+static uint16_t native_delta_to_ctrl(uint16_t delta_native)
+{
+	return default_native_delta_to_ctrl(canonical_native(delta_native));
+}
+
+static uint16_t ctrl_to_native_delta(uint16_t ctrl)
+{
+	if (ctrl > TORQUE_CTRL_MAX_CLU) {
+		ctrl = TORQUE_CTRL_MAX_CLU;
 	}
-	uint32_t base = default_centikg_to_native_delta(centikg);
-	uint32_t delta = (base * span_native + TORQUE_DEFAULT_SPAN_NATIVE / 2U) /
-		TORQUE_DEFAULT_SPAN_NATIVE;
-	return (delta > TORQUE_SPAN_MAX_NATIVE) ?
-		TORQUE_SPAN_MAX_NATIVE : (uint16_t)delta;
+	return apply_gain(default_ctrl_to_native_delta(ctrl));
 }
 
 /* FW-141: missed foreground calls must not stretch a millisecond-configured filter.
@@ -845,12 +917,23 @@ void torque_input_update_elapsed(uint16_t raw_native, int16_t torque_corrected_n
 		 * run_value_native and nothing overwrites it here any more. */
 	}
 	snapshot.assist_delta_run_native = run_value_native;
+	/*
+	 * FW-151: both projections of the same conditioned delta, computed side by side so a reader
+	 * can see they are siblings and not a chain. The control path reads load_ctrl; nothing in
+	 * the control path may read load_centikg.
+	 */
+	snapshot.load_ctrl = native_delta_to_ctrl((uint16_t)delta);
 	snapshot.load_centikg = native_delta_to_centikg((uint16_t)delta);
 	snapshot.span_native = span_native;
 	snapshot.calibration_source = calibration_source;
 	snapshot.sensor_valid = sensor_valid;
 
-	if (snapshot.load_centikg >= TQ_STUCK_CENTIKG) {
+	/*
+	 * FW-151: the stuck-high sensor fault is a CONTROL-side safety gate, so it is evaluated in
+	 * the control domain. Read on the kg table it would move every time that table is
+	 * re-measured - a fault threshold must not drift because a display scale improved.
+	 */
+	if (snapshot.load_ctrl >= TQ_STUCK_CTRL) {
 		if (stuck_ticks < TQ_STUCK_TICKS) {
 			stuck_ticks++;
 		} else {
@@ -1118,7 +1201,16 @@ void torque_input_cal_tick(int16_t torque_corrected_native, bool stationary)
 	}
 	uint32_t span = ((uint32_t)delta_reference * TORQUE_DEFAULT_SPAN_NATIVE +
 		reference_delta / 2U) / reference_delta;
-	if (!span_in_range((uint16_t)span)) {
+	/*
+	 * RANGE FIRST, CAST SECOND. span is a 32-bit product and a wildly out-of-spec sensor
+	 * overflows uint16_t before it is ever compared: a 5.00 kg reference answered with a
+	 * delta of 1546 (the default sensor gives ~71) computes span = 66347, and (uint16_t)66347
+	 * is 811 - back inside the accepted [800, 4200] window. The old code validated the
+	 * NARROWED value and therefore accepted 811 as a calibration, so the rider rode on a gain
+	 * that was wrong by a factor of 80. Comparing in 32 bits is the whole fix; the cast below
+	 * is then provably lossless.
+	 */
+	if (span < TORQUE_SPAN_MIN_NATIVE || span > TORQUE_SPAN_MAX_NATIVE) {
 		cal_fail(TORQUE_CAL_ERR_SPAN_RANGE);
 		return;
 	}
@@ -1263,4 +1355,49 @@ uint16_t torque_input_native_delta_to_centikg(uint16_t delta_native)
 		delta_native = TORQUE_SPAN_MAX_NATIVE;
 	}
 	return native_delta_to_centikg(delta_native);
+}
+
+/* FW-151: the CONTROL projection. See inc/torque_input.h for the domain contract. */
+uint16_t torque_input_native_delta_to_ctrl(uint16_t delta_native)
+{
+	if (delta_native > TORQUE_SPAN_MAX_NATIVE) {
+		delta_native = TORQUE_SPAN_MAX_NATIVE;
+	}
+	return native_delta_to_ctrl(delta_native);
+}
+
+uint16_t torque_input_ctrl_to_native_delta(uint16_t ctrl)
+{
+	return ctrl_to_native_delta(ctrl);
+}
+
+uint16_t torque_input_load_ctrl(void)
+{
+	return snapshot.load_ctrl;
+}
+
+/*
+ * FW-151: the CONFIGURATION BOUNDARY. A kilogram value the rider chose crosses into the control
+ * domain here, exactly once, and the CLU result is what gets stored and compared. Going through
+ * the canonical native delta is what makes the two ends independent: the kg side reads the
+ * measured table, the control side reads the frozen one, and neither knows about the other.
+ *
+ * Both directions deliberately ignore the user gain: a configured threshold is a property of the
+ * RIDER'S intent, not of this particular sensor's gain, and applying the gain here as well as on
+ * the live reading would apply it twice.
+ */
+uint16_t torque_input_centikg_to_ctrl(uint16_t centikg)
+{
+	if (centikg > TORQUE_INPUT_MAX_CENTIKG) {
+		centikg = TORQUE_INPUT_MAX_CENTIKG;
+	}
+	return default_native_delta_to_ctrl(default_centikg_to_native_delta(centikg));
+}
+
+uint16_t torque_input_ctrl_to_centikg(uint16_t ctrl)
+{
+	if (ctrl > TORQUE_CTRL_MAX_CLU) {
+		ctrl = TORQUE_CTRL_MAX_CLU;
+	}
+	return default_native_delta_to_centikg(default_ctrl_to_native_delta(ctrl));
 }

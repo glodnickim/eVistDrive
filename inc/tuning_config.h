@@ -49,9 +49,17 @@
  * Global rather than per level because the bank record has no room left (255 B, see
  * inc/assist_modes.h) and because it describes the rider's pedal, not one assist level.
  */
-#define TUNING_ASSIST_TORQUE_FULL_SCALE_CENTIKG_DEFAULT 6000U
-#define TUNING_ASSIST_TORQUE_FULL_SCALE_CENTIKG_MIN     2000U
-#define TUNING_ASSIST_TORQUE_FULL_SCALE_CENTIKG_MAX    12000U
+/*
+ * FW-151: stored and applied in the CONTROL domain (CLU), not in kilograms. It is the top of
+ * the rider-effort axis, so a re-measured kg table must not move it - that would rescale the
+ * whole effort curve of every stored profile. The rider still sets it in kilograms; the wire
+ * value is converted once, where the setting is accepted. The numbers are unchanged, which is
+ * why no stored tuning blob needs migrating: on the characteristic the control domain is frozen
+ * to, 6000 CLU is the same point 6000 centikg used to be.
+ */
+#define TUNING_ASSIST_TORQUE_FULL_SCALE_CTRL_DEFAULT 6000U
+#define TUNING_ASSIST_TORQUE_FULL_SCALE_CTRL_MIN     2000U
+#define TUNING_ASSIST_TORQUE_FULL_SCALE_CTRL_MAX    12000U
 
 /*
  * FW-129 §10: crank length. load_centikg is a physical force on the pedal, so rider power is
@@ -88,8 +96,9 @@ uint16_t tuning_config_min_iq_pct(void);
 /* FW-085: RUN torque estimator window (crank degrees; 0 = disabled). */
 uint16_t tuning_config_assist_torque_run_window_deg(void);
 
-/* FW-129: ride-feel torque axis and the crank arm of the rider-power equation. */
-uint16_t tuning_config_assist_torque_full_scale_centikg(void);
+/* FW-129/151: ride-feel torque axis (control domain) and the crank arm of the rider-power
+ * equation (physical - rider power genuinely is a force times a length). */
+uint16_t tuning_config_assist_torque_full_scale_ctrl(void);
 uint16_t tuning_config_crank_length_mm(void);
 
 uint16_t tuning_config_serialize(uint8_t *buffer);

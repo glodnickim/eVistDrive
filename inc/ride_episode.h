@@ -115,7 +115,7 @@ typedef struct {
 	bool     limiter_zeroed;
 	bool     pas_timeout;
 	/* Values ride_control latched at the arming instant, copied in when arm_seq changes. */
-	uint16_t arm_load_centikg;
+	uint16_t arm_load_ctrl;
 	uint16_t arm_fast_native;
 	uint16_t arm_run_seed_native;
 	int32_t  arm_iq_after_limits;
@@ -129,8 +129,10 @@ typedef struct {
 	 */
 	uint8_t  fwd_run;                 /* consecutive forward quadrature steps */
 	uint8_t  required_steps;          /* what fwd_run has to reach right now */
-	uint16_t load_centikg;            /* pedal load as the latch gate sees it */
-	uint16_t load_threshold_centikg;  /* what that load has to reach right now */
+	/* FW-151: the latch gate works in the CONTROL domain, so its recorder does too - a
+	 * recorder that measured a different domain than the gate would time the wrong event. */
+	uint16_t load_ctrl;               /* pedal load as the latch gate sees it */
+	uint16_t load_threshold_ctrl;     /* what that load has to reach right now */
 	bool     rolling;                 /* the bike is moving (selects the rolling threshold) */
 } ride_episode_input_t;
 
@@ -143,7 +145,7 @@ typedef struct {
 	uint16_t t_recover_ms;
 	/* All RIDE_EPISODE_TIME_NONE / 0 when the episode had no arming — never stale values
 	 * carried over from the previous one. */
-	uint16_t arm_load_centikg;
+	uint16_t arm_load_ctrl;
 	uint16_t arm_fast_native;
 	uint16_t arm_run_seed_native;
 	int32_t  arm_iq_after_limits;
@@ -170,15 +172,15 @@ typedef struct {
 	/*
 	 * FW-107: 1 = this episode's latch armed via the fast-rearm path (direction confirmed after
 	 * a lone reverse step, a real RUN-level demand, never the start-load threshold), 0 = the
-	 * normal load-threshold latch, or no arming at all (see arm_load_centikg's "no stale value"
+	 * normal load-threshold latch, or no arming at all (see arm_load_ctrl's "no stale value"
 	 * rule - both read 0 identically when !have_arm). The struct was already exactly 36 B with
 	 * no spare padding (verified: every existing field already accounts for the full size), so
 	 * this one new byte moves the 64-entry queue from 36 to 40 B/entry - measured and folded
 	 * into inc/diag_budget.h, not estimated.
 	 */
 	uint8_t  fast_rearm;
-	uint16_t load_threshold_centikg;
-	uint16_t load_peak_centikg;       /* highest load seen since the last reverse step */
+	uint16_t load_threshold_ctrl;     /* FW-151: control domain, as the gate compared it */
+	uint16_t load_peak_ctrl;          /* highest load seen since the last reverse step */
 	/*
 	 * FW-106: the pre-ramp Iq target AT THE INSTANT t_target_ready was set — not read live from
 	 * ride_control at dump time. A queued record can be dumped long after the episode itself

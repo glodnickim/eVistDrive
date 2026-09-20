@@ -47,7 +47,7 @@ static pas_trace_input_t clean(uint16_t gap, uint16_t disc_pos)
 	in.reverse = false;
 	in.gap_ticks = gap;
 	in.disc_pos = disc_pos;
-	in.load_centikg = 100;
+	in.load_ctrl = 100;
 	in.torque_raw_mv = 900;
 	in.torque_fast = 50;
 	in.iq_setpoint = 30;

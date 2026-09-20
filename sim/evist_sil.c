@@ -627,6 +627,7 @@ static void sim_ctrl_tick(sim_t *s, FILE *csv)
     r.torque_assist_now_native = ts->assist_delta_native;
     r.torque_assist_filtered = ts->assist_delta_filtered_native;
     r.torque_run_filtered = ts->assist_delta_run_native;
+    r.torque_load_ctrl = ts->load_ctrl;
     r.torque_load_centikg = ts->load_centikg;
     r.cadence_rpm = control_cadence;
     r.wheel_speed_x100 = 0U;

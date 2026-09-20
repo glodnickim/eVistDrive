@@ -39,7 +39,9 @@ Production ownership rules:
 - PAS electrical plausibility: `pas_sampler.c`
 - PAS direction safety: `pas_direction.c`
 - cadence used by control: `cadence_filter.c`
-- rider torque conditioning (zero, calibration, physical kg): `torque_input.c`
+- rider torque conditioning (zero, calibration gain, the frozen CONTROL domain and the
+  measured kg projection): `torque_input.c` - control reads CLU, humans read kg, and the two
+  are independent by contract (see `inc/torque_input.h`)
 - pedal-assist permission and lifecycle: `ap2_pas_state.c` - the ONE owner
 - rider demand and the pedal-cycle base/dynamic split: `ap2_rider_demand.c`
 - rider aggression and terrain load: `ap2_estimators.c`

@@ -288,7 +288,7 @@ static void freeze(pas_trace_slot_t *s)
 		slot->from_to = (uint8_t)((in->from_state << 4) | in->to_state);
 		slot->flags = flags;
 		slot->disc_pos = (uint8_t)(in->disc_pos % 96U);
-		slot->load_centikg = in->load_centikg;
+		slot->load_ctrl = in->load_ctrl;
 		slot->torque_raw_mv = in->torque_raw_mv;
 		slot->torque_fast = in->torque_fast;
 		slot->iq_setpoint = in->iq_setpoint;
@@ -436,7 +436,7 @@ uint8_t pas_trace_transition(const pas_trace_input_t *in)
 		slot->from_to = (uint8_t)((in->from_state << 4) | in->to_state);
 		slot->flags = (uint8_t)(context_flags(in) | PAS_TR_TRIGGER);
 		slot->disc_pos = (uint8_t)(in->disc_pos % 96U);
-		slot->load_centikg = in->load_centikg;
+		slot->load_ctrl = in->load_ctrl;
 		slot->torque_raw_mv = in->torque_raw_mv;
 		slot->torque_fast = in->torque_fast;
 		slot->iq_setpoint = in->iq_setpoint;

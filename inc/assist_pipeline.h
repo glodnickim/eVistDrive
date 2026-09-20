@@ -49,7 +49,13 @@
 
 typedef struct {
 	/* --- rider sensors (already conditioned by their existing owners) --- */
-	uint16_t torque_load_centikg;   /* torque_input.c: zeroed, calibrated, physical */
+	/*
+	 * FW-151: the pipeline consumes the CONTROL projection (CLU). torque_load_centikg is
+	 * carried alongside it for TELEMETRY ONLY - no block below reads it to make a decision,
+	 * and none may start to. See inc/torque_input.h for the domain contract.
+	 */
+	uint16_t torque_load_ctrl;      /* torque_input.c: zeroed, gain-corrected, control domain */
+	uint16_t torque_load_centikg;   /* human projection, telemetry only */
 	bool torque_sensor_valid;
 	uint8_t cadence_rpm;            /* cadence_filter.c: the one control cadence */
 	uint32_t speed_x100;
@@ -116,7 +122,8 @@ typedef struct {
  */
 typedef struct {
 	/* inputs as the pipeline saw them */
-	uint16_t torque_load_centikg;
+	uint16_t torque_load_ctrl;      /* FW-151: what control actually decided on */
+	uint16_t torque_load_centikg;   /* FW-151: what the rider would have been shown */
 	int32_t torque_normalized_permille;
 	uint8_t cadence_rpm;
 	uint8_t pas_state;              /* ap2_pas_state_t */
@@ -179,7 +186,7 @@ typedef struct {
 	/* The start gate as it stood THIS tick, from its one owner rather than re-derived by a
 	 * reader against a constant that may have drifted. */
 	uint8_t required_steps;
-	uint16_t engage_threshold_centikg;
+	uint16_t engage_threshold_ctrl;  /* FW-151: control domain, same domain as torque_load_ctrl */
 	bool bike_rolling;
 
 	/* rider power, for the existing support-ratio telemetry */

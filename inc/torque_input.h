@@ -5,10 +5,41 @@
 #include <stdint.h>
 
 /*
- * Single owner of the torque sensor chain: raw ADC millivolts -> automatic
- * zero -> corrected signal -> delta above zero -> public kilogram-force
- * scale in 0.01 kg units. The default conversion is piecewise-linear through
- * measured points, so the firmware is usable without load calibration.
+ * Single owner of the torque sensor chain. It produces TWO independent projections of one
+ * measurement, and keeping them independent is the whole point of this module:
+ *
+ *   raw ADC millivolts
+ *        -> automatic zero            (offset_correction)
+ *        -> corrected signal
+ *        -> delta above zero
+ *        -> user GAIN calibration     (span_native / TORQUE_GAIN_REFERENCE_NATIVE)
+ *        =  CANONICAL INTERNAL TORQUE  - the delta the FACTORY sensor would have produced
+ *                                        for this force. One unit, one range, no kilograms.
+ *              |
+ *              +--> frozen control characteristic -> CONTROL LOAD (CLU)  -> assist pipeline
+ *              |
+ *              +--> measured FW-150 kg table      -> load_centikg        -> UI / telemetry /
+ *                                                                          calibration display
+ *
+ * WHY TWO. Until FW-151 the kilogram table WAS the control characteristic: every threshold,
+ * the effort deadband and the effort full scale were stored in 0.01 kg and compared against a
+ * kg reading. So correcting the SENSOR MEASUREMENT silently retuned the bike. The FW-150
+ * reference-weight measurement did exactly that - the same stored 0.70 kg standing threshold
+ * meant 17 mV of sensor signal before it and 5 mV after, a 3.4x change in how hard the rider
+ * has to press, from a change that was only ever meant to fix a displayed number. 5 mV is
+ * inside the sensor's own rest noise (TQ_RECAL_STABLE_MV = 10), so assist permission could be
+ * granted by noise alone.
+ *
+ * THE CONTRACT FROM FW-151 ON:
+ *   - CONTROL never sees kilograms. It sees CLU, produced by a FROZEN characteristic.
+ *   - The kg table is a MEASUREMENT and may be re-measured freely. Re-measuring it changes
+ *     what the rider is SHOWN and changes nothing the motor does.
+ *   - Deliberately retuning control means editing the frozen control characteristic, which is
+ *     a separate, explicit, tested decision - never a side effect of a better kg measurement.
+ *   - tests/host/torque/torque_control_domain_host.c enforces this and must not be weakened.
+ *
+ * The default kg conversion is piecewise-linear through measured points, so the firmware is
+ * usable without load calibration.
  *
  * FW-150: the default characteristic is the 2026-09-17 reference-weight
  * measurement on this bike (165 mm crank), zero 740 mV:
@@ -71,6 +102,21 @@
  * by design - 60 kg is a SCALE reference here, not a reachable reading.
  */
 #define TORQUE_DEFAULT_SPAN_NATIVE       3047U
+/*
+ * FW-151: THE GAIN REFERENCE, frozen.
+ *
+ * A user calibration stores span_native, and span_native only ever means a GAIN:
+ *
+ *     gain = span_native / TORQUE_GAIN_REFERENCE_NATIVE
+ *
+ * It used to be defined as "the native delta this sensor produces at 60.00 kg", which tied the
+ * gain - and therefore every calibrated rider's assist - to the kg table. Re-measuring that
+ * table would then have silently rescaled the gain of every calibrated sensor in the field.
+ * The reference is now a frozen constant that happens to equal the FW-150 value, so every
+ * stored v3 record keeps its exact numeric meaning and no migration is needed, while the kg
+ * table is free to move.
+ */
+#define TORQUE_GAIN_REFERENCE_NATIVE     3047U
 #define TORQUE_SPAN_MIN_NATIVE           800U
 /*
  * FW-150: raised from 2600 so the DEFAULT span above is inside the accepted range
@@ -79,6 +125,39 @@
 #define TORQUE_SPAN_MAX_NATIVE           4200U
 #define TORQUE_PUBLIC_FULL_SCALE_CENTIKG 6000U
 #define TORQUE_INPUT_MAX_CENTIKG         12000U
+
+/*
+ * FW-151: THE CANONICAL CONTROL CHARACTERISTIC - canonical internal torque -> CONTROL LOAD.
+ *
+ * UNIT. "CLU" (control load units). It is NOT a physical unit and is never displayed. It is a
+ * monotonic, integer, zero-referenced, gain-corrected projection of the sensor, and its only
+ * job is to be STABLE: the number the control path compares thresholds against and normalizes
+ * effort from must not move when a measurement of the sensor's kilogram scale is improved.
+ *
+ * VALUES. Seeded from the characteristic this firmware was riding on the last time the start
+ * behaviour was verified on the bike (commit 1d6c6ba, 2026-09-07): a two-segment curve through
+ * 146 native = 600 and 1580 native = 8400, full scale 6000 at 1139 native. That is deliberate,
+ * and it is the reason this refactor does not change the ride: every stored threshold, the
+ * effort deadband and the effort full scale keep the exact native trip points they had in the
+ * bike-verified build.
+ *
+ * DO NOT "CORRECT" THESE NUMBERS BECAUSE A BETTER SENSOR MEASUREMENT EXISTS. That is what the
+ * kg table (TORQUE_CURVE_P*) is for. Changing the numbers below IS a deliberate retune of how
+ * hard the rider has to press and of the whole effort axis; it needs its own card, its own ride
+ * evidence, and it invalidates every stored threshold, which is why it must come with a bank
+ * version bump. The FW-150 kg measurement is NOT such evidence: it says what the sensor reads
+ * in kilograms, not how assist should respond.
+ */
+#define TORQUE_CTRL_BREAK_NATIVE         146U
+#define TORQUE_CTRL_BREAK_CLU            600U
+#define TORQUE_CTRL_HIGH_NATIVE          1580U
+#define TORQUE_CTRL_HIGH_CLU             8400U
+/* Control load at TORQUE_CTRL_FULL_SCALE_NATIVE; the effort axis reference. */
+#define TORQUE_CTRL_FULL_SCALE_CLU       6000U
+#define TORQUE_CTRL_FULL_SCALE_NATIVE    1139U
+/* Mirrors TORQUE_INPUT_MAX_CENTIKG: the ceiling of the control scale. */
+#define TORQUE_CTRL_MAX_CLU              12000U
+
 #define TORQUE_ASSIST_DEADBAND_NATIVE    10U
 #define TORQUE_ASSIST_FILTER_MS          35U
 #define TORQUE_INPUT_TICKS_PER_MS        4U
@@ -194,7 +273,12 @@ typedef struct {
 	uint16_t assist_delta_native;
 	uint16_t assist_delta_filtered_native;
 	uint16_t assist_delta_run_native;   /* FW-033: slow RUN estimator of the fast signal */
-	uint16_t load_centikg;
+	/*
+	 * FW-151: the two projections of the same conditioned measurement.
+	 * load_ctrl is what the assist pipeline consumes; load_centikg is for humans.
+	 */
+	uint16_t load_ctrl;                 /* CONTROL domain (CLU) - the control path reads THIS */
+	uint16_t load_centikg;              /* HUMAN domain (0.01 kg) - UI/telemetry/calibration */
 	uint16_t span_native;
 	uint8_t calibration_source;
 	bool sensor_valid;
@@ -382,8 +466,34 @@ typedef enum {
 	TORQUE_COAST_IMPLAUSIBLE_RAW = 7
 } torque_coast_result_t;
 
+/*
+ * HUMAN projection. Both directions read the MEASURED kg table and apply the gain, so both
+ * move when the table is re-measured. Use them for display, telemetry, calibration and for
+ * converting a value the rider typed in kilograms at a configuration boundary. NEVER inside a
+ * per-tick control decision.
+ */
 uint16_t torque_input_centikg_to_native_delta(uint16_t centikg);
 uint16_t torque_input_native_delta_to_centikg(uint16_t delta_native);
+
+/*
+ * FW-151: CONTROL projection. Both directions read the FROZEN control characteristic and apply
+ * the gain, so they are invariant to a kg re-measurement. This is the ONE conversion between
+ * the sensor and the control domain - there is no second normalization anywhere downstream.
+ */
+uint16_t torque_input_native_delta_to_ctrl(uint16_t delta_native);
+uint16_t torque_input_ctrl_to_native_delta(uint16_t ctrl);
+/* The control load for the current tick (snapshot.load_ctrl). */
+uint16_t torque_input_load_ctrl(void);
+
+/*
+ * FW-151: configuration-boundary conversions, for values the RIDER expresses in kilograms
+ * (start pressure, effort full scale). kg -> CLU happens ONCE, where the setting is accepted;
+ * CLU -> kg happens ONLY to show the stored setting back. The stored and compared value is
+ * always the CLU one, which is what makes a later kg re-measurement change the displayed
+ * number without changing the bike's behaviour.
+ */
+uint16_t torque_input_centikg_to_ctrl(uint16_t centikg);
+uint16_t torque_input_ctrl_to_centikg(uint16_t ctrl);
 
 /*
  * FW-129 D8 / FW-150: calibration persist versions.

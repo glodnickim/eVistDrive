@@ -35,23 +35,28 @@
  *   dynamic     max(0, demand - base) with its own fast envelope: the "pushed harder" term
  *
  * UNITS. Everything leaving this module is permille (0..1000) of the rider-effort full scale
- * (tuning_config_assist_torque_full_scale_centikg()). That full scale is a RIDE-FEEL setting
- * and has nothing to do with the sensor calibration, which torque_input.c already applied -
- * the input here is a calibrated physical pedal force in 0.01 kgf.
+ * (tuning_config_assist_torque_full_scale_ctrl()). That full scale is a RIDE-FEEL setting and
+ * has nothing to do with the sensor calibration, which torque_input.c already applied.
+ *
+ * FW-151: the input is CONTROL LOAD (CLU), not kilograms. This module does not know what a
+ * kilogram is, and must not learn: the projection from the sensor onto the control domain is
+ * torque_input.c's frozen characteristic, applied exactly once, before this block. There is no
+ * second normalization here - the only thing done to the input is the deadband and the
+ * projection onto the ride-feel axis. See inc/torque_input.h for the domain contract.
  */
 
 /*
- * The single deadband of the assist path, in physical force. Below it the pipeline reports
+ * The single deadband of the assist path, in the control domain. Below it the pipeline reports
  * no effort at all. It exists to keep sensor rest noise and the weight of a resting foot out
- * of the demand, and it is expressed in kgf rather than ADC counts so it means the same thing
- * after a sensor recalibration.
+ * of the demand.
  *
- * FW-150: 0.15 -> 0.55 kg. Being in kgf makes this value survive a GAIN recalibration, but
- * not a corrected CURVE: the old two-point characteristic was disproved by reference-weight
- * measurement, and the 0.15 kg that used to mean 3.65 mV of sensor signal would now mean
- * 1 mV - below the sensor's own rest noise. 0.55 kg is the same 3.65 mV on the measured curve.
+ * FW-151: 15 CLU. Being in the control domain makes this value survive BOTH a gain
+ * recalibration and a re-measurement of the kilogram table. It was 15 centikg in the
+ * bike-verified build and 55 centikg after FW-150 corrected the kg table - the same 3.65 mV of
+ * sensor signal, renumbered twice by a measurement that was never about the deadband. In CLU it
+ * is 15 and stays 15, whatever the kg table later says.
  */
-#define AP2_EFFORT_DEADBAND_CENTIKG 55U
+#define AP2_EFFORT_DEADBAND_CTRL 15U
 
 /*
  * THE ONE FILTER ON THE MEASUREMENT PATH. Its job is sensor noise, nothing else - it is far
@@ -86,11 +91,11 @@
 #define AP2_STROKE_PEAK_DECAY_STROKES 2U
 
 typedef struct {
-	uint16_t load_centikg;        /* calibrated pedal force from torque_input.c */
+	uint16_t load_ctrl;           /* FW-151: control load (CLU) from torque_input.c */
 	bool torque_valid;            /* sensor healthy and not in calibration */
 	bool pedaling;                /* PAS lifecycle says the cranks are driving forward */
 	uint8_t cadence_rpm;          /* conditioned control cadence */
-	uint16_t full_scale_centikg;  /* ride-feel axis; 0 falls back to the compiled default */
+	uint16_t full_scale_ctrl;     /* ride-feel axis (CLU); 0 falls back to the compiled default */
 	uint16_t base_hold_ms;        /* profile floor for the base decay */
 	uint32_t elapsed_ticks;
 } ap2_demand_input_t;
@@ -102,10 +107,10 @@ typedef struct {
 	int32_t dynamic_permille;      /* fast excess above the sustained level */
 	int32_t stroke_peak_permille;  /* decaying peak-hold, for the aggression estimator */
 	uint16_t stroke_period_ms;     /* the pedal clock this tick was evaluated against */
-	uint16_t load_centikg;         /* echoed input, for telemetry */
+	uint16_t load_ctrl;            /* echoed input, for telemetry */
 } ap2_demand_output_t;
 
-#define AP2_FULL_SCALE_DEFAULT_CENTIKG 6000U
+#define AP2_FULL_SCALE_DEFAULT_CTRL 6000U
 
 void ap2_rider_demand_reset(void);
 void ap2_rider_demand_update(const ap2_demand_input_t *in, ap2_demand_output_t *out);

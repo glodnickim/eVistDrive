@@ -34,8 +34,8 @@ static uint16_t min_iq_pct = 2U;
 static uint16_t torque_run_window_deg = TUNING_TORQUE_RUN_WINDOW_DEG_DEFAULT;
 
 /* FW-129: ride-feel torque axis + crank arm of the rider-power equation (see the header). */
-static uint16_t assist_torque_full_scale_centikg =
-	TUNING_ASSIST_TORQUE_FULL_SCALE_CENTIKG_DEFAULT;
+static uint16_t assist_torque_full_scale_ctrl =
+	TUNING_ASSIST_TORQUE_FULL_SCALE_CTRL_DEFAULT;
 static uint16_t crank_length_mm = TUNING_CRANK_LENGTH_MM_DEFAULT;
 
 static uint16_t clamp_max(uint16_t value, uint16_t max)
@@ -89,9 +89,9 @@ uint16_t tuning_config_assist_torque_run_window_deg(void)
 	return torque_run_window_deg;
 }
 
-uint16_t tuning_config_assist_torque_full_scale_centikg(void)
+uint16_t tuning_config_assist_torque_full_scale_ctrl(void)
 {
-	return assist_torque_full_scale_centikg;
+	return assist_torque_full_scale_ctrl;
 }
 
 uint16_t tuning_config_crank_length_mm(void)
@@ -160,7 +160,7 @@ uint16_t tuning_config_serialize(uint8_t *buffer)
 	put_u16(&buffer[18], min_iq_pct);
 	put_u16(&buffer[20], torque_run_window_deg); /* FW-085: crank degrees, was ms in v6 */
 	put_u16(&buffer[22], start_steps); /* FW-068 */
-	put_u16(&buffer[24], assist_torque_full_scale_centikg); /* FW-129 */
+	put_u16(&buffer[24], assist_torque_full_scale_ctrl); /* FW-129/151 */
 	put_u16(&buffer[26], crank_length_mm);                  /* FW-129 */
 	put_u16(&buffer[28], 0); /* reserve: the LAST spare u16 in this blob length */
 	put_u16(&buffer[TUNING_BLOB_LEN - 2U],
@@ -280,16 +280,16 @@ bool tuning_config_apply_blob(const uint8_t *buffer, uint16_t length)
 	 * scale, 165 mm crank) - so migrating an old profile changes nothing a rider can feel.
 	 */
 	if (version >= TUNING_VERSION_V8) {
-		assist_torque_full_scale_centikg = clamp_or_default(get_u16(&buffer[24]),
-			TUNING_ASSIST_TORQUE_FULL_SCALE_CENTIKG_MIN,
-			TUNING_ASSIST_TORQUE_FULL_SCALE_CENTIKG_MAX,
-			TUNING_ASSIST_TORQUE_FULL_SCALE_CENTIKG_DEFAULT);
+		assist_torque_full_scale_ctrl = clamp_or_default(get_u16(&buffer[24]),
+			TUNING_ASSIST_TORQUE_FULL_SCALE_CTRL_MIN,
+			TUNING_ASSIST_TORQUE_FULL_SCALE_CTRL_MAX,
+			TUNING_ASSIST_TORQUE_FULL_SCALE_CTRL_DEFAULT);
 		crank_length_mm = clamp_or_default(get_u16(&buffer[26]),
 			TUNING_CRANK_LENGTH_MM_MIN, TUNING_CRANK_LENGTH_MM_MAX,
 			TUNING_CRANK_LENGTH_MM_DEFAULT);
 	} else {
-		assist_torque_full_scale_centikg =
-			TUNING_ASSIST_TORQUE_FULL_SCALE_CENTIKG_DEFAULT;
+		assist_torque_full_scale_ctrl =
+			TUNING_ASSIST_TORQUE_FULL_SCALE_CTRL_DEFAULT;
 		crank_length_mm = TUNING_CRANK_LENGTH_MM_DEFAULT;
 	}
 	return true;

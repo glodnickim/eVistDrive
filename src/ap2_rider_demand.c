@@ -90,7 +90,7 @@ void ap2_rider_demand_update(const ap2_demand_input_t *in, ap2_demand_output_t *
 		out->dynamic_permille = 0;
 		out->stroke_peak_permille = 0;
 		out->stroke_period_ms = (uint16_t)AP2_STROKE_MAX_MS;
-		out->load_centikg = 0U;
+		out->load_ctrl = 0U;
 		return;
 	}
 
@@ -108,11 +108,11 @@ void ap2_rider_demand_update(const ap2_demand_input_t *in, ap2_demand_output_t *
 		out->dynamic_permille = 0;
 		out->stroke_peak_permille = 0;
 		out->stroke_period_ms = stroke_period_ms(in->cadence_rpm);
-		out->load_centikg = in->load_centikg;
+		out->load_ctrl = in->load_ctrl;
 		return;
 	}
 
-	raw = in->load_centikg;
+	raw = in->load_ctrl;
 	ctx.hist[2] = ctx.hist[1];
 	ctx.hist[1] = ctx.hist[0];
 	ctx.hist[0] = raw;
@@ -121,25 +121,25 @@ void ap2_rider_demand_update(const ap2_demand_input_t *in, ap2_demand_output_t *
 	}
 
 	/* ---- TORQUE ZERO / NORMALIZATION -------------------------------------------------
-	 * torque_input.c already removed the sensor zero and applied the calibration span, so
-	 * the input is a physical force. All that is left is the deadband and the projection
-	 * onto the ride-feel axis.
+	 * torque_input.c already removed the sensor zero, applied the calibration gain and read
+	 * the frozen control characteristic, so the input is CONTROL LOAD. All that is left is the
+	 * deadband and the projection onto the ride-feel axis - the ONE normalization of this path.
 	 */
-	full_scale = (in->full_scale_centikg != 0U) ?
-		in->full_scale_centikg : (uint16_t)AP2_FULL_SCALE_DEFAULT_CENTIKG;
-	if (full_scale <= AP2_EFFORT_DEADBAND_CENTIKG) {
-		full_scale = (uint16_t)(AP2_EFFORT_DEADBAND_CENTIKG + 1U);
+	full_scale = (in->full_scale_ctrl != 0U) ?
+		in->full_scale_ctrl : (uint16_t)AP2_FULL_SCALE_DEFAULT_CTRL;
+	if (full_scale <= AP2_EFFORT_DEADBAND_CTRL) {
+		full_scale = (uint16_t)(AP2_EFFORT_DEADBAND_CTRL + 1U);
 	}
 
 	{
 		uint16_t robust = (ctx.hist_count >= 3U) ?
 			median3(ctx.hist[0], ctx.hist[1], ctx.hist[2]) : raw;
-		int32_t above = (int32_t)robust - (int32_t)AP2_EFFORT_DEADBAND_CENTIKG;
+		int32_t above = (int32_t)robust - (int32_t)AP2_EFFORT_DEADBAND_CTRL;
 		if (above < 0) {
 			above = 0;
 		}
 		effort = ap2_map(above, 0,
-			(int32_t)full_scale - (int32_t)AP2_EFFORT_DEADBAND_CENTIKG,
+			(int32_t)full_scale - (int32_t)AP2_EFFORT_DEADBAND_CTRL,
 			0, AP2_PERMILLE);
 	}
 
@@ -199,5 +199,5 @@ void ap2_rider_demand_update(const ap2_demand_input_t *in, ap2_demand_output_t *
 	out->dynamic_permille = dynamic;
 	out->stroke_peak_permille = ap2_clamp(ap2_q16_value(ctx.peak_q16), 0, AP2_PERMILLE);
 	out->stroke_period_ms = period;
-	out->load_centikg = in->load_centikg;
+	out->load_ctrl = in->load_ctrl;
 }

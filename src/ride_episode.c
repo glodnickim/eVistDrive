@@ -169,7 +169,7 @@ void ride_episode_init(void)
 	E.published.t_target_ready_ms = RIDE_EPISODE_TIME_NONE;
 	E.published.iq_pre_ramp_at_target_ready = 0;
 	E.published.t_recover_ms = RIDE_EPISODE_TIME_NONE;
-	E.published.arm_load_centikg = 0;
+	E.published.arm_load_ctrl = 0;
 	E.published.arm_fast_native = 0;
 	E.published.arm_run_seed_native = 0;
 	E.published.arm_iq_after_limits = 0;
@@ -179,8 +179,8 @@ void ride_episode_init(void)
 	E.published.t_steps_ready_ms = RIDE_EPISODE_TIME_NONE;
 	E.published.t_load_ready_ms = RIDE_EPISODE_TIME_NONE;
 	E.published.required_steps = 0;
-	E.published.load_threshold_centikg = 0;
-	E.published.load_peak_centikg = 0;
+	E.published.load_threshold_ctrl = 0;
+	E.published.load_peak_ctrl = 0;
 }
 
 void ride_episode_reverse_step(int32_t iq_setpoint_now, uint16_t arm_seq_now, uint32_t now_tick)
@@ -283,7 +283,7 @@ void ride_episode_tick(const ride_episode_input_t *input, uint32_t now_tick)
 		E.have_arm = true;
 		E.flags |= RIDE_EP_FLAG_LATCH_ARMED;
 		E.t_latch = ticks_to_ms(elapsed);
-		E.arm_load = input->arm_load_centikg;
+		E.arm_load = input->arm_load_ctrl;
 		E.arm_fast = input->arm_fast_native;
 		E.arm_seed = input->arm_run_seed_native;
 		E.arm_iq = input->arm_iq_after_limits;
@@ -300,15 +300,15 @@ void ride_episode_tick(const ride_episode_input_t *input, uint32_t now_tick)
 	 * was already satisfied before the anchor still gets a real timestamp rather than 0 ms.
 	 */
 	E.req_steps = input->required_steps;
-	E.load_thr = input->load_threshold_centikg;
-	if (input->load_centikg > E.load_peak) {
-		E.load_peak = input->load_centikg;
+	E.load_thr = input->load_threshold_ctrl;
+	if (input->load_ctrl > E.load_peak) {
+		E.load_peak = input->load_ctrl;
 	}
 	if (E.t_steps_ready == RIDE_EPISODE_TIME_NONE && input->fwd_run >= input->required_steps) {
 		E.t_steps_ready = ticks_to_ms(elapsed);
 	}
 	if (E.t_load_ready == RIDE_EPISODE_TIME_NONE &&
-	    input->load_centikg >= input->load_threshold_centikg) {
+	    input->load_ctrl >= input->load_threshold_ctrl) {
 		E.t_load_ready = ticks_to_ms(elapsed);
 	}
 
@@ -363,7 +363,7 @@ void ride_episode_tick(const ride_episode_input_t *input, uint32_t now_tick)
 	 * fields are cleared, so a reader cannot mistake stale numbers for fresh ones — the first
 	 * version left them standing and they looked entirely plausible.
 	 */
-	E.published.arm_load_centikg = E.have_arm ? E.arm_load : 0U;
+	E.published.arm_load_ctrl = E.have_arm ? E.arm_load : 0U;
 	E.published.arm_fast_native = E.have_arm ? E.arm_fast : 0U;
 	E.published.arm_run_seed_native = E.have_arm ? E.arm_seed : 0U;
 	E.published.arm_iq_after_limits = E.have_arm ? E.arm_iq : 0;
@@ -373,8 +373,8 @@ void ride_episode_tick(const ride_episode_input_t *input, uint32_t now_tick)
 	E.published.t_steps_ready_ms = E.t_steps_ready;
 	E.published.t_load_ready_ms = E.t_load_ready;
 	E.published.required_steps = E.req_steps;
-	E.published.load_threshold_centikg = E.load_thr;
-	E.published.load_peak_centikg = E.load_peak;
+	E.published.load_threshold_ctrl = E.load_thr;
+	E.published.load_peak_ctrl = E.load_peak;
 	E.published.session_id = E.current_session_id;
 	E.published.number++;
 

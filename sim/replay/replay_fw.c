@@ -135,7 +135,7 @@ int main(int argc,char **argv)
         rider_input_t ri={0};
         ri.torque_raw_mv=raw; ri.torque_corrected_mv=corr; ri.torque_filtered=ts->delta_native;
         ri.torque_assist_now_native=ts->assist_delta_native; ri.torque_assist_filtered=ts->assist_delta_filtered_native;
-        ri.torque_run_filtered=ts->assist_delta_run_native; ri.torque_load_centikg=ts->load_centikg;
+        ri.torque_run_filtered=ts->assist_delta_run_native; ri.torque_load_ctrl=ts->load_ctrl; ri.torque_load_centikg=ts->load_centikg;
         ri.cadence_rpm=cadence; ri.wheel_speed_x100=speed_x100; ri.motor_erps=erps;
         /* AP-0a: THIS is the field finish_power_request() actually reads (assist_modes.c uses
          * rider_input_t.motor_voltage_utilization, not ride_control_input_t.u_abs - the latter

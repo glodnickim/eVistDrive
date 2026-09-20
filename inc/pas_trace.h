@@ -153,7 +153,7 @@ typedef struct {
 	uint8_t  from_to;        /* (previous quadrature state << 4) | new state */
 	uint8_t  flags;
 	uint8_t  disc_pos;       /* pas_fwd_accum % 96: where on the disc this happened */
-	uint16_t load_centikg;   /* converted pedal load */
+	uint16_t load_ctrl;      /* FW-151: pedal load in the control domain */
 	uint16_t torque_raw_mv;  /* raw sensor reading, before any filtering */
 	uint16_t torque_fast;    /* the 35 ms filtered assist delta */
 	uint16_t iq_setpoint;    /* what the motor was being asked for */
@@ -165,7 +165,7 @@ typedef struct {
 	bool     reverse;        /* the decoder's verdict for this step */
 	uint16_t gap_ticks;
 	uint16_t disc_pos;
-	uint16_t load_centikg;
+	uint16_t load_ctrl;      /* FW-151: control domain, the domain the gate compared */
 	uint16_t torque_raw_mv;
 	uint16_t torque_fast;
 	uint16_t iq_setpoint;

@@ -81,8 +81,15 @@ typedef struct {
 
 	uint8_t forward_steps;      /* consecutive forward PAS steps (pas_direction) */
 	uint8_t required_steps;     /* anti-jiggle guard, from tuning config */
-	uint16_t load_centikg;      /* calibrated pedal force, raw per-tick */
-	uint16_t engage_load_centikg; /* the threshold in force THIS tick (standstill vs rolling) */
+	/*
+	 * FW-151: the engagement gate works in the CONTROL domain (CLU), never in kilograms. This
+	 * module is the ONE owner of pedal-assist permission, and what the rider has to press to
+	 * earn it must not change because the kg table was re-measured - which is exactly what
+	 * happened at FW-150, taking the standing gate from 17 mV of sensor signal to 5 mV, inside
+	 * the sensor's own rest noise. See inc/torque_input.h.
+	 */
+	uint16_t load_ctrl;         /* conditioned control load, raw per-tick */
+	uint16_t engage_load_ctrl;  /* the threshold THIS tick (standstill vs rolling) */
 
 	uint32_t elapsed_ticks;
 } ap2_pas_input_t;

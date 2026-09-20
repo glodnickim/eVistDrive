@@ -408,19 +408,19 @@ void assist_pipeline_update(const assist_pipeline_input_t *in, assist_pipeline_c
 	pas_in.required_steps = bike_rolling ?
 		((in->required_steps > 0U) ? (uint8_t)(in->required_steps - 1U) : 0U) :
 		in->required_steps;
-	pas_in.load_centikg = in->torque_load_centikg;
-	pas_in.engage_load_centikg = bike_rolling ?
-		level->riding_start_load_centikg : level->minimum_pedal_load_centikg;
+	pas_in.load_ctrl = in->torque_load_ctrl;
+	pas_in.engage_load_ctrl = bike_rolling ?
+		level->riding_start_load_ctrl : level->minimum_pedal_load_ctrl;
 	pas_in.elapsed_ticks = used_ticks;
 	ap2_pas_state_update(&pas_in, &pas);
 
 	/* ---- RIDER DEMAND + PEDAL CYCLE --------------------------------------------------- */
-	demand_in.load_centikg = in->torque_load_centikg;
+	demand_in.load_ctrl = in->torque_load_ctrl;
 	demand_in.torque_valid = in->torque_sensor_valid;
 	demand_in.pedaling = (pas.state == AP2_PAS_FORWARD) ||
 		(pas.state == AP2_PAS_STARTING_FORWARD);
 	demand_in.cadence_rpm = in->cadence_rpm;
-	demand_in.full_scale_centikg = tuning_config_assist_torque_full_scale_centikg();
+	demand_in.full_scale_ctrl = tuning_config_assist_torque_full_scale_ctrl();
 	demand_in.base_hold_ms = ctx.base_hold_ms;
 	demand_in.elapsed_ticks = used_ticks;
 	ap2_rider_demand_update(&demand_in, &demand);
@@ -639,17 +639,35 @@ void assist_pipeline_update(const assist_pipeline_input_t *in, assist_pipeline_c
 	 * approached over the rider-feel release time and the regulator keeps the old reference for
 	 * the whole of it.
 	 *
-	 * When block_positive is true (stop, reverse, safety cut, level 0), the reference is
-	 * forced to zero. The ceiling must track the reference at the same rate, otherwise it
-	 * can fall below the reference during the release ramp (S17).
+	 * THE CEILING IS NOT A REQUEST, AND IT DOES NOT FOLLOW ONE.
+	 *
+	 * An intermediate build (the "S17" change) made the ceiling slew to ZERO whenever
+	 * block_positive was set, on the stated grounds that it "can otherwise fall below the
+	 * reference during the release ramp". That cannot happen: iq_ceiling is the limiter chain
+	 * applied to a request of FULL SCALE (inc/ap2_limits.h) - the largest current the
+	 * protections allow right now, independent of what the rider asked for. It is therefore
+	 * always at or above a reference that is itself being forced to zero, so there was no case
+	 * to fix. What the change did do:
+	 *
+	 *   - it made a PROTECTION limit a function of LIFECYCLE state, which is a second meaning
+	 *     for one value and exactly the kind of conflation this pipeline exists to avoid;
+	 *   - the ceiling clamp zeroes the trajectory's rate when it binds (src/fast_iq_slew.c), so
+	 *     a descending ceiling took the release away from its one owner mid-ramp;
+	 *   - after the block cleared, the ceiling had to climb back from ~0 over
+	 *     AP2_CEILING_RISE_MS, clamping legitimate assist for 400 ms after every level-0
+	 *     toggle, direction confirm or brake release - a delay the bike-verified baseline
+	 *     does not have;
+	 *   - it changed cmd->iq_ceiling on every tick of a release, which is the command churn
+	 *     dc23faf had to defend the release-rate derivation against.
+	 *
+	 * Reaching zero on a block is the trajectory's job, and it already does it: lim.final_iq is
+	 * forced to zero above and trajectory() returns FIS_MODE_SAFETY over AP2_SAFETY_RELEASE_MS.
+	 * REVERTED to the baseline behaviour deliberately - do not reintroduce it without a
+	 * measurement showing the ceiling binding below the reference.
 	 */
 	if (!ctx.ceiling_valid) {
 		ctx.ceiling = lim.iq_ceiling;
 		ctx.ceiling_valid = true;
-	} else if (pas.block_positive) {
-		/* Track the reference to zero at the safety release rate. */
-		ctx.ceiling = ap2_slew_step(ctx.ceiling, 0, iq_ramp_scale,
-			AP2_CEILING_RISE_MS, AP2_SAFETY_RELEASE_MS, used_ticks);
 	} else {
 		ctx.ceiling = ap2_slew_step(ctx.ceiling, lim.iq_ceiling, iq_ramp_scale,
 			AP2_CEILING_RISE_MS, AP2_CEILING_FALL_MS, used_ticks);
@@ -664,6 +682,7 @@ void assist_pipeline_update(const assist_pipeline_input_t *in, assist_pipeline_c
 		&cmd->step_mag_8, &cmd->release_ticks_16k, &cmd->zero_policy);
 
 	/* ---- TELEMETRY -------------------------------------------------------------------- */
+	ctx.tlm.torque_load_ctrl = in->torque_load_ctrl;
 	ctx.tlm.torque_load_centikg = in->torque_load_centikg;
 	ctx.tlm.torque_normalized_permille = demand.effort_permille;
 	ctx.tlm.cadence_rpm = in->cadence_rpm;
@@ -701,7 +720,7 @@ void assist_pipeline_update(const assist_pipeline_input_t *in, assist_pipeline_c
 		ctx.tlm.engage_seq++;
 	}
 	ctx.tlm.required_steps = pas_in.required_steps;
-	ctx.tlm.engage_threshold_centikg = pas_in.engage_load_centikg;
+	ctx.tlm.engage_threshold_ctrl = pas_in.engage_load_ctrl;
 	ctx.tlm.bike_rolling = bike_rolling;
 	ctx.tlm.rider_power_w = rider_power_w(in->torque_load_centikg, in->cadence_rpm);
 	ctx.tlm.motor_power_w = motor_power_w(lim.final_iq, in->battery_voltage_mv,

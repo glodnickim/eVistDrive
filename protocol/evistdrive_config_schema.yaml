@@ -299,12 +299,26 @@ profile_fields:
     since: 1
     access: persistent_rw
     per_level: true
-    # RESTORED to baseline (was 2.5 in regression). FW-150 curve change relabelled the same
-    # sensor signal (17 mV) from 0.7 kg to 2.55 kg, but baseline default 0.7 kg works correctly.
+    # FW-151: THE RIDER SETS THIS IN KILOGRAMS; THE CONTROLLER STORES A CONTROL-DOMAIN VALUE.
+    #
+    # The kg <-> control conversion happens once, at this configuration boundary, on the
+    # sensor's CURRENT kilogram table. What is stored on the wire and compared by the
+    # permission gate is the control value, so re-measuring that table changes the kilograms
+    # this key DISPLAYS and changes nothing the motor does.
+    #
+    # Tools must therefore treat a kg value read back from a v10 controller as a PROJECTION of
+    # the stored setting, not as the stored setting itself: writing back the kg number a tool
+    # read earlier, after a firmware update that improved the kg table, would move the stored
+    # control value. Read-modify-write of this key is only safe within one kg table.
+    #
+    # The default is 0.70 on the characteristic the control domain is frozen to (17 mV of
+    # sensor signal), which is the value the bike was verified on.
     value: {type: u16, scale: 0.1, unit: kilogram_force, min: 0.0, max: 22.5, default: 0.7}
-    implementation: active_decikg_precision_centikg_control_bank_v7
-    wire_v7: u16_centikg_at_level_record_19_quantized_to_decikg
-    legacy_v1_to_v6: native_millivolt_delta_migrated_through_active_torque_calibration
+    implementation: active_decikg_precision_control_domain_bank_v10
+    wire_v10: u16_control_load_units_at_level_record_19_quantized_to_10_units
+    wire_v7_to_v9: u16_centikg_at_level_record_19_quantized_to_decikg
+    migration_v7_to_v9: identity_pre_fw150_centikg_equals_control_load_units
+    legacy_v1_to_v6: native_millivolt_delta_read_on_frozen_control_characteristic
     ui_group: start_boost
 
   - key: riding_minimum_pedal_load_kg
@@ -312,10 +326,13 @@ profile_fields:
     since: 7
     access: persistent_rw
     per_level: true
-    # RESTORED to baseline (was 1.1 in regression). Baseline default 0.3 kg works correctly.
+    # FW-151: stored in the control domain, exactly like minimum_pedal_load_kg above - see
+    # the read-modify-write caveat there. Default 0.30 = 8 mV of sensor signal.
     value: {type: u8, scale: 0.1, unit: kilogram_force, min: 0.0, max: 22.5, default: 0.3}
-    implementation: active_decikg_bank_v7_centikg_control
-    wire_v7: u8_decikg_at_level_record_35
+    implementation: active_decikg_bank_v10_control_domain
+    wire_v10: u8_control_load_steps_at_level_record_35
+    wire_v7_to_v9: u8_decikg_at_level_record_35
+    migration_v7_to_v9: identity_pre_fw150_decikg_equals_control_load_steps
     legacy_v6: derived_from_minimum_threshold_minus_start_load_reduction_mv
     ui_group: start_boost
 

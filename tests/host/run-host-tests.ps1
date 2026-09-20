@@ -304,6 +304,23 @@ $suites = @(
         Modules = @(Join-Path $root 'src\torque_input.c')
         IncludeDirs = @(Join-Path $PSScriptRoot 'common')
         Defines = @('-Wno-type-limits') },
+    @{ Name = 'FW-151 torque domain contract (control domain frozen, kg table is display only)'
+        Harness = Join-Path $PSScriptRoot 'torque\torque_control_domain_host.c'
+        Modules = @((Join-Path $root 'src\torque_input.c'),
+                    (Join-Path $root 'src\ap2_rider_demand.c'),
+                    (Join-Path $root 'src\assist_modes.c'),
+                    (Join-Path $root 'src\ap2_profiles.c'),
+                    (Join-Path $root 'src\tuning_config.c'))
+        IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common'))
+        Defines = @('-Wno-type-limits') },
+    @{ Name = 'FW-151 start-load threshold migration into the control domain (bank v10, V1-V9)'
+        Harness = Join-Path $PSScriptRoot 'torque\torque_threshold_migration_host.c'
+        Modules = @((Join-Path $root 'src\assist_modes.c'),
+                    (Join-Path $root 'src\ap2_profiles.c'),
+                    (Join-Path $root 'src\torque_input.c'),
+                    (Join-Path $root 'src\tuning_config.c'))
+        IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common'))
+        Defines = @('-Wno-type-limits') },
     @{ Name = 'QZERO Quiet Zero PI integral fade at Iq_ref=0 (real quiet_zero.c + real 16 kHz slew owner + PI_control replica + wiring guards)'
        Harness = Join-Path $PSScriptRoot 'qzero_quiet_zero_host.c'
        # Links the REAL state machine and the REAL 16 kHz slew owner, so the entry edge is the

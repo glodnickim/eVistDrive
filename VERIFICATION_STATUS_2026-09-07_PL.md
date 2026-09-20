@@ -1,18 +1,75 @@
-# EVistDrive v3 — FW145 + ap2_torque_chain checkpoint
+# EVistDrive v3 — FW145 + Assist Pipeline V2 checkpoint
+
+> **KOREKTA 2026-09-20 (FW-151).** Ten dokument opisywał `ap2_torque_chain` jako architekturę
+> produkcyjną. **Nie jest i nie był nią przez większość życia tego dokumentu.** Modułu nie ma
+> w drzewie (`src/ap2_torque_chain.c` usunięty), nie ma go w żadnej liście źródeł ani w buildzie,
+> a właścicielem rider demand jest `ap2_rider_demand.c`. Jedynym właścicielem pozwolenia na
+> wspomaganie jest `ap2_pas_state.c`. Sekcja §0 poniżej zachowana jako historia, z wyraźnym
+> oznaczeniem, które twierdzenia są nieaktualne.
+>
+> Aktualny opis toru torque i domen: [docs/AUDIT_FINAL_TORQUE_DOMAIN_PIPELINE2_2026-09-20.md](docs/AUDIT_FINAL_TORQUE_DOMAIN_PIPELINE2_2026-09-20.md).
 
 **Baseline wejściowy:** `EvistDrive06092026v3.zip`
-**Linia rozwoju:** FW139 -> FW145 + ap2_torque_chain
+**Linia rozwoju:** FW139 -> FW145 -> Assist Pipeline V2 -> FW-151 (rozdzielenie domen torque)
 **Cel checkpointu:** samowystarczalny projekt do dalszej pracy przez kolejnego agenta, z real-module tests, whole-pipeline regression, supervisory SIL, electrical FOC/PMSM/Hall/QZERO SIL oraz pełnym Walk Assist SIL.
 **Stan:** PC/SIL VERIFIED; exact ARM target build DONE (0.610 NORMAL / 0.611 DIAG); Arm GNU 13.2.1 available.
 
-## 0. Nowe w tym checkpointie (ap2_torque_chain)
+## 0. Architektura produkcyjna toru wspomagania — STAN AKTUALNY (FW-151)
 
-Zastąpiono `ap2_rider_demand.c` modułem `ap2_torque_chain.c`:
-- **6-state engagement gating** (RESET→GATE→CONFIRM→ACTIVE→HYSTERESIS→RECOVERY) zamiennie z `ap2_pas_state.c`
-- **Base/dynamic split** przeniesiony z poprawioną logiką ACTIVE state (wychodzi tylko na `!in->pedaling`, śledzi demand poniżej `active_threshold` zamiast zerować)
-- **Elapsed-time LPF** (20 ms) dla effort, crank-angle window dla base term (1.5 udaru)
-- Naprawione: base term nie kolapsuje między udarami (S1), ceiling śledzi referencję przy block_positive (S17)
-- Wszystkie 56 testów głównych PASS, regresja deterministyczna PASS
+```text
+RAW ADC (mV)
+    -> auto zero (offset_correction)                     torque_input.c
+    -> delta nad zerem
+    -> GAIN kalibracji uzytkownika (span_native)         torque_input.c
+    =  KANONICZNY WEWNETRZNY TORQUE
+         |
+         +-> ZAMROZONA charakterystyka sterowania -> CONTROL LOAD (CLU)
+         |                                              |
+         |                                              v
+         |     ap2_pas_state.c    pozwolenie (JEDEN wlasciciel, progi w CLU)
+         |     ap2_rider_demand.c effort -> demand -> base + dynamic (permille)
+         |     ap2_estimators.c   agresja / obciazenie terenu
+         |     ap2_profiles.c     profil / AUTO
+         |     ap2_limits.c       jeden lancuch limiterow
+         |     assist_pipeline.c  JEDNA droga do Iq
+         |     fast_iq_slew.c     trajektoria Iq (16 kHz)
+         |     foc_current_loop.c PI + saturacja wektora
+         |
+         +-> MIERZONA tabela kg (FW-150) -> load_centikg -> HMI / telemetria / kalibracja
+```
+
+**Wlasciciele, ktorych nie wolno duplikowac:** pozwolenie = `ap2_pas_state.c`; rider demand i
+podzial base/dynamic = `ap2_rider_demand.c`; finalne Iq = `fast_iq_slew.c`.
+
+### Co jest NIEAKTUALNE w poprzedniej wersji tej sekcji (historia)
+
+Poprzednia wersja opisywala checkpoint, w ktorym `ap2_rider_demand.c` zastapiono modulem
+`ap2_torque_chain.c`. Ten kierunek zostal **wycofany** i modul **usuniety**:
+
+- ❌ `ap2_torque_chain.c` — **NIE ISTNIEJE.** Usuniety w `e4f2b88`; nie ma go w
+  `scripts/sources-m820.txt` ani w zadnym harnessie. Nie przywracac.
+- ❌ **6-state engagement gating** (RESET→GATE→CONFIRM→ACTIVE→HYSTERESIS→RECOVERY) — **NIE
+  ISTNIEJE** i bylo drugim, konkurencyjnym wlascicielem pozwolenia obok `ap2_pas_state.c`.
+  Nie tworzyc drugiego GATE/CONFIRM/ACTIVE.
+- ❌ **"ceiling sledzi referencje przy block_positive (S17)"** — **WYCOFANE w FW-151.**
+  `iq_ceiling` to limit OCHRONNY, zdefiniowany jako lancuch limiterow zastosowany do zadania
+  o pelnej skali (`inc/ap2_limits.h`), wiec nie moze spasc ponizej referencji zerowanej do zera
+  — uzasadnienie tej zmiany bylo niemozliwe. Powodowala natomiast zatrzaskiwanie wspomagania
+  na `AP2_CEILING_RISE_MS` (400 ms) po kazdym zdjeciu blokady. Uzasadnienie: `src/assist_pipeline.c`.
+- ✅ **Base/dynamic split** — istnieje, ale w `ap2_rider_demand.c` (nie w usunietym module).
+  Chroniony testem D9 w `tests/host/torque/torque_control_domain_host.c`.
+- ✅ **Elapsed-time LPF 20 ms** dla effort — istnieje, `AP2_EFFORT_LPF_MS`.
+- ⚠️ **"base term nie kolapsuje miedzy udarami (S1)"** — wlasnosc utrzymana, ale realizowana
+  przez `AP2_BASE_FALL_STROKE_NUM/DEN` w `ap2_rider_demand.c`.
+
+### FW-151 — rozdzielenie domen torque
+
+- progi sterowania (start, rolling, deadband, stuck-high) i os effort sa w **domenie sterowania
+  (CLU)**, nie w kilogramach;
+- kilogramy pozostaja dla HMI, telemetrii, diagnostyki i kalibracji — poprawa tabeli kg
+  **nie zmienia zachowania silnika**;
+- bank przechowywanej konfiguracji: **v10**; migracja v1..v9 jednorazowa i deterministyczna;
+- naprawione zawezenie typu przed walidacja zakresu `span` w kalibracji (P0).
 
 ## 1. Zmiany produkcyjne zachowane z FW139–FW142
 
@@ -238,7 +295,7 @@ Smoke na istniejącym `RUN_60_ride.csv`: **24 000 / 24 000 rows**, repeated repl
 Stary recorded output różni się od bieżącego kodu (max `Iq_ref` delta 124 counts), co jest raportowane zamiast
 maskowane; trace nie zawiera V/I/ERPS, więc replay jawnie zgłasza brakujące kanały/defaulty.
 
-## Aktualny host/build gate po FW145 + ap2_torque_chain
+## Aktualny host/build gate po FW145 + Assist Pipeline V2
 
 - source manifest: **55/55 production C**, 81 total entries — PASS;
 - real-module host suites: **56/56 PASS**;

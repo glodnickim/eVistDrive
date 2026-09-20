@@ -87,7 +87,8 @@ changes its time constant whenever the loop is late. Nothing in this pipeline co
 
 | Quantity | Unit | Where it comes from |
 |---|---|---|
-| pedal force | 0.01 kgf (centikg) | `torque_input.c`, after zero and calibration |
+| pedal force (control) | CLU, control load units | `torque_input.c`, after zero and calibration gain, read on the FROZEN control characteristic |
+| pedal force (human) | 0.01 kgf (centikg) | `torque_input.c`, same canonical value read on the MEASURED kg table - telemetry and UI only, never a control decision |
 | effort / demand / base / dynamic / response | permille, 0..1000 | normalized against the ride-feel full scale |
 | aggression, load state, auto factor | permille, 0..1000 | confidences, no physical dimension |
 | cadence | rpm | `cadence_filter.c` (the one control cadence) |
@@ -96,7 +97,7 @@ changes its time constant whenever the loop is late. Nothing in this pipeline co
 | power | W | measured duty conversion, see §8 |
 | times | ms for a FULL-SCALE move | so a number means the same thing to the rider everywhere |
 
-The rider-effort full scale is `tuning_config_assist_torque_full_scale_centikg()`. It is a
+The rider-effort full scale is `tuning_config_assist_torque_full_scale_ctrl()`. It is a
 **ride-feel** setting: it decides how much pedal force counts as "everything you have". It is
 not the sensor calibration, the sensor maximum or the ADC maximum, and changing it moves no
 kilogram reading anywhere.
@@ -126,7 +127,7 @@ the block it sits in is modelled wrongly.
 
 | In | Out |
 |---|---|
-| `load_centikg`, `torque_valid`, `cadence_rpm`, `pedaling`, `full_scale_centikg`, `base_hold_ms` | `effort`, `demand`, `base`, `dynamic`, `stroke_peak`, `stroke_period_ms` |
+| `load_ctrl`, `torque_valid`, `cadence_rpm`, `pedaling`, `full_scale_ctrl`, `base_hold_ms` | `effort`, `demand`, `base`, `dynamic`, `stroke_peak`, `stroke_period_ms` |
 
 1. **Validation.** A faulted or in-calibration torque sensor produces no effort at all, and
    every state that could outlive the fault is dropped with it. There is deliberately no "last
@@ -134,7 +135,7 @@ the block it sits in is modelled wrongly.
    the motor pulling.
 2. **Spike rejection.** Median of the last three samples (0.75 ms). This removes a single
    corrupted ADC sample without adding the lag a filter long enough to do the same job would.
-3. **Deadband and normalization.** `AP2_EFFORT_DEADBAND_CENTIKG` (0.15 kgf) in *physical force*,
+3. **Deadband and normalization.** `AP2_EFFORT_DEADBAND_CTRL` (15 CLU) in the *control domain*,
    so it means the same thing after a sensor recalibration; then a linear projection onto
    0..1000 against the ride-feel full scale.
 4. **The one noise filter.** `AP2_EFFORT_LPF_MS` = 20 ms. Its job is sensor noise. It is far too
@@ -479,10 +480,10 @@ The complete rider-facing surface, and what each one *feels* like when it goes u
 | ACCELERATION | attack (`iq_rise_fast_ms`) | *lowering* it makes the motor answer a change sooner; too low feels twitchy |
 | | release (`release_ms`) | *lowering* it makes the motor let go sooner; too low feels like a cut-out |
 | START | start (`smooth_start.duration_ms`) | the first torque of a ride is softer |
-| START | `minimum_pedal_load_centikg` | more force needed to start from a standstill |
-| | `riding_start_load_centikg` | more force needed to re-engage while rolling |
+| START | `minimum_pedal_load_ctrl` | more force needed to start from a standstill |
+| | `riding_start_load_ctrl` | more force needed to re-engage while rolling |
 | | `tuning_config_start_steps()` | more crank movement needed before assist may start |
-| BASE ASSIST | `full_scale_centikg` (global) | the same pedal force counts as **less** effort — everything gets gentler |
+| BASE ASSIST | `full_scale_ctrl` (global) | the same pedal force counts as **less** effort — everything gets gentler |
 | LIMITS | battery current, phase current %, speed limit | the corresponding ceiling |
 
 Attack, release and start are honoured for **fixed** profiles only. Choosing AUTO *is* choosing to

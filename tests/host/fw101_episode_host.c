@@ -89,7 +89,7 @@ int main(void)
 		g_test_tick = 0;
 		const uint16_t OLD_SEQ = 7;
 		ride_episode_input_t in = at(RIDING_IQ, OLD_SEQ);
-		in.arm_load_centikg = 999;   /* values from that OLD arming */
+		in.arm_load_ctrl = 999;   /* values from that OLD arming */
 		in.arm_fast_native = 888;
 		in.arm_iq_after_limits = 777;
 		run(&in, 10);
@@ -97,7 +97,7 @@ int main(void)
 		ride_episode_reverse_step(RIDING_IQ, OLD_SEQ, g_test_tick);
 		/* Drive is lost and never comes back within the timeout. */
 		ride_episode_input_t dead = at(0, OLD_SEQ);
-		dead.arm_load_centikg = 999;
+		dead.arm_load_ctrl = 999;
 		dead.arm_fast_native = 888;
 		dead.arm_iq_after_limits = 777;
 		run(&dead, RIDE_EPISODE_TIMEOUT_TICKS + 20U);
@@ -110,7 +110,7 @@ int main(void)
 		check(r.t_latch_ms == RIDE_EPISODE_TIME_NONE,
 			"1. ...so the latch time stays 'never', not ~0 ms");
 		/* DEFECT 3, same episode: no arming here, so no arming values may be published. */
-		check(r.arm_load_centikg == 0 && r.arm_fast_native == 0 &&
+		check(r.arm_load_ctrl == 0 && r.arm_fast_native == 0 &&
 			r.arm_iq_after_limits == 0,
 			"3. an episode without an arming publishes no arming values");
 	}
@@ -127,7 +127,7 @@ int main(void)
 		run(&lost, 40);                       /* 10 ms with no drive */
 
 		ride_episode_input_t armed = at(0, 4); /* seq changed => a new arming */
-		armed.arm_load_centikg = 85;
+		armed.arm_load_ctrl = 85;
 		armed.arm_fast_native = 210;
 		armed.arm_run_seed_native = 210;
 		armed.arm_iq_after_limits = 30;
@@ -137,7 +137,7 @@ int main(void)
 		/* Pipeline comes back to full, then the ramp follows. */
 		ride_episode_input_t ready = at(0, 4);
 		ready.iq_pre_ramp = RIDING_IQ;
-		ready.arm_load_centikg = 85;
+		ready.arm_load_ctrl = 85;
 		ready.arm_fast_native = 210;
 		ready.arm_run_seed_native = 210;
 		ready.arm_iq_after_limits = 30;
@@ -151,7 +151,7 @@ int main(void)
 		check(r.number == 1, "arming: the episode completes");
 		check((r.flags & RIDE_EP_FLAG_LATCH_ARMED) != 0, "arming: the latch is recorded");
 		check(r.t_latch_ms == 10, "arming: the latch time is measured from the reverse step");
-		check(r.arm_load_centikg == 85 && r.arm_fast_native == 210 &&
+		check(r.arm_load_ctrl == 85 && r.arm_fast_native == 210 &&
 			r.arm_run_seed_native == 210 && r.arm_iq_after_limits == 30,
 			"arming: the published values are the ones from THIS arming");
 		check(r.t_target_ready_ms == 10,
@@ -179,13 +179,13 @@ int main(void)
 		ride_episode_input_t a_lost = at(0, 1);
 		run(&a_lost, 20);
 		ride_episode_input_t a_arm = at(0, 2);      /* seq 1 -> 2: armed */
-		a_arm.arm_load_centikg = 4242;
+		a_arm.arm_load_ctrl = 4242;
 		a_arm.arm_fast_native = 3131;
 		a_arm.arm_run_seed_native = 2020;
 		a_arm.arm_iq_after_limits = 909;
 		run(&a_arm, 5);
 		ride_episode_input_t a_back = at(RIDING_IQ, 2);
-		a_back.arm_load_centikg = 4242;
+		a_back.arm_load_ctrl = 4242;
 		a_back.arm_fast_native = 3131;
 		a_back.arm_run_seed_native = 2020;
 		a_back.arm_iq_after_limits = 909;
@@ -193,7 +193,7 @@ int main(void)
 
 		ride_episode_result_t ra;
 		ride_episode_get_result(&ra);
-		check(ra.number == 1 && ra.arm_load_centikg == 4242,
+		check(ra.number == 1 && ra.arm_load_ctrl == 4242,
 			"3. precondition: episode A published its own arming values");
 
 		/*
@@ -203,7 +203,7 @@ int main(void)
 		 * keep the values out of the record.
 		 */
 		ride_episode_input_t b = at(RIDING_IQ, 2);
-		b.arm_load_centikg = 4242;
+		b.arm_load_ctrl = 4242;
 		b.arm_fast_native = 3131;
 		b.arm_run_seed_native = 2020;
 		b.arm_iq_after_limits = 909;
@@ -218,7 +218,7 @@ int main(void)
 		ride_episode_get_result(&rb);
 		check(rb.number == 2, "3. episode B completes");
 		check(!(rb.flags & RIDE_EP_FLAG_LATCH_ARMED), "3. episode B had no arming");
-		check(rb.arm_load_centikg == 0 && rb.arm_fast_native == 0 &&
+		check(rb.arm_load_ctrl == 0 && rb.arm_fast_native == 0 &&
 			rb.arm_run_seed_native == 0 && rb.arm_iq_after_limits == 0,
 			"3. episode B publishes zeros, NOT episode A's values");
 	}
@@ -382,8 +382,8 @@ int main(void)
 		/* 1 ms of drive lost, gates both unmet: neither milestone may fire yet. */
 		ride_episode_input_t cut = at(0, 1);
 		cut.required_steps = 3;
-		cut.load_threshold_centikg = 200;
-		cut.load_centikg = 50;
+		cut.load_threshold_ctrl = 200;
+		cut.load_ctrl = 50;
 		run(&cut, 4);                              /* ticks=4 -> 1 ms; enters WAIT_RECOVER */
 
 		check(ride_episode_get_state() == RIDE_EP_WAIT_RECOVER,
@@ -393,8 +393,8 @@ int main(void)
 		ride_episode_forward_step(g_test_tick);
 		ride_episode_input_t rebuild = at(0, 1);
 		rebuild.required_steps = 3;
-		rebuild.load_threshold_centikg = 200;
-		rebuild.load_centikg = 120;                /* peak so far, still under threshold */
+		rebuild.load_threshold_ctrl = 200;
+		rebuild.load_ctrl = 120;                /* peak so far, still under threshold */
 		run(&rebuild, 7);                          /* ticks=11 */
 
 		ride_episode_result_t mid;
@@ -404,16 +404,16 @@ int main(void)
 		/* Steps catch up first: this is tick 12, the first of this block -> exactly 3 ms. */
 		ride_episode_input_t steps_ok = at(0, 1);
 		steps_ok.required_steps = 3;
-		steps_ok.load_threshold_centikg = 200;
-		steps_ok.load_centikg = 150;
+		steps_ok.load_threshold_ctrl = 200;
+		steps_ok.load_ctrl = 150;
 		steps_ok.fwd_run = 3;
 		run(&steps_ok, 4);                          /* ticks=15 */
 
 		/* Load catches up afterwards: tick 16, the first of this block -> exactly 4 ms. */
 		ride_episode_input_t load_ok = at(0, 1);
 		load_ok.required_steps = 3;
-		load_ok.load_threshold_centikg = 200;
-		load_ok.load_centikg = 200;
+		load_ok.load_threshold_ctrl = 200;
+		load_ok.load_ctrl = 200;
 		load_ok.fwd_run = 3;
 		run(&load_ok, 4);                           /* ticks=19 */
 
@@ -421,7 +421,7 @@ int main(void)
 		 * tick including the recovery one — never blanked out just because current came back. */
 		ride_episode_input_t back = at(RIDING_IQ, 1);
 		back.required_steps = 3;
-		back.load_threshold_centikg = 200;
+		back.load_threshold_ctrl = 200;
 		run(&back, 1);                               /* ticks=20 -> recovers */
 
 		ride_episode_result_t r;
@@ -433,9 +433,9 @@ int main(void)
 		check(r.t_load_ready_ms == 4, "FW-102 gates: load-ready fires independently, later");
 		check(r.t_steps_ready_ms < r.t_load_ready_ms,
 			"FW-102 gates: this episode's wait was spent on the LOAD gate, not the step gate");
-		check(r.required_steps == 3 && r.load_threshold_centikg == 200,
+		check(r.required_steps == 3 && r.load_threshold_ctrl == 200,
 			"FW-102 gates: the thresholds actually in force are published, not a constant");
-		check(r.load_peak_centikg == 200,
+		check(r.load_peak_ctrl == 200,
 			"FW-102 gates: peak load tracks the highest value seen, not just the last");
 		check((r.flags & RIDE_EP_FLAG_FWD_SEEN) != 0,
 			"FW-102 gates: a forward step during the wait is flagged");

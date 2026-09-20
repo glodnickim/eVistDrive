@@ -15,6 +15,8 @@ typedef struct {
 	uint16_t torque_filtered;
 	uint16_t torque_assist_filtered;   /* fast 35 ms: start, safety, start-gate */
 	uint16_t torque_run_filtered;      /* FW-033: slow RUN estimator: power/eMTB/torque, boost */
+	/* FW-151: control domain for decisions, kg for humans. See inc/torque_input.h. */
+	uint16_t torque_load_ctrl;
 	uint16_t torque_load_centikg;
 	/*
 	 * FW-107: the CURRENT sample, after the existing assist deadband

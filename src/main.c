@@ -2739,7 +2739,7 @@ void reg_ADC_processing(void)
 					.reverse = (st<0),
 					.gap_ticks = pt_gap_ticks,
 					.disc_pos = pas_fwd_accum,
-					.load_centikg = torque_input_load_centikg(),
+					.load_ctrl = torque_input_load_ctrl(),
 					.torque_raw_mv = torque_raw_mv,
 					.torque_fast = torque_input_get_snapshot()->assist_delta_filtered_native,
 					.iq_setpoint = (uint16_t)pt_iq,
@@ -3047,6 +3047,7 @@ void reg_ADC_processing(void)
 			.torque_filtered = MS.torque_filtered,
 			.torque_assist_filtered = torque_snapshot->assist_delta_filtered_native,
 			.torque_run_filtered = torque_snapshot->assist_delta_run_native, //FW-033
+			.torque_load_ctrl = torque_input_load_ctrl(),
 			.torque_load_centikg = torque_input_load_centikg(),
 			.torque_assist_now_native = torque_snapshot->assist_delta_native, //FW-107
 			/* FW-140: assist consumes the conditioned cadence. MS.cadence remains raw. */
@@ -3473,15 +3474,15 @@ void reg_ADC_processing(void)
                 .hard_cut = ep_tlm->block_positive,
                 .limiter_zeroed = ep_tlm->limiter_zeroed,
                 .pas_timeout = pas_real_stop != 0,   //the same verdict the lifecycle terminal uses: pas_liveness (any-edge), not the forward-only cadence gap
-                .arm_load_centikg = ep_tlm->torque_load_centikg,
+                .arm_load_ctrl = ep_tlm->torque_load_ctrl,
                 .arm_fast_native = (uint16_t)ep_tlm->rider_demand_permille,
                 .arm_run_seed_native = (uint16_t)ep_tlm->assist_base_permille,
                 .arm_iq_after_limits = ep_tlm->final_iq_request,
                 .arm_fast_rearm = false,
                 .fwd_run = pas_direction_fwd_run(),
                 .required_steps = ep_tlm->required_steps,
-                .load_centikg = torque_input_load_centikg(),
-                .load_threshold_centikg = ep_tlm->engage_threshold_centikg,
+                .load_ctrl = torque_input_load_ctrl(),
+                .load_threshold_ctrl = ep_tlm->engage_threshold_ctrl,
                 .rolling = ep_tlm->bike_rolling
             };
             ride_episode_tick(&ep_in, control_now);
@@ -5033,8 +5034,8 @@ static bool diag_ep_frame(uint8_t session_id, uint16_t frag, uint32_t *efid, uin
 		if(iq<0) iq=0;
 		if(iq>65535) iq=65535;
 		*efid = 0x00010211U;
-		data[0] = (ep.arm_load_centikg>>8)&0xFF;
-		data[1] = (ep.arm_load_centikg)&0xFF;
+		data[0] = (ep.arm_load_ctrl>>8)&0xFF;
+		data[1] = (ep.arm_load_ctrl)&0xFF;
 		data[2] = (ep.arm_fast_native>>8)&0xFF;
 		data[3] = (ep.arm_fast_native)&0xFF;
 		data[4] = (ep.arm_run_seed_native>>8)&0xFF;
@@ -5090,10 +5091,10 @@ static bool diag_ep_frame(uint8_t session_id, uint16_t frag, uint32_t *efid, uin
 		*efid = 0x00010214U;
 		data[0] = ep.required_steps;
 		data[1] = 0;
-		data[2] = (ep.load_threshold_centikg>>8)&0xFF;
-		data[3] = (ep.load_threshold_centikg)&0xFF;
-		data[4] = (ep.load_peak_centikg>>8)&0xFF;
-		data[5] = (ep.load_peak_centikg)&0xFF;
+		data[2] = (ep.load_threshold_ctrl>>8)&0xFF;
+		data[3] = (ep.load_threshold_ctrl)&0xFF;
+		data[4] = (ep.load_peak_ctrl>>8)&0xFF;
+		data[5] = (ep.load_peak_ctrl)&0xFF;
 		data[6] = 0;
 		data[7] = 0;
 		return true;
@@ -5163,8 +5164,8 @@ static bool diag_trace_frame(uint8_t session_id, uint16_t frag, uint32_t *efid, 
 		data[7] = cap;
 	}else{
 		*efid = 0x00010217U;
-		data[0] = (s.load_centikg>>8)&0xFF;
-		data[1] = (s.load_centikg)&0xFF;
+		data[0] = (s.load_ctrl>>8)&0xFF;
+		data[1] = (s.load_ctrl)&0xFF;
 		data[2] = (s.torque_raw_mv>>8)&0xFF;
 		data[3] = (s.torque_raw_mv)&0xFF;
 		data[4] = (uint8_t)(idx & 0xFFU);

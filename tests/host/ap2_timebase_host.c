@@ -137,7 +137,7 @@ static void test_lpf_jitter(void)
 
 /* ------------------------------------------------------------------ the demand model ------ */
 
-static int32_t demand_over(uint32_t total_ticks, uint32_t chunk, uint16_t load_centikg,
+static int32_t demand_over(uint32_t total_ticks, uint32_t chunk, uint16_t load_ctrl,
 	int32_t *base_out)
 {
 	ap2_demand_input_t in;
@@ -147,11 +147,11 @@ static int32_t demand_over(uint32_t total_ticks, uint32_t chunk, uint16_t load_c
 	ap2_rider_demand_reset();
 	memset(&in, 0, sizeof(in));
 	memset(&out, 0, sizeof(out));
-	in.load_centikg = load_centikg;
+	in.load_ctrl = load_ctrl;
 	in.torque_valid = true;
 	in.pedaling = true;
 	in.cadence_rpm = 70U;
-	in.full_scale_centikg = 6000U;
+	in.full_scale_ctrl = 6000U;
 	in.base_hold_ms = 350U;
 
 	for (t = 0; t < total_ticks; t += chunk) {

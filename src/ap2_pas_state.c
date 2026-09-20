@@ -89,8 +89,8 @@ void ap2_pas_state_update(const ap2_pas_input_t *in, ap2_pas_output_t *out)
 	} else {
 		forward_ok = in->forward_valid;
 		steps_met = in->forward_steps >= in->required_steps;
-		load_met = (in->engage_load_centikg == 0U) ||
-			(in->load_centikg >= in->engage_load_centikg);
+		load_met = (in->engage_load_ctrl == 0U) ||
+			(in->load_ctrl >= in->engage_load_ctrl);
 
 		switch (ctx.state) {
 		case AP2_PAS_REVERSE:
