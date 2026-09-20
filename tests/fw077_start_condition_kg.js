@@ -22,25 +22,29 @@ const constant = (source, name) => {
     return Number(match[1]);
 };
 
-const lowNative = constant(torqueH, 'TORQUE_DEFAULT_LOW_NATIVE');
-const lowCentikg = constant(torqueH, 'TORQUE_DEFAULT_LOW_CENTIKG');
-const highNative = constant(torqueH, 'TORQUE_DEFAULT_HIGH_NATIVE');
-const highCentikg = constant(torqueH, 'TORQUE_DEFAULT_HIGH_CENTIKG');
+// FW-150: the default characteristic is a three-point table, not two points.
+const curve = [
+    [constant(torqueH, 'TORQUE_CURVE_P1_NATIVE'), constant(torqueH, 'TORQUE_CURVE_P1_CENTIKG')],
+    [constant(torqueH, 'TORQUE_CURVE_P2_NATIVE'), constant(torqueH, 'TORQUE_CURVE_P2_CENTIKG')],
+    [constant(torqueH, 'TORQUE_CURVE_P3_NATIVE'), constant(torqueH, 'TORQUE_CURVE_P3_CENTIKG')],
+];
 const maxCentikg = constant(torqueH, 'TORQUE_INPUT_MAX_CENTIKG');
 const wireStep = constant(assistH, 'ASSIST_START_LOAD_WIRE_STEP_CENTIKG');
 
 // Faithful port of the default native-delta -> centikg conversion used during
-// v1..v6 migration. User calibration is linear, so the migration invariant is
-// the same: convert once, then compare in the calibrated load domain.
+// v1..v6 migration. User calibration is a gain on this curve, so the migration
+// invariant is the same: convert once, then compare in the calibrated domain.
 function nativeToCentikg(delta) {
+    const lerp = (x, x0, x1, y0, y1) =>
+        y0 + Math.floor(((x - x0) * (y1 - y0) + (x1 - x0) / 2) / (x1 - x0));
     let load;
-    if (delta <= lowNative) {
-        load = Math.floor((delta * lowCentikg + lowNative / 2) / lowNative);
+    if (delta <= curve[0][0]) {
+        load = lerp(delta, 0, curve[0][0], 0, curve[0][1]);
     } else {
-        load = lowCentikg + Math.floor(
-            ((delta - lowNative) * (highCentikg - lowCentikg) +
-                (highNative - lowNative) / 2) /
-            (highNative - lowNative));
+        // The last segment also carries the extrapolation above the table.
+        let i = curve.length - 1;
+        while (i > 1 && delta <= curve[i - 1][0]) { i--; }
+        load = lerp(delta, curve[i - 1][0], curve[i][0], curve[i - 1][1], curve[i][1]);
     }
     return Math.min(load, maxCentikg);
 }
@@ -68,17 +72,22 @@ for (const newName of ['minimum_pedal_load_centikg', 'riding_start_load_centikg'
         `${newName} must be present in config and serialization`);
 }
 
-// Historical default: 18 mV is 0.74 kg on the measured curve. The public
-// setting must be rounded once to one decimal place during migration.
-check(roundToDecikg(nativeToCentikg(18)) === 70,
-    `legacy 18 mV must migrate to 0.7 kg, got ${(roundToDecikg(nativeToCentikg(18)) / 100).toFixed(1)} kg`);
+// Historical default: 18 mV. It read as 0.74 kg on the OLD two-point curve, and the
+// expectation here was 0.7 kg. FW-150 replaced that curve with the 2026-09-17
+// reference-weight measurement, on which 18 mV above zero is 2.7 kg of real force -
+// so a v6 bank migrates to a HARDER start threshold than its label ever implied.
+// The number below tracks the curve because the curve is a measurement; whether the
+// migration should instead land on the configured 0.7 kg default is a product
+// decision, and changing it belongs in assist_modes.c, not here.
+check(roundToDecikg(nativeToCentikg(18)) === 270,
+    `legacy 18 mV must migrate to 2.7 kg, got ${(roundToDecikg(nativeToCentikg(18)) / 100).toFixed(1)} kg`);
 
 // v6 rolling threshold was (minimum - reduction). Verify the v7 direct value.
 const legacyMinimumMv = 18;
 const legacyReductionMv = 10;
 const rollingMv = Math.max(0, legacyMinimumMv - legacyReductionMv);
-check(roundToDecikg(nativeToCentikg(rollingMv)) === 30,
-    `18-10 mV must migrate to direct rolling threshold 0.3 kg, got ${roundToDecikg(nativeToCentikg(rollingMv)) / 100}`);
+check(roundToDecikg(nativeToCentikg(rollingMv)) === 120,
+    `18-10 mV must migrate to direct rolling threshold 1.2 kg, got ${roundToDecikg(nativeToCentikg(rollingMv)) / 100}`);
 // Both public fields round to 0.1 kg. The maximum error is 0.05 kg.
 for (let centikg = 0; centikg <= 2250; centikg++) {
     const wire = Math.floor((centikg + wireStep / 2) / wireStep);

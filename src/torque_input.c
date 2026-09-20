@@ -98,18 +98,52 @@ static bool span_in_range(uint16_t value)
 		value <= TORQUE_SPAN_MAX_NATIVE;
 }
 
+/*
+ * FW-150: the default characteristic as a point table. The origin (0,0) is implicit,
+ * so index 0 holds the FIRST measured point. Both columns are strictly increasing,
+ * which is what makes both directions a plain segment walk with no special cases.
+ */
+typedef struct {
+	uint16_t native;
+	uint16_t centikg;
+} torque_curve_point_t;
+
+static const torque_curve_point_t default_curve[TORQUE_CURVE_POINT_COUNT] = {
+	{ TORQUE_CURVE_P1_NATIVE, TORQUE_CURVE_P1_CENTIKG },
+	{ TORQUE_CURVE_P2_NATIVE, TORQUE_CURVE_P2_CENTIKG },
+	{ TORQUE_CURVE_P3_NATIVE, TORQUE_CURVE_P3_CENTIKG }
+};
+
+/* Linear interpolation of x from [x0,x1] onto [y0,y1], rounded, integer only. */
+static uint32_t interpolate(uint32_t x, uint32_t x0, uint32_t x1,
+	uint32_t y0, uint32_t y1)
+{
+	uint32_t run = x1 - x0;
+
+	if (run == 0U) {
+		return y0;
+	}
+	return y0 + ((x - x0) * (y1 - y0) + run / 2U) / run;
+}
+
 static uint16_t default_native_delta_to_centikg(uint16_t delta_native)
 {
 	uint32_t load;
-	if (delta_native <= TORQUE_DEFAULT_LOW_NATIVE) {
-		load = ((uint32_t)delta_native * TORQUE_DEFAULT_LOW_CENTIKG +
-			TORQUE_DEFAULT_LOW_NATIVE / 2U) / TORQUE_DEFAULT_LOW_NATIVE;
+	uint8_t i;
+
+	/* Below the first measured point: straight line from the implicit origin. */
+	if (delta_native <= default_curve[0].native) {
+		load = interpolate(delta_native, 0U, default_curve[0].native,
+			0U, default_curve[0].centikg);
 	} else {
-		load = TORQUE_DEFAULT_LOW_CENTIKG +
-			((uint32_t)(delta_native - TORQUE_DEFAULT_LOW_NATIVE) *
-			(TORQUE_DEFAULT_HIGH_CENTIKG - TORQUE_DEFAULT_LOW_CENTIKG) +
-			(TORQUE_DEFAULT_HIGH_NATIVE - TORQUE_DEFAULT_LOW_NATIVE) / 2U) /
-			(TORQUE_DEFAULT_HIGH_NATIVE - TORQUE_DEFAULT_LOW_NATIVE);
+		/* Last segment doubles as the extrapolation slope above the table. */
+		i = TORQUE_CURVE_POINT_COUNT - 1U;
+		while (i > 1U && delta_native <= default_curve[i - 1U].native) {
+			i--;
+		}
+		load = interpolate(delta_native,
+			default_curve[i - 1U].native, default_curve[i].native,
+			default_curve[i - 1U].centikg, default_curve[i].centikg);
 	}
 	return (load > TORQUE_INPUT_MAX_CENTIKG) ?
 		TORQUE_INPUT_MAX_CENTIKG : (uint16_t)load;
@@ -118,15 +152,19 @@ static uint16_t default_native_delta_to_centikg(uint16_t delta_native)
 static uint16_t default_centikg_to_native_delta(uint16_t centikg)
 {
 	uint32_t delta;
-	if (centikg <= TORQUE_DEFAULT_LOW_CENTIKG) {
-		delta = ((uint32_t)centikg * TORQUE_DEFAULT_LOW_NATIVE +
-			TORQUE_DEFAULT_LOW_CENTIKG / 2U) / TORQUE_DEFAULT_LOW_CENTIKG;
+	uint8_t i;
+
+	if (centikg <= default_curve[0].centikg) {
+		delta = interpolate(centikg, 0U, default_curve[0].centikg,
+			0U, default_curve[0].native);
 	} else {
-		delta = TORQUE_DEFAULT_LOW_NATIVE +
-			((uint32_t)(centikg - TORQUE_DEFAULT_LOW_CENTIKG) *
-			(TORQUE_DEFAULT_HIGH_NATIVE - TORQUE_DEFAULT_LOW_NATIVE) +
-			(TORQUE_DEFAULT_HIGH_CENTIKG - TORQUE_DEFAULT_LOW_CENTIKG) / 2U) /
-			(TORQUE_DEFAULT_HIGH_CENTIKG - TORQUE_DEFAULT_LOW_CENTIKG);
+		i = TORQUE_CURVE_POINT_COUNT - 1U;
+		while (i > 1U && centikg <= default_curve[i - 1U].centikg) {
+			i--;
+		}
+		delta = interpolate(centikg,
+			default_curve[i - 1U].centikg, default_curve[i].centikg,
+			default_curve[i - 1U].native, default_curve[i].native);
 	}
 	return (delta > TORQUE_SPAN_MAX_NATIVE) ?
 		TORQUE_SPAN_MAX_NATIVE : (uint16_t)delta;

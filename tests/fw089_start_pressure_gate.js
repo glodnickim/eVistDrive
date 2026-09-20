@@ -30,9 +30,12 @@ const num = (src, name) => {
     return m[1].split('+').reduce((a, b) => a + Number(b.trim()), 0);
 };
 const ZERO = num(tq, 'TORQUE_ZERO_TARGET_NATIVE');            // 740
-const LOW_NATIVE = num(tq, 'TORQUE_DEFAULT_LOW_NATIVE');      // 146
-const LOW_CENTIKG = num(tq, 'TORQUE_DEFAULT_LOW_CENTIKG');    // 600
-const SPAN = num(tq, 'TORQUE_DEFAULT_SPAN_NATIVE');           // 1139
+// FW-150: first segment of the three-point default curve (origin -> P1). Every load
+// this test exercises (0.3-0.7 kg) sits inside it, so the first segment is the whole
+// conversion here.
+const LOW_NATIVE = num(tq, 'TORQUE_CURVE_P1_NATIVE');         // 20
+const LOW_CENTIKG = num(tq, 'TORQUE_CURVE_P1_CENTIKG');       // 300
+const SPAN = num(tq, 'TORQUE_DEFAULT_SPAN_NATIVE');           // 3047
 const GATE_MIN = num(cfg, 'TQ_GATE_MIN');                     // 18
 // The removed gate was TQ_PRESSURE_FLOOR_START_MV = 750 + TQ_GATE_MIN. Note the 750 is its
 // own baseline, NOT the sensor zero (740) — the two differ, which is precisely why the

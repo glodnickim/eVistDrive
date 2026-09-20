@@ -23,11 +23,9 @@ EMTB_FIXED_Q_ONE = 1 << EMTB_FIXED_Q_SHIFT  # 256
 MOTOR_VOLTAGE_UTILIZATION_SCALE = 2048
 
 # === TORQUE INPUT CONSTANTS (torque_input.h) ===
-TORQUE_DEFAULT_LOW_NATIVE = 146
-TORQUE_DEFAULT_LOW_CENTIKG = 600
-TORQUE_DEFAULT_HIGH_NATIVE = 1580
-TORQUE_DEFAULT_HIGH_CENTIKG = 8400
-TORQUE_SPAN_MAX_NATIVE = 2600
+# FW-150: three-point default curve (origin implicit), measured 2026-09-17.
+TORQUE_CURVE = ((20, 300), (185, 950), (780, 2000))
+TORQUE_SPAN_MAX_NATIVE = 4200
 TORQUE_ASSIST_DEADBAND_NATIVE = 10
 TORQUE_PUBLIC_FULL_SCALE_CENTIKG = 6000
 TORQUE_INPUT_MAX_CENTIKG = 12000
@@ -58,17 +56,20 @@ LEVELS = {
 }
 
 
+def _lerp(x, x0, x1, y0, y1):
+    return y0 + ((x - x0) * (y1 - y0) + (x1 - x0) // 2) // (x1 - x0)
+
+
 def default_native_delta_to_centikg(delta_native):
-    """Replicate torque_input.c:94-109"""
-    if delta_native <= TORQUE_DEFAULT_LOW_NATIVE:
-        load = (delta_native * TORQUE_DEFAULT_LOW_CENTIKG +
-                TORQUE_DEFAULT_LOW_NATIVE // 2) // TORQUE_DEFAULT_LOW_NATIVE
+    """Replicate default_native_delta_to_centikg() in torque_input.c"""
+    if delta_native <= TORQUE_CURVE[0][0]:
+        load = _lerp(delta_native, 0, TORQUE_CURVE[0][0], 0, TORQUE_CURVE[0][1])
     else:
-        load = (TORQUE_DEFAULT_LOW_CENTIKG +
-                ((delta_native - TORQUE_DEFAULT_LOW_NATIVE) *
-                 (TORQUE_DEFAULT_HIGH_CENTIKG - TORQUE_DEFAULT_LOW_CENTIKG) +
-                 (TORQUE_DEFAULT_HIGH_NATIVE - TORQUE_DEFAULT_LOW_NATIVE) // 2) //
-                (TORQUE_DEFAULT_HIGH_NATIVE - TORQUE_DEFAULT_LOW_NATIVE))
+        i = len(TORQUE_CURVE) - 1
+        while i > 1 and delta_native <= TORQUE_CURVE[i - 1][0]:
+            i -= 1
+        load = _lerp(delta_native, TORQUE_CURVE[i - 1][0], TORQUE_CURVE[i][0],
+                     TORQUE_CURVE[i - 1][1], TORQUE_CURVE[i][1])
     return min(load, TORQUE_INPUT_MAX_CENTIKG)
 
 
@@ -79,15 +80,14 @@ def native_delta_to_centikg(delta_native):
 
 def centikg_to_native_delta(centikg):
     """Inverse: centikg -> native (for input mapping)"""
-    if centikg <= TORQUE_DEFAULT_LOW_CENTIKG:
-        delta = (centikg * TORQUE_DEFAULT_LOW_NATIVE +
-                 TORQUE_DEFAULT_LOW_CENTIKG // 2) // TORQUE_DEFAULT_LOW_CENTIKG
+    if centikg <= TORQUE_CURVE[0][1]:
+        delta = _lerp(centikg, 0, TORQUE_CURVE[0][1], 0, TORQUE_CURVE[0][0])
     else:
-        delta = (TORQUE_DEFAULT_LOW_NATIVE +
-                 ((centikg - TORQUE_DEFAULT_LOW_CENTIKG) *
-                  (TORQUE_DEFAULT_HIGH_NATIVE - TORQUE_DEFAULT_LOW_NATIVE) +
-                  (TORQUE_DEFAULT_HIGH_CENTIKG - TORQUE_DEFAULT_LOW_CENTIKG) // 2) //
-                 (TORQUE_DEFAULT_HIGH_CENTIKG - TORQUE_DEFAULT_LOW_CENTIKG))
+        i = len(TORQUE_CURVE) - 1
+        while i > 1 and centikg <= TORQUE_CURVE[i - 1][1]:
+            i -= 1
+        delta = _lerp(centikg, TORQUE_CURVE[i - 1][1], TORQUE_CURVE[i][1],
+                      TORQUE_CURVE[i - 1][0], TORQUE_CURVE[i][0])
     return min(delta, TORQUE_SPAN_MAX_NATIVE)
 
 

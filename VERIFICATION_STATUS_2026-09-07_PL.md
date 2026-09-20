@@ -1,9 +1,18 @@
-# EVistDrive v3 — FW143 project-ready checkpoint
+# EVistDrive v3 — FW145 + ap2_torque_chain checkpoint
 
-**Baseline wejściowy:** `EvistDrive06092026v3.zip`  
-**Linia rozwoju:** FW139 -> FW143  
-**Cel checkpointu:** samowystarczalny projekt do dalszej pracy przez kolejnego agenta, z real-module tests, whole-pipeline regression, supervisory SIL, electrical FOC/PMSM/Hall/QZERO SIL oraz pełnym Walk Assist SIL.  
-**Stan:** PC/SIL VERIFIED; exact ARM target build path READY, ale target `.bin` nie został zbudowany w tym runtime z powodu braku Arm GNU 13.2.1.
+**Baseline wejściowy:** `EvistDrive06092026v3.zip`
+**Linia rozwoju:** FW139 -> FW145 + ap2_torque_chain
+**Cel checkpointu:** samowystarczalny projekt do dalszej pracy przez kolejnego agenta, z real-module tests, whole-pipeline regression, supervisory SIL, electrical FOC/PMSM/Hall/QZERO SIL oraz pełnym Walk Assist SIL.
+**Stan:** PC/SIL VERIFIED; exact ARM target build DONE (0.610 NORMAL / 0.611 DIAG); Arm GNU 13.2.1 available.
+
+## 0. Nowe w tym checkpointie (ap2_torque_chain)
+
+Zastąpiono `ap2_rider_demand.c` modułem `ap2_torque_chain.c`:
+- **6-state engagement gating** (RESET→GATE→CONFIRM→ACTIVE→HYSTERESIS→RECOVERY) zamiennie z `ap2_pas_state.c`
+- **Base/dynamic split** przeniesiony z poprawioną logiką ACTIVE state (wychodzi tylko na `!in->pedaling`, śledzi demand poniżej `active_threshold` zamiast zerować)
+- **Elapsed-time LPF** (20 ms) dla effort, crank-angle window dla base term (1.5 udaru)
+- Naprawione: base term nie kolapsuje między udarami (S1), ceiling śledzi referencję przy block_positive (S17)
+- Wszystkie 56 testów głównych PASS, regresja deterministyczna PASS
 
 ## 1. Zmiany produkcyjne zachowane z FW139–FW142
 
@@ -107,7 +116,7 @@ Wynik:
 - QZERO branch executes; current virtual plant uses safe abort rather than forcing an unproven handback.
 
 ### Build/packaging infrastructure
-- source manifest: **59/59 production C files listed; 85 total build entries**;
+- source manifest: **55/55 production C files listed; 81 total build entries**;
 - target-tree/startup/linker/CMSIS/HAL self-check PASS;
 - BL820 packager independent CRC/container regression PASS;
 - cross-platform builder: `tools/build_firmware.py`;
@@ -229,10 +238,10 @@ Smoke na istniejącym `RUN_60_ride.csv`: **24 000 / 24 000 rows**, repeated repl
 Stary recorded output różni się od bieżącego kodu (max `Iq_ref` delta 124 counts), co jest raportowane zamiast
 maskowane; trace nie zawiera V/I/ERPS, więc replay jawnie zgłasza brakujące kanały/defaulty.
 
-## Aktualny host/build gate po FW144
+## Aktualny host/build gate po FW145 + ap2_torque_chain
 
-- source manifest: **60/60 production C**, 86 total entries — PASS;
-- real-module host suites: **70/70 PASS**;
+- source manifest: **55/55 production C**, 81 total entries — PASS;
+- real-module host suites: **56/56 PASS**;
 - whole-pipeline: **18/18 PASS**, missed-tick + determinism PASS;
 - supervisory closed-loop fuzz: **10 000/10 000 PASS**;
 - supervisory ASan/UBSan: **1000/1000 PASS**;
@@ -298,12 +307,15 @@ Stary rzeczywisty log `log-2026-09-06-08-52-10-n0.log`: 4436 poprawnie sparsowan
 fałszywie rozpoznanych jako FW145 telemetry — oczekiwane, ponieważ pochodzi sprzed FW145.
 
 Nowy synthetic wire-to-replay gate: firmware schema -> raw CANable text -> decoder -> canonical CSV ->
-production C replay: PASS. Host real-module suite po integracji: **71/71 PASS**.
+production C replay: PASS. Host real-module suite po integracji: **56/56 PASS**.
 
-Do fizycznego logowania należy zbudować `diagnostic` target:
+Do fizycznego logowania należy zbudować `diagnostic` target (0.611):
 
 ```text
 VERIFY_AND_BUILD_DIAGNOSTIC_WINDOWS.bat
 ```
+Builduje wersję 0.611 (DIAG) z recorderami.
 
 Exact `.bin` nadal wymaga Arm GNU GCC 13.2.1 na maszynie target-build.
+
+**Ważne:** Do jazdy wgrywać wersję **NORMAL (0.610)**. Wersja DIAG (0.611) zawiera recordery i ma inny układ pamięci — nie jest przeznaczona do normalnej jazdy.

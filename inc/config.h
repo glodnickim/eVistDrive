@@ -650,7 +650,11 @@
 #define TQ_RECAL_MIN_PERIOD_TICKS 240000U // ~60 s @4kHz minimum between applied corrections WHILE MOVING (standstill unrestricted)
 #define TQ_RECAL_MOVING_X100 100  // >= 1.0 km/h counts as moving (MS.Speedx100 scale) -> the lockout above applies
 #define TQ_RECAL_SETTLE_TICKS 2000// coast must last this long (~0.5 s) before its averaged rest is trusted
-#define TQ_RECAL_BAND_MV    30    // re-zero immediately if rest within 740±this (~1.1 kg @27mV/kg) - static pedal load must stay outside
+#define TQ_RECAL_BAND_MV    30    // re-zero immediately if rest within 740±this - static pedal load must stay outside.
+                                  // FW-150: on the MEASURED curve 30 mV is ~3.4 kg, not the ~1.1 kg this comment used to
+                                  // claim from the disproved 27 mV/kg figure. A static pedal load below ~3.4 kg can still
+                                  // be absorbed as "zero" - value left unchanged deliberately, but it is now known to be
+                                  // wider in real force than intended and is a candidate for its own measurement.
 #define TQ_RECAL_MAX_STEP   5     // max offset correction per coast (mV). FW-059: was 20, which alone exceeded the
                                   // 18 mV assist engage threshold - one bad coast could redefine how hard you must
                                   // press. Thermal drift is slow, so 5 mV/correction still tracks it.
@@ -658,7 +662,8 @@
                                   // noisier than this (rough road, chain slap, foot shifting) yields no calibration
 #define TQ_REACQUIRE_COASTS 3     // out-of-band rest must REPEAT consistently over this many coasts -> real drift -> re-acquire (anti-stuck)
 #define TQ_REACQUIRE_TOL_MV 30    // consecutive coasts must agree within this to count as "consistent" (not a random load)
-#define TQ_REACQUIRE_MAX_MV 40    // reacquire accepts only rest within this of the zero: drift (~1.5 kg) yes, a static 2+ kg load never
+#define TQ_REACQUIRE_MAX_MV 40    // reacquire accepts only rest within this of the zero. FW-150: on the measured curve
+                                  // that is ~6.0 kg, not the ~1.5 kg this comment used to claim - see TQ_RECAL_BAND_MV.
 #define TQ_REST_RAW_MIN     300   // absolute plausible UNLOADED raw baseline window (mV, pre-normalization): re-zero only within...
 #define TQ_REST_RAW_MAX     1500  // ...this window (anti-infinite-drift); outside => pedal pressed/sensor fault -> Error 25, no re-zero
 #define TQ_STUCK_CENTIKG    5600  // load held at/above ~56 kg counts toward stuck-high detection (domain: 0.01 kg, scale-independent)

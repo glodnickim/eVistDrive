@@ -45,8 +45,13 @@
  * no effort at all. It exists to keep sensor rest noise and the weight of a resting foot out
  * of the demand, and it is expressed in kgf rather than ADC counts so it means the same thing
  * after a sensor recalibration.
+ *
+ * FW-150: 0.15 -> 0.55 kg. Being in kgf makes this value survive a GAIN recalibration, but
+ * not a corrected CURVE: the old two-point characteristic was disproved by reference-weight
+ * measurement, and the 0.15 kg that used to mean 3.65 mV of sensor signal would now mean
+ * 1 mV - below the sensor's own rest noise. 0.55 kg is the same 3.65 mV on the measured curve.
  */
-#define AP2_EFFORT_DEADBAND_CENTIKG 15U
+#define AP2_EFFORT_DEADBAND_CENTIKG 55U
 
 /*
  * THE ONE FILTER ON THE MEASUREMENT PATH. Its job is sensor noise, nothing else - it is far

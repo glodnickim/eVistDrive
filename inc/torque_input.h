@@ -7,10 +7,40 @@
 /*
  * Single owner of the torque sensor chain: raw ADC millivolts -> automatic
  * zero -> corrected signal -> delta above zero -> public kilogram-force
- * scale in 0.01 kg units. Default characteristic measured with reference
- * weights on this bike (165 mm crank): zero 740 mV, 6 kg at 886 mV and
- * 84 kg at 2320 mV. The default conversion is piecewise-linear through
- * those measured points, so the firmware is usable without load calibration.
+ * scale in 0.01 kg units. The default conversion is piecewise-linear through
+ * measured points, so the firmware is usable without load calibration.
+ *
+ * FW-150: the default characteristic is the 2026-09-17 reference-weight
+ * measurement on this bike (165 mm crank), zero 740 mV:
+ *
+ *     3.00 kg @  760 mV   (delta   20)
+ *     9.50 kg @  925 mV   (delta  185)
+ *    20.00 kg @ 1520 mV   (delta  780)
+ *
+ * It REPLACES the previous two-point curve (6 kg @ 886 mV, 84 kg @ 2320 mV),
+ * which the same measurement disproved: that curve predicted 25-53 mV MORE
+ * than the sensor actually produces below 10 kg, and 377 mV LESS at 20 kg.
+ *
+ * Three consequences are deliberate, documented here so they are not "fixed"
+ * back by someone reading only one of them:
+ *
+ *  1. The real sensor is strongly PROGRESSIVE - 6.7 mV/kg over the first
+ *     3 kg, 25.4 mV/kg to 9.5 kg, 56.7 mV/kg above that. The old curve
+ *     assumed the opposite (sensitivity FALLING with load). TORQUE_ASSIST_-
+ *     DEADBAND_NATIVE (10 mV) therefore costs ~1.5 kg of real force on its
+ *     own; that is a demand-side tuning decision, not a curve error.
+ *  2. Reported load RISES for the same real force (5 kg real used to read
+ *     3.8 kg). Assist per unit of pedal force goes UP with this curve.
+ *     Compensate through assist level / max_iq_pct - never by re-flattening
+ *     this curve, which is a measurement, not a tuning knob.
+ *  3. Above the last measured point the curve EXTRAPOLATES on the 9.5->20 kg
+ *     slope. TORQUE_PUBLIC_FULL_SCALE_CENTIKG (60.00 kg) then sits at delta
+ *     ~3047, above the ADC's physical ceiling (~2560 = 3300 mV - zero), so
+ *     60 kg is not reachable on this sensor; usable range ends near 51 kg.
+ *     TORQUE_SPAN_MAX_NATIVE is raised accordingly so the DEFAULT span stays
+ *     representable. No data exists above 20 kg - the extrapolation is the
+ *     weakest part of this curve and the first thing to re-measure if a
+ *     reference weight above 20 kg becomes available.
  * FW-129: a user load calibration corrects the sensor GAIN only - the measured delta is
  * referred back to the default sensor and then read on the SAME piecewise characteristic,
  * so calibrating moves where the curve sits without changing its shape. span_native keeps
@@ -22,14 +52,31 @@
  */
 
 #define TORQUE_ZERO_TARGET_NATIVE        740U
-#define TORQUE_DEFAULT_LOW_NATIVE        146U
-#define TORQUE_DEFAULT_LOW_CENTIKG       600U
-#define TORQUE_DEFAULT_HIGH_NATIVE       1580U
-#define TORQUE_DEFAULT_HIGH_CENTIKG      8400U
-/* Interpolated native delta corresponding to 60.00 kg on the default curve. */
-#define TORQUE_DEFAULT_SPAN_NATIVE       1139U
+/*
+ * FW-150: the default characteristic as a point table. Points are (native delta
+ * above zero, centikg), strictly increasing in both columns; the origin (0,0) is
+ * implicit and is NOT in the table. Between points the curve is linear; above the
+ * last point it extrapolates on the last segment's slope (see the file header).
+ */
+#define TORQUE_CURVE_POINT_COUNT         3U
+#define TORQUE_CURVE_P1_NATIVE           20U    /*  3.00 kg @  760 mV */
+#define TORQUE_CURVE_P1_CENTIKG          300U
+#define TORQUE_CURVE_P2_NATIVE           185U   /*  9.50 kg @  925 mV */
+#define TORQUE_CURVE_P2_CENTIKG          950U
+#define TORQUE_CURVE_P3_NATIVE           780U   /* 20.00 kg @ 1520 mV */
+#define TORQUE_CURVE_P3_CENTIKG          2000U
+/*
+ * Extrapolated native delta corresponding to 60.00 kg on the default curve:
+ * 780 + (6000 - 2000) * (780 - 185) / (2000 - 950) = 3047. Above the ADC ceiling
+ * by design - 60 kg is a SCALE reference here, not a reachable reading.
+ */
+#define TORQUE_DEFAULT_SPAN_NATIVE       3047U
 #define TORQUE_SPAN_MIN_NATIVE           800U
-#define TORQUE_SPAN_MAX_NATIVE           2600U
+/*
+ * FW-150: raised from 2600 so the DEFAULT span above is inside the accepted range
+ * (a user calibration that matches the factory sensor must be representable).
+ */
+#define TORQUE_SPAN_MAX_NATIVE           4200U
 #define TORQUE_PUBLIC_FULL_SCALE_CENTIKG 6000U
 #define TORQUE_INPUT_MAX_CENTIKG         12000U
 #define TORQUE_ASSIST_DEADBAND_NATIVE    10U

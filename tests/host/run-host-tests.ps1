@@ -405,17 +405,17 @@ $suites = @(
        # continuously, and every limiter both binds and releases. No exact Iq value is pinned -
        # those are ride-feel settings meant to be tuned on the bike.
        Harness = Join-Path $PSScriptRoot 'ap2_pipeline_scenarios_host.c'
-       Modules = @((Join-Path $root 'src\ap2_pas_state.c'),
-                   (Join-Path $root 'src\ap2_rider_demand.c'),
-                   (Join-Path $root 'src\ap2_estimators.c'),
-                   (Join-Path $root 'src\ap2_profiles.c'),
-                   (Join-Path $root 'src\ap2_limits.c'),
-                   (Join-Path $root 'src\assist_pipeline.c'),
-                   (Join-Path $root 'src\assist_modes.c'),
-                   (Join-Path $root 'src\torque_input.c'),
-                   (Join-Path $root 'src\tuning_config.c'),
-                   (Join-Path $root 'src\battery_iq_cap.c'),
-                   (Join-Path $root 'src\fast_iq_slew.c'))
+Modules = @((Join-Path $root 'src\ap2_pas_state.c'),
+                    (Join-Path $root 'src\ap2_torque_chain.c'),
+                    (Join-Path $root 'src\ap2_estimators.c'),
+                    (Join-Path $root 'src\ap2_profiles.c'),
+                    (Join-Path $root 'src\ap2_limits.c'),
+                    (Join-Path $root 'src\assist_pipeline.c'),
+                    (Join-Path $root 'src\assist_modes.c'),
+                    (Join-Path $root 'src\torque_input.c'),
+                    (Join-Path $root 'src\tuning_config.c'),
+                    (Join-Path $root 'src\battery_iq_cap.c'),
+                    (Join-Path $root 'src\fast_iq_slew.c'))
        IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common'))
        Defines = @('-Wno-type-limits') },
     @{ Name = 'stored assist bank contract (round trip, restart, and the meaning of zero)'

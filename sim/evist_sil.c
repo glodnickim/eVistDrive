@@ -307,17 +307,24 @@ typedef struct {
 /* Raw forward ring for PAS_DIR_SIGN=-1: 00 -> 10 -> 11 -> 01 -> 00. */
 static const uint8_t FWD_AB[4] = {0U, 2U, 3U, 1U};
 
+/* FW-150: mirrors default_centikg_to_native_delta() over the three-point curve. */
 static uint16_t sensor_native_from_ckg(double ckg)
 {
     double d;
     if (ckg < 0.0) ckg = 0.0;
-    if (ckg <= TORQUE_DEFAULT_LOW_CENTIKG) {
-        d = ckg * (double)TORQUE_DEFAULT_LOW_NATIVE / TORQUE_DEFAULT_LOW_CENTIKG;
+    if (ckg <= TORQUE_CURVE_P1_CENTIKG) {
+        d = ckg * (double)TORQUE_CURVE_P1_NATIVE / TORQUE_CURVE_P1_CENTIKG;
+    } else if (ckg <= TORQUE_CURVE_P2_CENTIKG) {
+        d = TORQUE_CURVE_P1_NATIVE +
+            (ckg - TORQUE_CURVE_P1_CENTIKG) *
+            (double)(TORQUE_CURVE_P2_NATIVE - TORQUE_CURVE_P1_NATIVE) /
+            (double)(TORQUE_CURVE_P2_CENTIKG - TORQUE_CURVE_P1_CENTIKG);
     } else {
-        d = TORQUE_DEFAULT_LOW_NATIVE +
-            (ckg - TORQUE_DEFAULT_LOW_CENTIKG) *
-            (double)(TORQUE_DEFAULT_HIGH_NATIVE - TORQUE_DEFAULT_LOW_NATIVE) /
-            (double)(TORQUE_DEFAULT_HIGH_CENTIKG - TORQUE_DEFAULT_LOW_CENTIKG);
+        /* Last segment also extrapolates above the last measured point. */
+        d = TORQUE_CURVE_P2_NATIVE +
+            (ckg - TORQUE_CURVE_P2_CENTIKG) *
+            (double)(TORQUE_CURVE_P3_NATIVE - TORQUE_CURVE_P2_NATIVE) /
+            (double)(TORQUE_CURVE_P3_CENTIKG - TORQUE_CURVE_P2_CENTIKG);
     }
     if (d > TORQUE_SPAN_MAX_NATIVE) d = TORQUE_SPAN_MAX_NATIVE;
     return (uint16_t)llround((double)TORQUE_ZERO_TARGET_NATIVE + d);
