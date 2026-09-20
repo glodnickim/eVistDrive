@@ -304,6 +304,11 @@ $suites = @(
         Modules = @(Join-Path $root 'src\torque_input.c')
         IncludeDirs = @(Join-Path $PSScriptRoot 'common')
         Defines = @('-Wno-type-limits') },
+    @{ Name = 'FW-151 calibration gain reference decoupled from the physical kg curve (Mutation E)'
+        Harness = Join-Path $PSScriptRoot 'torque\torque_gain_decoupling_host.c'
+        Modules = @(Join-Path $root 'src\torque_input.c')
+        IncludeDirs = @(Join-Path $PSScriptRoot 'common')
+        Defines = @('-Wno-type-limits', '-DTORQUE_DEFAULT_SPAN_NATIVE=3600U') },
     @{ Name = 'FW-151 torque domain contract (control domain frozen, kg table is display only)'
         Harness = Join-Path $PSScriptRoot 'torque\torque_control_domain_host.c'
         Modules = @((Join-Path $root 'src\torque_input.c'),

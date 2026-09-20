@@ -101,7 +101,14 @@
  * 780 + (6000 - 2000) * (780 - 185) / (2000 - 950) = 3047. Above the ADC ceiling
  * by design - 60 kg is a SCALE reference here, not a reachable reading.
  */
+#ifndef TORQUE_DEFAULT_SPAN_NATIVE
 #define TORQUE_DEFAULT_SPAN_NATIVE       3047U
+#endif
+/*
+ * The #ifndef above exists ONLY so a host test can override this value at compile time to
+ * simulate a future TORQUE_CURVE_P* re-measurement, and prove the calibration gain reference
+ * below does not move when it does. Production builds never pass -DTORQUE_DEFAULT_SPAN_NATIVE.
+ */
 /*
  * FW-151: THE GAIN REFERENCE, frozen.
  *

@@ -663,16 +663,20 @@
 #define TQ_REACQUIRE_COASTS 3     // out-of-band rest must REPEAT consistently over this many coasts -> real drift -> re-acquire (anti-stuck)
 #define TQ_REACQUIRE_TOL_MV 30    // consecutive coasts must agree within this to count as "consistent" (not a random load)
 #define TQ_REACQUIRE_MAX_MV 40    // reacquire accepts only rest within this of the zero. FW-150: on the measured curve
-                                  // that is ~6.0 kg, not the ~1.5 kg this comment used to claim - see TQ_RECAL_BAND_MV.
+                                  // that is ~3.8 kg (40 mV native delta -> torque_input_native_delta_to_centikg()),
+                                  // close to TQ_RECAL_BAND_MV's ~3.4 kg as expected since both are small deltas on the
+                                  // same first curve segment - not the ~1.5 kg this comment used to claim, and not the
+                                  // ~6.0 kg an earlier correction of this comment claimed either. See TQ_RECAL_BAND_MV.
 #define TQ_REST_RAW_MIN     300   // absolute plausible UNLOADED raw baseline window (mV, pre-normalization): re-zero only within...
 #define TQ_REST_RAW_MAX     1500  // ...this window (anti-infinite-drift); outside => pedal pressed/sensor fault -> Error 25, no re-zero
-#define TQ_STUCK_CENTIKG    5600  // HUMAN/diagnostic label only: the stuck-high level as the kg table reads it
-                                  // FW-151: the GATE itself is TQ_STUCK_CTRL below. This constant is retained for
-                                  // diagnostics and documentation; no control decision reads it.
 #define TQ_STUCK_CTRL       5600  // FW-151: stuck-high sensor fault, in the frozen CONTROL domain (CLU). Numerically
                                   // the bike-verified value, so the fault trips at the same sensor signal as before.
                                   // A re-measured kg table must never move a fault threshold - see inc/torque_input.h.
-#define TQ_STUCK_TICKS      80000U// ~20 s @4kHz continuously above TQ_STUCK_CENTIKG -> sensor fault (real pedaling always dips between legs)
+                                  // A human-facing kg label for this threshold, if ever needed, must be computed at
+                                  // read time via torque_input_ctrl_to_centikg(TQ_STUCK_CTRL), never a second literal
+                                  // (a prior TQ_STUCK_CENTIKG=5600 duplicate label existed here and was removed: it
+                                  // was never read by any control or diagnostic code, only documented as unused).
+#define TQ_STUCK_TICKS      80000U// ~20 s @4kHz continuously above TQ_STUCK_CTRL -> sensor fault (real pedaling always dips between legs)
 #define TQ_FAULT_HOLD_TICKS 20000U// ~5 s minimum hold of torque_fault after the cause clears (no Error 25 flicker / assist chatter)
 
 //---------------------------------------------------------------------

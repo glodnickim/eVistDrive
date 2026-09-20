@@ -1182,16 +1182,25 @@ void torque_input_cal_tick(int16_t torque_corrected_native, bool stationary)
 		return;
 	}
 	/*
-	 * FW-129 D8: span is the sensor's GAIN relative to the factory characteristic, not a
-	 * straight line through the calibration point.
+	 * FW-129 D8 / FW-151: span is the sensor's GAIN relative to the factory characteristic,
+	 * not a straight line through the calibration point.
 	 *
 	 *   gain = measured delta at the reference weight / delta the DEFAULT sensor would give
-	 *   span = TORQUE_DEFAULT_SPAN_NATIVE * gain
+	 *   span = TORQUE_GAIN_REFERENCE_NATIVE * gain
 	 *
 	 * so a sensor that already matches the factory curve calibrates to exactly
-	 * TORQUE_DEFAULT_SPAN_NATIVE with ANY reference weight - the invariance the old
+	 * TORQUE_GAIN_REFERENCE_NATIVE with ANY reference weight - the invariance the old
 	 * 6000/reference form could not give. It also puts the calibration point back where it
 	 * belongs: native_delta_to_centikg(delta_reference) now returns cal_reference_centikg.
+	 *
+	 * FW-151: span MUST be scaled against the frozen TORQUE_GAIN_REFERENCE_NATIVE, not the
+	 * kg-curve-derived TORQUE_DEFAULT_SPAN_NATIVE. The two are numerically equal today only
+	 * because the gain reference was seeded from the FW-150 curve; a future re-measurement of
+	 * TORQUE_CURVE_P* changes TORQUE_DEFAULT_SPAN_NATIVE (it is derived from the curve by
+	 * extrapolation) and must NOT retroactively rescale every already-calibrated rider's
+	 * stored gain. reference_delta below is intentionally read from the physical kg table
+	 * (default_centikg_to_native_delta) because calibration is performed with a real
+	 * reference weight - do not change that part.
 	 */
 	uint32_t reference_delta =
 		default_centikg_to_native_delta(cal_reference_centikg);
@@ -1199,7 +1208,7 @@ void torque_input_cal_tick(int16_t torque_corrected_native, bool stationary)
 		cal_fail(TORQUE_CAL_ERR_REFERENCE_RANGE);
 		return;
 	}
-	uint32_t span = ((uint32_t)delta_reference * TORQUE_DEFAULT_SPAN_NATIVE +
+	uint32_t span = ((uint32_t)delta_reference * TORQUE_GAIN_REFERENCE_NATIVE +
 		reference_delta / 2U) / reference_delta;
 	/*
 	 * RANGE FIRST, CAST SECOND. span is a 32-bit product and a wildly out-of-spec sensor
