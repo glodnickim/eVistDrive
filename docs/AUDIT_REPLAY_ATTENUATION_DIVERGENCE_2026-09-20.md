@@ -316,3 +316,88 @@ RECOMMENDATION: change tools/replay_behavior.py's max_attenuation torque-side in
   control-invariant. Do not change the 0.60 limit. Do not touch ap2_*.c / assist_pipeline.c /
   torque_input.c. Add the synthetic-signal pinning test from §M as part of that same change.
 ```
+
+---
+
+## POST-AUDIT IMPLEMENTATION ADDENDUM
+
+Everything above this heading is the audit as it was written on 2026-09-20, at
+`START_HEAD = 3714ad08ffd4867a48386df63d45e3399890e39d`, and is left unchanged. Section M and the
+FINAL ANSWER BLOCK correctly record that, at the time of writing, the recommendation had been
+stated but not carried out. This addendum records only that it was carried out afterwards; it
+revises none of the audit's findings, root cause, or first-bad-commit determination.
+
+```text
+implemented in commit:
+97b8a86a76a05f4df5657fc686187bc17871819e
+```
+
+### What the fix does
+
+- `sim/replay/replay_fw.c` now exports a `torque_ctrl` column, written from `ts->load_ctrl` - the
+  frozen control-domain pedal signal (CLU) that `ap2_pas_state.c` and `ap2_rider_demand.c`
+  actually gate and scale on.
+- `max_attenuation` in `tools/replay_behavior.py` computes its torque-side ripple from
+  `torque_ctrl`, not from `torque_ckg` (the display kilogram curve).
+- A trace with no `torque_ctrl` column raises `MissingControlDomainSignal`. The criterion fails
+  loudly instead of reporting a number computed from the wrong domain.
+- There is **no fallback to `torque_ckg`** on the `max_attenuation` path. (`responds_to_load`
+  keeps a documented soft preference, because it checks only the DIRECTION of movement and is not
+  sensitive to the kg-curve-vs-CLU distinction the way a ripple ratio is - see the comment in
+  `replay_behavior.py`.)
+- The `0.60` limit is unchanged. The fix corrects which signal is measured, not what is required
+  of it.
+- **Pipeline 2 was not modified.** No file under `src/ap2_*.c`, `src/assist_pipeline.c`,
+  `src/torque_input.c`, `src/fast_iq_slew.c`, `src/FOC.c`, `src/foc_current_loop.c`,
+  `src/ap2_profiles.c` or `src/ap2_limits.c` was touched. Commit `97b8a86` changes exactly four
+  files: this document, `sim/replay/replay_fw.c`, `tests/test_replay_behavior.py` and
+  `tools/replay_behavior.py`.
+
+### Results after the fix
+
+`python tools/run_replay_regression.py`, control-domain metric, limit `0.60`:
+
+```text
+f01 = 0.318 PASS
+f07 = 0.372 PASS
+f08 = 0.302 PASS
+```
+
+These are the pre-divergence values from §E reproduced on current HEAD, which is the point: the
+`0.618 / 0.785 / 0.588` figures recorded in the FINAL ANSWER BLOCK were the display-kg curve
+moving, never the assist. `iq_ref_new` was byte-identical throughout, as §D established.
+
+### Tests
+
+In `tests/test_replay_behavior.py`:
+
+- **kg-rescale invariance — PASS.** Two traces share identical `torque_ctrl` and `iq_ref_new`
+  while one has `torque_ckg` re-scaled 2.1x, as if its kg curve had just been re-measured. Both
+  must report the same attenuation. This is the 2026-09-14 → 2026-09-20 divergence reproduced
+  synthetically.
+- **missing `torque_ctrl` refusal — PASS.** A trace without the column must raise
+  `MissingControlDomainSignal` rather than silently read `torque_ckg`.
+- **synthetic attenuation math — PASS** (added as the follow-up §M asked for, in commit
+  `test: pin replay attenuation math and close audit`). The two tests above prove the criterion
+  reads the right *column*; they do not prove it computes the right *number*, because each
+  compares two runs against each other rather than against arithmetic. This one pins the
+  arithmetic itself, through the real `tools/replay_behavior.py` rather than a local copy of the
+  formula:
+
+  ```text
+  torque_ctrl 200..600 about a mean of 400  -> ripple 1.000
+  iq          225..375 about a mean of 300  -> ripple 0.500
+  expected attenuation                      =       0.500   PASS
+
+  torque_ctrl 200..600 about a mean of 400  -> ripple 1.000
+  iq        262.5..337.5 about a mean of 300 -> ripple 0.250
+  expected attenuation                      =       0.250   PASS
+  ```
+
+  Both reported ripples are asserted, not only the quotient. That is deliberate: a half-cycle
+  (amplitude instead of full peak-to-peak) error cancels in the ratio and would leave the quotient
+  correct, so asserting the quotient alone would not catch the ×2 class of defect §M named. The
+  check was confirmed to fail against a deliberately mutated `_ripple()` before being accepted.
+
+§C's conclusion — that no stray ×2 or half-cycle factor exists in `_ripple()`/`evaluate()` — was
+reached by code reading. It is now pinned by an executable test, and §M is closed.

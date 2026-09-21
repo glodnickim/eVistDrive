@@ -189,6 +189,39 @@ def main() -> int:
     except MissingControlDomainSignal:
         print(f'PASS [{name}]')
 
+    # --- max_attenuation: the ratio itself, pinned to known numbers -----------------------
+    # The two tests above prove max_attenuation reads the right COLUMN. They do not prove it
+    # computes the right NUMBER: both would still pass if _ripple() were off by a factor of two
+    # (half-cycle amplitude instead of full peak-to-peak), or if the ratio were inverted, because
+    # each compares two runs against each other rather than against arithmetic. So here the input
+    # ripples are constructed to be exactly known and the reported attenuation is required to be
+    # exactly their quotient - through the real tools/replay_behavior.py, never a local copy of
+    # the formula, which would only pin the copy.
+    #
+    #   torque_ctrl swings 200..600 about a mean of 400  -> ripple (600-200)/400 = 1.000
+    #   iq          swings 225..375 about a mean of 300  -> ripple (375-225)/300 = 0.500
+    #   attenuation                                      -> 0.500 / 1.000       = 0.500
+    #
+    #   iq          swings 262.5..337.5 about 300        -> ripple  (75)/300    = 0.250
+    #   attenuation                                      -> 0.250 / 1.000       = 0.250
+    #
+    # A x2 error anywhere in that chain reports 0.250 or 1.000 instead, and this test says so.
+    span = lambda lo, hi: (lambda i: lo + (hi - lo) * (i % 40) / 39.0)
+    ctrl_ripple_one = span(200.0, 600.0)
+
+    for iq_lo, iq_hi, want in ((225.0, 375.0, '0.500'), (262.5, 337.5, '0.250')):
+        rows_known = ride(n=400, tq=ctrl_ripple_one, tq_ctrl=ctrl_ripple_one,
+                          iq=span(iq_lo, iq_hi), req=open_req)
+        res = evaluate(trace(rows_known), {'max_attenuation': 0.60})
+        detail = next(d for c, _, d in res.checks if c == 'max_attenuation')
+        name = f'max_attenuation computes exactly {want} for a known ripple pair'
+        want_detail = f'torque_ctrl ripple 1.000, iq ripple {want}, attenuation {want}'
+        if not res.ok or want_detail not in detail:
+            failures.append(f'{name}: got {detail!r} (ok={res.ok}), wanted {want_detail!r}')
+            print(f'FAIL [{name}]: got {detail}')
+        else:
+            print(f'PASS [{name}]: {detail}')
+
     # --- the "no criteria" contract -------------------------------------------------------
     res = evaluate(trace(ride()), {})
     if res.assessed:
