@@ -19,35 +19,44 @@ from pathlib import Path
 
 R = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(R / 'tools'))
-from replay_behavior import evaluate  # noqa: E402
+from replay_behavior import evaluate, MissingControlDomainSignal  # noqa: E402
 
-COLUMNS = ['time_s', 'cadence_rpm', 'torque_ckg', 'wheel_speed_kph', 'battery_v', 'battery_a',
-           'iq_request_new', 'iq_ref_new', 'iq_request_recorded', 'iq_ref_recorded',
+COLUMNS = ['time_s', 'cadence_rpm', 'torque_ckg', 'torque_ctrl', 'wheel_speed_kph', 'battery_v',
+           'battery_a', 'iq_request_new', 'iq_ref_new', 'iq_request_recorded', 'iq_ref_recorded',
            'delta_request', 'delta_ref', 'debug_flags']
+
+# Columns written when a trace deliberately has NO torque_ctrl, to prove the criterion refuses
+# to fall back to torque_ckg rather than silently reading it.
+COLUMNS_NO_CTRL = [c for c in COLUMNS if c != 'torque_ctrl']
 
 failures: list[str] = []
 
 
-def trace(rows):
+def trace(rows, columns=COLUMNS):
     d = Path(tempfile.mkdtemp())
     p = d / 'trace.csv'
     with p.open('w', newline='') as f:
-        w = csv.DictWriter(f, fieldnames=COLUMNS)
+        w = csv.DictWriter(f, fieldnames=columns)
         w.writeheader()
         for r in rows:
-            full = {c: 0 for c in COLUMNS}
-            full.update(r)
+            full = {c: 0 for c in columns}
+            full.update({k: v for k, v in r.items() if k in full})
             w.writerow(full)
     return p
 
 
-def row(t, cad, tq, iq, req=None):
+def row(t, cad, tq, iq, req=None, tq_ctrl=None):
+    # tq_ctrl defaults to tq: most fixtures don't care about the kg-vs-CLU distinction, only the
+    # tests under "torque_ctrl vs torque_ckg" below deliberately pull them apart.
     return {'time_s': t, 'cadence_rpm': cad, 'torque_ckg': tq,
+            'torque_ctrl': tq if tq_ctrl is None else tq_ctrl,
             'iq_ref_new': iq, 'iq_request_new': req if req is not None else iq}
 
 
-def ride(n=200, cad=60, tq=lambda i: 400, iq=lambda i: 300, req=None):
-    return [row(i * 0.03, cad, tq(i), iq(i), None if req is None else req(i)) for i in range(n)]
+def ride(n=200, cad=60, tq=lambda i: 400, iq=lambda i: 300, req=None, tq_ctrl=None):
+    return [row(i * 0.03, cad, tq(i), iq(i), None if req is None else req(i),
+                None if tq_ctrl is None else tq_ctrl(i))
+            for i in range(n)]
 
 
 def check(name, rows, spec, want_ok, want_detail=None):
@@ -136,6 +145,49 @@ def main() -> int:
           ride(n=400, tq=lambda i: 200 + 600 * (i % 40) / 40.0,
                iq=lambda i: 300 + 20 * (i % 40) / 40.0, req=lambda i: 500 + (i % 7)),
           {'max_attenuation': 0.60}, False, 'pinned at its ceiling')
+
+    # --- max_attenuation must be invariant to the physical kg representation --------------
+    # docs/AUDIT_REPLAY_ATTENUATION_DIVERGENCE_2026-09-20.md: the 2026-09-14 -> 2026-09-20
+    # divergence (0.318/0.372/0.302 -> 0.618/0.785/0.588) was caused entirely by a firmware
+    # commit re-measuring the torque_ckg (display kg) curve while iq_ref_new stayed byte-
+    # identical. torque_ctrl is the frozen control-domain signal that curve is NOT allowed to
+    # move. This is that regression, reproduced synthetically: two traces share the exact same
+    # torque_ctrl and iq_ref_new, but one has a torque_ckg column re-scaled 2.1x, as if its kg
+    # curve had just been re-measured. If max_attenuation reads torque_ckg, this fails (the
+    # traces disagree); reading torque_ctrl, they must not.
+    same_ctrl = lambda i: 200 + 600 * (i % 40) / 40.0
+    same_iq = lambda i: 300 + 20 * (i % 40) / 40.0
+    rows_old_kg_curve = ride(n=400, tq=lambda i: same_ctrl(i) * 1.00, tq_ctrl=same_ctrl,
+                              iq=same_iq, req=open_req)
+    rows_new_kg_curve = ride(n=400, tq=lambda i: same_ctrl(i) * 2.10, tq_ctrl=same_ctrl,
+                              iq=same_iq, req=open_req)
+    spec = {'max_attenuation': 0.60}
+    res_old = evaluate(trace(rows_old_kg_curve), spec)
+    res_new = evaluate(trace(rows_new_kg_curve), spec)
+    att_old = next(d for c, _, d in res_old.checks if c == 'max_attenuation')
+    att_new = next(d for c, _, d in res_new.checks if c == 'max_attenuation')
+    name = 'max_attenuation is invariant to a torque_ckg-only rescale (torque_ctrl unchanged)'
+    if res_old.ok != res_new.ok or att_old != att_new:
+        failures.append(f'{name}: old-curve trace gave {att_old!r} ({res_old.ok}), '
+                         f'new-curve trace gave {att_new!r} ({res_new.ok}) - '
+                         f'changing only torque_ckg changed the result')
+        print(f'FAIL [{name}]')
+        print(f'        old torque_ckg curve: {att_old}')
+        print(f'        new torque_ckg curve: {att_new}')
+    else:
+        print(f'PASS [{name}]: {att_old}')
+
+    # --- max_attenuation must refuse to fall back to torque_ckg --------------------------
+    rows_no_ctrl = [{k: v for k, v in r.items() if k != 'torque_ctrl'}
+                     for r in ride(n=400, tq=lambda i: 200 + 600 * (i % 40) / 40.0,
+                                    iq=lambda i: 300 + 20 * (i % 40) / 40.0, req=open_req)]
+    name = 'max_attenuation raises rather than silently falling back to torque_ckg'
+    try:
+        evaluate(trace(rows_no_ctrl, columns=COLUMNS_NO_CTRL), {'max_attenuation': 0.60})
+        failures.append(f'{name}: no exception was raised')
+        print(f'FAIL [{name}]: no exception was raised')
+    except MissingControlDomainSignal:
+        print(f'PASS [{name}]')
 
     # --- the "no criteria" contract -------------------------------------------------------
     res = evaluate(trace(ride()), {})

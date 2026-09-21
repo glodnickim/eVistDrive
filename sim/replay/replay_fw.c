@@ -99,7 +99,12 @@ int main(int argc,char **argv)
         const char *e=getenv("REPLAY_U_ABS");
         if(e&&*e){ long v=strtol(e,NULL,10); if(v<0)v=0; if(v>2048)v=2048; cfg_u_abs=(int32_t)v; }
     }
-    fprintf(out,"time_s,cadence_rpm,torque_ckg,wheel_speed_kph,battery_v,battery_a,iq_request_new,iq_ref_new,iq_request_recorded,iq_ref_recorded,delta_request,delta_ref,debug_flags\n");
+    /* torque_ctrl: the frozen control-domain pedal signal (CLU, torque_input.c's load_ctrl) -
+     * the same domain ap2_pas_state.c/ap2_rider_demand.c actually gate and scale on. Added
+     * alongside torque_ckg (display kg) so a consumer can tell the two apart instead of reading
+     * a display-domain number and assuming it tracks control. See
+     * docs/AUDIT_REPLAY_ATTENUATION_DIVERGENCE_2026-09-20.md. */
+    fprintf(out,"time_s,cadence_rpm,torque_ckg,torque_ctrl,wheel_speed_kph,battery_v,battery_a,iq_request_new,iq_ref_new,iq_request_recorded,iq_ref_recorded,delta_request,delta_ref,debug_flags\n");
 
     torque_input_init(); torque_input_startup_zero(TORQUE_ZERO_TARGET_NATIVE);
     torque_input_set_run_window_deg(tuning_config_assist_torque_run_window_deg());
@@ -167,8 +172,9 @@ int main(int argc,char **argv)
         double df=isfinite(r.recorded_iq_ref)?(double)ms.i_q_setpoint-r.recorded_iq_ref:NAN;
         if(isfinite(dr)&&fabs(dr)>max_req_delta)max_req_delta=fabs(dr);
         if(isfinite(df)){if(fabs(df)>max_ref_delta)max_ref_delta=fabs(df);sum_ref_delta+=fabs(df);compared++;}
-        fprintf(out,"%.9f,%.3f,%u,%.3f,%.3f,%.3f,%d,%d,%.3f,%.3f,%.3f,%.3f,0x%02X\n",
-                r.time_s,(double)cadence,(unsigned)ts->load_centikg,(double)speed_x100/100.0,vb,ia,
+        fprintf(out,"%.9f,%.3f,%u,%u,%.3f,%.3f,%.3f,%d,%d,%.3f,%.3f,%.3f,%.3f,0x%02X\n",
+                r.time_s,(double)cadence,(unsigned)ts->load_centikg,(unsigned)ts->load_ctrl,
+                (double)speed_x100/100.0,vb,ia,
                 mo->iq_request_before_limits,ms.i_q_setpoint,r.recorded_iq_request,r.recorded_iq_ref,dr,df,
                 (unsigned)assist_pipeline_reason_bits());
         rows++;

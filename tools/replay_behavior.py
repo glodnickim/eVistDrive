@@ -26,6 +26,20 @@ import math
 from pathlib import Path
 
 
+class MissingControlDomainSignal(ValueError):
+    """torque_ctrl is required and must not be silently substituted with torque_ckg.
+
+    torque_ckg is the DISPLAY kilogram value (torque_input.c's measured kg curve); it is
+    re-measurable for display accuracy without changing anything the pipeline decides on, and
+    has done so at least once in this repo's history. torque_ctrl is the frozen control-domain
+    signal (CLU, torque_input.c's load_ctrl) - the same domain ap2_pas_state.c and
+    ap2_rider_demand.c actually gate and scale on. A criterion that measures assist quality must
+    read torque_ctrl; falling back to torque_ckg when it is missing would silently reintroduce
+    the divergence documented in docs/AUDIT_REPLAY_ATTENUATION_DIVERGENCE_2026-09-20.md instead
+    of failing loudly enough to be noticed.
+    """
+
+
 class BehaviorResult:
     def __init__(self):
         self.checks: list[tuple[str, bool, str]] = []
@@ -85,6 +99,11 @@ def evaluate(replayed_csv: Path, spec: dict) -> BehaviorResult:
     req = _col(rows, 'iq_request_new')
     torque = _col(rows, 'torque_ckg')
     cadence = _col(rows, 'cadence_rpm')
+    has_ctrl = bool(rows) and 'torque_ctrl' in rows[0]
+    # The control-domain pedal signal (CLU), preferred wherever a criterion is meant to say
+    # something about the assist rather than about the kg display curve. See
+    # MissingControlDomainSignal and docs/AUDIT_REPLAY_ATTENUATION_DIVERGENCE_2026-09-20.md.
+    torque_ctrl = _col(rows, 'torque_ctrl') if has_ctrl else None
 
     if 'produces_assist' in spec:
         want = bool(spec['produces_assist'])
@@ -95,8 +114,13 @@ def evaluate(replayed_csv: Path, spec: dict) -> BehaviorResult:
     if 'responds_to_load' in spec:
         # The rider's effort rises through the fragment; the assist must follow it. Compared as
         # halves rather than sample by sample: the model deliberately does NOT track each stroke.
+        # Prefers the control-domain signal (torque_ctrl); falls back to the display kg column
+        # (torque_ckg) only when a trace has no torque_ctrl column at all - this criterion only
+        # checks DIRECTION of movement, which is far less sensitive to the kg-curve-vs-CLU
+        # distinction than max_attenuation's ratio is, so a soft preference is acceptable here.
+        load = torque_ctrl if has_ctrl else torque
         half = len(rows) // 2
-        t1, t2 = _mean(torque[:half]), _mean(torque[half:])
+        t1, t2 = _mean(load[:half]), _mean(load[half:])
         i1, i2 = _mean(iq[:half]), _mean(iq[half:])
         rising = spec['responds_to_load'] == 'rising'
         load_moved = (t2 > t1) if rising else (t2 < t1)
@@ -126,6 +150,19 @@ def evaluate(replayed_csv: Path, spec: dict) -> BehaviorResult:
             res.add('restart_recovers', False, 'no pause found in the fragment')
 
     if 'max_attenuation' in spec:
+        # This ratio must be computed on the control domain (torque_ctrl, CLU), never on the
+        # display kg column (torque_ckg): torque_ckg is re-measurable for display accuracy alone
+        # (see torque_input.c's kg curve) and doing so changes its ripple with no change to the
+        # assist whatsoever - that is exactly the divergence in
+        # docs/AUDIT_REPLAY_ATTENUATION_DIVERGENCE_2026-09-20.md, where iq_ripple was proven
+        # byte-identical to the golden baseline while a kg curve swap alone moved this metric
+        # from ~0.3 to ~0.6-0.8. Falling back to torque_ckg here would silently reintroduce that.
+        if not has_ctrl:
+            raise MissingControlDomainSignal(
+                "max_attenuation requires a 'torque_ctrl' column (the frozen control-domain "
+                "pedal signal, CLU) in the replayed trace; it is absent. Refusing to fall back "
+                "to 'torque_ckg' (display kg, re-measurable independently of control) - "
+                "see docs/AUDIT_REPLAY_ATTENUATION_DIVERGENCE_2026-09-20.md.")
         # Only meaningful where the request is not pinned at the ceiling: a clipped signal is
         # smooth because it is clipped. Refuse rather than report a flattering number.
         rf = _finite(req)
@@ -136,9 +173,10 @@ def evaluate(replayed_csv: Path, spec: dict) -> BehaviorResult:
                     f'the request is pinned at its ceiling for {pinned * 100:.0f} % of the '
                     f'fragment - attenuation here would be clipping, not the demand model')
         else:
-            tq_r, iq_r = _ripple(torque), _ripple(iq)
+            tq_r, iq_r = _ripple(torque_ctrl), _ripple(iq)
             att = iq_r / tq_r if tq_r and tq_r == tq_r and tq_r > 0 else math.nan
             limit = float(spec['max_attenuation'])
             res.add('max_attenuation', att == att and att <= limit,
-                    f'torque ripple {tq_r:.3f}, iq ripple {iq_r:.3f}, attenuation {att:.3f}, limit {limit}')
+                    f'torque_ctrl ripple {tq_r:.3f}, iq ripple {iq_r:.3f}, attenuation {att:.3f}, '
+                    f'limit {limit}')
     return res
