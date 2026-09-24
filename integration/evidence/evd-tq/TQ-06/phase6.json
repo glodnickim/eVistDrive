@@ -1,0 +1,10 @@
+{
+    "recorded_at":  "2026-09-24T20:07:25+02:00",
+    "phase":  6,
+    "result":  "PASS",
+    "vectors":  66,
+    "mutation_rejections":  5,
+    "prior_boundary_regression":  "60 A-x checkpoints and 29516 EB74 rows PASS",
+    "runtime_references":  "500, 700, 900, 1000000, -900, 0",
+    "review":  "NOT_RUN"
+}

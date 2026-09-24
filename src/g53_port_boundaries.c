@@ -135,7 +135,9 @@ g53_ad7ec_output_t g53_ad7ec_step(uint16_t load_ctrl,
 
 int32_t g53_boundary_b_iq_request(uint16_t m2aa_native, int32_t phase_current_max)
 {
-    (void)m2aa_native;
-    (void)phase_current_max;
-    return 0;
+    /* Contract 9.3: explicit s16 interpretation, widened product, trunc0.
+     * Native ap2_limits owns negative suppression and hardware ceilings. */
+    const int32_t signed_demand = m2aa_native <= INT16_MAX
+        ? (int32_t)m2aa_native : (int32_t)m2aa_native - 65536;
+    return (int32_t)(((int64_t)signed_demand * phase_current_max) / 10000);
 }

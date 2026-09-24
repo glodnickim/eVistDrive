@@ -1,0 +1,5 @@
+hardcoded_700: REJECTED exit=1 FAIL tests/host/g53_port_boundaries_host.c:169: g53_boundary_b_iq_request(cases[i].raw,cases[i].full)==cases[i].expected
+unsigned: REJECTED exit=1 FAIL tests/host/g53_port_boundaries_host.c:169: g53_boundary_b_iq_request(cases[i].raw,cases[i].full)==cases[i].expected
+narrow_product: REJECTED exit=1 FAIL tests/host/g53_port_boundaries_host.c:169: g53_boundary_b_iq_request(cases[i].raw,cases[i].full)==cases[i].expected
+hidden_clamp: REJECTED exit=1 FAIL tests/host/g53_port_boundaries_host.c:169: g53_boundary_b_iq_request(cases[i].raw,cases[i].full)==cases[i].expected
+wrong_scale: REJECTED exit=1 FAIL tests/host/g53_port_boundaries_host.c:169: g53_boundary_b_iq_request(cases[i].raw,cases[i].full)==cases[i].expected
