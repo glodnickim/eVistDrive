@@ -1,0 +1,9 @@
+﻿{
+    "recorded_at":  "2026-09-24T14:58:43+02:00",
+    "phase":  2,
+    "command":  "gcc -std=c11 -Wall -Wextra -Werror -Iinc tests/host/g53_port_boundaries_host.c src/g53_port_boundaries.c -o .build/tq06-boundaries.exe; run resulting executable",
+    "result":  "PASS",
+    "exact_checkpoints":  60,
+    "mutation_rejected":  4,
+    "note":  "First mutation attempt interrupted due to Windows CRT abort handling; test failure reporting changed to exit(1); unmodified control exit 0 and all four mutants exit 1 on rerun."
+}

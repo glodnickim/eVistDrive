@@ -1,12 +1,16 @@
 #include "g53_port_boundaries.h"
 #include <string.h>
 
-/* Phase-1 safe stubs. No production caller until the phase-7 cutover. */
-void g53_ax_reset(void) {}
+/* Boundary A-x: contract M-x / G53 0x080164B0. Raw PA6, not torque or mapped Iq.
+ * State and updates are in G53 logical invocations, with one integer truncation
+ * at each of the two shifts. The facade supplies the logical tick schedule. */
+static uint16_t ax;
+void g53_ax_reset(void) { ax = 0; }
 uint16_t g53_ax_step(uint16_t raw_pa6_adc)
 {
-    (void)raw_pa6_adc;
-    return 0;
+    const uint16_t u = (uint16_t)(((uint32_t)raw_pa6_adc * 498u) >> 12);
+    ax = (uint16_t)((3u * (uint32_t)ax + u) >> 2);
+    return ax;
 }
 
 void g53_ad7ec_reset(void) {}
