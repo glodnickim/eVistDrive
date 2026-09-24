@@ -1,0 +1,29 @@
+{
+  "governance_sha": "6f8ab5ec716797ac610c6733d0b6fedd5faa74d0",
+  "source_sha256": {
+    "integration/evidence/evd-tq/TQ-04-ORACLE/oracle/config.py": "c4ff595dbc95a8f616013b4525e21a4be79ae31031d297debb419146ea37725c",
+    "integration/evidence/evd-tq/TQ-04-ORACLE/oracle/types.py": "2a73ef19d18db39ce7e02627be0e47f46a5c690914a5755361d7d3caf31607e9",
+    "integration/evidence/evd-tq/TQ-04-ORACLE/oracle/pas_cadence.py": "794d27e68995e6e24257fd29856519bf841139e6221963028f69291c420c6860",
+    "pas_scenarios.csv": "1169880581585f16741e68cc9281f4cb41ded391ecf96cc824b85ca61913efd5"
+  },
+  "native_reference_replay": {
+    "geometry": 144,
+    "timeout_max": 208,
+    "rows": 8540,
+    "compared_fields": 17,
+    "mismatches": 0
+  },
+  "port_reference": {
+    "geometry": 96,
+    "timeout_max": 311,
+    "rows": 28341,
+    "compared_fields": 25,
+    "seed": "0x530096"
+  },
+  "fixture_sha256": "75fd7df0524d48789f31d9e15c28792f1fb7aba3428c5e90ae135359fd649596",
+  "note": "Original 8540 input rows replayed through the accepted Oracle configured to frozen M820 96/rev and C16=311. Stock expected values are first independently revalidated at 144/rev/208, not compared as if geometry were unchanged.",
+  "additional_plausibility_rows": 1401,
+  "plausibility_flag_active_rows": 223,
+  "total_rows": 28341,
+  "initial_fixture_sha256": "2383a54e8081128cb4ab97841fe3a0672d35e053c499abfe342262d11c814ff7"
+}

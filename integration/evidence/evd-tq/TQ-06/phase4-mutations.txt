@@ -1,0 +1,7 @@
+geometry: REJECTED exit=1 PAS row 55 cadence: actual=6 expected=10
+timeout: REJECTED exit=1 PAS row 1 base_timeout_ticks: actual=208 expected=311
+boot_skip: REJECTED exit=1 PAS row 31 direction: actual=1 expected=0
+direction: REJECTED exit=1 PAS row 49 evidence: actual=2 expected=3
+filter: REJECTED exit=1 PAS row 55 filter_accumulator: actual=40 expected=41
+plausibility: REJECTED exit=1 PAS row 27767 anti_rock: actual=0 expected=1
+true_stop: REJECTED exit=1 PAS row 482 evidence: actual=1 expected=0

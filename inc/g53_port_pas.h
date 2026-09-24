@@ -16,10 +16,28 @@ typedef struct {
     uint16_t no_transition_ticks;
     uint8_t code;
     uint8_t anti_rock;
+    uint8_t span;
+    uint16_t magnitude;
+    int16_t raw_cadence;
+    int16_t current_delta;
+    int16_t previous_delta;
+    uint16_t transition_count;
+    uint16_t elapsed_ticks;
+    int32_t filter_accumulator;
+    int16_t filtered_cadence;
+    uint16_t plausibility_budget;
+    uint16_t plausibility_base;
+    uint16_t plausibility_latch;
+    uint16_t plausibility_previous_latch;
+    uint16_t plausibility_flag;
 } g53_pas_output_t;
 
 typedef struct {
     g53_pas_output_t output;
+    uint8_t previous_code;
+    uint8_t previous_rank;
+    bool first_boot_call;
+    bool skip_first_boot_transition;
 } g53_pas_ctx_t;
 
 void g53_pas_reset(g53_pas_ctx_t *ctx, bool boot, uint8_t pas_ab);

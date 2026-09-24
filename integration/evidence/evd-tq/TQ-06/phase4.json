@@ -1,0 +1,12 @@
+{
+    "recorded_at":  "2026-09-24T19:55:20+02:00",
+    "phase":  4,
+    "result":  "PASS",
+    "command":  "gcc -std=c11 -Wall -Wextra -Werror -Iinc tests/host/g53_port_pas_host.c src/g53_port_pas.c -o .build/tq06-pas.exe; run resulting executable",
+    "vectors":  28341,
+    "fields":  25,
+    "mismatches":  0,
+    "mutation_rejections":  7,
+    "reference":  "host/pas/pas-reference-provenance.json",
+    "review":  "NOT_RUN"
+}
