@@ -1,0 +1,13 @@
+{
+    "recorded_at":  "2026-09-24T20:06:18+02:00",
+    "phase":  5,
+    "result":  "PASS",
+    "command":  "gcc -std=c11 -Wall -Wextra -Werror -Iinc tests/host/g53_port_chain_host.c src/g53_port_chain.c src/g53_port_pas.c -o .build/tq06-chain.exe; run resulting executable",
+    "vectors":  39600,
+    "fields":  120,
+    "mismatches":  0,
+    "mutation_rejections":  8,
+    "host_suites":  "64/64 PASS, zero post-step skips",
+    "reference":  "host/chain/chain-reference-provenance.json",
+    "review":  "NOT_RUN"
+}

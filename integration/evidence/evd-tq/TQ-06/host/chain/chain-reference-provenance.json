@@ -1,0 +1,54 @@
+{
+  "governance_sha": "6f8ab5ec716797ac610c6733d0b6fedd5faa74d0",
+  "rows": 39600,
+  "fields": 120,
+  "seed": "0x53D7EC",
+  "geometry": 96,
+  "pas_timeout_max": 311,
+  "g1_g2": 4096,
+  "ceiling": 6500,
+  "fsm_states": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "max_m2aa": 6500,
+  "fixture_sha256": "3ea2cd6dfb9da4efbe9236387c1d299fc9a27178ceccc646d15a074fc3c862b4",
+  "source_sha256": {
+    "bde8.py": "755855bce6d5210385764c9181ab24224ff71692ba8d8324f783bbc06235debf",
+    "d7ec.py": "581e13ce1573bb9e93570f0ce586b7eeb24822c2188971e9497a94e0969d7498",
+    "e1e8.py": "e3d7b7e19d18caedd4ecd315dd0fbaa042d0e22857cf65cc2cd292c9dfe5e3a3",
+    "fsm.py": "183b73089f0999ceb70082bdff089ae981a9e0e5a8cb838deef6eb07fcf95f9e",
+    "oracle_bde8.py": "9ee38c317ded1fd45ac2d63e1bf2d9cee12135672bc87b824f0d3b3f16e987ac",
+    "oracle_config.py": "c4ff595dbc95a8f616013b4525e21a4be79ae31031d297debb419146ea37725c",
+    "oracle_d7ec.py": "be1a6a2047a9236925fe72713dbe68b727fa4cae2d9ed5fc663002b1fa34441c",
+    "oracle_e1e8.py": "3f7427ee95307a2744a98622b13f88dff03908e8b2b33d01ffe0ec3083ad5a29",
+    "oracle_limiters_sr.py": "be226b366c41edb9173d811ec9af76bbcd2e497bd67e80729e4508bb0b833a6b",
+    "oracle_memory.py": "244aed128597caa58b42e10878afdbef29f442bd097c5df0148aca5f9405663c",
+    "oracle_oracle.py": "ae2cc8750a6d4f3ec30e6d1797ac3d37b99b3af21150b45a3599b65f2390a9ea",
+    "oracle_pas_cadence.py": "794d27e68995e6e24257fd29856519bf841139e6221963028f69291c420c6860",
+    "oracle_reference.py": "95dbf6ffd6e629acd3692fad1248020dd0391a3c369128852bdccce3686cad33",
+    "oracle_scheduler.py": "a20e537fd4af4aa8eab8503e04c1ea51e35ccef6b8190c2d606415be2521f8ae",
+    "oracle_torque_conditioning.py": "44b0b7a561b09bce6fe0d0c9170a79c18ae44ca9401f6e2f766cd612e6efbecb",
+    "oracle_torque_fsm.py": "8477b682aad45d6c90f8102b25633ae5c515aadeda795f561a021734def46b7c",
+    "oracle_trace.py": "14e69c6c89b8281f8f3d0d612b8fdc3bc6852110bf29e87ad8ac9c23a07102fe",
+    "oracle_types.py": "2a73ef19d18db39ce7e02627be0e47f46a5c690914a5755361d7d3caf31607e9"
+  },
+  "phase_encoding": {
+    "PAS": 1,
+    "FSM": 2,
+    "BDE8": 4,
+    "D7EC": 8,
+    "E1E8": 16
+  },
+  "scope": "Tick-indexed fixed configuration differential; no hardware or physical-time claim.",
+  "accepted_loader_revalidation": {
+    "rows": 39600,
+    "mismatches": 0,
+    "source_pin_check": "PASS using unmodified reference.py",
+    "line_endings": "Governance git blobs are LF; reference.py expected pins are the exact CRLF checkout representation. Verified all four hashes after LF->CRLF only; source text unchanged."
+  }
+}

@@ -1,0 +1,8 @@
+fsm_phase: REJECTED exit=1 Chain row 7 fsm_state: actual=1 expected=0
+d7ec_phase: REJECTED exit=1 Chain row 1 d7ec_speed: actual=0 expected=500
+e1e8_phase: REJECTED exit=1 Chain row 4 e1e8_taper: actual=0 expected=4096
+fsm_fullscale: REJECTED exit=1 Chain row 32898 fsm_t40: actual=38425 expected=39385
+rider_ratio: REJECTED exit=1 Chain row 301 d7ec_rider: actual=686 expected=685
+fatal_mask: REJECTED exit=1 Chain row 14401 e1e8_state: actual=1 expected=2
+bde8_ceiling: REJECTED exit=1 Chain row 17222 bde8_q5a: actual=748 expected=749
+e1e8_initial: REJECTED exit=1 Chain row 1 e1e8_factor: actual=3840 expected=4096
