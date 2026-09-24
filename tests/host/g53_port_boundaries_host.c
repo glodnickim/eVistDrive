@@ -58,15 +58,53 @@ static void ax_vectors(void)
     assert(g53_ax_step(0) == 0);
 }
 
+static void eb74_vectors(void)
+{
+    /* Persisted output of the pinned, independent REV-EB74 semantic reference.
+     * Source and fixture SHA-256 are recorded beside the CSV. Never regenerate
+     * expected values in this test, or compare the port against itself. */
+    FILE *file = fopen("integration/evidence/evd-tq/TQ-06/host/boundaries/eb74-reference.csv", "r");
+    assert(file != NULL);
+    char line[512];
+    assert(fgets(line, sizeof(line), file) != NULL);
+    unsigned rows = 0;
+    while (fgets(line, sizeof(line), file) != NULL) {
+        unsigned reset, load, speed, dee, m298, pre, output, zero, threshold, startup, check, m29e;
+        int cadence;
+        assert(sscanf(line, "%u,%u,%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u",
+            &reset,&load,&cadence,&speed,&dee,&m298,&pre,&output,&zero,&threshold,&startup,&check,&m29e) == 13);
+        if (reset) g53_ad7ec_reset();
+        const g53_ad7ec_feedback_t feedback = {
+            .cadence=(int16_t)cadence, .speed_native=(uint16_t)speed,
+            .d7ec_rider=(uint16_t)dee, .m298=(uint8_t)m298
+        };
+        const g53_ad7ec_output_t actual = g53_ad7ec_step((uint16_t)load, &feedback);
+        if (actual.pre_eb74 != pre || actual.rider_input_native != output || actual.zero != zero ||
+            actual.threshold != threshold || actual.startup_count != startup ||
+            actual.check_count != check || actual.m29e != m29e) {
+            fprintf(stderr, "EB74 first divergence row %u input %sactual: %u,%u,%u,%u,%u,%u,%u\n",
+                rows+1,line,actual.pre_eb74,actual.rider_input_native,actual.zero,
+                actual.threshold,actual.startup_count,actual.check_count,actual.m29e);
+            exit(1);
+        }
+        ++rows;
+    }
+    assert(!ferror(file));
+    assert(fclose(file) == 0);
+    assert(rows == 29516);
+    printf("EB74 independent reference: %u vectors, 0 mismatches PASS\n", rows);
+}
+
 int main(void)
 {
     ax_vectors();
+    eb74_vectors();
     const g53_ad7ec_feedback_t feedback = {0};
     g53_ax_reset();
     g53_ad7ec_reset();
     assert(g53_ax_step(0) == 0);
     assert(g53_ad7ec_step(0, &feedback).rider_input_native == 0);
     assert(g53_boundary_b_iq_request(0, 900) == 0);
-    puts("G53 boundaries: M-x 60 exact checkpoints plus zero/reset PASS; A-D7EC/B are phase-1 stubs");
+    puts("G53 boundaries: M-x and A-D7EC/EB74 PASS; Boundary B is a phase-1 stub");
     return 0;
 }

@@ -1,0 +1,9 @@
+{
+  "governance_sha": "6f8ab5ec716797ac610c6733d0b6fedd5faa74d0",
+  "reference_path": "evidence/evd-tq/TQ-02B/REV-EB74/eb74/eb74_model.py",
+  "reference_sha256": "b1164ea5d0e67d7fab9421ed39b0e6aa8e4fe7dbb4130f70e6268eda714d0264",
+  "vectors": 29516,
+  "fixture_sha256": "1ec982a8d01b5e166b5c581fbbf62d4e5d2f0c78dc3404fe6d3743b4e828d47d",
+  "random_seed": "0xEB74",
+  "scope": "Frozen stock local EB74 configuration, P50/P52/P53=0; CLU owner adapter; startup/check/reset/threshold/saturation/feedback/auto-zero/boundaries/random"
+}

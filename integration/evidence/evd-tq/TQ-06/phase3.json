@@ -1,0 +1,12 @@
+﻿{
+    "recorded_at":  "2026-09-24T19:47:07+02:00",
+    "phase":  3,
+    "result":  "PASS",
+    "command":  "gcc -std=c11 -Wall -Wextra -Werror -Iinc tests/host/g53_port_boundaries_host.c src/g53_port_boundaries.c -o .build/tq06-boundaries.exe; run resulting executable",
+    "vectors":  29516,
+    "mismatches":  0,
+    "mutation_rejections":  8,
+    "reference":  "host/boundaries/eb74-reference-provenance.json",
+    "scope":  "Fixed local-source EB74, P52=0 and M29E=0; no alternate CAN source ported",
+    "review":  "NOT_RUN"
+}
