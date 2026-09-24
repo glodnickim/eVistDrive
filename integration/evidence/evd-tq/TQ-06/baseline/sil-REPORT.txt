@@ -1,0 +1,15 @@
+SCENARIO clean_start        permission=  62.50ms firstIq=  62.50ms firstHall=  92.75ms perm->Hall=  30.25ms falseR=0 inhibitTicks=0 steadyIqMean=556.0 std=0.0 pp=0
+SCENARIO loaded_start       permission=  62.50ms firstIq=  62.50ms firstHall=  96.00ms perm->Hall=  33.50ms falseR=0 inhibitTicks=0 steadyIqMean=556.0 std=0.0 pp=0
+SCENARIO pas_bounce         permission=  41.75ms firstIq=  41.75ms firstHall=  72.75ms perm->Hall=  31.00ms falseR=0 inhibitTicks=0 steadyIqMean=556.0 std=0.0 pp=0
+SCENARIO steady_ripple      permission=  41.75ms firstIq=  41.75ms firstHall=  72.75ms perm->Hall=  31.00ms falseR=0 inhibitTicks=0 steadyIqMean=556.0 std=0.0 pp=0
+SCENARIO cadence_raw        permission=  38.50ms firstIq=  38.50ms firstHall=  69.75ms perm->Hall=  31.25ms falseR=0 inhibitTicks=0 steadyIqMean=556.0 std=0.0 pp=0
+SCENARIO cadence_filtered   permission=  38.50ms firstIq=  38.50ms firstHall=  69.75ms perm->Hall=  31.25ms falseR=0 inhibitTicks=0 steadyIqMean=556.0 std=0.0 pp=0
+SCENARIO pedal20            permission= 116.50ms firstIq= 116.50ms firstHall= 146.00ms perm->Hall=  29.50ms falseR=0 inhibitTicks=0 steadyIqMean=556.0 std=0.0 pp=0
+SCENARIO pedal40            permission=  58.25ms firstIq=  58.25ms firstHall=  88.75ms perm->Hall=  30.50ms falseR=0 inhibitTicks=0 steadyIqMean=556.0 std=0.0 pp=0
+SCENARIO pedal60            permission=  39.00ms firstIq=  39.00ms firstHall=  70.25ms perm->Hall=  31.25ms falseR=0 inhibitTicks=0 steadyIqMean=556.0 std=0.0 pp=0
+SCENARIO pedal80            permission=  29.25ms firstIq=  29.25ms firstHall=  60.75ms perm->Hall=  31.50ms falseR=0 inhibitTicks=0 steadyIqMean=556.0 std=0.0 pp=0
+SCENARIO stop_restart       releaseIq=556 stop->Iq0=386.75ms maxFallStep=1 restartPermission=41.25ms permission->Iq=0.00ms firstRestartIq=1 maxRiseStep=1 PASS
+AXIS stop     iqAtEvent=556 | edge->detect=197.75ms detect->permission=0.00ms permission->target=0.00ms permission->ref0=189.00ms ref0->drive0=2.25ms TOTAL=389.00ms | releaseMs=190 peakDrive=555.9 peakBrake=0.0 PASS
+AXIS reverse  iqAtEvent=556 | edge->detect=0.00ms detect->permission=0.00ms permission->target=0.00ms permission->ref0=0.00ms ref0->drive0=11.25ms TOTAL=11.25ms | releaseMs=190 peakDrive=491.6 peakBrake=0.0 PASS
+
+FUZZ deterministic seed=0xE7157A39 cases=1000 failures=0

@@ -1,0 +1,16 @@
+﻿{
+    "recorded_at":  "2026-09-24T14:54:36+02:00",
+    "phase":  1,
+    "build_command":  "python tools/build_firmware.py --check-only",
+    "build_exit":  0,
+    "manifest_sources":  84,
+    "host_command":  "python tools/run_host_tests.py",
+    "host_exit":  0,
+    "host_pass":  64,
+    "host_fail":  0,
+    "host_skipped":  0,
+    "mutation_rejections":  4,
+    "production_wiring":  "NOT_STARTED",
+    "diff_check":  "PASS",
+    "review":  "NOT_RUN"
+}

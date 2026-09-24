@@ -1,0 +1,7 @@
+Portable whole-pipeline regression
+==================================
+Scenarios: 6 x 3 layers = 18 traces
+Harnesses: torque_trace, assist_pipeline, ride_control_pipeline, missed_tick_burst
+Determinism RUN_100 assist rerun: PASS (byte-identical CSV)
+Build flags: -Wall -Wextra -Werror; documented type-limits exceptions only
+Result: PASS

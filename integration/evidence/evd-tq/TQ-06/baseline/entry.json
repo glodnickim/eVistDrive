@@ -1,0 +1,21 @@
+﻿{
+    "recorded_at":  "2026-09-24T14:53:14+02:00",
+    "command":  "python tools/verify_all.py --quick",
+    "exit_status":  0,
+    "governance_sha":  "6f8ab5ec716797ac610c6733d0b6fedd5faa74d0",
+    "production_base":  "63583a1b5c7cd3ac20c00110cf1d00933aa47273",
+    "implementation_branch":  "feat/TQ-06-g53-port",
+    "oracle_sha256":  "f89e7b8590c05eec6ab1c7abd9d4de3466a0d7ea66c13f1a1ccfe47a53df8e4d",
+    "oracle_rows":  93,
+    "oracle_columns":  24,
+    "host_pass":  60,
+    "host_fail":  0,
+    "host_post_step_skipped":  0,
+    "compiler":  "gcc.exe (GCC) 14.2.0",
+    "python":  "3.12.10",
+    "sanitizers":  "NOT_RUN: --quick intentionally skips sanitizers",
+    "target_build":  "NOT_RUN: baseline invocation has neither --target nor --require-target",
+    "pc_gate":  "PASS",
+    "fixture_schema":  "PASS: 24 fields per row; all 23 payload columns numeric",
+    "environment_note":  "Process-scoped Git safe.directory for this repository; no global Git configuration change. Fetch required sandbox escalation and succeeded."
+}

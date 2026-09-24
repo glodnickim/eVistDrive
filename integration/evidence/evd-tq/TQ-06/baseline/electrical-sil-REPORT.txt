@@ -1,0 +1,50 @@
+STANDALONE REAL FOC / PMSM
+EVistDrive electrical FOC SIL (real FOC.c + PI + SVPWM + PWM geometry)
+PWM polarity calibration: u_q=15 vq(-)=+0.1601V vq(+)=-0.1601V -> polarity=-1
+SVPWM requested-geometry 360deg sweep:
+  u=1170 -> requested [795,2956], clamp angles=0/360
+  u=1305 -> requested [670,3080], clamp angles=0/360
+  u=1600 -> requested [398,3352], clamp angles=0/360
+  u=1887 -> requested [133,3617], clamp angles=0/360
+  u=1920 -> requested [103,3647], clamp angles=0/360
+SVPWM geometry within configured _U_MAX: PASS
+locked target=100 angle=+0: physical dq=(+0.0,+101.2) ctrl_q=101.2 u=53 clamps=0 sat=0
+locked target=200 angle=+0: physical dq=(+0.0,+201.3) ctrl_q=201.3 u=101 clamps=0 sat=0
+locked target=100 angle=+20: physical dq=(-34.2,+94.1) ctrl_q=100.1 u=51 clamps=0 sat=0
+locked target=100 angle=-20: physical dq=(+35.3,+94.6) ctrl_q=101.0 u=53 clamps=0 sat=0
+locked target=100 angle=+30: physical dq=(-48.6,+88.1) ctrl_q=100.6 u=51 clamps=0 sat=0
+locked target=100 angle=-30: physical dq=(+50.4,+88.6) ctrl_q=101.9 u=52 clamps=0 sat=0
+6-sector standstill sweep: PASS
+moving erps= 50.0 target=100: iq=+99.3 id=+1.0 u=468 clamp=0.0% sat=0.0%
+moving erps=100.0 target=100: iq=+98.0 id=+0.6 u=888 clamp=0.0% sat=0.0%
+moving erps=150.0 target=100: iq=+95.5 id=+0.1 u=1305 clamp=0.0% sat=0.0%
+moving erps=180.0 target=100: iq=+94.1 id=+0.7 u=1555 clamp=0.0% sat=0.0%
+moving erps=200.0 target=100: iq=+93.2 id=+1.3 u=1722 clamp=0.0% sat=0.0%
+moving erps=220.0 target=100: iq=+92.4 id=+2.5 u=1887 clamp=0.0% sat=15.4%
+electrical FOC SIL: PASS
+
+END-TO-END ASSIST -> REAL FOC -> PMSM -> HALL
+SCENARIO clean_start        permission=  62.50ms firstIq=  62.50ms firstHall=  98.00ms perm->Hall=  35.50ms falseR=0 inhibitTicks=0 steadyIqMean=173.0 std=0.0 pp=0 angleErrMax=30.00deg
+SCENARIO loaded_start       permission=  62.50ms firstIq=  62.50ms firstHall= 101.50ms perm->Hall=  39.00ms falseR=0 inhibitTicks=0 steadyIqMean=173.0 std=0.0 pp=0 angleErrMax=30.00deg
+SCENARIO pas_bounce         permission=  41.75ms firstIq=  41.75ms firstHall=  78.25ms perm->Hall=  36.50ms falseR=0 inhibitTicks=0 steadyIqMean=173.0 std=0.0 pp=0 angleErrMax=30.00deg
+SCENARIO steady_ripple      permission=  41.75ms firstIq=  41.75ms firstHall=  78.25ms perm->Hall=  36.50ms falseR=0 inhibitTicks=0 steadyIqMean=173.0 std=0.0 pp=0 angleErrMax=30.00deg
+SCENARIO cadence_raw        permission=  38.50ms firstIq=  38.50ms firstHall=  75.25ms perm->Hall=  36.75ms falseR=0 inhibitTicks=0 steadyIqMean=173.0 std=0.0 pp=0 angleErrMax=30.00deg
+SCENARIO cadence_filtered   permission=  38.50ms firstIq=  38.50ms firstHall=  75.25ms perm->Hall=  36.75ms falseR=0 inhibitTicks=0 steadyIqMean=173.0 std=0.0 pp=0 angleErrMax=30.00deg
+SCENARIO pedal20            permission= 116.50ms firstIq= 116.50ms firstHall= 151.00ms perm->Hall=  34.50ms falseR=0 inhibitTicks=0 steadyIqMean=173.0 std=0.0 pp=0 angleErrMax=30.00deg
+SCENARIO pedal40            permission=  58.25ms firstIq=  58.25ms firstHall=  94.00ms perm->Hall=  35.75ms falseR=0 inhibitTicks=0 steadyIqMean=173.0 std=0.0 pp=0 angleErrMax=30.00deg
+SCENARIO pedal60            permission=  39.00ms firstIq=  39.00ms firstHall=  75.75ms perm->Hall=  36.75ms falseR=0 inhibitTicks=0 steadyIqMean=173.0 std=0.0 pp=0 angleErrMax=30.00deg
+SCENARIO pedal80            permission=  29.25ms firstIq=  29.25ms firstHall=  66.50ms perm->Hall=  37.25ms falseR=0 inhibitTicks=0 steadyIqMean=173.0 std=0.0 pp=0 angleErrMax=30.00deg
+HALL START SWEEP 24 angles x 2 loads: failures=0 worstPerm->Hall=39.50ms worstAngleErr=30.00deg PASS
+WALK FOC MATRIX 7 targets x 3 loads x 6 Hall starts = 126: failures=0 safeStalls=2 trackingWarnings=23 worstFirstHall=206.00ms worstMeanErr=93.9% worstSteadyPP=28.80rpm PASS
+SCENARIO stop_restart       releaseIq=173 stop->Iq0=384.75ms maxFallStep=1 restartPermission=41.25ms permission->Iq=0.00ms firstRestartIq=1 maxRiseStep=1 qzeroEntries=1 qzeroAborts=1 qzeroHandbacks=0 qzEntryErps=190 qzAbortErps=166 qzPeakIq=278 PASS
+AXIS stop     iqAtEvent=173 | edge->detect=197.75ms detect->permission=0.00ms permission->target=0.00ms permission->ref0=187.00ms ref0->drive0=-20.50ms TOTAL=364.25ms | releaseMs=190 peakDrive=130.5 peakBrake=0.0 PASS
+AXIS reverse  iqAtEvent=173 | edge->detect=0.00ms detect->permission=0.00ms permission->target=0.00ms permission->ref0=0.00ms ref0->drive0=0.75ms TOTAL=0.75ms | releaseMs=190 peakDrive=85.0 peakBrake=35.1 PASS
+
+SHARD 1/4 cases=63 seed=0xe7157a39
+FUZZ deterministic seed=0xE7157A39 cases=63 failures=0
+SHARD 2/4 cases=63 seed=0xade87ca2
+FUZZ deterministic seed=0xADE87CA2 cases=63 failures=0
+SHARD 3/4 cases=62 seed=0x81603dd3
+FUZZ deterministic seed=0x81603DD3 cases=62 failures=0
+SHARD 4/4 cases=62 seed=0xc259eef6
+FUZZ deterministic seed=0xC259EEF6 cases=62 failures=0

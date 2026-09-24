@@ -85,3 +85,7 @@ Firmware/GD32F30x_standard_peripheral/Source/gd32f30x_spi.c
 Firmware/GD32F30x_standard_peripheral/Source/gd32f30x_timer.c
 Firmware/GD32F30x_standard_peripheral/Source/gd32f30x_usart.c
 Firmware/GD32F30x_standard_peripheral/Source/gd32f30x_wwdgt.c
+src/g53_port_boundaries.c
+src/g53_port_pas.c
+src/g53_port_chain.c
+src/g53_port.c

@@ -1,0 +1,21 @@
+L4 flat_soc90         SOC 90% grade= 0.0% cadenceTarget= 60.0  speedMax=18.70 km/h Vmin=41.51 IbatMax=14.95A IqMax=  700 fwSOC=76.0 trueSOC=89.8 errMax=14.0% battLimit=0 speedLimit=0 angle=30.00deg PASS
+L4 hill5_soc80        SOC 80% grade= 5.0% cadenceTarget= 70.0  speedMax=14.83 km/h Vmin=40.93 IbatMax=15.10A IqMax=  700 fwSOC=71.0 trueSOC=79.8 errMax=9.0% battLimit=26890 speedLimit=0 angle=30.00deg PASS
+L4 hill10_soc50       SOC 50% grade=10.0% cadenceTarget= 75.0  speedMax=10.49 km/h Vmin=37.52 IbatMax=15.49A IqMax=  700 fwSOC=39.0 trueSOC=49.8 errMax=11.0% battLimit=26528 speedLimit=0 angle=30.00deg PASS
+L4 hill15_soc20       SOC 20% grade=15.0% cadenceTarget= 80.0  speedMax= 6.95 km/h Vmin=32.87 IbatMax=20.26A IqMax=  689 fwSOC=16.0 trueSOC=19.8 errMax=4.0% battLimit=20433 speedLimit=0 angle=30.00deg PASS
+L4 low_soc10          SOC 10% grade= 8.0% cadenceTarget= 70.0  speedMax=11.47 km/h Vmin=31.59 IbatMax=15.02A IqMax=  462 fwSOC=7.9 trueSOC=9.8 errMax=2.0% battLimit=17260 speedLimit=0 angle=30.00deg PASS
+L4 low_soc5           SOC 5% grade= 5.0% cadenceTarget= 60.0  speedMax=10.24 km/h Vmin=31.69 IbatMax= 6.55A IqMax=  210 fwSOC=4.9 trueSOC=4.9 errMax=0.0% battLimit=0 speedLimit=0 angle=30.00deg PASS
+L4 sag_soc30          SOC 30% grade=10.0% cadenceTarget= 75.0  speedMax=10.46 km/h Vmin=33.60 IbatMax=15.80A IqMax=  688 fwSOC=23.0 trueSOC=29.8 errMax=7.0% battLimit=26796 speedLimit=0 angle=30.00deg PASS
+L4 cad120_soc80       SOC 80% grade= 2.0% cadenceTarget=120.0  speedMax=23.45 km/h Vmin=40.78 IbatMax=16.79A IqMax=  609 fwSOC=71.0 trueSOC=79.8 errMax=9.0% battLimit=11009 speedLimit=0 angle=30.00deg PASS
+L4 matched_lg50       SOC 50% grade= 7.0% cadenceTarget= 70.0  speedMax=12.67 km/h Vmin=38.99 IbatMax=15.39A IqMax=  700 fwSOC=50.0 trueSOC=49.8 errMax=0.2% battLimit=27161 speedLimit=0 angle=30.00deg PASS
+LEVEL4 fixed scenarios: 9 cases failures=0 PASS
+SOC endurance FEB start=100.0 trueEnd= 88.0 fwEnd= 87.8 maxAbsErr=  0.4% PASS
+SOC endurance FEB start= 90.0 trueEnd= 78.0 fwEnd= 64.3 maxAbsErr= 14.0% PASS
+SOC endurance FEB start= 80.0 trueEnd= 68.0 fwEnd= 59.0 maxAbsErr=  9.0% PASS
+SOC endurance FEB start= 60.0 trueEnd= 48.0 fwEnd= 36.1 maxAbsErr= 12.0% PASS
+SOC endurance FEB start= 40.0 trueEnd= 28.0 fwEnd= 17.3 maxAbsErr= 11.0% PASS
+SOC endurance FEB start= 20.0 trueEnd=  8.0 fwEnd=  4.2 maxAbsErr=  4.0% PASS
+SOC endurance FEB start= 10.0 trueEnd=  0.0 fwEnd=  0.0 maxAbsErr=  2.0% PASS
+SOC endurance FEB start=  5.0 trueEnd=  0.0 fwEnd=  0.0 maxAbsErr=  0.1% PASS
+SOC endurance MATCHED start=80 maxAbsErr=0.19% PASS
+
+LEVEL4 fuzz seed=0x144B1CE5 cases=25 safePhysicalStalls=11 marginalStarts=2 failures=0 PASS

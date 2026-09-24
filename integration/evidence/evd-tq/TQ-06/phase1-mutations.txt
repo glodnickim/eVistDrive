@@ -1,0 +1,4 @@
+boundaries: reset/zero mutation REJECTED; exit=3; Assertion failed: g53_ax_step(0) == 0, file tests/host/g53_port_boundaries_host.c, line 10
+pas: reset/zero mutation REJECTED; exit=3; Assertion failed: out.direction == 0 && out.cadence == 0 && out.evidence == 0, file tests/host/g53_port_pas_host.c, line 12
+chain: reset/zero mutation REJECTED; exit=3; Assertion failed: out.m2aa_native == 0 && !out.normal_permission, file tests/host/g53_port_chain_host.c, line 13
+integration: reset/zero mutation REJECTED; exit=3; Assertion failed: out.iq_request_pre_limits == 0 && out.m2aa_native == 0, file tests/host/g53_port_integration_host.c, line 13

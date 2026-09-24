@@ -462,6 +462,21 @@ Modules = @((Join-Path $root 'src\ap2_pas_state.c'),
        Harness = Join-Path $PSScriptRoot 'fw144_soc_core_parity_host.c'
        Modules = @(Join-Path $root 'src\soc_core.c')
        IncludeDirs = @(Join-Path $PSScriptRoot 'common') },
+    @{ Name = 'TQ-06 G53 boundaries (real module)'
+       Harness = Join-Path $PSScriptRoot 'g53_port_boundaries_host.c'
+       Modules = @((Join-Path $root 'src\g53_port_boundaries.c')) },
+    @{ Name = 'TQ-06 G53 PAS (real module)'
+       Harness = Join-Path $PSScriptRoot 'g53_port_pas_host.c'
+       Modules = @((Join-Path $root 'src\g53_port_pas.c')) },
+    @{ Name = 'TQ-06 G53 chain (real module)'
+       Harness = Join-Path $PSScriptRoot 'g53_port_chain_host.c'
+       Modules = @((Join-Path $root 'src\g53_port_chain.c')) },
+    @{ Name = 'TQ-06 G53 integration (real modules)'
+       Harness = Join-Path $PSScriptRoot 'g53_port_integration_host.c'
+       Modules = @((Join-Path $root 'src\g53_port.c'),
+                   (Join-Path $root 'src\g53_port_boundaries.c'),
+                   (Join-Path $root 'src\g53_port_pas.c'),
+                   (Join-Path $root 'src\g53_port_chain.c')) },
     @{ Name = 'FW-145 continuous Level-4 ride telemetry (real module pacing, priority and wire schema)'
        Harness = Join-Path $PSScriptRoot 'ride_telemetry_host.c'
        Modules = @((Join-Path $root 'src\ride_telemetry.c'))
