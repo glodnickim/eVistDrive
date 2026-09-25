@@ -152,3 +152,17 @@ VERIFICATION: suite 57 PASS; canonical `python tools/run_host_tests.py` PASS (64
 SCOPE: This execution changed only the authorized `tests/host/ap2_pipeline_scenarios_host.c`. No Phase 3/4/5/6 or READ_ONLY files were changed in this execution. Phase 4 commit 20650bb, Phase 5 commit 40828eb, and Phase 6 commit e196555 remain unchanged.
 PHASE STATUS: Phase 7 host gate is green and ready for local phase commit; independent review remains NOT_RUN. Phase 8 has not yet been verified.
 ```
+```text
+PHASE 8 CORRECTION / EVIDENCE (append-only)
+TIMESTAMP: 2026-09-25T09:40:44+02:00
+PHASE 7 COMMIT: 15034f19ff27d14f6b867171d50dac3fd23b0413
+PHASE 8 RESULT: PASS (downstream source/host verification; no implementation changes required)
+EVIDENCE:
+- Native ap2_limits_apply remains on the G53 pedal path in src/assist_pipeline.c and on the separate Walk path in src/ride_control.c.
+- Pedal-assist normal non-veto path selects FIS_MODE_BYPASS; direction inhibit selects FORCE_ZERO; native safety/real-stop selects SAFETY with AP2_SAFETY_RELEASE_MS * AP2_FOC_TICKS_PER_MS. Host suite 57 covers P1-P8 and passes.
+- ride_control_update has one final mailbox publication point. main.c runPIcontrol consumes that mailbox through fast_iq_slew_tick(..., &MS.i_q_setpoint); repository search found no direct assignment to MS.i_q_setpoint and no second fast_iq_slew_tick consumer/writer.
+- No normal-path RELEASE/Rise/Fall shaping was introduced; final slew remains owned by the existing 16 kHz module. The host gate verifies suites 41/42/43 and 57.
+- Frozen READ_ONLY files remain unchanged; the Phase 7 commit status was clean before this evidence append.
+VERIFICATION LIMIT: This is source-level downstream handoff verification plus host coverage; it does not claim target/HW execution or Phase 9 SIL/replay completion.
+NEXT EXACT ACTION: Begin Phase 9 only under its authorized WRITE_SCOPE and preserve the Phase 7/8 evidence.
+```
