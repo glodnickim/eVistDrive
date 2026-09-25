@@ -119,7 +119,9 @@ void ride_control_request_service_iq(int32_t iq_target)
 
 uint8_t ride_control_get_session_state(void)
 {
-	return ap2_pas_state_legacy_session_code();
+	const ap2_pas_state_t state=assist_pipeline_pas_state();
+    if(state==AP2_PAS_REVERSE || state==AP2_PAS_INVALID) return 2;
+    return assist_pipeline_telemetry()->assist_permitted ? 1 : 0;
 }
 
 uint8_t ride_control_get_pas_state(void)
@@ -249,9 +251,12 @@ void ride_control_update(const ride_control_input_t *input)
 		cmd.iq_ceiling = 0;
 	} else {
 		/* ---- PEDAL ASSIST: the one rider-facing path ---------------------------------- */
+        if (ride_owner_prev != RIDE_OWNER_ASSIST) assist_pipeline_reset();
 		ride_owner_prev = RIDE_OWNER_ASSIST;
 		rider = rider_input_get();
 
+		pipe_in.raw_pa6_adc = input->raw_pa6_adc;
+		pipe_in.pas_ab = input->pas_ab;
 		pipe_in.torque_load_ctrl = rider->torque_load_ctrl;
 		pipe_in.torque_load_centikg = rider->torque_load_centikg;
 		pipe_in.torque_sensor_valid = rider->torque_sensor_valid;

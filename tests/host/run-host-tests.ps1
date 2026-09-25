@@ -425,17 +425,14 @@ $suites = @(
                    (Join-Path $root 'src\ap2_estimators.c'))
        IncludeDirs = @(Join-Path $PSScriptRoot 'common')
        Defines = @('-Wno-type-limits') },
-    @{ Name = 'Assist Pipeline V2 behavioural scenarios (real ap2_*/assist_pipeline/limits chain)'
-       # Drives the SHIPPED assist chain with a pulsating pedal model and checks the rider-facing
-       # invariants: the sustained term survives the dead spot, a reverse step zeroes the request
-       # in the same tick, the profiles are ordered and differ in character, AUTO moves
-       # continuously, and every limiter both binds and releases. No exact Iq value is pinned -
-       # those are ride-feel settings meant to be tuned on the bike.
+    @{ Name = 'TQ-06 production G53 assist pipeline + limits + zero-policy scenarios'
+       # Runs the ported G53 demand chain through assist_pipeline_update(), ap2_limits, and the
+       # production 16 kHz owner. The suite checks the frozen P1-P9 safety/zero-policy contract.
        Harness = Join-Path $PSScriptRoot 'ap2_pipeline_scenarios_host.c'
-Modules = @((Join-Path $root 'src\ap2_pas_state.c'),
-                    (Join-Path $root 'src\ap2_rider_demand.c'),
-                    (Join-Path $root 'src\ap2_estimators.c'),
-                    (Join-Path $root 'src\ap2_profiles.c'),
+       Modules = @((Join-Path $root 'src\g53_port.c'),
+                    (Join-Path $root 'src\g53_port_boundaries.c'),
+                    (Join-Path $root 'src\g53_port_pas.c'),
+                    (Join-Path $root 'src\g53_port_chain.c'),
                     (Join-Path $root 'src\ap2_limits.c'),
                     (Join-Path $root 'src\assist_pipeline.c'),
                     (Join-Path $root 'src\assist_modes.c'),

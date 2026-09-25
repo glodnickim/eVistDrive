@@ -10,6 +10,7 @@
 #include "ap2_profiles.h"
 #include "ap2_rider_demand.h"
 #include "fast_iq_slew.h"
+#include "g53_port.h"
 
 /*
  * ASSIST PIPELINE V2 - the whole pedal-assist path, in one place.
@@ -48,6 +49,8 @@
  */
 
 typedef struct {
+    uint16_t raw_pa6_adc;
+    uint8_t pas_ab;
 	/* --- rider sensors (already conditioned by their existing owners) --- */
 	/*
 	 * FW-151: the pipeline consumes the CONTROL projection (CLU). torque_load_centikg is
@@ -229,6 +232,7 @@ void assist_pipeline_reset(void);
 void assist_pipeline_update(const assist_pipeline_input_t *in, assist_pipeline_command_t *cmd);
 
 const assist_pipeline_telemetry_t *assist_pipeline_telemetry(void);
+const g53_port_output_t *assist_pipeline_g53(void);
 
 /* The PAS lifecycle state, for diagnostics and for the legacy session-state byte. */
 ap2_pas_state_t assist_pipeline_pas_state(void);

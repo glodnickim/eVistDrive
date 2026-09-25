@@ -2388,3 +2388,9 @@ void g53_chain_step(const g53_chain_input_t *in, g53_chain_output_t *out)
     fast_phase=(uint8_t)((fast_phase+1u)%10u);
     supervisor_phase=(uint8_t)((supervisor_phase+1u)%10u);
 }
+
+uint8_t g53_chain_level(uint8_t assist_level)
+{
+    static const uint8_t slots[6]={0,2,4,6,8,9};
+    return assist_level<6 ? slots[assist_level] : 0;
+}

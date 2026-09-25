@@ -584,24 +584,28 @@ static void test_production_static_guards(void)
 		"STATIC: PI_iq reference and feedback remain entirely in the Iq domain");
 
 	{
-		/* The cap is a stage of the limiter chain the pipeline runs before it decides the
-		 * trajectory; ride_control then publishes that decision once. Both halves are checked,
-		 * so neither can be moved after the final owner without this failing. */
-		const char *limits = pipe_c ? strstr(pipe_c, "ap2_limits_apply(&lim_in, &lim);") : NULL;
-		const char *traj = limits ? strstr(limits, "cmd->slew_mode = trajectory(") : NULL;
+		/* The cap stays upstream of the G53 pipeline's final request, which ride_control
+		 * publishes once. The 16 kHz owner remains the only dynamic reference writer. */
+		const char *limits = pipe_c ? strstr(pipe_c, "ap2_limits_apply(&lim_in,&lim);") : NULL;
+		const char *final_request = limits ? strstr(limits, "cmd->final_iq_request=lim.final_iq;") : NULL;
 		const char *publish = strstr(ride_c, "ride_publish_final_iq(cmd.final_iq_request");
-		CHECK(limits && traj && publish &&
+		CHECK(limits && final_request && publish && limits < final_request &&
 			strstr(main_c, "PI_iq.recent_value = MS.Battery_Current;") == NULL,
 			"STATIC: battery cap remains before final slew and no post-slew battery-domain clamp exists");
 	}
 	CHECK(strstr(ride_c, "assist_dynamics_apply(") == NULL,
 		"STATIC: the legacy 4 kHz final owner is gone, not merely inactive");
-	CHECK(pipe_c && strstr(pipe_c, "return block_positive ? FIS_MODE_SAFETY : FIS_MODE_RELEASE;") != NULL,
-		"STATIC: production explicitly publishes FIS_MODE_SAFETY for the 200 ms hard cut");
-	CHECK(pipe_c && strstr(pipe_c, "fast_iq_slew_current_accumulator_q10()") != NULL &&
-		strstr(pipe_c, "rising = target_q10 > live_q10;") != NULL &&
-		strstr(pipe_c, "return (iq_target > 0) ? FIS_MODE_RISE : FIS_MODE_FALL") == NULL,
-		"R2 STATIC: production direction compares target with authoritative live Q10, never target sign");
+	CHECK(pipe_c && strstr(pipe_c, "cmd->slew_mode=FIS_MODE_SAFETY") != NULL &&
+		strstr(pipe_c, "AP2_SAFETY_RELEASE_MS*AP2_FOC_TICKS_PER_MS") != NULL &&
+		strstr(pipe_c, "cmd->slew_mode=FIS_MODE_FORCE_ZERO") != NULL,
+		"STATIC: native safety publishes the 200 ms SAFETY mode and direction inhibit publishes FORCE_ZERO");
+	CHECK(pipe_c && strstr(pipe_c, "cmd->slew_mode=FIS_MODE_BYPASS") != NULL &&
+		strstr(pipe_c, "trajectory(") == NULL &&
+		strstr(pipe_c, "cmd->slew_mode=FIS_MODE_RISE") == NULL &&
+		strstr(pipe_c, "cmd->slew_mode=FIS_MODE_FALL") == NULL &&
+		strstr(pipe_c, "cmd->slew_mode=FIS_MODE_HOLD") == NULL &&
+		strstr(pipe_c, "cmd->slew_mode=FIS_MODE_RELEASE") == NULL,
+		"R2 STATIC: G53 normal output uses BYPASS; legacy AP2 trajectory modes and target-sign dispatch are absent");
 	CHECK(strstr(main_c, "ride_control_force_final_iq_zero();") != NULL &&
 		strstr(ride_c, "hall_calibration_iq_request()") != NULL &&
 		strstr(ride_c, "motor_core_set_id_target(input->current_id);") != NULL,

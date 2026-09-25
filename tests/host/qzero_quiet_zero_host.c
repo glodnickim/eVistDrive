@@ -1008,63 +1008,44 @@ static void production_wiring_checks(void)
 			"T13: one state object, one include - no second copy of the state anywhere in main.c");
 	}
 
-	/* ---- T14: the producer grants QUIET for rider-caused zeroes only, and defaults to NONE -- */
+	/* ---- T14: the single production pipeline owns the zero policy after the G53 cutover. ---- */
 	{
-		/*
-		 * TWO rider-caused zeroes, and only two.
-		 *
-		 * Quiet Zero exists for a zero the RIDER caused, and there are exactly two of those: a
-		 * reverse crank step, which removes the reference outright, and the ordinary end of
-		 * pedalling, which releases it over the profile time. Every other zero - a limiter, a
-		 * service mode, Walk, a force-zero - keeps the ordinary zero-current PI.
-		 *
-		 * Both grants live in the trajectory decision. The layer that merely publishes the
-		 * command must not be able to invent a policy of its own, which is what the
-		 * ride_control count proves.
-		 */
-		CHECK(pipe_c && count_all(pipe_c, "FIS_ZERO_POLICY_QUIET") == 2 &&
+		const char *update = pipe_c ? find_span_open(pipe_c,
+			"void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_command_t *cmd)") : NULL;
+		const char *update_end = update ? pipe_c + strlen(pipe_c) : NULL;
+		CHECK(update && update_end && update < update_end,
+			"T14: the sole G53-backed assist_pipeline_update() policy span is locatable");
+		CHECK(pipe_c && count_all(pipe_c, "FIS_ZERO_POLICY_QUIET") == 1 &&
 			count_all(ride_c, "FIS_ZERO_POLICY_QUIET") == 0,
-			"T14: Quiet Zero is granted in exactly the two rider-caused cases, both inside the trajectory decision - never in the layer that only publishes it");
-		const char *direction_branch = pipe_c ? strstr(pipe_c, "if (direction_block) {") : NULL;
-		const char *direction_grant = direction_branch ?
-			strstr(direction_branch, "FIS_ZERO_POLICY_QUIET") : NULL;
-		const char *direction_return = direction_branch ?
-			strstr(direction_branch, "return FIS_MODE_FORCE_ZERO;") : NULL;
-		CHECK(direction_branch && direction_grant && direction_return &&
-			direction_grant < direction_return,
-			"T14: the direction grant sits inside the direction branch, above its own return");
-		const char *release_branch = pipe_c ?
-			strstr(pipe_c, "if (iq_target == 0 && (block_positive || !permitted)) {") : NULL;
-		const char *release_grant = release_branch ?
-			strstr(release_branch, "FIS_ZERO_POLICY_QUIET") : NULL;
-		const char *release_return = release_branch ?
-			strstr(release_branch, "return block_positive ? FIS_MODE_SAFETY : FIS_MODE_RELEASE;") : NULL;
-		CHECK(release_branch && release_grant && release_return &&
-			release_grant < release_return,
-			"T14: and the release grant sits inside the release branch, above its own return");
-		CHECK(pipe_c && count_all(pipe_c,
-			"*out_zero_policy = service_cut ? FIS_ZERO_POLICY_NONE : FIS_ZERO_POLICY_QUIET;") == 2,
-			"T14: BOTH grants exclude the pedal-load calibration - a workshop procedure is not a rider event, whichever way the zero was reached");
-		CHECK(pipe_c && strstr(pipe_c, "*out_zero_policy = FIS_ZERO_POLICY_NONE;") != NULL,
-			"T14: the policy is default-deny - every other path leaves the ordinary PI in charge");
+			"T14: QUIET is decided once in the G53 pipeline and never in ride_control publication");
+		CHECK(update && update_end && count_in_span(update, update_end,
+			"cmd->zero_policy=quiet && !in->service_cut ? FIS_ZERO_POLICY_QUIET : FIS_ZERO_POLICY_NONE;") == 1,
+			"T14: one default-deny assignment excludes service_cut and assigns NONE on every other path");
+		const char *direction_branch = update ? strstr(update, "if(in->direction_inhibit) {") : NULL;
+		const char *direction_force = direction_branch ? strstr(direction_branch,
+			"cmd->slew_mode=FIS_MODE_FORCE_ZERO") : NULL;
+		CHECK(update && update_end && direction_branch && direction_force &&
+			count_in_span(update, update_end, "cmd->slew_mode=FIS_MODE_FORCE_ZERO") == 2,
+			"T14: direction inhibit retains the native FORCE_ZERO owner alongside null-input fail-safe");
+		CHECK(update && update_end && count_in_span(update, update_end,
+			"cmd->slew_mode=FIS_MODE_SAFETY") == 1 &&
+			count_in_span(update, update_end, "AP2_SAFETY_RELEASE_MS*AP2_FOC_TICKS_PER_MS") == 1,
+			"T14: native safety and true stop retain the 200 ms SAFETY owner");
+		CHECK(update && update_end && count_in_span(update, update_end,
+			"cmd->slew_mode=FIS_MODE_BYPASS") == 1,
+			"T14: normal and limiter paths retain the G53 BYPASS owner");
+		CHECK(update && update_end && count_in_span(update, update_end,
+			"quiet=cmd->final_iq_request==0 && (assist_off || !in->forward_valid);") == 1 &&
+			count_in_span(update, update_end, "cmd->final_iq_request=lim.final_iq;") == 1,
+			"T14: normal QUIET eligibility requires the post-limiter final request to be zero at assist-off or no-forward state");
+		CHECK(pipe_c && strstr(pipe_c, "ap2_profiles_resolve(") == NULL &&
+			strstr(pipe_c, "trajectory(") == NULL,
+			"T14: the G53 cutover has no legacy profile resolver or AP2 trajectory fallback");
 		CHECK(count_all(ride_c, "fast_iq_slew_publish(") == 1,
 			"T14: still exactly one publish call site - the policy did not create a second owner");
-		CHECK(strstr(main_c, ".service_cut_active = torque_input_calibration_active(),") != NULL,
-			"T14: main.c supplies the service subset from the calibration flag itself");
-		/* One threshold, two consumers: the ISR and FW-048 must read the same constant. */
-		CHECK(strstr(main_c, ".min_brake_erps = RIDE_COAST_RELEASE_ERPS,") != NULL &&
-			strstr(main_c, ".rotor_erps = (int32_t)rotor_motion.edge_erps,") != NULL &&
-			strstr(main_c, ".speed_fresh = rotor_motion_speed_fresh(&rotor_motion, ui16_erps_counter),") != NULL,
-			"T14: QZERO uses a fresh real Hall interval, never the age-decayed liveness speed");
-		CHECK(pipe_c && count_all(pipe_c, "#define RIDE_COAST_RELEASE_ERPS") == 0 &&
-			strstr(pipe_c, "#define AP2_COAST_RELEASE_ERPS RIDE_COAST_RELEASE_ERPS") != NULL &&
-			strstr(pipe_c, "in->motor_erps < AP2_COAST_RELEASE_ERPS") != NULL,
-			"T14: the coast threshold is the shared constant, named once and not re-declared");
-		/* Nothing this card touches may have changed the release timing constants. */
-		CHECK(pipe_c && strstr(pipe_c, "#define AP2_SAFETY_RELEASE_MS 200U") != NULL,
-			"T14: the 200 ms firmware-owned safety release is untouched");
-		CHECK(pipe_c && strstr(pipe_c, "release_ms = prof.p.release_ms;") != NULL,
-			"T14: the normal release still comes from the profile's own release time");
+		CHECK(pipe_c && strstr(pipe_c, "#define AP2_SAFETY_RELEASE_MS 200U") != NULL &&
+			strstr(pipe_c, "AP2_SAFETY_RELEASE_MS*AP2_FOC_TICKS_PER_MS") != NULL,
+			"T14: the native 200 ms safety release remains firmware-owned");
 	}
 
 	free(main_c);

@@ -21,6 +21,8 @@
  */
 
 typedef struct {
+    uint16_t raw_pa6_adc;
+    uint8_t pas_ab;
 	uint32_t speed_x100;
 	uint8_t cadence_rpm;
 	uint8_t assist_level_index;

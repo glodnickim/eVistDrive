@@ -3286,6 +3286,8 @@ void reg_ADC_processing(void)
         bool non_direction_safety_cut = MS.brake_active_flag || overtemp_stage >= 2 ||
             torque_fault || torque_input_calibration_active();
         ride_control_input_t ride_input = {
+            .raw_pa6_adc = adc_value[1],
+            .pas_ab = pas_sampler_state(),
             .speed_x100 = MS.Speedx100,
             /* FW-140: the same single control cadence drives demand and adaptive Iq slew. */
             .cadence_rpm = cadence_filter_get(),
@@ -3313,10 +3315,8 @@ void reg_ADC_processing(void)
             //QZERO: the SERVICE subset of the line above, for the zero-policy only. It changes no
             //cut decision - a load calibration still hard-cuts through safety_cut_non_direction.
             .service_cut_active = torque_input_calibration_active(),
-            //FW-030: throttle ported to the ride core. map() returns 0 while ADC < throttle_offset,
-            //so a disconnected/unused throttle contributes nothing (offset is the natural gate).
-			//Scaled to full phase_current_max (throttle is level-independent, like a real throttle).
-            .throttle_iq = (int32_t)map(adc_value[1], MP.throttle_offset, MP.throttle_max, 0, MP.phase_current_max),
+            /* PA6 feeds G53 Boundary A-x once; no parallel mapped throttle request. */
+            .throttle_iq = 0,
 			.start_phase = start_phase != 0,
 			.elapsed_ticks = control_delta
         };

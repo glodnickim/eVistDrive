@@ -138,6 +138,7 @@ typedef struct {
     int32_t external_inhibit;
     int32_t fatal_fault;
     int32_t nonfatal_fault;
+    uint32_t dropped_logical_ticks;
     uint16_t raw_pa6_adc;
     uint16_t rider_input_native;
 } g53_port_trace_t;
@@ -148,6 +149,7 @@ typedef struct {
     g53_port_trace_t trace;
 } g53_chain_output_t;
 
+uint8_t g53_chain_level(uint8_t assist_level);
 void g53_chain_reset(void);
 void g53_chain_step(const g53_chain_input_t *in, g53_chain_output_t *out);
 
