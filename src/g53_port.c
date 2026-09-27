@@ -11,6 +11,14 @@ static uint8_t control_remainder;
 static bool normal_permission;
 static uint32_t dropped_ticks;
 
+/* P9-G5: translate native M820 A/B coordinates only at the G53 behavior seam.
+ * Native PAS decoding and safety continue to consume the original packed value. */
+static uint8_t g53_pas_coordinate(uint8_t native_pas_ab)
+{
+    return (uint8_t)(((native_pas_ab & 0x01u) << 1) |
+                     ((native_pas_ab & 0x02u) >> 1));
+}
+
 void g53_port_reset(void)
 {
     g53_ax_reset();
@@ -43,7 +51,7 @@ void g53_port_update(const g53_port_input_t *in,g53_port_output_t *out)
         g53_chain_input_t ci={0};
         g53_chain_output_t co;
         ci.x=g53_ax_step(in->raw_pa6_adc);
-        ci.pas=g53_pas_step(&pas,in->pas_ab,level);
+        ci.pas=g53_pas_step(&pas,g53_pas_coordinate(in->pas_ab),level);
         const g53_ad7ec_feedback_t feedback={
             .cadence=ci.pas.cadence,
             .speed_native=(uint16_t)(speed>32767u ? 32767u : speed),

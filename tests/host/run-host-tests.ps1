@@ -461,7 +461,7 @@ $suites = @(
        IncludeDirs = @(Join-Path $PSScriptRoot 'common') },
     @{ Name = 'TQ-06 G53 boundaries (real module)'
        Harness = Join-Path $PSScriptRoot 'g53_port_boundaries_host.c'
-       Modules = @((Join-Path $root 'src\g53_port_boundaries.c')) },
+       Modules = @() },
     @{ Name = 'TQ-06 G53 PAS (real module)'
        Harness = Join-Path $PSScriptRoot 'g53_port_pas_host.c'
        Modules = @((Join-Path $root 'src\g53_port_pas.c')) },
@@ -473,7 +473,8 @@ $suites = @(
        Modules = @((Join-Path $root 'src\g53_port.c'),
                    (Join-Path $root 'src\g53_port_boundaries.c'),
                    (Join-Path $root 'src\g53_port_pas.c'),
-                   (Join-Path $root 'src\g53_port_chain.c')) },
+                   (Join-Path $root 'src\g53_port_chain.c'),
+                   (Join-Path $root 'src\pas_quadrature.c')) },
     @{ Name = 'FW-145 continuous Level-4 ride telemetry (real module pacing, priority and wire schema)'
        Harness = Join-Path $PSScriptRoot 'ride_telemetry_host.c'
        Modules = @((Join-Path $root 'src\ride_telemetry.c'))

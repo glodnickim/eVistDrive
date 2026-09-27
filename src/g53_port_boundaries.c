@@ -106,8 +106,8 @@ g53_ad7ec_output_t g53_ad7ec_step(uint16_t load_ctrl,
         ++eb74.out.check_count;
         if (source > eb74.out.threshold) {
             eb74.out.check_count = EB74_CHECK_LENGTH - EB74_CHECK_BACK;
+            eb74.out.rider_input_native = 0;
         }
-        eb74.out.rider_input_native = 0;
         return eb74.out;
     }
     eb74_auto_zero((uint16_t)source, feedback);

@@ -15,6 +15,7 @@
 #include "assist_modes.h"
 #include "ap2_limits.h"
 #include "assist_pipeline.h"
+#include "eb74_invocation_observer.h"
 #include "cadence_filter.h"
 #include "config.h"
 #include "motor_core.h"
@@ -273,6 +274,9 @@ typedef struct {
     bool inject_bounce;
     uint32_t forward_edges;
     bool active;
+    bool torque_active;
+    uint32_t torque_ramp_start_tick;
+    uint32_t torque_ramp_duration_ticks;
     /* +1 normal pedalling, -1 the crank being turned backwards. The rider keeps pushing while
      * it happens - that is the case §19 is about, not a coast. */
     int8_t direction;
@@ -286,6 +290,7 @@ typedef struct {
     plant_t plant;
     rider_plant_t rider;
     uint32_t tick;
+    uint32_t stats_start_tick;
     uint16_t last_forward_gap;
     uint16_t stop_timeout;
     uint8_t start_phase;
@@ -300,9 +305,21 @@ typedef struct {
     double iq_sq_sum_run;
     uint32_t iq_samples_run;
     bool use_filtered_control_cadence;
+    uint16_t wheel_speed_x100;
+    uint16_t phase_current_max;
+    uint16_t speed_limit_x100;
+    uint8_t assist_level_index;
+    bool legal_enabled;
+    bool fixture_public_vector;
+    const uint8_t *pas_fixture;
+    uint32_t pas_fixture_count;
+    uint32_t pas_fixture_start_tick;
     int32_t iq_min_all;
     int32_t iq_max_all;
+    const char *trace_phase;
 } sim_t;
+
+static uint8_t sil_native_pas_from_chain_fixture(uint8_t chain_pas_ab);
 
 /* Raw forward ring for PAS_DIR_SIGN=-1: 00 -> 10 -> 11 -> 01 -> 00. */
 static const uint8_t FWD_AB[4] = {0U, 2U, 3U, 1U};
@@ -470,6 +487,7 @@ static void rider_init(rider_plant_t *r, double rpm, double cadence_ripple_fract
     r->next_pas_edge_rev = 1.0 / (double)PAS_TRANSITIONS_PER_REV;
     r->inject_bounce = bounce;
     r->active = true;
+    r->torque_active = true;
     r->direction = 1;
 }
 
@@ -514,10 +532,18 @@ static uint8_t rider_pas_tick(rider_plant_t *r)
 
 static double rider_torque_ckg(const rider_plant_t *r, uint32_t tick)
 {
-    (void)tick;
-    if (!r->active) return 0.0;
+    if (!r->torque_active) return 0.0;
+    double ramp=1.0;
+    if(r->torque_ramp_duration_ticks!=0U){
+        if(tick<=r->torque_ramp_start_tick)ramp=0.0;
+        else {
+            const uint32_t elapsed=tick-r->torque_ramp_start_tick;
+            ramp=elapsed>=r->torque_ramp_duration_ticks?1.0:
+                (double)elapsed/(double)r->torque_ramp_duration_ticks;
+        }
+    }
     /* two leg pushes per crank revolution; mean plus bounded sinusoidal ripple */
-    double v = r->torque_mean_ckg + r->torque_ripple_ckg * sin(4.0 * PI * r->crank_rev);
+    double v = ramp*(r->torque_mean_ckg + r->torque_ripple_ckg * sin(4.0 * PI * r->crank_rev));
     return v < 0.0 ? 0.0 : v;
 }
 
@@ -551,6 +577,10 @@ static void sim_init(sim_t *s, double rpm, double cadence_ripple_fraction,
     s->iq_min_all = 0x7fffffff;
     s->iq_max_all = -0x7fffffff;
     s->use_filtered_control_cadence = use_filtered_control_cadence;
+    s->phase_current_max = PH_CURRENT_MAX;
+    s->speed_limit_x100 = SPEEDLIMIT;
+    s->assist_level_index = 3U;
+    s->legal_enabled = true;
     /* seed physical PAS state */
     pas_sampler_isr_tick(s->rider.ab, 0U);
 }
@@ -595,7 +625,14 @@ static void sim_ctrl_tick(sim_t *s, FILE *csv)
     s->tick++;
     s->plant.hall_edge_this_ctrl = false;
 
-    uint8_t ab = rider_pas_tick(&s->rider);
+    uint8_t ab;
+    if(s->pas_fixture && s->tick>=s->pas_fixture_start_tick) {
+        uint32_t fixture_tick=(s->tick-s->pas_fixture_start_tick)/4U;
+        ab=fixture_tick<s->pas_fixture_count
+            ? sil_native_pas_from_chain_fixture(s->pas_fixture[fixture_tick]) : s->rider.ab;
+    } else {
+        ab=rider_pas_tick(&s->rider);
+    }
     process_pas(s, ab);
 
     uint32_t idle = s->tick - pas_sampler_last_transition_tick();
@@ -627,10 +664,13 @@ static void sim_ctrl_tick(sim_t *s, FILE *csv)
     r.torque_assist_now_native = ts->assist_delta_native;
     r.torque_assist_filtered = ts->assist_delta_filtered_native;
     r.torque_run_filtered = ts->assist_delta_run_native;
-    r.torque_load_ctrl = ts->load_ctrl;
-    r.torque_load_centikg = ts->load_centikg;
+    r.torque_load_ctrl = s->fixture_public_vector
+        ? (((s->tick-s->pas_fixture_start_tick)/4U)>=130U ? 12000U : 0U)
+        : ts->load_ctrl;
+    r.torque_load_centikg = s->fixture_public_vector
+        ? (r.torque_load_ctrl ? 6000U : 0U) : ts->load_centikg;
     r.cadence_rpm = control_cadence;
-    r.wheel_speed_x100 = 0U;
+    r.wheel_speed_x100 = s->wheel_speed_x100;
     r.motor_erps = (uint16_t)(s->plant.erps > 65535.0 ? 65535.0 : llround(s->plant.erps));
     r.motor_erps_age_ticks = s->plant.hall_age_ticks;
     /* Approximate increasing electrical voltage utilization with motor speed. At standstill the
@@ -652,7 +692,7 @@ static void sim_ctrl_tick(sim_t *s, FILE *csv)
     r.crank_forward_steps = pas_direction_fwd_run();
     r.crank_direction_ok = crank_direction_ok;
     r.real_stop = real_stop;
-    r.wheel_valid = false;
+    r.wheel_valid = true;
     r.direction_inhibit_active = pas_direction_direction_inhibit_active();
     r.forward_confirmed_this_tick = pas_direction_forward_confirmed_last_call();
     r.sample_tick = s->tick;
@@ -663,13 +703,14 @@ static void sim_ctrl_tick(sim_t *s, FILE *csv)
 
     ride_control_input_t in;
     memset(&in, 0, sizeof(in));
-    in.speed_x100 = 0U;
+    in.pas_ab = pas_sampler_state();
+    in.speed_x100 = s->wheel_speed_x100;
     in.cadence_rpm = control_cadence;
-    in.assist_level_index = 3U; /* default Power level 3 */
+    in.assist_level_index = s->assist_level_index;
     in.battery_voltage_mv = TEST_BATTERY_MV;
-    in.iq_scale = PH_CURRENT_MAX;
-    in.ride_core_iq_limit = PH_CURRENT_MAX;
-    in.phase_current_max = PH_CURRENT_MAX;
+    in.iq_scale = s->phase_current_max;
+    in.ride_core_iq_limit = s->phase_current_max;
+    in.phase_current_max = s->phase_current_max;
     in.battery_current_mA = 0;
     in.battery_current_max = 15000;
     in.u_abs =
@@ -695,8 +736,8 @@ static void sim_ctrl_tick(sim_t *s, FILE *csv)
     in.voltage_min_raw = VOLTAGE_MIN;
     in.controller_temperature_c = TEST_TEMP_C;
     in.cadence_filtered_x8 = cadence_filter_get_x8();
-    in.speed_limit_x100 = SPEEDLIMIT;
-    in.legal_enabled = true;
+    in.speed_limit_x100 = s->speed_limit_x100;
+    in.legal_enabled = s->legal_enabled;
     in.elapsed_ticks = 1U;
     ride_control_update(&in);
 
@@ -720,7 +761,7 @@ static void sim_ctrl_tick(sim_t *s, FILE *csv)
     if (s->MS.i_q_setpoint > s->iq_max_all) s->iq_max_all = s->MS.i_q_setpoint;
     if (r.direction_inhibit_active) s->direction_inhibit_ticks++;
 
-    if (s->tick > 2U * CTRL_HZ) {
+    if (s->tick > s->stats_start_tick + 2U * CTRL_HZ) {
         int32_t iq = s->MS.i_q_setpoint;
         if (iq < s->iq_min_run) s->iq_min_run = iq;
         if (iq > s->iq_max_run) s->iq_max_run = iq;
@@ -731,17 +772,39 @@ static void sim_ctrl_tick(sim_t *s, FILE *csv)
 
     if (csv && (s->tick % 4U) == 0U) {
         const assist_pipeline_telemetry_t *mo = assist_pipeline_telemetry();
-        fprintf(csv, "%u,%u,%u,%u,%u,%d,%.3f,%.3f,%u,%u,%u,%u,%u,%u,%d\n",
-            s->tick, ab, pas_direction_fwd_run(), s->MS.cadence,
-            cadence_filter_get(), s->MS.i_q_setpoint,
-            s->plant.iq_actual, s->plant.erps, s->plant.hall_age_ticks,
-            ride_control_get_session_state(), assist_pipeline_reason_bits(),
-            ts->load_centikg, ts->assist_delta_filtered_native,
-            ts->assist_delta_run_native, mo->iq_request_before_limits);
+        const g53_port_output_t *g=assist_pipeline_g53();
+        uint32_t pre_eb74=750U+((uint32_t)r.torque_load_ctrl*2450U)/6000U;
+        if(pre_eb74>3200U)pre_eb74=3200U;
+        fprintf(csv,"%s,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%d,%d,%d,%d,%d,%d,%d,%d,%u,%d,%u,%d,%d,%d,%u,%u,%u,%d,%u,%u,%d,%d,%.3f,%.3f,%u,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+            s->trace_phase?s->trace_phase:"RIDE",s->tick,ab,pas_sampler_state(),pas_direction_fwd_run(),
+            s->MS.cadence,cadence_filter_get(),r.crank_direction_ok?1U:0U,
+            r.direction_inhibit_active?1U:0U,r.real_stop?1U:0U,r.torque_load_ctrl,pre_eb74,
+            g->trace.pas_code,g->trace.pas_direction,g->trace.cadence,g->trace.rider_input_native,
+            g->trace.d7ec_rider,g->trace.e1e8_output,g->trace.bde8_q50,g->trace.m2aa,
+            g->normal_permission?1U:0U,g->iq_request_pre_limits,mo->assist_permitted?1U:0U,
+            mo->iq_request_before_limits,mo->final_iq_request,mo->iq_ceiling,
+            mo->limiter_zeroed?1U:0U,mo->block_positive?1U:0U,assist_pipeline_reason_bits(),
+            s->MS.i_q_setpoint,s->plant.hall_age_ticks,r.torque_load_centikg,
+            ts->assist_delta_filtered_native,ts->assist_delta_run_native,
+            s->plant.iq_actual,s->plant.erps,ride_control_get_session_state(),g->trace.fsm_state,
+            g->trace.fsm_output,g->trace.fsm_t34,g->trace.e1e8_state,g->trace.e1e8_output_factor,
+            g->trace.bde8_q50,g->trace.m298,g->trace.m2aa,g->trace.x,g->trace.d7ec_envelope,
+            g->trace.d7ec_accel,g->trace.e1e8_pi,g->trace.e1e8_target,g->trace.e1e8_latch,
+            g->trace.bde8_q5a,g->trace.bde8_q5c,g->trace.bde8_mode,g->trace.bde8_demand,
+            g->trace.evidence,g->trace.movement);
     }
 }
 
+static bool sim_criterion_c_start(sim_t *s,double mean_ckg,double ripple_ckg);
+
 static uint32_t fuzz_state = 0xE7157A39U;
+
+static uint8_t sil_native_pas_from_chain_fixture(uint8_t chain_pas_ab)
+{
+    /* chain-reference.csv records the accepted G53-side coordinate. Feed the native
+     * quadrature decoder the inverse P9-G5 swap so native safety sees native A/B. */
+    return (uint8_t)(((chain_pas_ab & 0x01U) << 1) | ((chain_pas_ab & 0x02U) >> 1));
+}
 
 static uint32_t fuzz_u32(void)
 {
@@ -774,11 +837,21 @@ static int run_fuzz(unsigned count)
         bool bounce = (fuzz_u32() & 1U) != 0U;
 
         sim_t s;
+        l4_eb74_observer_reset();
         sim_init(&s, rpm, cadence_ripple, mean_ckg, torque_ripple, bounce,
             breakaway_iq, true);
 #ifdef EVD_SIL_REAL_FOC
         plant_set_start_angle(&s.plant, fuzz_range(0.0, 1.0));
 #endif
+        const uint32_t generated_state=fuzz_state;
+        const bool startup_ok=sim_criterion_c_start(&s,mean_ckg,torque_ripple);
+        if(!startup_ok || fuzz_state!=generated_state){
+            fprintf(stderr,"FUZZ startup/prehistory FAIL case=%u startup=%u prng=%08X/%08X\n",
+                i,startup_ok?1U:0U,generated_state,fuzz_state);
+            failures++;
+            if(failures>=10U)break;
+            continue;
+        }
         uint32_t n = 2U * CTRL_HZ;
         for (uint32_t t = 0U; t < n; t++) sim_ctrl_tick(&s, NULL);
 
@@ -826,11 +899,73 @@ static int run_fuzz(unsigned count)
 static int run_stop_restart_scenario(void)
 {
     sim_t s;
+    l4_eb74_observer_reset();
     sim_init(&s, 60.0, 0.20, 1800.0, 400.0, false, 8.0, true);
+    FILE *trace=fopen(".build/sil/stop_restart.csv","wb");
+    if(!trace){perror(".build/sil/stop_restart.csv");return 1;}
+    fputs("phase,tick,native_ab,input_pas_ab,native_fwd_run,native_cadence,cadence_filtered,native_forward_valid,direction_inhibit,real_stop,load_ctrl,mapped_preEB74,g53_pas_code,g53_direction,g53_cadence,rider_input_native,d7ec_rider,e1e8_output,bde8_q50,m2aa,normal_permission,iq_boundary_b,assist_permitted,iq_pre_limits,final_request,iq_ceiling,limiter_zeroed,block_positive,reason_bits,iq_ref,hall_age,load_ckg,torque_fast,torque_run,iq_actual,erps,session,fsm_state,fsm_output,fsm_t34,e1e8_state,e1e8_factor,bde8_q50_2,m298,m2aa_stage,x,d7ec_envelope,d7ec_accel,e1e8_pi,e1e8_target,e1e8_latch,bde8_q5a,bde8_q5c,bde8_mode,bde8_demand,g53_evidence,g53_movement\n",trace);
 
-    /* Establish a normal ACTIVE ride first. */
-    for (uint32_t i = 0U; i < 2U * CTRL_HZ; i++) sim_ctrl_tick(&s, NULL);
+    /* Criterion-C cold start: qualify with the real, unloaded production-port lifecycle.
+     * This is a physical start stimulus (no rider torque and no PAS), not G7 fuzz prehistory
+     * and not a controller-state seed.  Count actual EB74 wrapper calls, one per control update. */
+    s.rider.active = false;
+    s.rider.torque_active = false;
+    s.trace_phase="COLD_UNLOADED_QUALIFICATION";
+    while (l4_eb74_observer_count() < 131U && s.tick < 1000U) {
+        uint32_t before=l4_eb74_observer_count();
+        sim_ctrl_tick(&s,trace);
+        l4_eb74_observation_t obs=l4_eb74_observer_last();
+        uint32_t after=l4_eb74_observer_count();
+        if (after<before || after>before+1U ||
+            (after!=before && (obs.load_ctrl!=0U || obs.output.pre_eb74!=750U ||
+                               obs.output.rider_input_native!=0))) {
+            fclose(trace);
+            fprintf(stderr,"STOP_RESTART COLD QUALIFICATION FAIL: tick=%u calls=%u load=%u preEB74=%u rider=%d\n",
+                s.tick,l4_eb74_observer_count(),obs.load_ctrl,obs.output.pre_eb74,obs.output.rider_input_native);
+            return 1;
+        }
+    }
+    l4_eb74_observation_t qualified=l4_eb74_observer_last();
+    if (l4_eb74_observer_count()!=131U || s.tick!=524U ||
+        qualified.output.check_count==0U || qualified.output.rider_input_native!=0 ||
+        s.rider.active || pas_direction_fwd_run()!=0U) {
+        fclose(trace);
+        fprintf(stderr,"STOP_RESTART COLD QUALIFICATION FAIL: ticks=%u EB74=%u check=%u rider=%d PASsteps=%u\n",
+            s.tick,l4_eb74_observer_count(),qualified.output.check_count,
+            qualified.output.rider_input_native,pas_direction_fwd_run());
+        return 1;
+    }
+    printf("STOP_RESTART COLD QUALIFICATION PASS: cold reset, unloaded/no-PAS, actual EB74 calls=%u, control ticks=%u, preEB74=%u, check=%u\n",
+        l4_eb74_observer_count(),s.tick,qualified.output.pre_eb74,qualified.output.check_count);
+    s.fixture_public_vector=false;
+    s.pas_fixture=NULL;
+    s.pas_fixture_count=0U;
+    s.pas_fixture_start_tick=s.tick+1U;
+    s.assist_level_index=3U;
+    s.wheel_speed_x100 = 234U;
+    s.phase_current_max = 900U;
+    s.legal_enabled = false;
+    s.rider.torque_mean_ckg = 6000.0;
+    s.rider.torque_ripple_ckg = 400.0;
+    s.rider.torque_active = true;
+    s.rider.torque_ramp_start_tick=s.tick;
+    s.rider.torque_ramp_duration_ticks=CTRL_HZ;
+    s.trace_phase="TORQUE_RISE_BEFORE_PAS";
+    for(uint32_t i=0U;i<CTRL_HZ;i++)sim_ctrl_tick(&s,trace);
+    if(pas_direction_fwd_run()!=0U || s.MS.i_q_setpoint!=0 ||
+       s.first_permission_tick!=0U || rider_torque_ckg(&s.rider,s.tick)<5999.0 ||
+       torque_input_get_snapshot()->load_ctrl==0U){
+        fclose(trace);
+        fprintf(stderr,"STOP_RESTART FAIL: torque-rise pre-PAS phase did not remain unassisted\n");
+        return 1;
+    }
+    s.rider.active = true;
+    s.trace_phase="ACTIVE_START";
+
+    /* Real forward PAS plus rising physical rider-torque input after cold qualification. */
+    for (uint32_t i = 0U; i < 4U * CTRL_HZ; i++) sim_ctrl_tick(&s, trace);
     if (s.MS.i_q_setpoint <= 0 || s.first_permission_tick == 0U) {
+        fclose(trace);
         fprintf(stderr, "STOP_RESTART FAIL: did not establish ACTIVE ride\n");
         return 1;
     }
@@ -838,31 +973,70 @@ static int run_stop_restart_scenario(void)
     const uint32_t stop_tick = s.tick;
     const int32_t iq_at_release = s.MS.i_q_setpoint;
     s.rider.active = false;
+    s.rider.torque_active = false;
+    s.fixture_public_vector=false;
+    s.pas_fixture=NULL;
+    s.trace_phase="REAL_STOP_RELEASE";
     uint32_t zero_tick = 0U;
     int32_t prev_iq = s.MS.i_q_setpoint;
     int32_t max_fall_step = 0;
     for (uint32_t i = 0U; i < 2U * CTRL_HZ; i++) {
-        sim_ctrl_tick(&s, NULL);
+        sim_ctrl_tick(&s, trace);
         int32_t d = prev_iq - s.MS.i_q_setpoint;
         if (d > max_fall_step) max_fall_step = d;
         prev_iq = s.MS.i_q_setpoint;
         if (!zero_tick && s.MS.i_q_setpoint == 0) zero_tick = s.tick;
     }
     if (!zero_tick || s.MS.i_q_setpoint != 0) {
+        fclose(trace);
         fprintf(stderr, "STOP_RESTART FAIL: normal stop never reached Iq=0\n");
         return 1;
     }
 
     /* Restart from a true stopped/PAS-reset state. No stale Iq may survive. */
     const uint32_t restart_tick = s.tick;
+    s.fixture_public_vector=false;
+    s.pas_fixture=NULL;
+    s.pas_fixture_count=0U;
+    s.rider.active = false;
+    s.rider.torque_active = true;
+    s.rider.torque_mean_ckg = 6000.0;
+    s.rider.torque_ripple_ckg = 400.0;
+    s.rider.torque_ramp_start_tick=s.tick;
+    s.rider.torque_ramp_duration_ticks=CTRL_HZ;
+    s.trace_phase="RESTART_TORQUE_RISE_NO_PAS";
+    bool restart_stale_positive=false;
+    for(uint32_t i=0U;i<CTRL_HZ;i++){
+        sim_ctrl_tick(&s,trace);
+        const g53_port_output_t *g=assist_pipeline_g53();
+        const assist_pipeline_telemetry_t *t=assist_pipeline_telemetry();
+        if(g->m2aa_native!=0U || g->iq_request_pre_limits!=0 ||
+           t->iq_request_before_limits!=0 || t->final_iq_request!=0 ||
+           t->assist_permitted || s.MS.i_q_setpoint!=0)restart_stale_positive=true;
+    }
+    const g53_port_output_t *restart_pre_pas=assist_pipeline_g53();
+    if(restart_stale_positive || pas_direction_fwd_run()!=0U){
+        fclose(trace);
+        fprintf(stderr,"DISC-007 OBSERVED: positive/stale demand during no-PAS restart torque rise; M2AA=%u boundaryB=%d final=%d ref=%d permission=%u G53-normal-permission=%u\n",
+            restart_pre_pas->m2aa_native,restart_pre_pas->iq_request_pre_limits,
+            assist_pipeline_telemetry()->final_iq_request,s.MS.i_q_setpoint,
+            assist_pipeline_telemetry()->assist_permitted?1U:0U,
+            restart_pre_pas->normal_permission?1U:0U);
+        return 1;
+    }
+    printf("DISC-007 NOT_TRIGGERED: no M2AA/Boundary-B/pre-limit/final/ref positive demand before fresh PAS; G53 normal_permission=%u but native stop veto keeps assist_permitted=%u\n",
+        restart_pre_pas->normal_permission?1U:0U,
+        assist_pipeline_telemetry()->assist_permitted?1U:0U);
     s.rider.active = true;
+    s.rider.torque_ramp_duration_ticks=0U;
+    s.trace_phase="RESTART_AFTER_STOP";
     uint32_t restart_permission = 0U;
     uint32_t restart_first_iq = 0U;
     int32_t first_positive_iq = 0;
     int32_t max_rise_step = 0;
     prev_iq = s.MS.i_q_setpoint;
     for (uint32_t i = 0U; i < 2U * CTRL_HZ; i++) {
-        sim_ctrl_tick(&s, NULL);
+        sim_ctrl_tick(&s, trace);
         int32_t d = s.MS.i_q_setpoint - prev_iq;
         if (d > max_rise_step) max_rise_step = d;
         prev_iq = s.MS.i_q_setpoint;
@@ -873,6 +1047,7 @@ static int run_stop_restart_scenario(void)
             first_positive_iq = s.MS.i_q_setpoint;
         }
     }
+    fclose(trace);
 
     bool ok = restart_permission != 0U && restart_first_iq != 0U &&
               restart_first_iq >= restart_permission &&
@@ -915,6 +1090,7 @@ static int run_stop_restart_scenario(void)
  * backends, so one threshold reads the same in each.
  */
 #define AXIS_CURRENT_ZERO_COUNTS 2   /* ~0.19 A in the modelled machine: electrically down */
+#define AXIS_REAL_STOP_SAFETY_MS 200U /* Frozen M820 safety release, independent of assist profile. */
 
 typedef struct {
     const char *name;
@@ -952,18 +1128,53 @@ static double axis_ms_signed(uint32_t from, uint32_t to)
 static int run_stop_reverse_axis(bool reverse, axis_result_t *out)
 {
     sim_t s;
+    l4_eb74_observer_reset();
     sim_init(&s, 60.0, 0.20, 1800.0, 400.0, false, 8.0, true);
     memset(out, 0, sizeof(*out));
     out->name = reverse ? "reverse" : "stop";
     out->reverse = reverse;
 
+    /* The axis measurement starts from the same genuine Criterion-C lifecycle as
+     * STOP_RESTART: cold/reset, 131 real unloaded EB74 calls, then a rising torque
+     * input before PAS edges begin. This is harness setup, not controller seeding. */
+    s.rider.active=false;
+    s.rider.torque_active=false;
+    while(l4_eb74_observer_count()<131U && s.tick<1000U)sim_ctrl_tick(&s,NULL);
+    const l4_eb74_observation_t qualified=l4_eb74_observer_last();
+    if(l4_eb74_observer_count()!=131U || s.tick!=524U ||
+       qualified.load_ctrl!=0U || qualified.output.pre_eb74!=750U ||
+       qualified.output.rider_input_native!=0 || s.rider.active ||
+       pas_direction_fwd_run()!=0U){
+        fprintf(stderr,"AXIS %s FAIL: cold unloaded EB74 qualification did not complete\n",out->name);
+        return 1;
+    }
+    s.assist_level_index=3U;
+    s.wheel_speed_x100=234U;
+    s.phase_current_max=900U;
+    s.legal_enabled=false;
+    s.rider.torque_mean_ckg=6000.0;
+    s.rider.torque_ripple_ckg=400.0;
+    s.rider.torque_active=true;
+    s.rider.torque_ramp_start_tick=s.tick;
+    s.rider.torque_ramp_duration_ticks=CTRL_HZ;
+    for(uint32_t i=0U;i<CTRL_HZ;i++)sim_ctrl_tick(&s,NULL);
+    if(pas_direction_fwd_run()!=0U || s.MS.i_q_setpoint!=0 ||
+       s.first_permission_tick!=0U || rider_torque_ckg(&s.rider,s.tick)<5999.0 ||
+       torque_input_get_snapshot()->load_ctrl==0U){
+        fprintf(stderr,"AXIS %s FAIL: rising torque phase became assisted before PAS\n",out->name);
+        return 1;
+    }
+    s.rider.active=true;
+    s.rider.torque_ramp_duration_ticks=0U;
     for (uint32_t i = 0U; i < 2U * CTRL_HZ; i++) sim_ctrl_tick(&s, NULL);
     if (s.MS.i_q_setpoint <= 0 || assist_pipeline_pas_state() != AP2_PAS_FORWARD) {
         fprintf(stderr, "AXIS %s FAIL: did not establish an ACTIVE ride\n", out->name);
         return 1;
     }
     out->iq_at_event = s.MS.i_q_setpoint;
-    out->release_ms = assist_pipeline_telemetry()->release_ms;
+    /* The normal ride is BYPASS, so profile release_ms is zero here. A true
+     * native real-stop selects SAFETY and owns the fixed 200 ms trajectory. */
+    out->release_ms = reverse ? 0U : AXIS_REAL_STOP_SAFETY_MS;
     out->last_edge_tick = pas_sampler_last_transition_tick();
     out->event_tick = s.tick;
 
@@ -1069,19 +1280,62 @@ static int run_stop_reverse_axis_scenarios(void)
     return bad;
 }
 
+/* Start a real positive ride after a cold port reset: unloaded EB74 qualification,
+ * measured torque rise with no PAS, then physical forward PAS. No private state is seeded. */
+static bool sim_criterion_c_start(sim_t *s,double mean_ckg,double ripple_ckg)
+{
+    s->rider.active=false;
+    s->rider.torque_active=false;
+    while(l4_eb74_observer_count()<131U && s->tick<1000U){
+        const uint32_t before=l4_eb74_observer_count();
+        sim_ctrl_tick(s,NULL);
+        const l4_eb74_observation_t obs=l4_eb74_observer_last();
+        const uint32_t after=l4_eb74_observer_count();
+        if(after<before || after>before+1U ||
+           (after!=before && (obs.load_ctrl!=0U || obs.output.pre_eb74!=750U ||
+                              obs.output.rider_input_native!=0)))return false;
+    }
+    const l4_eb74_observation_t qualified=l4_eb74_observer_last();
+    if(l4_eb74_observer_count()!=131U || s->tick!=524U ||
+       qualified.output.check_count==0U || qualified.output.rider_input_native!=0 ||
+       s->rider.active || pas_direction_fwd_run()!=0U)return false;
+    s->rider.torque_mean_ckg=mean_ckg;
+    s->rider.torque_ripple_ckg=ripple_ckg;
+    s->rider.torque_active=true;
+    s->rider.torque_ramp_start_tick=s->tick;
+    s->rider.torque_ramp_duration_ticks=CTRL_HZ;
+    for(uint32_t i=0U;i<CTRL_HZ;i++)sim_ctrl_tick(s,NULL);
+    const double torque_end=rider_torque_ckg(&s->rider,s->tick);
+    const uint16_t load_end=torque_input_get_snapshot()->load_ctrl;
+    if(pas_direction_fwd_run()!=0U || s->MS.i_q_setpoint!=0 ||
+       s->first_permission_tick!=0U || torque_end<mean_ckg-1.0 || load_end==0U){
+        fprintf(stderr,"Criterion-C torque ramp invalid: steps=%u iq=%d perm=%u torque=%.1f/%.1f load=%u\n",
+            pas_direction_fwd_run(),s->MS.i_q_setpoint,s->first_permission_tick,torque_end,mean_ckg,load_end);
+        return false;
+    }
+    s->rider.active=true;
+    s->rider.torque_ramp_duration_ticks=0U;
+    s->stats_start_tick=s->tick;
+    return true;
+}
+
 static void run_scenario(const char *name, double rpm, double cadence_ripple_fraction,
                          double mean_ckg, double ripple_ckg, bool bounce,
                          double breakaway_iq, bool filtered_cadence, double seconds)
 {
     sim_t s;
+    l4_eb74_observer_reset();
     sim_init(&s, rpm, cadence_ripple_fraction, mean_ckg, ripple_ckg, bounce,
         breakaway_iq, filtered_cadence);
     char path[256];
     snprintf(path, sizeof(path), ".build/sil/%s.csv", name);
     FILE *f = fopen(path, "w");
     if (!f) { perror(path); exit(2); }
-    fprintf(f, "tick,ab,fwd_run,cadence_raw,cadence_filtered,iq_ref,iq_actual,erps,hall_age,session,debug,load_ckg,torque_fast,torque_run,iq_request\n");
+    fprintf(f,"phase,tick,native_ab,input_pas_ab,native_fwd_run,native_cadence,cadence_filtered,native_forward_valid,direction_inhibit,real_stop,load_ctrl,mapped_preEB74,g53_pas_code,g53_direction,g53_cadence,rider_input_native,d7ec_rider,e1e8_output,bde8_q50,m2aa,normal_permission,iq_boundary_b,assist_permitted,iq_pre_limits,final_request,iq_ceiling,limiter_zeroed,block_positive,reason_bits,iq_ref,hall_age,load_ckg,torque_fast,torque_run,iq_actual,erps,session\n");
+    const bool startup_ok=sim_criterion_c_start(&s,mean_ckg,ripple_ckg);
+    if(!startup_ok)fprintf(stderr,"SCENARIO %s FAIL: real cold Criterion-C startup did not complete\n",name);
     uint32_t n = (uint32_t)(seconds * CTRL_HZ);
+    s.trace_phase=name;
     for (uint32_t i = 0; i < n; i++) sim_ctrl_tick(&s, f);
     fclose(f);
 
@@ -1089,9 +1343,9 @@ static void run_scenario(const char *name, double rpm, double cadence_ripple_fra
     double var = s.iq_samples_run ? s.iq_sq_sum_run / s.iq_samples_run - mean * mean : 0.0;
     if (var < 0.0) var = 0.0;
     double std = sqrt(var);
-    double permission_ms = s.first_permission_tick ? 1000.0 * s.first_permission_tick / CTRL_HZ : -1.0;
-    double iq_ms = s.first_iq_tick ? 1000.0 * s.first_iq_tick / CTRL_HZ : -1.0;
-    double hall_ms = s.first_hall_tick ? 1000.0 * s.first_hall_tick / CTRL_HZ : -1.0;
+    double permission_ms = s.first_permission_tick ? 1000.0 * (s.first_permission_tick-s.stats_start_tick) / CTRL_HZ : -1.0;
+    double iq_ms = s.first_iq_tick ? 1000.0 * (s.first_iq_tick-s.stats_start_tick) / CTRL_HZ : -1.0;
+    double hall_ms = s.first_hall_tick ? 1000.0 * (s.first_hall_tick-s.stats_start_tick) / CTRL_HZ : -1.0;
     double perm_to_hall = (s.first_permission_tick && s.first_hall_tick) ?
         1000.0 * (s.first_hall_tick - s.first_permission_tick) / CTRL_HZ : -1.0;
     printf("SCENARIO %-18s permission=%7.2fms firstIq=%7.2fms firstHall=%7.2fms perm->Hall=%7.2fms falseR=%u inhibitTicks=%u steadyIqMean=%.1f std=%.1f pp=%d"
@@ -1314,9 +1568,14 @@ static int run_hall_start_angle_sweep(void)
     for (int deg = 0; deg < 360; deg += 15) {
         for (int load = 0; load < 2; load++) {
             sim_t s;
+            l4_eb74_observer_reset();
             sim_init(&s, 40.0, 0.20, 1800.0, 400.0, false,
                      load ? 15.0 : 6.0, true);
             plant_set_start_angle(&s.plant, (double)deg / 360.0);
+            if(!sim_criterion_c_start(&s,1800.0,400.0)){
+                failures++;
+                continue;
+            }
             for (uint32_t i = 0; i < CTRL_HZ; i++) sim_ctrl_tick(&s, NULL);
             double ms = (s.first_permission_tick && s.first_hall_tick) ?
                 1000.0 * (double)(s.first_hall_tick - s.first_permission_tick) / CTRL_HZ : 1e9;

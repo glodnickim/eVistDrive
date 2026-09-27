@@ -1125,31 +1125,35 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 		case 0x6029: //FW-015/017: read ride diagnostics v2 (peak-hold + current) (Canable only)
 			if(Ext_ID_Rx.operation==1 && Ext_ID_Rx.source==5){
 				const assist_pipeline_telemetry_t* cur = assist_pipeline_telemetry();
+				const g53_port_output_t* g53 = assist_pipeline_g53();
 				const rider_input_t* rin = rider_input_get();
+				extern uint8_t overtemp_stage;
 				uint32_t pas_ms = pas_idle_ticks/4U; if(pas_ms>65535)pas_ms=65535; //~4 ticks/ms @4kHz
+				const bool native_safety_cut = MS->brake_active_flag || overtemp_stage >= 2 ||
+					torque_fault || torque_input_calibration_active();
 				uint8_t flags = (cur->assist_permitted?0x01:0) |
-				                (rin->pedaling_active?0x02:0) |
-				                (MS->brake_active_flag?0x04:0) |
+				                (rin->crank_direction_ok?0x02:0) |
+				                (native_safety_cut?0x04:0) |
 				                (torque_fault?0x08:0) |
-				                (pas_direction_backpedal_confirmed()?0x10:0) |
-				                (torque_input_calibration_active()?0x20:0) |
-				                ((hmi_seen && hmi_lost_ticks>=COMM_CUT_TICKS)?0x40:0) |
+				                (pas_direction_direction_inhibit_active()?0x10:0) |
+				                (rin->real_stop?0x20:0) |
+				                (torque_input_calibration_active()?0x40:0) |
 				                (ui_8_PWM_ON_Flag?0x80:0);
 				//One pipeline, one source: the assist request before the limiter chain.
 				int32_t cur_iqr = cur->iq_request_before_limits;
-				if(cur_iqr<0)cur_iqr=0;
-				if(cur_iqr>32767)cur_iqr=32767;
-				int32_t cur_iqs = MS->i_q_setpoint; if(cur_iqs<0)cur_iqs=0; if(cur_iqs>32767)cur_iqs=32767;
+				if(cur_iqr>32767)cur_iqr=32767; else if(cur_iqr<-32768)cur_iqr=-32768;
+				int32_t cur_allowed_iq = cur->final_iq_request;
+				if(cur_allowed_iq>32767)cur_allowed_iq=32767; else if(cur_allowed_iq<-32768)cur_allowed_iq=-32768;
+				int32_t cur_iqs = MS->i_q_setpoint; if(cur_iqs>32767)cur_iqs=32767; else if(cur_iqs<-32768)cur_iqs=-32768;
+				int32_t peak_iqs = diag_peak_iq_set; if(peak_iqs<0)peak_iqs=0; if(peak_iqs>32767)peak_iqs=32767;
+				int32_t d7ec_rider = g53->trace.d7ec_rider; if(d7ec_rider<0)d7ec_rider=0; if(d7ec_rider>65535)d7ec_rider=65535;
 				uint8_t dg[72];
 				/*
-				 * 'D''G' ver7 (71 B). SAME LENGTH, SAME CRC, NEW MEANINGS for the slots whose
-				 * concepts went away with the legacy assist pipeline (Extended Boost state, the
-				 * launch/measured-duty crossfade, cadence compensation). The version byte is what
-				 * makes that a versioned change rather than a silent reinterpretation: a decoder
-				 * that knows only ver6 sees 7 and stops instead of reading Extended Boost numbers
-				 * out of the AUTO factor. See protocol/RIDE_DIAGNOSTICS_6029.md for the map.
+				 * 'D''G' ver8 (71 B). Same length and CRC; v1-v7 remain historical. This frozen
+				 * map reports native G53 stages and safety/limiter facts without presenting retired
+				 * AP2 estimators or profiles as active owners. See protocol/RIDE_DIAGNOSTICS_6029.md.
 				 */
-				dg[0]=0x44; dg[1]=0x47; dg[2]=7;
+				dg[0]=0x44; dg[1]=0x47; dg[2]=8;
 				dg[3]=DIAG_ENGINE_ID_RIDE_CORE; //deprecated protocol field, see the define
 				uint32_t bcur = diag_peak_motor_w ? ((uint32_t)diag_peak_motor_w*1000000UL)/(MS->Voltage?MS->Voltage:40000) : 0; if(bcur>65535)bcur=65535;
 				int32_t iqr = diag_peak_iq_req; if(iqr>32767)iqr=32767; else if(iqr<0)iqr=0;
@@ -1160,35 +1164,37 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 				dg[12]=diag_peak_motor_w&0xFF; dg[13]=(diag_peak_motor_w>>8)&0xFF;
 				dg[14]=bcur&0xFF; dg[15]=(bcur>>8)&0xFF;
 				dg[16]=iqr&0xFF; dg[17]=(iqr>>8)&0xFF;
-				dg[18]=diag_peak_iq_set&0xFF; dg[19]=(diag_peak_iq_set>>8)&0xFF; //peak setpoint reaching FOC
+				dg[18]=peak_iqs&0xFF; dg[19]=(peak_iqs>>8)&0xFF;               //peak setpoint reaching FOC
 				dg[20]=MS->Speedx100&0xFF; dg[21]=(MS->Speedx100>>8)&0xFF;
 				dg[22]=pas_ms&0xFF; dg[23]=(pas_ms>>8)&0xFF;                       //current pas_idle_ms
-				dg[24]=cur->rider_demand_permille&0xFF; dg[25]=(cur->rider_demand_permille>>8)&0xFF; //v7: rider_demand [permille]
-				dg[26]=cur_iqr&0xFF; dg[27]=(cur_iqr>>8)&0xFF;                     //current iq request before final ramp (effective)
+				dg[24]=d7ec_rider&0xFF; dg[25]=(d7ec_rider>>8)&0xFF;           //G53 D7EC rider output
+				dg[26]=cur_allowed_iq&0xFF; dg[27]=(cur_allowed_iq>>8)&0xFF;         //final allowed Iq before final slew, signed
 				dg[28]=cur_iqs&0xFF; dg[29]=(cur_iqs>>8)&0xFF;                     //current iq_setpoint
-				dg[30]=cur->assist_base_permille&0xFF; dg[31]=(cur->assist_base_permille>>8)&0xFF; //v7: assist_base [permille]
+				int32_t envelope=g53->trace.d7ec_envelope; if(envelope<0)envelope=0; if(envelope>65535)envelope=65535;
+				dg[30]=envelope&0xFF; dg[31]=(envelope>>8)&0xFF;                  //D7EC envelope, native
 				int32_t cur_iqm=MS->i_q; if(cur_iqm>32767)cur_iqm=32767; else if(cur_iqm<-32768)cur_iqm=-32768; //measured i_q (signed, actual FOC current)
 				dg[32]=cur_iqm&0xFF; dg[33]=(cur_iqm>>8)&0xFF;                     //FW-033: measured i_q (command vs actual test)
 				dg[34]=(BC_limit_flag?0x01:0);                                    //FW-033: bit0 = battery-current limiter active
-				dg[35]=cur->assist_dynamic_permille&0xFF; dg[36]=(cur->assist_dynamic_permille>>8)&0xFF; //v7: assist_dynamic [permille]
-				dg[37]=cur->rider_aggression_permille&0xFF; dg[38]=(cur->rider_aggression_permille>>8)&0xFF; //v7: rider_aggression [permille]
+				int32_t accel=g53->trace.d7ec_accel; if(accel<0)accel=0; if(accel>65535)accel=65535;
+				dg[35]=accel&0xFF; dg[36]=(accel>>8)&0xFF;                        //D7EC accel, native
+				int32_t e1e8=g53->trace.e1e8_output; if(e1e8<0)e1e8=0; if(e1e8>65535)e1e8=65535;
+				dg[37]=e1e8&0xFF; dg[38]=(e1e8>>8)&0xFF;                          //E1E8 output, native
 				dg[39]=diag_peak_u_abs&0xFF; dg[40]=(diag_peak_u_abs>>8)&0xFF;                     //peak u_abs (saturates at _U_MAX)
 				uint16_t pack_mv=(MS->Voltage>65535)?65535:(uint16_t)MS->Voltage;
 				dg[41]=pack_mv&0xFF; dg[42]=(pack_mv>>8)&0xFF;                                     //pack voltage [mV]
 				dg[43]=rin->cadence_rpm;                                                           //current cadence (not peak-held)
-				//v7: which stage of the ONE limiter chain was binding this tick.
+				//v8: native limiter, zeroing and G53 normal-permission facts.
 				dg[44]=(uint8_t)((cur->power_limited?0x01:0) | (cur->battery_limited?0x02:0) |
 				                 (cur->phase_limited?0x04:0) | (cur->voltage_limited?0x08:0) |
 				                 (cur->thermal_limited?0x10:0) | (cur->speed_limited?0x20:0) |
-				                 (cur->start_active?0x40:0) | (cur->release_active?0x80:0));
-				//v7: the pipeline lifecycle and the adaptive decision. These four answer
-				//"which profile was in force, how adaptive was it being, and how much of the
-				//request was sustained versus reactive" - the questions tuning actually asks.
-				dg[45]=cur->pas_state;                                                   //ap2_pas_state_t
-				dg[46]=cur->load_state_permille&0xFF; dg[47]=(cur->load_state_permille>>8)&0xFF; //terrain load [permille]
-				dg[48]=cur->auto_factor_permille&0xFF; dg[49]=(cur->auto_factor_permille>>8)&0xFF; //AUTO calm..strong [permille]
-				dg[50]=cur->assist_response_permille&0xFF; dg[51]=(cur->assist_response_permille>>8)&0xFF; //assist response [permille]
-				dg[52]=cur->profile_id;                                                  //ap2_profile_id_t
+				                 (cur->limiter_zeroed?0x40:0) | (g53->normal_permission?0x80:0));
+				dg[45]=(uint8_t)g53->trace.pas_direction;                               //G53 PAS direction, i8 low byte
+				int32_t x_conditioned=g53->trace.x; if(x_conditioned<0)x_conditioned=0; if(x_conditioned>65535)x_conditioned=65535;
+				dg[46]=x_conditioned&0xFF; dg[47]=(x_conditioned>>8)&0xFF;             //Boundary A-x, u16
+				dg[48]=g53->trace.rider_input_native&0xFF; dg[49]=(g53->trace.rider_input_native>>8)&0xFF;
+				dg[50]=g53->m2aa_native&0xFF; dg[51]=(g53->m2aa_native>>8)&0xFF;       //M2AA native
+				dg[52]=(uint8_t)(((uint8_t)fast_iq_slew_current_mode()&0x0FU) |
+				                 (fast_iq_slew_current_zero_policy()==FIS_ZERO_POLICY_QUIET?0x10U:0U));
 				/*
 				 * v7: the tuning block. Everything here is LIVE (not peak-held): it has to
 				 * answer "at THIS operating point, what were the dynamics and the ceiling, and
@@ -1199,13 +1205,14 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 					int32_t v;
 					uint16_t u16_uabs = (MS->u_abs<0) ? 0 :
 						((MS->u_abs>65535) ? 65535 : (uint16_t)MS->u_abs);
-					dg[53]=cur->torque_load_centikg&0xFF; dg[54]=(cur->torque_load_centikg>>8)&0xFF; //calibrated pedal load [centikg]
-					v=cur->torque_normalized_permille; if(v<0)v=0; if(v>65535)v=65535;
-					dg[55]=v&0xFF; dg[56]=(v>>8)&0xFF;                                              //normalized effort [permille]
-					dg[57]=cur->attack_ms&0xFF; dg[58]=(cur->attack_ms>>8)&0xFF;                    //attack in force [ms]
-					dg[59]=cur->release_ms&0xFF; dg[60]=(cur->release_ms>>8)&0xFF;                  //release in force [ms]
-					dg[61]=cur->max_power_w&0xFF; dg[62]=(cur->max_power_w>>8)&0xFF;                //power ceiling in force [W]
-					v=cur->iq_request_before_limits; if(v<0)v=0; if(v>65535)v=65535;
+					dg[53]=cur->torque_load_centikg&0xFF; dg[54]=(cur->torque_load_centikg>>8)&0xFF; //native centikg observation
+					dg[55]=g53->trace.raw_pa6_adc&0xFF; dg[56]=(g53->trace.raw_pa6_adc>>8)&0xFF;   //raw PA6 ADC
+					uint32_t release_ticks=fast_iq_slew_current_release_ticks_16k(); if(release_ticks>65535U)release_ticks=65535U;
+					dg[57]=release_ticks&0xFF; dg[58]=(release_ticks>>8)&0xFF;                      //final slew duration, 16 kHz ticks
+					int32_t ceiling=fast_iq_slew_current_ceiling(); if(ceiling>32767)ceiling=32767; else if(ceiling<-32768)ceiling=-32768;
+					dg[59]=ceiling&0xFF; dg[60]=(ceiling>>8)&0xFF;                                  //active final-Iq ceiling, signed
+					dg[61]=(uint8_t)g53->trace.bde8_q50; dg[62]=(uint8_t)g53->trace.e1e8_state;
+					v=cur_iqr;
 					dg[63]=v&0xFF; dg[64]=(v>>8)&0xFF;                                              //Iq request BEFORE the limiter chain
 					dg[65]=cur->motor_power_w&0xFF; dg[66]=(cur->motor_power_w>>8)&0xFF;            //requested motor power [W], live
 					dg[67]=u16_uabs&0xFF; dg[68]=(u16_uabs>>8)&0xFF;                                //live u_abs, pairs with dg[43] cadence

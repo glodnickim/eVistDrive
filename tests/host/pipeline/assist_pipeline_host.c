@@ -37,6 +37,7 @@
 #include "assist_pipeline.h"
 #include "config.h"
 #include "crank_model.h"
+#include "g53_port.h"
 #include "csv.h"
 #include "torque_input.h"
 
@@ -74,6 +75,12 @@ static const crank_torque_shape_t CRUISE_SHAPE = {
 #define WHEEL_SPEED_X100_FIXED 1500U /* 15.00 km/h - a representative "already rolling" speed */
 #define U_ABS_FIXED 1024            /* about 50 % duty; see the header note */
 #define CAL_I_FIXED 95
+/* G4 TEST ADAPTER DATA: the existing CRUISE load encoding tops out at 530 CLU.
+ * The public suite-57 vector already proves positive G53 demand at 6000 CLU.
+ * Scale only this AP2-era load coordinate so the original pulse shape is preserved
+ * while its peak maps to that proven endpoint; these are not stock constants. */
+#define CRUISE_SOURCE_LOAD_CTRL_MAX 530U
+#define CRUISE_PUBLIC_LOAD_CTRL_BASE_MAX 3000U
 
 typedef struct {
 	const char *name;
@@ -136,6 +143,63 @@ static const scenario_def_t *find_scenario(const char *name)
 	return NULL;
 }
 
+/* Put a CRUISE trace into its declared "already rolling" start condition before
+ * tick 0 is scored. This is synthetic test prehistory, not a timed/control delay:
+ * first wait for the actual G05 start window to open, then establish forward PAS. */
+static int cruise_prepare_forward_start(const scenario_def_t *sc, uint16_t load_ctrl)
+{
+	static const uint8_t native_pas_ab_forward[4] = { 0U, 2U, 3U, 1U };
+	g53_port_input_t pre = {0};
+	g53_port_output_t out;
+	pre.raw_pa6_adc = 0U;
+	pre.load_ctrl = 0U;
+	pre.pas_ab = 0U;
+	pre.assist_level = (uint8_t)sc->level;
+	pre.speed_x100 = WHEEL_SPEED_X100_FIXED;
+	pre.elapsed_ticks = 4U;
+	pre.phase_current_max = (int32_t)PH_CURRENT_MAX;
+	pre.torque_sensor_valid = true;
+
+	uint32_t ticks = 0U;
+	for (; ticks < 10000U; ++ticks) {
+		g53_port_update(&pre, &out);
+		if (out.trace.d7ec_accel_window >= out.trace.d7ec_max_timeout &&
+		    out.trace.d7ec_external_guard == 0)
+			break;
+	}
+	if (ticks == 10000U)
+		return 0;
+
+	pre.load_ctrl = load_ctrl;
+	uint32_t transition_fraction = 0U;
+	uint8_t phase = 0U;
+	const uint32_t cadence_rpm = (uint32_t)sc->cadence_rpm;
+	for (ticks = 0U; ticks < 10000U; ++ticks) {
+		transition_fraction += cadence_rpm * 96U;
+		const uint32_t transitions = transition_fraction / 60000U;
+		transition_fraction %= 60000U;
+		phase = (uint8_t)((phase + transitions) & 3U);
+		pre.pas_ab = native_pas_ab_forward[phase];
+		g53_port_update(&pre, &out);
+		if (out.trace.pas_direction > 0 && out.trace.cadence > 0 &&
+		    out.trace.d7ec_accel_window >= out.trace.d7ec_max_timeout &&
+		    out.trace.d7ec_external_guard == 0)
+			return 1;
+	}
+	return 0;
+}
+
+/* Keep stronger assist and higher cadence below the BDE8 ceiling while leaving
+ * every scenario's rider-load shape, cadence, duration, and profile intact. */
+static uint16_t cruise_public_load_ctrl_max(const scenario_def_t *sc)
+{
+	uint32_t max = CRUISE_PUBLIC_LOAD_CTRL_BASE_MAX * 3U / (uint32_t)sc->level;
+	max = max * 40U / (uint32_t)sc->cadence_rpm;
+	if (max > CRUISE_PUBLIC_LOAD_CTRL_BASE_MAX)
+		max = CRUISE_PUBLIC_LOAD_CTRL_BASE_MAX;
+	return (uint16_t)max;
+}
+
 int main(int argc, char **argv)
 {
 	if (argc != 3) {
@@ -159,8 +223,14 @@ int main(int argc, char **argv)
 	FILE *out = csv_open_or_die(argv[2],
 		"tick,time_s,crank_angle_deg,pas_state,cadence_input,"
 		"torque_raw,torque_corrected,torque_fast,torque_run,load_centikg,"
-		"rider_demand,assist_base,assist_dynamic,assist_response,"
-		"aggression,load_state,auto_factor,iq_request,iq_final");
+		"m2aa_native,iq_pre_limits,iq_request,iq_final,g53_permission,"
+		"pas_direction,pas_transitions,pas_magnitude,pas_code,pas_movement,"
+		"m298,fsm_state,d7ec_readiness,bde8_demand,load_ctrl,rider_input_native,x,"
+		"elapsed_ticks,raw_pa6_adc,pas_ab,torque_sensor_valid,forward_valid,direction_inhibit,"
+		"real_stop,safety_cut,service_cut,pas_cadence,pas_evidence,d7ec_rider,d7ec_requested,"
+		"d7ec_envelope,d7ec_accel,e1e8_output,e1e8_state,bde8_q50,bde8_mode,"
+		"power_limited,battery_limited,phase_limited,voltage_limited,thermal_limited,"
+		"speed_limited,limiter_zeroed,final_iq_request");
 
 	uint32_t total_ticks = (uint32_t)(sc->duration_s * CRANK_MODEL_TICK_HZ);
 
@@ -182,7 +252,20 @@ int main(int argc, char **argv)
 		assist_pipeline_input_t in;
 		assist_pipeline_command_t cmd;
 		memset(&in, 0, sizeof(in));
+		in.raw_pa6_adc = 0U;
+		static const uint8_t native_pas_ab_forward[4] = { 0U, 2U, 3U, 1U };
+		const uint8_t pas_ab = native_pas_ab_forward[crank.step_count & 3U];
+		in.pas_ab = pas_ab;
 		in.torque_load_ctrl = snap->load_ctrl;
+		if (sc->shape == &CRUISE_SHAPE) {
+			const uint16_t public_load_ctrl_max = cruise_public_load_ctrl_max(sc);
+			uint32_t adapted_load_ctrl =
+				((uint32_t)snap->load_ctrl * public_load_ctrl_max +
+				 (CRUISE_SOURCE_LOAD_CTRL_MAX / 2U)) / CRUISE_SOURCE_LOAD_CTRL_MAX;
+			if (adapted_load_ctrl > public_load_ctrl_max)
+				adapted_load_ctrl = public_load_ctrl_max;
+			in.torque_load_ctrl = (uint16_t)adapted_load_ctrl;
+		}
 		in.torque_load_centikg = snap->load_centikg;
 		in.torque_sensor_valid = true;
 		in.cadence_rpm = (uint8_t)(cadence_rpm > 255.0 ? 255 : cadence_rpm);
@@ -204,21 +287,50 @@ int main(int argc, char **argv)
 		in.controller_temperature_c = 30;
 		in.speed_limit_x100 = 2500U;
 		in.elapsed_ticks = 1U;
+		if (tick == 0U && sc->shape == &CRUISE_SHAPE &&
+		    !cruise_prepare_forward_start(sc, in.torque_load_ctrl)) {
+			fprintf(stderr, "%s: synthetic already-rolling prehistory did not reach G05/PAS readiness\n", sc->name);
+			fclose(out);
+			return 1;
+		}
 		assist_pipeline_update(&in, &cmd);
 
-		const assist_pipeline_telemetry_t *t = assist_pipeline_telemetry();
 
-		fprintf(out, "%u,%.6f,%.3f,%u,%.3f,%u,%d,%u,%u,%u,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+		const assist_pipeline_telemetry_t *t = assist_pipeline_telemetry();
+		const g53_port_output_t *g53 = assist_pipeline_g53();
+		fprintf(out, "%u,%.6f,%.3f,%u,%.3f,%u,%d,%u,%u,%u,%u,%d,%d,%d,%u,%d,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u,%d",
 			tick, t_s, crank.crank_angle_deg, crank_pas_state(&crank), cadence_rpm,
 			(unsigned)raw_mv, (int)corrected,
 			(unsigned)snap->assist_delta_filtered_native,
 			(unsigned)snap->assist_delta_run_native,
 			(unsigned)snap->load_centikg,
-			(int)t->rider_demand_permille, (int)t->assist_base_permille,
-			(int)t->assist_dynamic_permille, (int)t->assist_response_permille,
-			(int)t->rider_aggression_permille, (int)t->load_state_permille,
-			(int)t->auto_factor_permille,
-			(int)t->iq_request_before_limits, (int)cmd.final_iq_request);
+			(unsigned)g53->m2aa_native,
+			(int)g53->iq_request_pre_limits,
+			(int)t->iq_request_before_limits, (int)cmd.final_iq_request,
+			g53->normal_permission ? 1U : 0U, (int)g53->trace.pas_direction,
+			(int)g53->trace.pas_transition_count, (int)g53->trace.pas_magnitude,
+			(int)g53->trace.pas_code, (int)g53->trace.movement,
+			(int)g53->trace.m298, (int)g53->trace.fsm_state,
+			(int)g53->trace.d7ec_readiness, (int)g53->trace.bde8_demand,
+			(unsigned)in.torque_load_ctrl, (unsigned)g53->trace.rider_input_native,
+			(int)g53->trace.x);
+		fprintf(out, ",%u,%u,%u,%u,%u,%u,%u,%u,%u",
+			(unsigned)in.elapsed_ticks, (unsigned)in.raw_pa6_adc, (unsigned)pas_ab,
+			in.torque_sensor_valid ? 1U : 0U, in.forward_valid ? 1U : 0U,
+			in.direction_inhibit ? 1U : 0U, in.real_stop ? 1U : 0U,
+			in.safety_cut ? 1U : 0U, in.service_cut ? 1U : 0U);
+		fprintf(out, ",%d,%d,%d,%d,%d,%d,%d,%d,%d",
+			(int)g53->trace.cadence, (int)g53->trace.evidence,
+			(int)g53->trace.d7ec_rider, (int)g53->trace.d7ec_requested,
+			(int)g53->trace.d7ec_envelope, (int)g53->trace.d7ec_accel,
+			(int)g53->trace.e1e8_output, (int)g53->trace.e1e8_state,
+			(int)g53->trace.bde8_q50);
+		fprintf(out, ",%d,%u,%u,%u,%u,%u,%u,%u,%d\n",
+			(int)g53->trace.bde8_mode, t->power_limited ? 1U : 0U,
+			t->battery_limited ? 1U : 0U, t->phase_limited ? 1U : 0U,
+			t->voltage_limited ? 1U : 0U, t->thermal_limited ? 1U : 0U,
+			t->speed_limited ? 1U : 0U, t->limiter_zeroed ? 1U : 0U,
+			(int)cmd.final_iq_request);
 	}
 
 	fclose(out);

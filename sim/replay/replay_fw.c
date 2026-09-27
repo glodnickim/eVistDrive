@@ -11,6 +11,7 @@
 #include "cadence_filter.h"
 #include "config.h"
 #include "fast_iq_slew.h"
+#include "g53_port.h"
 #include "motor_core.h"
 #include "ride_control.h"
 #include "rider_input.h"
@@ -67,6 +68,56 @@ static uint16_t raw_from_row(const replay_row_t *r)
     return TORQUE_ZERO_TARGET_NATIVE;
 }
 
+/* G1: forward-start captures need synthetic, unscored prehistory because their row 0
+ * is already in motion. Hold idle until the actual G05 start window is ready, then
+ * establish ordered forward PAS at the captured row-0 cadence/load. No captured row
+ * is altered, and no AP2/FIS clock or replay score advances during this G53 setup. */
+static int prepare_forward_start(uint8_t assist_level, uint32_t speed_x100,
+		uint8_t cadence_rpm, uint16_t load_ctrl, uint8_t *phase_out)
+{
+	static const uint8_t native_pas_ab_forward[4] = { 0U, 2U, 3U, 1U };
+	g53_port_input_t pre = {0};
+	g53_port_output_t out;
+	pre.raw_pa6_adc = 0U;
+	pre.assist_level = assist_level;
+	pre.speed_x100 = speed_x100;
+	pre.elapsed_ticks = 4U;
+	pre.phase_current_max = PH_CURRENT_MAX;
+	pre.torque_sensor_valid = true;
+
+	uint32_t ticks = 0U;
+	for (; ticks < 10000U; ++ticks) {
+		pre.load_ctrl = 0U;
+		pre.pas_ab = 0U;
+		g53_port_update(&pre, &out);
+		if (out.trace.d7ec_accel_window >= out.trace.d7ec_max_timeout &&
+		    out.trace.d7ec_external_guard == 0)
+			break;
+	}
+	if (ticks == 10000U)
+		return 0;
+
+	pre.load_ctrl = load_ctrl;
+	uint32_t transition_fraction = 0U;
+	uint8_t phase = 0U;
+	for (ticks = 0U; ticks < 10000U; ++ticks) {
+		transition_fraction += (uint32_t)cadence_rpm * PAS_TRANSITIONS_PER_REV;
+		const uint32_t transitions = transition_fraction / 60000U;
+		transition_fraction %= 60000U;
+		phase = (uint8_t)((phase + transitions) & 3U);
+		pre.pas_ab = native_pas_ab_forward[phase];
+		g53_port_update(&pre, &out);
+		if (phase == 0U && out.trace.pas_direction > 0 && out.trace.cadence > 0 &&
+		    out.trace.d7ec_accel_window >= out.trace.d7ec_max_timeout &&
+		    out.trace.d7ec_external_guard == 0) {
+			if (phase_out)
+				*phase_out = phase;
+			return 1;
+		}
+	}
+	return 0;
+}
+
 int main(int argc,char **argv)
 {
     if(argc<3){fprintf(stderr,"usage: %s canonical.csv replay_out.csv [max_iq_ref_delta]\n",argv[0]);return 2;}
@@ -114,6 +165,9 @@ int main(int argc,char **argv)
 
     double prev_t=NAN, pas_frac=0.0, max_req_delta=0.0, max_ref_delta=0.0, sum_ref_delta=0.0;
     uint64_t rows=0, compared=0, forward_steps=0; uint32_t defaults=0;
+    uint8_t control_remainder=0U;
+    uint8_t synthetic_pas_phase=0U;
+    static const uint8_t native_synthetic_pas_ab[4]={0U,2U,3U,1U};
     while(fgets(line,sizeof(line),in)){
         replay_row_t r; if(!read_row(line,&r))continue;
         double dt=isfinite(prev_t)?r.time_s-prev_t:0.00025; prev_t=r.time_s;
@@ -121,10 +175,32 @@ int main(int argc,char **argv)
         uint32_t elapsed=(uint32_t)llround(dt*4000.0); if(elapsed<1U)elapsed=1U; if(elapsed>4000U)elapsed=4000U;
         double cad=isfinite(r.cadence_rpm)&&r.cadence_rpm>0?r.cadence_rpm:0.0;
         int direction=isfinite(r.pas_direction)?(r.pas_direction>0?1:(r.pas_direction<0?-1:0)):(cad>0?1:0);
-        pas_frac += cad * (double)PAS_TRANSITIONS_PER_REV / 60.0 * dt;
-        unsigned steps=(unsigned)floor(pas_frac); pas_frac-=steps;
-        if(direction>0){for(unsigned i=0;i<steps;i++)torque_input_run_filter_step(); forward_steps+=steps;}
-        else if(direction<0)forward_steps=0;
+        const uint32_t logical_steps_total=(uint32_t)(elapsed+control_remainder)/4U;
+        const uint8_t next_control_remainder=(uint8_t)((elapsed+control_remainder)%4U);
+        const uint32_t logical_steps=logical_steps_total>64U?64U:logical_steps_total;
+        uint8_t pas_history[64];
+        uint8_t segment_history[64];
+        for(uint32_t i=0U;i<logical_steps;i++) {
+            const uint32_t segment_ticks=(i==0U)?(4U-control_remainder):4U;
+            segment_history[i]=(uint8_t)segment_ticks;
+            pas_frac += fabs(cad) * (double)PAS_TRANSITIONS_PER_REV / 60.0 *
+                (double)segment_ticks / 4000.0;
+            unsigned transitions=(unsigned)floor(pas_frac);
+            pas_frac-=(double)transitions;
+            if(direction>0) {
+                for(unsigned edge=0U;edge<transitions;edge++) {
+                    synthetic_pas_phase=(uint8_t)((synthetic_pas_phase+1U)&3U);
+                    torque_input_run_filter_step();
+                    if(forward_steps<UINT64_MAX) forward_steps++;
+                }
+            } else if(direction<0) {
+                for(unsigned edge=0U;edge<transitions;edge++)
+                    synthetic_pas_phase=(uint8_t)((synthetic_pas_phase+3U)&3U);
+                forward_steps=0U;
+            }
+            pas_history[i]=native_synthetic_pas_ab[synthetic_pas_phase];
+        }
+        control_remainder=next_control_remainder;
 
         uint16_t raw=raw_from_row(&r); int16_t corr=torque_input_correct(raw);
         torque_input_update_elapsed(raw,corr,true,elapsed);
@@ -156,6 +232,8 @@ int main(int argc,char **argv)
 
         ride_control_input_t ci={0};
         ci.speed_x100=speed_x100; ci.cadence_rpm=cadence;
+        ci.raw_pa6_adc=0U; /* W1 has no captured PA6: explicit synthetic no-throttle input. */
+        ci.pas_ab=native_synthetic_pas_ab[synthetic_pas_phase]; /* native-domain synthetic 96-transition/rev history. */
         ci.assist_level_index=isfinite(r.assist_level)?(uint8_t)fmax(0,fmin(8,llround(r.assist_level))):3U;
         ci.battery_voltage_mv=(uint32_t)llround(vb*1000.0); ci.iq_scale=PH_CURRENT_MAX;
         ci.ride_core_iq_limit=PH_CURRENT_MAX; ci.phase_current_max=PH_CURRENT_MAX;
@@ -164,19 +242,48 @@ int main(int argc,char **argv)
         ci.voltage_raw=(uint16_t)llround(vb*1000.0/(double)CAL_BAT_V); ci.voltage_min_raw=VOLTAGE_MIN;
         ci.controller_temperature_c=25; ci.cadence_filtered_x8=(uint16_t)cadence*8U; ci.speed_limit_x100=SPEEDLIMIT;
         ci.legal_enabled=true; ci.offroad=false; ci.walk_active=isfinite(r.walk)&&r.walk!=0.0;
-        ci.safety_cut_non_direction=isfinite(r.brake)&&r.brake!=0.0; ci.service_cut_active=false; ci.elapsed_ticks=elapsed;
-        ride_control_update(&ci);
+        ci.safety_cut_non_direction=isfinite(r.brake)&&r.brake!=0.0; ci.service_cut_active=false;
+        if(rows==0U && pedaling) {
+            uint8_t ready_phase=synthetic_pas_phase;
+            if(!prepare_forward_start(ci.assist_level_index,speed_x100,cadence,
+                                      ts->load_ctrl,&ready_phase)) {
+                fprintf(stderr,"synthetic W1 prehistory did not reach G05/PAS readiness\n");
+                fclose(in); fclose(out); return 1;
+            }
+            synthetic_pas_phase=ready_phase;
+            pas_frac=0.0;
+            control_remainder=0U;
+        }
+        if(logical_steps==0U) {
+            ci.elapsed_ticks=elapsed;
+            ride_control_update(&ci);
+        } else {
+            for(uint32_t i=0U;i<logical_steps;i++) {
+                ci.pas_ab=pas_history[i];
+                ci.elapsed_ticks=segment_history[i];
+                ride_control_update(&ci);
+            }
+            /* G53 caps catch-up at 64 logical steps. Discard time beyond that
+             * cap, then carry only the fractional control-tick remainder. */
+            const uint32_t tail_ticks=next_control_remainder;
+            if(tail_ticks!=0U) {
+                ci.pas_ab=native_synthetic_pas_ab[synthetic_pas_phase];
+                ci.elapsed_ticks=tail_ticks;
+                ride_control_update(&ci);
+            }
+        }
         for(uint32_t k=0;k<elapsed*4U;k++)fast_iq_slew_tick(mb,&ms.i_q_setpoint);
         const assist_pipeline_telemetry_t *mo=assist_pipeline_telemetry();
         double dr=isfinite(r.recorded_iq_request)?(double)mo->iq_request_before_limits-r.recorded_iq_request:NAN;
         double df=isfinite(r.recorded_iq_ref)?(double)ms.i_q_setpoint-r.recorded_iq_ref:NAN;
         if(isfinite(dr)&&fabs(dr)>max_req_delta)max_req_delta=fabs(dr);
         if(isfinite(df)){if(fabs(df)>max_ref_delta)max_ref_delta=fabs(df);sum_ref_delta+=fabs(df);compared++;}
-        fprintf(out,"%.9f,%.3f,%u,%u,%.3f,%.3f,%.3f,%d,%d,%.3f,%.3f,%.3f,%.3f,0x%02X\n",
+        fprintf(out,"%.9f,%.3f,%u,%u,%.3f,%.3f,%.3f,%d,%d,%.3f,%.3f,%.3f,%.3f,0x%02X",
                 r.time_s,(double)cadence,(unsigned)ts->load_centikg,(unsigned)ts->load_ctrl,
                 (double)speed_x100/100.0,vb,ia,
                 mo->iq_request_before_limits,ms.i_q_setpoint,r.recorded_iq_request,r.recorded_iq_ref,dr,df,
                 (unsigned)assist_pipeline_reason_bits());
+        fputc('\n',out);
         rows++;
     }
     fclose(in); fclose(out);

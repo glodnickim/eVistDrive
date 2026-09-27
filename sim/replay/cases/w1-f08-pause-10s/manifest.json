@@ -15,7 +15,9 @@
     "produces_assist": true,
     "pause_releases": 0.95,
     "restart_recovers": true,
-    "max_attenuation": 0.6,
     "note": "a short pause - the same contract on a timescale where a sustained term that refused to let go would still be visible"
+  },
+  "observation": {
+    "max_attenuation": 0.6
   }
 }

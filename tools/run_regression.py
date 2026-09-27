@@ -81,6 +81,7 @@ def metric(rows,k):
 # The whole assist chain, exactly as the firmware links it.
 assist_mod=['torque_input.c','rider_input.c','assist_modes.c','tuning_config.c',
             'ap2_pas_state.c','ap2_rider_demand.c','ap2_estimators.c','ap2_profiles.c',
+            'g53_port.c','g53_port_boundaries.c','g53_port_pas.c','g53_port_chain.c',
             'ap2_limits.c','battery_iq_cap.c','fast_iq_slew.c','assist_pipeline.c']
 ride_mod=assist_mod+['ride_control.c','iq_chain.c','motor_core.c']
 
@@ -115,9 +116,9 @@ if base != rep:
 
 # The signals a ride-feel regression actually shows up in: the rider's pulsating input, the
 # two halves of the demand model that absorb that pulsation, and the resulting request.
-assist_cols=['torque_raw','torque_corrected','torque_fast','load_centikg','rider_demand',
-             'assist_base','assist_dynamic','assist_response','iq_request','iq_final']
-ride_cols=['torque_fast','rider_demand','assist_base','iq_request','iq_final']
+assist_cols=['torque_raw','torque_corrected','torque_fast','load_centikg',
+             'rider_input_native','m2aa_native','iq_pre_limits','iq_request','iq_final']
+ride_cols=['torque_fast','rider_input_native','m2aa_native','iq_pre_limits','iq_request','iq_final']
 summary=[]
 for sc in scenarios+assist_only:
     for tag,cols in ([('assist',assist_cols),('ride',ride_cols)] if sc in scenarios

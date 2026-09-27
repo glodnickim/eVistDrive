@@ -21,8 +21,7 @@ ANALYZER = R / 'tools/analyze_assist_ripple.py'
 
 COLUMNS = ['tick', 'time_s', 'crank_angle_deg', 'pas_state', 'cadence_input',
            'torque_raw', 'torque_corrected', 'torque_fast', 'torque_run', 'load_centikg',
-           'rider_demand', 'assist_base', 'assist_dynamic', 'assist_response',
-           'aggression', 'load_state', 'auto_factor', 'iq_request', 'iq_final']
+           'm2aa_native', 'iq_pre_limits', 'iq_request', 'iq_final']
 
 # Every scenario the analyzer requires, read from the analyzer itself so the two cannot drift
 # apart. Parsed rather than imported: importing would run the module, and this file exists to
@@ -49,8 +48,8 @@ def synth_rows(n: int, *, pulsating=True, response=500, iq=300, iq_request=None)
             'tick': i, 'time_s': i / 4000.0, 'crank_angle_deg': 0.0, 'pas_state': 2,
             'cadence_input': 60.0, 'torque_raw': tq, 'torque_corrected': tq,
             'torque_fast': tq, 'torque_run': tq, 'load_centikg': tq * 5,
-            'rider_demand': 300, 'assist_base': 280, 'assist_dynamic': 20,
-            'assist_response': response, 'aggression': 0, 'load_state': 0, 'auto_factor': 0,
+            'm2aa_native': 6500 if response >= 1000 else response,
+            'iq_pre_limits': iq if iq_request is None else iq_request,
             'iq_request': iq if iq_request is None else iq_request, 'iq_final': iq,
         })
     return rows
@@ -135,14 +134,31 @@ def main() -> int:
     def missing_column(d, scenarios, n):
         rows = synth_rows(n)
         for r_ in rows:
-            del r_['assist_base']
+            del r_['m2aa_native']
         p = d / f'{scenarios[0]}_assist.csv'
-        cols = [c for c in COLUMNS if c != 'assist_base']
+        cols = [c for c in COLUMNS if c != 'm2aa_native']
         with p.open('w', newline='') as f:
             w = csv.DictWriter(f, fieldnames=cols)
             w.writeheader()
             w.writerows(rows)
     case('missing column', missing_column, 'is missing from the trace')
+
+    # The retired AP2 attenuation target is retained as an observation, never a TQ-06 gate.
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        n = 4000 * 8
+        for sc in scenarios:
+            rows = synth_rows(n)
+            if sc == scenarios[0]:
+                for i, row in enumerate(rows):
+                    row['iq_final'] = 100 if i % 2 else 500
+                    row['iq_request'] = row['iq_pre_limits'] = row['iq_final']
+            write_trace(d, sc, rows)
+        r = run(d)
+        if r.returncode != 0 or 'non-gating TQ-08 observation' not in r.stdout:
+            raise SystemExit(f'FAIL [attenuation observation]: >0.60 must remain non-gating\n'
+                             f'--- stdout ---\n{r.stdout}\n--- stderr ---\n{r.stderr}')
+        print('PASS [attenuation observation]: >0.60 is reported and does not FAIL')
 
     print('PASS: the ripple analyzer rejects every unusable form of evidence')
     return 0

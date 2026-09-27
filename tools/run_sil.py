@@ -10,7 +10,8 @@ mods=[
  'src/torque_input.c','src/rider_input.c','src/assist_modes.c','src/cadence_filter.c',
  'src/tuning_config.c',
     'src/ap2_pas_state.c','src/ap2_rider_demand.c','src/ap2_estimators.c',
-    'src/ap2_profiles.c','src/ap2_limits.c','src/assist_pipeline.c',
+    'src/ap2_profiles.c','src/g53_port.c','src/g53_port_boundaries.c',
+    'src/g53_port_pas.c','src/g53_port_chain.c','src/ap2_limits.c','src/assist_pipeline.c',
  'src/ride_control.c','src/fast_iq_slew.c','src/battery_iq_cap.c',
  'src/iq_chain.c',
  'src/motor_core.c','src/pas_quadrature.c','src/pas_direction.c','src/pas_liveness.c',
@@ -24,8 +25,9 @@ def build(exe:Path, sanitize=False):
         flags += ['-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer']
     else:
         flags += ['-O2']
-    cmd=[cc,*flags,'-Iinc','-Itests/host/common/host_stubs','-Itests/host/common',
-         '-o',str(exe),'sim/evist_sil.c',*mods,'-lm']
+    cmd=[cc,*flags,'-Isim/l4','-Iinc','-Itests/host/common/host_stubs','-Itests/host/common',
+         '-o',str(exe),'sim/evist_sil.c','sim/l4/eb74_invocation_observer.c',*mods,
+         '-Wl,--wrap=g53_ad7ec_step','-lm']
     p=subprocess.run(cmd,cwd=R,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
     if p.returncode:
         print(p.stdout); raise SystemExit(p.returncode)

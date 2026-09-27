@@ -6,11 +6,12 @@ line reading CASE PASS, which promised more than it had checked - audit finding 
 
     REPLAY_EXECUTED     the production chain consumed the recorded sensor history and produced a
                         trace. Infrastructure only. Says nothing about the assist.
-    BEHAVIOR_ACCEPTED   the trace satisfies criteria stated in the case manifest: assist present,
-                        response in the right direction, release to zero, restart, attenuation.
+    BEHAVIOR_ACCEPTED   the trace satisfies gating criteria stated in the case manifest: assist
+                        present, response in the right direction, release to zero, restart.
                         A case with no criteria is BEHAVIOR_NOT_ASSESSED - never a pass.
     OUTPUT_PINNED       the bytes match a hash a human accepted after validating that ride. Most
                         cases are deliberately unpinned until the physical bike confirms them.
+    OBSERVATION         a non-gating measurement such as attenuation, routed to TQ-08 AC3.
 """
 from __future__ import annotations
 import csv, hashlib, json, subprocess, sys
@@ -84,6 +85,13 @@ def registered():
                 bad = [c for c, ok, _ in res.checks if not ok]
                 failures.append(f'{name}: {", ".join(bad)}')
                 print(f'  BEHAVIOR_REJECTED  {name}: {", ".join(bad)}')
+
+        observation = evaluate(out, m.get('observation') or {})
+        if observation.assessed:
+            for oname, ok, detail in observation.checks:
+                print(f'  OBSERVATION         {name} {oname}: {detail}')
+        else:
+            print(f'  OBSERVATION         {name}: none declared')
 
         expected = m.get('accepted_output_sha256')
         if expected:

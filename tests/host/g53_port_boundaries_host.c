@@ -1,4 +1,5 @@
 #include "g53_port_boundaries.h"
+#include "../../src/g53_port_boundaries.c"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -95,6 +96,80 @@ static void eb74_vectors(void)
     printf("EB74 independent reference: %u vectors, 0 mismatches PASS\n", rows);
 }
 
+static void eb74_startup_lifecycle_regressions(void)
+{
+    const g53_ad7ec_feedback_t unloaded = { .d7ec_rider = 0 };
+    const g53_ad7ec_feedback_t loaded = { .d7ec_rider = 1 };
+    g53_ad7ec_output_t out;
+
+    /* T1: reproduce the accepted native B+0x58 sentinel at invocation 31. */
+    g53_ad7ec_reset();
+    for (unsigned n = 1; n <= 30; ++n) {
+        out = g53_ad7ec_step(515, &loaded); /* exact pre-EB74 source 960 */
+        assert(out.startup_count == n * 10u);
+        assert(out.rider_input_native == 0);
+    }
+    eb74.out.rider_input_native = 0x1234;
+    for (unsigned n = 31; n <= 130; ++n) {
+        out = g53_ad7ec_step(515, &loaded);
+        assert(out.pre_eb74 == 960);
+        assert(out.check_count == n - 30u);
+        assert(out.rider_input_native == 0x1234);
+    }
+    out = g53_ad7ec_step(515, &loaded);
+    assert(out.check_count == 100);
+    assert(out.rider_input_native == 52);
+    puts("EB74 T1 sentinel preserve (invocations 31-130), normal call 131: PASS");
+
+    /* T2: reset initializes B+0x58 to zero and preservation keeps it zero. */
+    g53_ad7ec_reset();
+    for (unsigned n = 1; n <= 130; ++n) {
+        out = g53_ad7ec_step(515, &loaded);
+        assert(out.rider_input_native == 0);
+        if (n > 30) assert(out.check_count == n - 30u);
+    }
+    puts("EB74 T2 reset-zero preservation through check window: PASS");
+
+    /* T3: high input from reset continually rewinds 91 back to 90. */
+    g53_ad7ec_reset();
+    for (unsigned n = 1; n <= 30; ++n) (void)g53_ad7ec_step(517, &loaded);
+    for (unsigned n = 31; n <= 430; ++n) {
+        out = g53_ad7ec_step(517, &loaded); /* exact pre-EB74 source 961 */
+        assert(out.pre_eb74 == 961);
+        assert(out.check_count == 90);
+        assert(out.rider_input_native == 0);
+    }
+    puts("EB74 T3 high-load-from-reset remains zero and unqualified: PASS");
+
+    /* T4: exactly 130 unloaded calls qualify the check window; call 131 loads. */
+    g53_ad7ec_reset();
+    for (unsigned n = 1; n <= 130; ++n) {
+        out = g53_ad7ec_step(0, &unloaded);
+        assert(out.rider_input_native == 0);
+    }
+    assert(out.startup_count == 300 && out.check_count == 100);
+    out = g53_ad7ec_step(12000, &unloaded);
+    assert(out.pre_eb74 == 3200);
+    assert(out.check_count == 100);
+    assert(out.threshold == 995);
+    assert(out.rider_input_native == 831);
+    puts("EB74 T4 unloaded qualification then positive load on call 131: PASS");
+
+    /* T5: 960 is allowed to qualify; 961 takes the strict-greater rewind. */
+    g53_ad7ec_reset();
+    for (unsigned n = 1; n <= 30; ++n) (void)g53_ad7ec_step(515, &loaded);
+    out = g53_ad7ec_step(515, &loaded);
+    assert(out.pre_eb74 == 960 && out.check_count == 1);
+    assert(out.rider_input_native == 0);
+    g53_ad7ec_reset();
+    for (unsigned n = 1; n <= 30; ++n) (void)g53_ad7ec_step(517, &loaded);
+    eb74.out.rider_input_native = 0x1234;
+    out = g53_ad7ec_step(517, &loaded);
+    assert(out.pre_eb74 == 961 && out.check_count == 90);
+    assert(out.rider_input_native == 0);
+    puts("EB74 T5 exact 960/961 strict comparator boundary: PASS");
+}
+
 static void boundary_b_vectors(void)
 {
     static const struct { uint16_t raw; int32_t full, expected; } cases[] = {
@@ -175,6 +250,7 @@ int main(void)
     boundary_b_vectors();
     ax_vectors();
     eb74_vectors();
+    eb74_startup_lifecycle_regressions();
     const g53_ad7ec_feedback_t feedback = {0};
     g53_ax_reset();
     g53_ad7ec_reset();

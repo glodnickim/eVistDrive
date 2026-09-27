@@ -165,6 +165,9 @@ int main(int argc, char **argv)
 		rider_input_update(&sample);
 
 		ride_control_input_t ride_input = { 0 };
+		static const uint8_t native_pas_ab_forward[4] = { 0U, 2U, 3U, 1U };
+		ride_input.raw_pa6_adc = 0U;
+		ride_input.pas_ab = native_pas_ab_forward[crank.step_count & 3U];
 		ride_input.speed_x100 = WHEEL_SPEED_X100_FIXED;
 		ride_input.cadence_rpm = sample.cadence_rpm;
 		ride_input.assist_level_index = ASSIST_LEVEL_INDEX;
@@ -172,6 +175,7 @@ int main(int argc, char **argv)
 		ride_input.iq_scale = (int32_t)PH_CURRENT_MAX;
 		ride_input.ride_core_iq_limit = (int32_t)PH_CURRENT_MAX;
 		ride_input.phase_current_max = (int32_t)PH_CURRENT_MAX;
+		ride_input.elapsed_ticks = 1U;
 		ride_input.current_iq = MS.i_q_setpoint;
 		ride_input.current_id = MS.i_d_setpoint;
 		ride_input.voltage_raw = VOLTAGE_RAW_FIXED;

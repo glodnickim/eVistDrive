@@ -1,0 +1,140 @@
+﻿ M TASK_HISTORY.md
+ M protocol/RIDE_DIAGNOSTICS_6029.md
+ M sim/evist_sil.c
+ M sim/l4/virtual_bike_l4.c
+ M sim/replay/cases/w1-f01-stable-cad49/manifest.json
+ M sim/replay/cases/w1-f07-pause-43s/manifest.json
+ M sim/replay/cases/w1-f08-pause-10s/manifest.json
+ M sim/replay/replay_fw.c
+ M src/CAN_Display.c
+ M src/g53_port.c
+ M src/g53_port_boundaries.c
+ M src/main.c
+ M tests/host/g53_port_boundaries_host.c
+ M tests/host/g53_port_integration_host.c
+ M tests/host/pipeline/assist_pipeline_host.c
+ M tests/host/pipeline/ride_control_pipeline_host.c
+ M tests/host/run-host-tests.ps1
+ M tests/test_ripple_analyzer_rejects.py
+ M tools/analyze_assist_ripple.py
+ M tools/run_electrical_sil.py
+ M tools/run_level4.py
+ M tools/run_regression.py
+ M tools/run_replay.py
+ M tools/run_replay_regression.py
+ M tools/run_sil.py
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-001.md
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-canable-decode-rerun.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-canable-decode.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-cruise-analyzer.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-diff-check.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-disc007-check.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-disc007-confirmed.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-electrical-after-axis.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-electrical-cold-lifecycle.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-electrical-final.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-electrical-full-rerun.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-electrical-full.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-electrical-postfix.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-electrical.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-final-diff-stat.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-final-source-diff.patch
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-final-status.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-host-final.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-host.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-initial-diff-stat.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-initial-status.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-level4-g7-first.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-level4-g7-r1.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-level4-post-sil.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-level4-trace-comparison.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-regression-final.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-replay-behavior-selftest.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-replay-final.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-replay.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-ripple-selftest.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-sil-axis-release-policy.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-sil-axis-startup.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-sil-current.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-sil-final.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-sil-full-rerun.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-sil-full.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-sil-fuzz-ramp-diagnostic.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-sil-fuzz-ramp-pilot.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-sil-fuzz-ramp-pilot2.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-sil-scenarios-cold-lifecycle.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-sil-torque-ramp.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-stop-restart-r1.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-stop-restart-r10.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-stop-restart-r11.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-stop-restart-r12.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-stop-restart-r13.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-stop-restart-r14.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-stop-restart-r15.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-stop-restart-r16.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-stop-restart-r17.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-stop-restart-r18.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-stop-restart-r19.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-stop-restart-r2.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-stop-restart-r3.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-stop-restart-r4.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-stop-restart-r5.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-stop-restart-r6.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-stop-restart-r7.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-stop-restart-r8.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-stop-restart-r9.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-target-diagnostic.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-target-normal.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-vector-baseline.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-verify-all-quick.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-EB74-CONFORMANCE-20260926-MANIFEST.md
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-EB74-CONFORMANCE-20260926-level4-startup-observer.c
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-EB74-CONFORMANCE-20260926-level4-startup.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-EB74-CONFORMANCE-20260926-port-vectors.c
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-EB74-CONFORMANCE-20260926-schedule-A.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-EB74-CONFORMANCE-20260926-schedule-B.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-EB74-CONFORMANCE-20260926-schedule-S.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-EB74-POSTFIX-20260926-MANIFEST.md
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-EB74-POSTFIX-20260926-final-source-diff.patch
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-EB74-POSTFIX-20260926-host-gate.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-EB74-POSTFIX-20260926-level4-quick.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-EB74-POSTFIX-20260926-port-vectors.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-EB74-POSTFIX-20260926-source-diff.patch
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-EB74-POSTFIX-20260926-targeted-host.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-FREEZE-PREFLIGHT-20260927-MANIFEST.md
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-FREEZE-PREFLIGHT-20260927-status-porcelain.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-FREEZE-PREFLIGHT-20260927-tracked-diff-name-status.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-FIRST-ZERO-20260926-MANIFEST.md
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-FIRST-ZERO-20260926-flat_soc90-base.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-FIRST-ZERO-20260926-flat_soc90-trace.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-FUZZ-EXPECTED-START-AUDIT-20260926-MANIFEST.md
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-FUZZ-EXPECTED-START-AUDIT-20260926-case-00.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-FUZZ-EXPECTED-START-AUDIT-20260926-case-01.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-FUZZ-EXPECTED-START-AUDIT-20260926-case-02.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-FUZZ-EXPECTED-START-AUDIT-20260926-case-05.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-FUZZ-EXPECTED-START-AUDIT-20260926-case-07.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-FUZZ-EXPECTED-START-AUDIT-20260926-case-09.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-FUZZ-EXPECTED-START-AUDIT-20260926-case-10.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-FUZZ-EXPECTED-START-AUDIT-20260926-case-11.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-FUZZ-EXPECTED-START-AUDIT-20260926-case-12.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-FUZZ-EXPECTED-START-AUDIT-20260926-case-13.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-FUZZ-EXPECTED-START-AUDIT-20260926-case-16.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-FUZZ-EXPECTED-START-AUDIT-20260926-case-19.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-FUZZ-EXPECTED-START-AUDIT-20260926-case-21.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-FUZZ-EXPECTED-START-AUDIT-20260926-case-23.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-FUZZ-EXPECTED-START-AUDIT-20260926-case-24.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-FUZZ-EXPECTED-START-AUDIT-20260926-matrix.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-POSTFIX-20260926-MANIFEST.md
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-L4-POSTFIX-20260926-flat_soc90-trace.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-P9G6-20260926-eb74-invocation-observer.c
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-P9G6-20260926-eb74-invocation-observer.h
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-P9G6-20260926-flat_soc90-prehistory.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-P9G6-20260926-flat_soc90-stages.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-P9G6-20260926-harness-diff.patch
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-P9G6-20260926-level4-quick.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-P9G6-20260926-sil-clean-start.csv
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-P9G6-20260926-stop-restart.txt
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-P9G6-IMPLEMENTATION-20260926-MANIFEST.md
+?? integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-STOP-001.md
+?? sim/l4/eb74_invocation_observer.c
+?? sim/l4/eb74_invocation_observer.h

@@ -20,6 +20,7 @@ A decoder must refuse a version it has no map for.
 | 5 | 53 | 55 | Extended Boost state |
 | 6 | 69 | 71 | the unit-domain block: pedal load, conversion anchors, crossfade |
 | 7 | 69 | 71 | **Assist Pipeline V2.** Same length and CRC, new meanings — see below |
+| 8 | 69 | 71 | **TQ-06 G53.** Same length and CRC, native G53 and limiter observations — see below |
 
 CRC-16/CCITT-FALSE (init 0xFFFF, poly 0x1021) over the body, little-endian in the two bytes that
 follow it. All multi-byte values are little-endian.
@@ -114,3 +115,68 @@ Extended Boost state, the launch/measured-duty anchors and their crossfade, and 
 compensation. Those mechanisms were removed with the legacy pipeline. A decoder must report them
 as *unavailable* on v7, never as zero: zero is a measurement, and "this controller does not have
 that mechanism" is not one.
+
+## v8 — TQ-06 G53 map
+
+v1–v7 remain historical wire contracts. v8 retains the 71-byte envelope and CRC while replacing
+retired AP2 estimator/profile fields with read-only G53/native state. All integer fields are
+little-endian. Saturation happens before packing as specified below. No v8 field feeds control.
+
+| Offset | v7 disposition | v8 meaning | Type / unit | Source and packing |
+|---|---|---|---|---|
+| 0..1 | retain | magic `D`,`G` | u8 × 2 | exact constants |
+| 2 | replace | version = 8 | u8 | exact constant |
+| 3 | retain | deprecated engine id | u8 | `DIAG_ENGINE_ID_RIDE_CORE` |
+| 4 | retain | peak cadence | u8 rpm | native cadence peak, saturate u8 |
+| 5 | replace | native permission/safety facts | u8 bits | see byte 5 below |
+| 6..7 | replace | peak G53 D7EC rider output | u16 G53 native | `g53_port_output_t.trace.d7ec_rider`, peak, saturate u16 |
+| 8..9 | retain | peak rider power | u16 W | native observation, saturate u16 |
+| 10..11 | retain | peak applied support ratio | u16 % | native observation, saturate u16 |
+| 12..13 | retain | peak motor power | u16 W | native electrical observation, saturate u16 |
+| 14..15 | retain | peak requested battery current | u16 mA | existing motor-power/pack-voltage derivation, saturate u16 |
+| 16..17 | retain | peak pre-limit Iq request | u16 Iq | telemetry `iq_request_before_limits`, peak, clamp 0..32767 |
+| 18..19 | retain | peak `MS.i_q_setpoint` | u16 Iq | native final-Iq observation, peak, clamp 0..32767 |
+| 20..21 | retain | speed | u16 0.01 km/h | `MS.Speedx100`, saturate u16 |
+| 22..23 | retain | PAS idle | u16 ms | `pas_idle_ticks / 4`, saturate u16 |
+| 24..25 | replace | live G53 D7EC rider output | u16 G53 native | `trace.d7ec_rider`, saturate u16 |
+| 26..27 | replace | final allowed Iq before final slew | i16 Iq | telemetry `final_iq_request`, saturate signed 16-bit |
+| 28..29 | retain | live `MS.i_q_setpoint` | i16 Iq | native final-Iq writer, saturate signed 16-bit |
+| 30..31 | replace | live D7EC envelope | u16 G53 native | `trace.d7ec_envelope`, saturate u16 |
+| 32..33 | retain | measured `MS.i_q` | i16 Iq | native measurement, saturate signed 16-bit |
+| 34 | retain | battery-current limiter | u8 bits | bit0 active; bits1..7 zero |
+| 35..36 | replace | live D7EC acceleration output | u16 G53 native | `trace.d7ec_accel`, saturate u16 |
+| 37..38 | replace | live E1E8 output | u16 G53 native | `trace.e1e8_output`, saturate u16 |
+| 39..40 | retain | peak `u_abs` | u16 native | diagnostic peak, saturate u16 |
+| 41..42 | retain | pack voltage | u16 mV | `MS.Voltage`, saturate u16 |
+| 43 | retain | live cadence | u8 rpm | `rider_input_t.cadence_rpm`, saturate u8 |
+| 44 | replace | limiter, zero, and G53 permission facts | u8 bits | see byte 44 below |
+| 45 | replace | G53 PAS direction | i8 G53 native | `trace.pas_direction`, low 8 bits (two's complement) |
+| 46..47 | replace | Boundary A conditioned x | u16 G53 native | `trace.x`, saturate u16 |
+| 48..49 | replace | Boundary A-D7EC rider input | u16 G53 native | `trace.rider_input_native`, saturate u16 |
+| 50..51 | replace | M2AA | u16 G53 native | `g53_port_output_t.m2aa_native`, exact u16 |
+| 52 | replace | final slew mode and zero policy | packed u8 enum | see byte 52 below |
+| 53..54 | retain | calibrated pedal load | u16 centikg | native torque observation, saturate u16 |
+| 55..56 | replace | raw PA6 ADC | u16 ADC counts | G53 input trace, 0..4095 |
+| 57..58 | replace | final-Iq release duration | u16 ticks at 16 kHz | `fast_iq_slew_current_release_ticks_16k()`, saturate u16; maximum contract 48000 |
+| 59..60 | replace | active final-Iq ceiling | i16 Iq | `fast_iq_slew_current_ceiling()`, saturate signed 16-bit |
+| 61 | replace | BDE8 q50 | u8 G53 native | `trace.bde8_q50`, low 8 bits |
+| 62 | replace | E1E8 state | u8 G53 native | `trace.e1e8_state`, low 8 bits |
+| 63..64 | retain | Iq request before limiter chain | i16 Iq | G53 compatibility seam, saturate signed 16-bit |
+| 65..66 | retain | requested motor power | u16 W | native observation, saturate u16 |
+| 67..68 | retain | live `u_abs` | u16 native | `MS.u_abs`, saturate u16 |
+| 69..70 | retain | CRC-16/CCITT-FALSE | u16 | over bytes 0..68, little-endian |
+
+Byte 5 is live: bit0 final assist-permission observation; bit1 native `forward_valid`;
+bit2 native safety cut; bit3 torque sensor fault; bit4 direction inhibit; bit5 real stop;
+bit6 service cut; bit7 PWM on.
+
+Byte 44 is live: bit0 power limiter; bit1 battery-current limiter; bit2 phase limiter;
+bit3 undervoltage limiter; bit4 thermal limiter; bit5 speed/legal limiter; bit6 limiter zeroed;
+bit7 G53 `normal_permission`.
+
+Byte 52 is live: bits0..3 `fis_mode_t` (0..6); bit4 is set for
+`FIS_ZERO_POLICY_QUIET` and clear for `FIS_ZERO_POLICY_NONE`; bits5..7 are zero/reserved.
+
+On v8, the replaced slots do not describe AUTO factor, a SPORT profile, attack/release times,
+rider aggression, terrain estimator, or AP2 PAS lifecycle. A downstream decoder must recognize
+version 8 explicitly and continue to reject unknown versions.

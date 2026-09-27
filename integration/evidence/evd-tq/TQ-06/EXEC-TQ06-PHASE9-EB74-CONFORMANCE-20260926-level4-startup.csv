@@ -1,0 +1,10 @@
+scenario,control_ticks,first_control_tick,first_load_ctrl,first_pre_eb74,native_pas_ab_at_start,native_cadence_at_start,first_CLU_gt_600_tick,EB74_invocations_before_first_high_load,first_logical_EB74_tick,startup_counter_before_first_logical_call,min_CLU,min_pre_eb74,control_ticks_pre_eb74_le_960,first_pre_eb74_le_960,unloaded_prehistory_before_load,rider_load_present_from_start
+cad120_soc80,32000,1,12000,3200,0,0,1,0,4,0,1062,1183,0,,NO,YES
+flat_soc90,32000,1,12000,3200,0,0,1,0,4,0,883,1110,0,,NO,YES
+hill10_soc50,32000,1,12000,3200,0,0,1,0,4,0,6910,3200,0,,NO,YES
+hill15_soc20,32000,1,12000,3200,0,0,1,0,4,0,11490,3200,0,,NO,YES
+hill5_soc80,32000,1,12000,3200,0,0,1,0,4,0,3902,2343,0,,NO,YES
+low_soc10,32000,1,12000,3200,0,0,1,0,4,0,5523,3005,0,,NO,YES
+low_soc5,32000,1,12000,3200,0,0,1,0,4,0,3798,2300,0,,NO,YES
+matched_lg50,32000,1,12000,3200,0,0,1,0,4,0,5044,2809,0,,NO,YES
+sag_soc30,32000,1,12000,3200,0,0,1,0,4,0,6844,3200,0,,NO,YES

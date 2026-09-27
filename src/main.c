@@ -3637,13 +3637,11 @@ void reg_ADC_processing(void)
 #if CAN_DIAGNOSTICS_ENABLE
         {
             const assist_pipeline_telemetry_t* do_ = assist_pipeline_telemetry();
+            const g53_port_output_t* g53_diag = assist_pipeline_g53();
             int32_t current_iq_req = do_->iq_request_before_limits;
-            uint16_t peak_effort = (do_->rider_demand_permille < 0) ? 0U :
-                ((do_->rider_demand_permille > 65535) ? 65535U :
-                 (uint16_t)do_->rider_demand_permille);
-            uint16_t peak_dynamic = (do_->assist_dynamic_permille < 0) ? 0U :
-                ((do_->assist_dynamic_permille > 65535) ? 65535U :
-                 (uint16_t)do_->assist_dynamic_permille);
+            uint16_t peak_effort = (g53_diag->trace.d7ec_rider < 0) ? 0U :
+                ((g53_diag->trace.d7ec_rider > 65535) ? 65535U :
+                 (uint16_t)g53_diag->trace.d7ec_rider);
             if(diag_peak_reset){ diag_peak_cadence=0; diag_peak_torque=0; diag_peak_human_w=0; diag_peak_support=0; diag_peak_motor_w=0; diag_peak_iq_req=0; diag_peak_iq_set=0;
                 diag_peak_assist_dynamic=0; diag_peak_u_abs=0; diag_peak_reset=0; }
             if(do_->cadence_rpm>diag_peak_cadence) diag_peak_cadence=do_->cadence_rpm;
@@ -3653,9 +3651,6 @@ void reg_ADC_processing(void)
             if(do_->motor_power_w>diag_peak_motor_w) diag_peak_motor_w=do_->motor_power_w;
             if(current_iq_req>diag_peak_iq_req) diag_peak_iq_req=current_iq_req;
             if(MS.i_q_setpoint>diag_peak_iq_set) diag_peak_iq_set=MS.i_q_setpoint;
-            //The reactive half of the request, peak-held: it separates "the rider pushed
-            //harder and got it" from "the sustained level alone carried the ride".
-            if(peak_dynamic>diag_peak_assist_dynamic) diag_peak_assist_dynamic=peak_dynamic;
             if(MS.u_abs>0 && (uint32_t)MS.u_abs>diag_peak_u_abs) diag_peak_u_abs=(MS.u_abs>65535)?65535:(uint16_t)MS.u_abs;
         }
 #endif

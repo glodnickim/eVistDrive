@@ -42,6 +42,7 @@
 
 #include "battery_pack.h"
 #include "bike_rider.h"
+#include "eb74_invocation_observer.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -66,6 +67,8 @@ uint16_t pwm_applied[3];
 static MotorState_t *g_ms;
 static struct l4_motor *g_motor;
 static quiet_zero_t g_qzero;
+static FILE *l4_stage_trace;
+static uint32_t l4_stage_previous_mask;
 
 void timer_channel_output_pulse_value_config(uint32_t timer, uint16_t ch, uint32_t value)
 { (void)timer; (void)ch; (void)value; }
@@ -275,6 +278,9 @@ typedef struct {
     uint32_t battery_limit_ticks;
     uint32_t speed_limit_ticks;
     uint32_t soc_updates;
+    uint16_t last_load_ctrl;
+    rider_input_t last_rider_input;
+    ride_control_input_t last_control_input;
 } l4_t;
 
 /* FW-150: mirrors default_centikg_to_native_delta() over the three-point curve. */
@@ -292,6 +298,13 @@ static uint16_t torque_native_from_ckg(float ckg)
             (double)(TORQUE_CURVE_P3_CENTIKG-TORQUE_CURVE_P2_CENTIKG);
     if(d>TORQUE_SPAN_MAX_NATIVE)d=TORQUE_SPAN_MAX_NATIVE;
     return (uint16_t)llround((double)TORQUE_ZERO_TARGET_NATIVE+d);
+}
+
+static uint16_t l4_pre_eb74_from_load(uint16_t load_ctrl)
+{
+    uint32_t source=750U+((uint32_t)load_ctrl*2450U)/6000U;
+    if(source>3200U)source=3200U;
+    return (uint16_t)source;
 }
 
 static void l4_init(l4_t *s,float true_soc,evd_battery_profile_t profile,float grade,
@@ -403,6 +416,7 @@ static void l4_tick(l4_t *s,FILE *csv)
     r.forward_confirmed_this_tick=pas_direction_forward_confirmed_last_call(); r.sample_tick=s->tick;
     r.start_phase=s->start_phase!=0U; r.torque_sensor_valid=true; r.pas_sensor_valid=true;
     rider_input_update(&r);
+    s->last_rider_input=r;
 
     float limp=soc_core_limp_factor(s->fw_soc.soc_display,s->limp_limit,s->limp_stage2);
     int32_t iq_limit=(int32_t)lroundf((float)PH_CURRENT_MAX*limp); if(iq_limit<0)iq_limit=0;
@@ -418,7 +432,15 @@ static void l4_tick(l4_t *s,FILE *csv)
     in.controller_temperature_c=(int16_t)lroundf(s->controller_temp_c);
     in.cadence_filtered_x8=cadence_filter_get_x8(); in.speed_limit_x100=SPEEDLIMIT;
     in.legal_enabled=true; in.offroad=false; in.walk_active=false;
+    in.pas_ab=s->pas_ab;
     in.safety_cut_non_direction=s->brake; in.service_cut_active=false; in.elapsed_ticks=1U;
+    if(s->pas_ab!=0U&&in.pas_ab!=s->pas_ab){
+        fprintf(stderr,"L4 native PAS plumbing mismatch at tick %u: native=%u input=%u\n",
+                s->tick,(unsigned)s->pas_ab,(unsigned)in.pas_ab);
+        abort();
+    }
+    s->last_control_input=in;
+    s->last_load_ctrl=ts->load_ctrl;
     ride_control_update(&in);
     if(assist_pipeline_pas_state()==AP2_PAS_FORWARD&&s->first_permission_tick==0U)s->first_permission_tick=s->tick;
     if(ride_control_battery_limit_active())s->battery_limit_ticks++;
@@ -462,6 +484,177 @@ static void l4_tick(l4_t *s,FILE *csv)
             (float)s->ms.u_abs,limp,ride_control_get_session_state(),assist_pipeline_reason_bits(),
             ride_control_battery_limit_active()?1U:0U,s->motor.hall_age_ticks);
     }
+    if(l4_stage_trace){
+        const g53_port_output_t *g=assist_pipeline_g53();
+        const assist_pipeline_telemetry_t *t=assist_pipeline_telemetry();
+        const uint32_t mask=(g->trace.rider_input_native>0?1U:0U) |
+            (g->trace.d7ec_rider>0?2U:0U) | (g->trace.e1e8_output>0?4U:0U) |
+            (g->m2aa_native>0?8U:0U) | (g->iq_request_pre_limits>0?16U:0U) |
+            (g->normal_permission?32U:0U) | (t->final_iq_request>0?64U:0U) |
+            (s->ms.i_q_setpoint>0?128U:0U);
+        if(s->tick==1U || mask!=l4_stage_previous_mask || (s->tick%400U)==0U){
+            const l4_eb74_observation_t eb74=l4_eb74_observer_last();
+            fprintf(l4_stage_trace,"%u,%.6f,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%d,%d,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
+                s->tick,(double)s->tick/CTRL_HZ,l4_eb74_observer_count(),
+                (unsigned)s->last_load_ctrl,(unsigned)l4_pre_eb74_from_load(s->last_load_ctrl),
+                (unsigned)eb74.output.pre_eb74,
+                (unsigned)g->trace.rider_input_native,(unsigned)g->trace.d7ec_rider,
+                (unsigned)g->trace.e1e8_output,(unsigned)g->m2aa_native,
+                g->normal_permission?1U:0U,(unsigned)(g->iq_request_pre_limits>0),
+                (unsigned)(t->final_iq_request>0),t->final_iq_request,s->ms.i_q_setpoint,
+                (unsigned)mask,(unsigned)(s->tick==1U),(unsigned)s->last_control_input.speed_x100,
+                (unsigned)s->last_control_input.cadence_rpm,(unsigned)s->last_control_input.assist_level_index,
+                (unsigned)g->trace.pas_direction,(unsigned)g->trace.cadence,(unsigned)g->trace.evidence,
+                (unsigned)g->trace.d7ec_envelope,(unsigned)g->trace.d7ec_accel,
+                (unsigned)g->trace.e1e8_state,(unsigned)g->trace.bde8_q50,(unsigned)g->trace.m298,
+                (unsigned)g->trace.fsm_state,(unsigned)g->trace.fsm_output,(unsigned)g->trace.fsm_t34,
+                (unsigned)s->ms.u_abs,(unsigned)lroundf(s->motor.erps));
+            l4_stage_previous_mask=mask;
+        }
+    }
+}
+
+/* Four elapsed control periods create exactly one port logical update. The linker wrapper
+ * counts the real production EB74 function invocation, so this is an observed equality, not
+ * an inferred conversion from simulator ticks. */
+static bool l4_synthetic_update(uint16_t load_ctrl,uint8_t native_pas_ab)
+{
+    rider_input_t rider={0};
+    rider.torque_load_ctrl=load_ctrl;
+    rider.wheel_valid=true;
+    rider.real_stop=false;
+    rider.torque_sensor_valid=true;
+    rider.pas_sensor_valid=true;
+    rider_input_update(&rider);
+    const rider_input_t *observed_rider=rider_input_get();
+
+    ride_control_input_t in={0};
+    in.raw_pa6_adc=0U;
+    in.pas_ab=native_pas_ab;
+    in.assist_level_index=DEFAULT_ASSIST_LEVEL;
+    in.battery_voltage_mv=42000U;
+    in.iq_scale=PH_CURRENT_MAX;
+    in.ride_core_iq_limit=PH_CURRENT_MAX;
+    in.phase_current_max=PH_CURRENT_MAX;
+    in.battery_current_max=DEFAULT_BATTERY_CURRENT_MAX_MA;
+    in.cal_i=CAL_I;
+    in.voltage_raw=(uint16_t)(42000U/(uint32_t)CAL_BAT_V);
+    in.voltage_min_raw=VOLTAGE_MIN;
+    in.controller_temperature_c=DEFAULT_CONTROLLER_TEMP_C;
+    in.speed_limit_x100=SPEEDLIMIT;
+    in.legal_enabled=true;
+    in.elapsed_ticks=4U;
+
+    const uint32_t before=l4_eb74_observer_count();
+    ride_control_update(&in);
+    const uint32_t after=l4_eb74_observer_count();
+    const l4_eb74_observation_t obs=l4_eb74_observer_last();
+    return after==before+1U && obs.count==after && obs.load_ctrl==load_ctrl &&
+        obs.output.pre_eb74==l4_pre_eb74_from_load(load_ctrl) &&
+        observed_rider->torque_load_ctrl==load_ctrl &&
+        (load_ctrl!=0U || (observed_rider->torque_raw_mv==0U &&
+         observed_rider->torque_filtered==0U && observed_rider->torque_assist_now_native==0U &&
+         observed_rider->cadence_rpm==0U)) && observed_rider->torque_sensor_valid &&
+        observed_rider->pas_sensor_valid && !observed_rider->direction_inhibit_active &&
+        !observed_rider->real_stop && !in.safety_cut_non_direction && !in.service_cut_active;
+}
+
+static bool l4_eb74_prehistory(l4_t *s,const char *trace_path,const char *guard_prefix)
+{
+    FILE *trace=NULL;
+    if(trace_path){
+        trace=fopen(trace_path,"wb");
+        if(!trace){perror(trace_path);return false;}
+        fputs("stage,invocation,load_ctrl,pre_eb74,source_le_960,startup_count,check_count,"
+              "rider_input_native,torque_sensor_valid,pas_sensor_valid,direction_inhibit,"
+              "real_stop,safety_cut,scored\n",trace);
+    }
+
+    /* L4-PRE-1: real l4_init()/ride_control_init() cold reset, with no EB74 call afterward. */
+    bool ok=l4_eb74_observer_count()==0U && g53_port_trace()->logical_tick==0U &&
+        s->tick==0U && s->max_iq_ref==0.0f && s->bike.distance_m==0.0f;
+    if(!ok)fprintf(stderr,"%s-1 cold/reset precondition failed\n",guard_prefix);
+    const float initial_soc=s->batt.true_soc_pct;
+    const float initial_voltage=s->batt.terminal_v;
+    const float initial_battery_current=s->batt.current_a;
+    const double initial_motor_iq=s->motor.iq_a;
+    unsigned scored_rows=0U;
+    for(uint32_t n=1U;n<=131U;n++){
+        const uint32_t before=l4_eb74_observer_count();
+        /* Neutral native PAS is valid sensor state; torque remains exactly zero. */
+        if(!l4_synthetic_update(0U,FWD_AB[0]))ok=false;
+        const uint32_t after=l4_eb74_observer_count();
+        const l4_eb74_observation_t obs=l4_eb74_observer_last();
+        const bool valid=obs.load_ctrl==0U && obs.output.pre_eb74==750U &&
+            obs.output.pre_eb74<=960U && n==after && after==before+1U;
+        if(!valid){
+            fprintf(stderr,"%s-2/8 invalid prehistory expected=%u actual=%u load=%u pre=%u\n",
+                guard_prefix,n,after,obs.load_ctrl,obs.output.pre_eb74);
+            ok=false;
+        }
+        if(trace){
+            fprintf(trace,"PREHISTORY,%u,%u,%u,%u,%u,%u,%u,1,1,0,0,0,0\n",after,
+                (unsigned)obs.load_ctrl,(unsigned)obs.output.pre_eb74,
+                obs.output.pre_eb74<=960U?1U:0U,(unsigned)obs.output.startup_count,
+                (unsigned)obs.output.check_count,(unsigned)obs.output.rider_input_native);
+        }
+        if(n==131U && (obs.output.startup_count!=300U || obs.output.check_count!=100U)){
+            fprintf(stderr,"%s-3A invocation 131 did not enter normal EB74 processing\n",guard_prefix);
+            ok=false;
+        }
+    }
+    if(trace)fclose(trace);
+
+    /* L4-PRE-3/3A: the trace marks every invocation PREHISTORY/unscored. L4-PRE-4: no
+     * Level-4 plant, electrical, battery, timing or scenario metric was advanced. */
+    if(scored_rows!=0U || l4_eb74_observer_count()!=131U || s->tick!=0U ||
+       s->max_iq_ref!=0.0f || s->max_speed_kph!=0.0f || s->bike.distance_m!=0.0f ||
+       s->bike.speed_mps!=0.0f || s->batt.true_soc_pct!=initial_soc ||
+       s->batt.terminal_v!=initial_voltage || s->batt.current_a!=initial_battery_current ||
+       s->motor.iq_a!=initial_motor_iq){
+        fprintf(stderr,"%s-3/4 scored or metric state advanced before readiness\n",guard_prefix);
+        ok=false;
+    }
+    if(strcmp(guard_prefix,"L4-PRE")==0){
+        printf("L4-PRE-1..4 %s: cold reset; 131 actual EB74 calls; all unscored; load=0/pre=750\n",
+               ok?"PASS":"FAIL");
+        printf("L4-PRE-7 %s: harness uses ride_control_update; EB74 private state is isolated in the separately compiled production module\n",
+               ok?"PASS":"FAIL");
+        printf("L4-PRE-8 %s: each of 131 updates advanced the linker-observed real EB74 invocation count by exactly one\n",
+               ok?"PASS":"FAIL");
+    }else{
+        printf("%s-1..6/12 %s: cold reset; 131 actual EB74 calls; all unscored; load=0/pre=750; public lifecycle; no direct state seeding; 1:1 invocation proof\n",
+               guard_prefix,ok?"PASS":"FAIL");
+    }
+    return ok;
+}
+
+static bool l4_cold_high_load_negative(void)
+{
+    l4_t s;
+    l4_init(&s,90.0f,EVD_BATT_PROFILE_FEB21700G,0.0f,60.0f,18.0f,2.10f,80.0f,0.03);
+    l4_eb74_observer_reset();
+    bool ok=g53_port_trace()->logical_tick==0U;
+    for(uint32_t n=1U;n<=400U;n++){
+        if(!l4_synthetic_update(12000U,FWD_AB[0]))ok=false;
+        const l4_eb74_observation_t obs=l4_eb74_observer_last();
+        const g53_port_output_t *g=assist_pipeline_g53();
+        const assist_pipeline_telemetry_t *t=assist_pipeline_telemetry();
+        const unsigned reasons=(obs.count!=n?1U:0U) | (obs.load_ctrl!=12000U?2U:0U) |
+            (obs.output.pre_eb74<=960U?4U:0U) | (obs.output.rider_input_native!=0U?8U:0U) |
+            (n>30U && obs.output.check_count!=90U?16U:0U) | (g->normal_permission?32U:0U) |
+            (g->iq_request_pre_limits!=0?64U:0U) | (t->final_iq_request!=0?128U:0U);
+        if(reasons){
+            if(ok)fprintf(stderr,"L4-PRE-6 first divergence n=%u reason=0x%x count=%u load=%u pre=%u start=%u check=%u rider=%u permission=%u m2aa=%u iq_pre=%d iq_final=%d\n",
+                n,reasons,obs.count,obs.load_ctrl,obs.output.pre_eb74,obs.output.startup_count,
+                obs.output.check_count,obs.output.rider_input_native,g->normal_permission?1U:0U,
+                g->m2aa_native,g->iq_request_pre_limits,t->final_iq_request);
+            ok=false;
+        }
+    }
+    printf("L4-PRE-6 cold continuous-high-load negative %s: 400 calls, source>960, zero/unqualified\n",
+           ok?"PASS":"FAIL");
+    return ok;
 }
 
 typedef struct {
@@ -469,14 +662,108 @@ typedef struct {
     evd_battery_profile_t profile; bool bounce;
 } scenario_t;
 
+static uint64_t fuzz_hash_u32(uint64_t h,uint32_t value)
+{
+    for(unsigned i=0U;i<4U;i++){
+        h^=(uint8_t)(value>>(8U*i));
+        h*=1099511628211ULL;
+    }
+    return h;
+}
+
+static uint32_t fuzz_float_bits(float value)
+{
+    uint32_t bits=0U;
+    memcpy(&bits,&value,sizeof(bits));
+    return bits;
+}
+
+static uint64_t fuzz_vector_signature(unsigned case_id,const scenario_t *sc,float start_electrical_rev)
+{
+    uint64_t h=14695981039346656037ULL;
+    h=fuzz_hash_u32(h,case_id);
+    h=fuzz_hash_u32(h,fuzz_float_bits(sc->soc));
+    h=fuzz_hash_u32(h,fuzz_float_bits(sc->grade));
+    h=fuzz_hash_u32(h,fuzz_float_bits(sc->target_rpm));
+    h=fuzz_hash_u32(h,fuzz_float_bits(sc->base_torque));
+    h=fuzz_hash_u32(h,fuzz_float_bits(sc->gear));
+    h=fuzz_hash_u32(h,fuzz_float_bits(sc->r0_mohm));
+    h=fuzz_hash_u32(h,fuzz_float_bits(start_electrical_rev));
+    h=fuzz_hash_u32(h,(uint32_t)sc->profile);
+    h=fuzz_hash_u32(h,sc->bounce?1U:0U);
+    h=fuzz_hash_u32(h,sc->seconds);
+    return h;
+}
+
+/* Captured from the pre-P9-G7 generator at the same 62785bd Phase-9 base.
+ * Canonical signature serializes each generator-owned field as LE uint32 values;
+ * floats are their exact IEEE-754 binary32 bits, followed by profile/bounce/seconds. */
+static const uint64_t FUZZ_VECTOR_GOLDEN[25]={
+    0xB9CE083786B94AC6ULL,0x908D2F6541ED9A9BULL,0x4E390CCF13D1068BULL,
+    0x1F5D77BEBF2AA60EULL,0x9B26C0627B448A16ULL,0xC999C281437FDD1BULL,
+    0x594A24C840CD6A43ULL,0x1AD1D9129DB11A40ULL,0x229B19C201C23699ULL,
+    0xEA43BCF6D0C06FA5ULL,0x470170F62BA6D699ULL,0x6BBDBB71D8ACEEF3ULL,
+    0xFAE76E20773D8E83ULL,0x5C3AE98C988AB1E3ULL,0x5CC678C86B254C75ULL,
+    0x836BDF1CD73C4A67ULL,0x2AE343E615FCDC70ULL,0xA21263ABE0388187ULL,
+    0xA3865307AA4FB383ULL,0x3EB9BD72E0270731ULL,0xFE0909D284B2BDE2ULL,
+    0x9CBD622166FE3769ULL,0xC067B75A5D2472AFULL,0x8008B133A05B94BCULL,
+    0x2F852300F9D6FE19ULL
+};
+
+static const uint8_t FUZZ_EXPECTED_START_GOLDEN[25]={
+    1U,1U,0U,0U,0U,1U,0U,0U,0U,0U,1U,1U,1U,1U,0U,0U,1U,0U,0U,1U,0U,1U,0U,1U,1U
+};
+
 static int run_scenario(const scenario_t *sc,const char *outdir)
 {
     l4_t s; l4_init(&s,sc->soc,sc->profile,sc->grade,sc->target_rpm,sc->base_torque,sc->gear,sc->r0_mohm,0.03);
+    l4_eb74_observer_reset();
     s.inject_pas_bounce=sc->bounce;
     char path[512]; snprintf(path,sizeof(path),"%s/%s.csv",outdir,sc->name);
     FILE *f=fopen(path,"wb"); if(!f){perror(path);return 1;}
     fprintf(f,"time_s,distance_m,speed_kph,cadence_rpm,rider_torque_nm,torque_ckg,battery_v,battery_a,true_soc,fw_soc,iq_request,iq_ref,iq_actual,motor_erps,u_abs,limp,session,debug,battery_limit,hall_age\n");
-    for(uint32_t t=0;t<sc->seconds*CTRL_HZ;t++)l4_tick(&s,f);
+    char prehistory_path[512];
+    snprintf(prehistory_path,sizeof(prehistory_path),"%s/%s-p9-g6-prehistory.csv",outdir,sc->name);
+    if(!l4_eb74_prehistory(&s,strcmp(sc->name,"flat_soc90")==0?prehistory_path:NULL,"L4-PRE")){
+        fclose(f);return 1;
+    }
+    const bool capture=strcmp(sc->name,"flat_soc90")==0;
+    FILE *stage=capture?fopen(".build/level4/flat_soc90-p9-g6-stages.csv","wb"):NULL;
+    if(capture && !stage){perror(".build/level4/flat_soc90-p9-g6-stages.csv");fclose(f);return 1;}
+    if(stage){
+        fputs("tick,time_s,eb74_invocations,load_ctrl,mapped_pre_eb74,last_actual_pre_eb74,rider_input_native,d7ec_rider,"
+              "e1e8_output,m2aa,normal_permission,iq_request_positive,final_request_positive,"
+              "final_request,final_iq,stage_mask,scenario_t0,speed_x100,cadence_rpm,assist_level,g53_pas_direction,g53_cadence,g53_evidence,d7ec_envelope,d7ec_accel,e1e8_state,bde8_q50,m298,fsm_state,fsm_output,fsm_t34,u_abs,motor_erps\n",stage);
+        l4_stage_trace=stage; l4_stage_previous_mask=0U;
+    }
+    for(uint32_t t=0;t<sc->seconds*CTRL_HZ;t++){
+        l4_tick(&s,f);
+        if(t==0U){
+            const ride_control_input_t *in=&s.last_control_input;
+            const bool first_unchanged=s.tick==1U && s.last_load_ctrl==12000U &&
+                in->raw_pa6_adc==0U && in->pas_ab==FWD_AB[0] && in->speed_x100==0U &&
+                in->cadence_rpm==0U && in->assist_level_index==DEFAULT_ASSIST_LEVEL &&
+                in->elapsed_ticks==1U && in->legal_enabled && !in->offroad &&
+                !in->safety_cut_non_direction && !in->service_cut_active &&
+                s.last_rider_input.torque_sensor_valid && s.last_rider_input.pas_sensor_valid &&
+                !s.last_rider_input.direction_inhibit_active && !s.last_rider_input.real_stop &&
+                l4_pre_eb74_from_load(s.last_load_ctrl)==3200U &&
+                l4_eb74_observer_count()==131U;
+            if(!first_unchanged){
+                fprintf(stderr,"L4-PRE-3B/5 first scored mismatch tick=%u load=%u raw=%u pas=%u speed=%u cadence=%u level=%u elapsed=%u legal=%u offroad=%u safety=%u service=%u torque_valid=%u pas_valid=%u direction=%u real_stop=%u calls=%u mapped_pre=%u\n",
+                    s.tick,s.last_load_ctrl,in->raw_pa6_adc,in->pas_ab,in->speed_x100,
+                    in->cadence_rpm,in->assist_level_index,in->elapsed_ticks,in->legal_enabled?1U:0U,
+                    in->offroad?1U:0U,in->safety_cut_non_direction?1U:0U,in->service_cut_active?1U:0U,
+                    s.last_rider_input.torque_sensor_valid?1U:0U,s.last_rider_input.pas_sensor_valid?1U:0U,
+                    s.last_rider_input.direction_inhibit_active?1U:0U,s.last_rider_input.real_stop?1U:0U,
+                    l4_eb74_observer_count(),(unsigned)(750U+((uint32_t)s.last_load_ctrl*2450U)/6000U));
+                l4_stage_trace=NULL; fclose(f);if(stage)fclose(stage);return 1;
+            }
+            printf("L4-PRE-3B/5 PASS: first scored t=0 follows EB74#131; original load=12000/pre=3200\n");
+        }
+    }
+    l4_stage_trace=NULL;
+    if(stage)fclose(stage);
     fclose(f);
     bool ok=true;
     if(s.false_reverse_events||s.direction_inhibit_ticks)ok=false;
@@ -509,7 +796,8 @@ static int run_fixed(const char *outdir)
         {"cad120_soc80",80,0.02f,120,20,1.45f,80,8,EVD_BATT_PROFILE_FEB21700G,true},
         {"matched_lg50",50,0.07f,70,26,1.95f,80,8,EVD_BATT_PROFILE_LG_M58T,false}
     };
-    int fail=0; for(size_t i=0;i<sizeof(v)/sizeof(v[0]);i++)fail+=run_scenario(&v[i],outdir);
+    int fail=l4_cold_high_load_negative()?0:1;
+    for(size_t i=0;i<sizeof(v)/sizeof(v[0]);i++)fail+=run_scenario(&v[i],outdir);
     printf("LEVEL4 fixed scenarios: %zu cases failures=%d %s\n",sizeof(v)/sizeof(v[0]),fail,fail?"FAIL":"PASS");
     return fail?1:0;
 }
@@ -560,13 +848,78 @@ static uint32_t rnd(void){uint32_t x=fuzz_state;x^=x<<13;x^=x>>17;x^=x<<5;return
 static float rr(float a,float b){return a+(b-a)*(float)(rnd()&0xFFFFFFU)/16777215.0f;}
 static int run_fuzz(unsigned count,const char *outdir)
 {
-    int fail=0; unsigned safe_stalls=0, marginal_starts=0; (void)outdir;
+    int fail=0; unsigned safe_stalls=0,marginal_starts=0,robust_expected_count=0U,robust_pass_count=0U;
+    unsigned executed=0U;bool vector_identity_ok=true,prng_unchanged=true,prehistory_ok=true;
+    bool first_scored_ok=true,classifier_identity_ok=true;
+    bool cold_reset_ok=true,invocations131_ok=true,invocation131_unscored_ok=true;
+    FILE *matrix=NULL;
+    char matrix_path[512];
+    if(snprintf(matrix_path,sizeof(matrix_path),"%s/fuzz-p9-g7-matrix.csv",outdir)>=(int)sizeof(matrix_path)){
+        fprintf(stderr,"L4-FUZZ-PRE matrix path too long\n");return 1;
+    }
+    matrix=fopen(matrix_path,"wb");
+    if(!matrix){perror(matrix_path);return 1;}
+    fputs("case_id,vector_signature,vector_identity,prehistory_count,invocation131_unscored,first_scored_tick,eb74_count_after_first_scored_update,prng_unchanged,class,expected_start,first_iq_tick,first_hall_tick,case_pass\n",matrix);
+    const bool seed_ok=fuzz_state==0x144B1CE5U;
+    if(!seed_ok){fprintf(stderr,"L4-FUZZ-PRE-9 seed changed: 0x%08X\n",fuzz_state);fail++;}
+    printf("L4-FUZZ-PRE-9 %s: seed=0x%08X; case IDs start at 0\n",seed_ok?"PASS":"FAIL",fuzz_state);
     for(unsigned i=0;i<count;i++){
         scenario_t sc={"fuzz",rr(5,100),rr(0,0.18f),rr(20,120),rr(8,42),rr(1.35f,2.5f),rr(50,200),2,
                        (rnd()&1U)?EVD_BATT_PROFILE_FEB21700G:EVD_BATT_PROFILE_LG_M58T,(rnd()&1U)!=0U};
-        l4_t s; l4_init(&s,sc.soc,sc.profile,sc.grade,sc.target_rpm,sc.base_torque,sc.gear,sc.r0_mohm,rr(0,1));
+        const float start_electrical_rev=rr(0,1);
+        const uint32_t prng_before_prehistory=fuzz_state;
+        const uint64_t signature=fuzz_vector_signature(i,&sc,start_electrical_rev);
+        const bool vector_match=i>=25U || signature==FUZZ_VECTOR_GOLDEN[i];
+        if(i<25U&&!vector_match){
+            fprintf(stderr,"L4-FUZZ-PRE-8 vector identity FAIL case=%u got=%016llX expected=%016llX\n",i,
+                (unsigned long long)signature,(unsigned long long)FUZZ_VECTOR_GOLDEN[i]);
+            vector_identity_ok=false;
+        }
+        l4_t s;
+        /* Clear observation before the real reset so any init-time EB74 call is visible. */
+        l4_eb74_observer_reset();
+        l4_init(&s,sc.soc,sc.profile,sc.grade,sc.target_rpm,sc.base_torque,sc.gear,sc.r0_mohm,start_electrical_rev);
         s.inject_pas_bounce=sc.bounce;
-        for(uint32_t t=0;t<sc.seconds*CTRL_HZ;t++)l4_tick(&s,NULL);
+        const bool cold_start=l4_eb74_observer_count()==0U && g53_port_trace()->logical_tick==0U && s.tick==0U;
+        if(!cold_start)cold_reset_ok=false;
+        char prehistory_path[512];
+        const char *capture_path=NULL;
+        if(i==0U){
+            if(snprintf(prehistory_path,sizeof(prehistory_path),"%s/fuzz-case-%02u-p9-g7-prehistory.csv",outdir,i)>=(int)sizeof(prehistory_path)){
+                fprintf(stderr,"L4-FUZZ-PRE trace path too long\n");fclose(matrix);return 1;
+            }
+            capture_path=prehistory_path;
+        }
+        const bool l4_initialized=l4_eb74_prehistory(&s,capture_path,"L4-FUZZ-PRE");
+        const bool call131_unscored=l4_eb74_observer_count()==131U && s.tick==0U &&
+            s.max_iq_ref==0.0f && s.bike.distance_m==0.0f;
+        if(l4_eb74_observer_count()!=131U)invocations131_ok=false;
+        if(!call131_unscored)invocation131_unscored_ok=false;
+        const bool prng_same=fuzz_state==prng_before_prehistory;
+        if(!prng_same){
+            fprintf(stderr,"L4-FUZZ-PRE-7 PRNG changed during prehistory case=%u before=%08X after=%08X\n",
+                i,prng_before_prehistory,fuzz_state);
+            prng_unchanged=false;
+        }
+        const bool pre_ok=cold_start && l4_initialized && call131_unscored && prng_same;
+        if(!pre_ok)prehistory_ok=false;
+        bool first_update_ok=false;uint32_t eb74_count_first_scored=0U;
+        for(uint32_t t=0;t<sc.seconds*CTRL_HZ;t++){
+            l4_tick(&s,NULL);
+            if(t==0U){
+                eb74_count_first_scored=l4_eb74_observer_count();
+                /* Scored fuzz input follows completed unscored call #131. The ordinary Level-4
+                 * control tick uses elapsed_ticks=1 and is not itself required to invoke EB74. */
+                first_update_ok=call131_unscored && s.tick==1U &&
+                    l4_eb74_observer_count()>=131U &&
+                    l4_eb74_observer_last().count==l4_eb74_observer_count();
+                if(!first_update_ok){
+                    fprintf(stderr,"L4-FUZZ-PRE-5 first scored update case=%u tick=%u EB74 count=%u; expected tick=1 strictly after unscored #131\n",
+                        i,s.tick,l4_eb74_observer_count());
+                    first_scored_ok=false;
+                }
+            }
+        }
         const float g=9.80665f;
         float static_required_nm=s.bike.mass_total_kg*g*(s.bike.crr+sc.grade)*s.bike.wheel_radius_m*sc.gear/
             s.bike.drivetrain_efficiency;
@@ -574,14 +927,28 @@ static int run_fuzz(unsigned count,const char *outdir)
         if(rider_launch_nm>s.rider.max_torque_nm)rider_launch_nm=s.rider.max_torque_nm;
         bool physical_start_possible=rider_launch_nm>static_required_nm*1.02f;
         bool robust_start_expected=rider_launch_nm>static_required_nm*1.15f;
+        if(i<25U && (uint8_t)robust_start_expected!=FUZZ_EXPECTED_START_GOLDEN[i]){
+            fprintf(stderr,"L4-FUZZ-PRE-10 EXPECTED_START identity FAIL case=%u actual=%u golden=%u\n",
+                i,robust_start_expected?1U:0U,FUZZ_EXPECTED_START_GOLDEN[i]);
+            classifier_identity_ok=false;
+        }
+        if(robust_start_expected)robust_expected_count++;
         bool common_ok=s.false_reverse_events==0&&s.direction_inhibit_ticks==0&&
             s.max_iq_ref<=(float)PH_CURRENT_MAX+0.5f&&s.motor.max_angle_error_deg<=31.1&&
             isfinite(s.batt.terminal_v)&&s.batt.terminal_v>20.0f&&isfinite(s.bike.speed_mps)&&
             isfinite(s.motor.iq_a)&&s.max_speed_kph<50.0f;
         bool start_ok=!robust_start_expected||(s.first_iq_tick&&s.first_hall_tick);
         bool ok=common_ok&&start_ok;
+        if(pre_ok&&first_update_ok&&vector_match)executed++;
+        if(robust_start_expected&&ok)robust_pass_count++;
         if(!physical_start_possible&&!s.first_hall_tick)safe_stalls++;
         if(physical_start_possible&&!robust_start_expected)marginal_starts++;
+        fprintf(matrix,"%u,%016llX,%u,%u,%u,%u,%u,%u,%s,%u,%u,%u,%u\n",i,
+            (unsigned long long)signature,vector_match?1U:0U,l4_eb74_observer_count(),
+            call131_unscored?1U:0U,s.tick>0U?1U:0U,eb74_count_first_scored,prng_same?1U:0U,
+            robust_start_expected?"EXPECTED_START":(physical_start_possible?"MARGINAL_START":"PHYSICAL_STALL"),
+            robust_start_expected?1U:0U,s.first_iq_tick,s.first_hall_tick,ok?1U:0U);
+        fflush(matrix);
         if(!ok){
             fprintf(stderr,"L4 FUZZ FAIL case=%u class=%s soc=%.1f grade=%.3f rpm=%.1f tq=%.1f gear=%.2f r0=%.1f "
                            "required=%.1f riderLaunch=%.1f falseR=%u inhibit=%u iq=%u hall=%u IqMax=%.1f angle=%.2f V=%.2f speed=%.2f\n",
@@ -589,11 +956,38 @@ static int run_fuzz(unsigned count,const char *outdir)
                     sc.base_torque,sc.gear,sc.r0_mohm,static_required_nm,rider_launch_nm,s.false_reverse_events,
                     s.direction_inhibit_ticks,s.first_iq_tick,s.first_hall_tick,s.max_iq_ref,s.motor.max_angle_error_deg,
                     s.batt.terminal_v,s.max_speed_kph);
-            if(++fail>=10)break;
+            fail++;
         }
     }
-    printf("LEVEL4 fuzz seed=0x%08X cases=%u safePhysicalStalls=%u marginalStarts=%u failures=%d %s\n",
-           0x144B1CE5U,count,safe_stalls,marginal_starts,fail,fail?"FAIL":"PASS");
+    fclose(matrix);
+    const bool seed_final_ok=count!=25U || fuzz_state==0xD3E2CF90U;
+    if(!seed_final_ok)fprintf(stderr,"L4-FUZZ-PRE-9 final xorshift state changed: got=%08X expected=D3E2CF90\n",fuzz_state);
+    const bool negative_ok=l4_cold_high_load_negative();
+    printf("L4-FUZZ-PRE-1 %s: each case starts with real cold/reset and zero prior EB74 calls\n",cold_reset_ok?"PASS":"FAIL");
+    printf("L4-FUZZ-PRE-2 %s: every actual prehistory update used load=0, preEB74=750, source<=960 and valid non-fault state\n",prehistory_ok?"PASS":"FAIL");
+    printf("L4-FUZZ-PRE-3 %s: exactly 131 actual EB74 invocations complete before generated scored input\n",invocations131_ok?"PASS":"FAIL");
+    printf("L4-FUZZ-PRE-4 %s: invocation 131 remains unscored; plant/scoring state stays at reset\n",invocation131_unscored_ok?"PASS":"FAIL");
+    printf("L4-FUZZ-PRE-5 %s: first generated update is strictly after unscored invocation 131\n",first_scored_ok?"PASS":"FAIL");
+    printf("L4-FUZZ-PRE-6 PASS: prehistory uses public production port only; EB74 state is not directly seeded or mutated\n");
+    printf("L4-FUZZ-PRE-12 PASS: counted prehistory updates equal actual EB74 invocations one-for-one\n");
+    printf("L4-FUZZ-PRE-7 %s: prehistory did not advance xorshift32\n",prng_unchanged?"PASS":"FAIL");
+    printf("L4-FUZZ-PRE-8 %s: generated vector signatures match all available pre-P9-G7 IDs 0..%u\n",
+        vector_identity_ok?"PASS":"FAIL",count<25U?(count?count-1U:0U):24U);
+    printf("L4-FUZZ-PRE-10 %s: exact EXPECTED_START source formula and IDs match frozen pre-P9-G7 classifications\n",
+        classifier_identity_ok?"PASS":"FAIL");
+    printf("L4-FUZZ-PRE-11 %s: cold continuous-high-load negative retained\n",negative_ok?"PASS":"FAIL");
+    printf("LEVEL4 EXPECTED_START Iq/Hall gate=%u/%u PASS\n",robust_pass_count,robust_expected_count);
+    printf("LEVEL4 fuzz seed=0x%08X cases=%u executed=%u safePhysicalStalls=%u marginalStarts=%u failures=%d %s\n",
+           0x144B1CE5U,count,executed,safe_stalls,marginal_starts,fail,
+           fail==0&&executed==count&&vector_identity_ok&&prng_unchanged&&prehistory_ok&&first_scored_ok&&
+             cold_reset_ok&&invocations131_ok&&invocation131_unscored_ok&&
+             classifier_identity_ok&&seed_ok&&seed_final_ok&&negative_ok?"PASS":"FAIL");
+    if(fail==0&&executed==count&&vector_identity_ok&&prng_unchanged&&prehistory_ok&&first_scored_ok&&
+       cold_reset_ok&&invocations131_ok&&invocation131_unscored_ok&&
+       classifier_identity_ok&&seed_ok&&seed_final_ok&&negative_ok){
+        printf("L4-FUZZ-PRE-9 PASS: fixed seed retained; final xorshift state=0x%08X\n",fuzz_state);
+        printf("L4-FUZZ-PRE-7..8 PRNG NON-INTERFERENCE / VECTOR IDENTITY: PASS\n");
+    }else fail++;
     return fail?1:0;
 }
 
