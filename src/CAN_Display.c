@@ -59,7 +59,7 @@ Ext_ID_t Ext_ID_Rx;
 Ext_ID_t Ext_ID_Tx;
 void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS);
 void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS);
-void sendCAN_Poll(MotorParams_t* MP, MotorState_t* MS, uint16_t command);
+bool sendCAN_Poll(MotorParams_t* MP, MotorState_t* MS, uint16_t command);
 void sendAcknoledge(void);
 //FW-068/076: the result of a config write has to reach the tool. Used by the multiframe
 //blobs and by the short 0x3203 write; a rejected frame must never read as a success.
@@ -855,7 +855,7 @@ void sendCAN_3100(MotorState_t* MS){
 }
 #endif
 
-void sendCAN_3202(void){
+bool sendCAN_3202(void){
 	//0x3202 byte0 bit0 drives the stock HMI (DPC245 CF80301.2) Walk-icon blink: it is copied
 	//to state[0].bit4 and gates the periodic FF/FE callback. It must be 0x01 ONLY while a Walk
 	//session is actually RUNNING and the bike is ACTUALLY MOVING - not merely when Walk mode
@@ -869,10 +869,11 @@ void sendCAN_3202(void){
 	   && (MS.Speedx100 > 0 || ui16_erps >= RIDE_COAST_RELEASE_ERPS)){
 		d[0] = 0x01;
 	}
-	can_tx_queue_enqueue(0x02F83202U, 1U, d); //FW-110: was a blocking can_message_transmit/can_transmit_states wait
+	return can_tx_queue_enqueue(0x02F83202U, 1U, d); //FW-110: non-blocking; caller retries if full
 }
 
-void sendCAN_Poll(MotorParams_t* MP, MotorState_t* MS, uint16_t command){
+bool sendCAN_Poll(MotorParams_t* MP, MotorState_t* MS, uint16_t command){
+	bool accepted = false;
 
 	switch (command){
 
@@ -899,7 +900,7 @@ void sendCAN_Poll(MotorParams_t* MP, MotorState_t* MS, uint16_t command){
 			d[5] = ((MS->Voltage/10)>>8)&0xFF;
 			d[6] = MS->int_Temperature+40; //temp sterownika (M820: jeden czujnik); +40 = offset protokolu, parser PC odejmuje 40
 			d[7] = MS->int_Temperature+40; //ta sama temp sterownika jako "motor temp"; +40 = offset protokolu (NIE przeklamanie)
-			can_tx_queue_enqueue(0x02F83201U, 8U, d); //FW-110: was a blocking can_message_transmit/can_transmit_states wait
+			accepted = can_tx_queue_enqueue(0x02F83201U, 8U, d); //non-blocking; periodic owner retries refusal
 			}
 			break;
 
@@ -928,7 +929,7 @@ void sendCAN_Poll(MotorParams_t* MP, MotorState_t* MS, uint16_t command){
 			uint16_t range_x100 = (MS->range < 650) ? (uint16_t)(MS->range*100) : 64999;
 			d[6] = range_x100&0xFF;//range LSB (0.01 km)
 			d[7] = (range_x100>>8)&0xFF;//range MSB
-			can_tx_queue_enqueue(0x02F83200U, 8U, d); //FW-110: was a blocking can_message_transmit/can_transmit_states wait
+			accepted = can_tx_queue_enqueue(0x02F83200U, 8U, d); //non-blocking; periodic owner retries refusal
 			}
 			break;
 
@@ -946,12 +947,13 @@ void sendCAN_Poll(MotorParams_t* MP, MotorState_t* MS, uint16_t command){
 #endif
 			d[0] = cal_val & 0xFF;
 			d[1] = (cal_val >> 8) & 0xFF;
-			can_tx_queue_enqueue(0x02F83205U, 2U, d); //FW-110: was a blocking can_message_transmit/can_transmit_states wait
+			accepted = can_tx_queue_enqueue(0x02F83205U, 2U, d); //non-blocking; periodic owner retries refusal
 			}
 			break;
 
 
 	}//end case
+	return accepted;
 }
 
 /*
@@ -971,17 +973,17 @@ void sendCAN_Poll(MotorParams_t* MP, MotorState_t* MS, uint16_t command){
  * overflow (FW-132). Split so the caller can schedule each on its own period and normally only
  * one frame is offered per pass.
  */
-void sendCAN_status_frame(MotorState_t* MS, uint8_t index){
+bool sendCAN_status_frame(MotorState_t* MS, uint8_t index){
 	static const uint32_t hb_efid[3] = {0x02FF1200, 0x02F8320F, 0x02F83000};
 	static const uint8_t  hb_dlen[3] = {1, 8, 4};
-	if(index > 2U) return;
+	if(index > 2U) return false;
 	uint8_t d[8] = {0};
 	if(index==0) d[0] = (MS->brake_active_flag==SET) ? 0x01 : 0x00; //bit0=brake
 	else if(index==1) d[0] = 0x01;
 	else { //0x3000: byte0 = session counter, +1 every 10 s since boot (matches the m510
 	       //logs 01,02,03...; bytes1-3 stay 0).
 	       d[0] = (uint8_t)(control_time_ticks / (CONTROL_TIMEBASE_HZ * 10U)); }
-	can_tx_queue_enqueue(hb_efid[index], hb_dlen[index], d); //FW-110: was a blocking wait
+	return can_tx_queue_enqueue(hb_efid[index], hb_dlen[index], d); //periodic owner retries refusal
 }
 
 /* All three at once. Only for the one-shot startup/calibration path, never for the cyclic
@@ -1398,9 +1400,9 @@ void update_checksum(void){
  *               not our data.
  *   bytes 6..7  zero in the capture too.
  */
-void sendCAN_3210(void){
+bool sendCAN_3210(void){
 	uint8_t d[8] = {0};
 	d[4] = (uint8_t)(ride_seconds & 0xFF);        //LE16 seconds of motion
 	d[5] = (uint8_t)((ride_seconds >> 8) & 0xFF);
-	can_tx_queue_enqueue(0x82F83210, 8, d);
+	return can_tx_queue_enqueue(0x82F83210, 8, d);
 }

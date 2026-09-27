@@ -21,6 +21,7 @@ varmap={
  'mainCPathForward': ROOT/'src/main.c',
  'mainHPathForward': ROOT/'inc/main.h',
  'canDisplayCPathForward': ROOT/'src/CAN_Display.c',
+ 'gd32ItCPathForward': ROOT/'src/gd32f30x_it.c',
  'currentCalCPathForward': ROOT/'src/current_cal.c',
  'rideControlCPathForward': ROOT/'src/ride_control.c',
  'assistPipelineCPathForward': ROOT/'src/assist_pipeline.c',

@@ -73,6 +73,8 @@ OF SUCH DAMAGE.
 #include "qs_transition_dump.h"
 #endif
 #include "can_tx_queue.h"
+#include "can_rx_queue.h"
+#include "can_periodic_due.h"
 #include "can_multiframe.h"
 #include "can_reply_effects.h"
 #include "torque_input.h"
@@ -146,7 +148,6 @@ uint32_t WordNum = ((FMC_WRITE_END_ADDR - FMC_WRITE_START_ADDR) >> 2);
 
 can_trasnmit_message_struct transmit_message;
 can_receive_message_struct receive_message;
-FlagStatus receive_flag;
 FlagStatus Speed_flag=0;
 FlagStatus reg_ADC_flag=0;
 FlagStatus OnOffButton_flag=0;
@@ -882,6 +883,20 @@ volatile uint16_t update_hold_ticks=0; //>0 = an update session is in progress, 
 extern volatile uint16_t cmd3005_seen;      //FW-132: 0x3005 frames seen (CAN_Display.c)
 extern volatile uint8_t  cmd3005_last_target; //FW-132: whom the last one was addressed to
 uint8_t auto_off_minutes=AUTO_OFF_MINUTES; //runtime auto-off timeout [min]; overwritten by HMI 0x6303
+
+static void can_rx_consume_liveness_events(void)
+{
+	/* The ISR is the only producer. Mask it only while exchanging the byte so an
+	 * event raised concurrently cannot be erased by the foreground clear. */
+	uint32_t primask = __get_PRIMASK();
+	__disable_irq();
+	uint8_t events = can_rx_event_flags;
+	can_rx_event_flags = 0U;
+	__set_PRIMASK(primask);
+	if(events & CAN_RX_EVENT_BUS){ bus_lost_ticks=0U; bus_seen=1U; }
+	if(events & CAN_RX_EVENT_HMI){ hmi_lost_ticks=0U; hmi_seen=1U; }
+}
+
 uint32_t Speedx100_cumulated=0;
 uint16_t last_valid_speed_x100=0;          //FW-036: baseline for false-pulse (impossible-rise) rejection
 volatile uint16_t speed_glitch_count=0;    //FW-036: rejected speed pulses since boot (diagnostics)
@@ -1008,7 +1023,6 @@ int main(void)
      uint32_t fw_ver = 0;
 #endif
     fwdgt_counter_reload();
-    //receive_flag = RESET;
     SystemInit();
     /* system clocks configuration */
 
@@ -1050,11 +1064,11 @@ int main(void)
     /* ADC configuration */
     adc_config();
 
+    /* Initialize the RX ring/events before enabling the CAN receive interrupt. */
+    can_rx_queue_init();
+
     /* initialize CAN and CAN filter */
     can_networking_init();
-
-    /* enable CAN receive FIFO0 not empty interrupt */
-    receive_flag = RESET;
 
     can_interrupt_enable(CAN0, CAN_INTEN_RFNEIE1);
 #ifdef PRINTDEBUG_UART
@@ -1279,8 +1293,16 @@ int main(void)
     	fwdgt_counter_reload();
 
 #if (DISPLAY_TYPE == DISPLAY_TYPE_BAFANG)
-    	if(receive_flag){
-    		receive_flag = RESET;
+		/* Atomically take physical RX events before parser work and watchdog evaluation.
+		 * If an IRQ arrives after restore, its bit remains set for the next loop. */
+		can_rx_consume_liveness_events();
+
+		/* At most one application frame per outer iteration; control work remains bounded. */
+		can_rx_frame_t queued_rx;
+		if(can_rx_queue_pop(&queued_rx)){
+			receive_message.rx_efid = queued_rx.rx_efid;
+			receive_message.rx_dlen = queued_rx.rx_dlen;
+			for(uint8_t rx_i=0U; rx_i<8U; rx_i++) receive_message.rx_data[rx_i]=queued_rx.rx_data[rx_i];
     		processCAN_Rx(&MP, &MS);
     	}
     	/* FW-110 v5: runs an accepted calibration request here, outside the CAN parser. */
@@ -1446,18 +1468,18 @@ int main(void)
             	 * uint16_t on purpose: 0x3000's divider is 248, which is close enough to a uint8_t's
             	 * ceiling that a future edit could silently wrap it.
             	 */
-            	static uint16_t hb1200_tick=0, hb320F_tick=0, hb3000_tick=0,
+			static uint16_t hb1200_tick=0, hb320F_tick=0, hb3000_tick=0,
             	                speed_tick=0, cad_tick=0, misc_tick=0, s202_tick=0, s3210_tick=0;
-            	if(++hb1200_tick >= 12){hb1200_tick=0; sendCAN_status_frame(&MS,0);} //  480 ms (stock  495)
-            	if(++hb320F_tick >= 50){hb320F_tick=0; sendCAN_status_frame(&MS,1);} // 2000 ms (stock 1980)
-            	if(++hb3000_tick >=248){hb3000_tick=0; sendCAN_status_frame(&MS,2);} // 9920 ms (stock 9900)
-            	if(++speed_tick  >=  6){speed_tick=0;  sendCAN_Poll(&MP,&MS,0x3201);} //  240 ms (stock  247)
-            	if(++cad_tick    >= 50){cad_tick=0;    sendCAN_Poll(&MP,&MS,0x3200);} // 2000 ms (stock 1980)
-            	if(++misc_tick   >= 99){misc_tick=0;   sendCAN_Poll(&MP,&MS,0x3205);} // 3960 ms (stock 3960, exact)
-            	if(++s202_tick   >=  3){s202_tick=0;   sendCAN_3202();}               //  120 ms (stock   99)
+			if(can_periodic_is_due(&hb1200_tick,12U) && sendCAN_status_frame(&MS,0)) can_periodic_enqueue_accepted(&hb1200_tick); // 480 ms (stock 495)
+			if(can_periodic_is_due(&hb320F_tick,50U) && sendCAN_status_frame(&MS,1)) can_periodic_enqueue_accepted(&hb320F_tick); // 2000 ms (stock 1980)
+			if(can_periodic_is_due(&hb3000_tick,248U) && sendCAN_status_frame(&MS,2)) can_periodic_enqueue_accepted(&hb3000_tick); // 9920 ms (stock 9900)
+			if(can_periodic_is_due(&speed_tick,6U) && sendCAN_Poll(&MP,&MS,0x3201)) can_periodic_enqueue_accepted(&speed_tick); // 240 ms (stock 247)
+			if(can_periodic_is_due(&cad_tick,50U) && sendCAN_Poll(&MP,&MS,0x3200)) can_periodic_enqueue_accepted(&cad_tick); // 2000 ms (stock 1980)
+			if(can_periodic_is_due(&misc_tick,99U) && sendCAN_Poll(&MP,&MS,0x3205)) can_periodic_enqueue_accepted(&misc_tick); // 3960 ms
+			if(can_periodic_is_due(&s202_tick,3U) && sendCAN_3202()) can_periodic_enqueue_accepted(&s202_tick); // 120 ms (stock 99)
             	//FW-134: the frame whose bytes 4..5 the stock controller steps once per second while
             	//moving. 25 x 40 ms = 1000 ms; stock table says 990 ms. See sendCAN_3210().
-            	if(++s3210_tick  >= 25){s3210_tick=0;  sendCAN_3210();}               // 1000 ms (stock  990)
+			if(can_periodic_is_due(&s3210_tick,25U) && sendCAN_3210()) can_periodic_enqueue_accepted(&s3210_tick); // 1000 ms (stock 990)
             	// filtr EMA /16 surowego ADC temperatury (wzorzec jak filtr napiecia), tlumi szum/glitch
             	// TODO(temp-sensor): detekcja rozwartego (ADC~4095) / zwartego (ADC~0) NTC i fail-safe
             	static uint32_t temp_adc_cumulated = 0;
@@ -1566,11 +1588,12 @@ int main(void)
 
 				//--- FW-135 comms watchdogs. Both are armed only after the first frame of their
 				//    own kind, so neither can fire during the boot grace period. Both counters
-				//    are reset in processCAN_Rx.
+				//    are reset from physical CAN IRQ events before this slow-loop watchdog.
 				//
 				//    ASSIST needs a live display. The bus counter is allowed to cut assist too:
 				//    a bus that has gone completely silent is a pulled cable, and that must stop
 				//    the motor whether or not the display ever identified itself as source 3.
+				can_rx_consume_liveness_events();
 				if(hmi_lost_ticks < 60000) hmi_lost_ticks++;
 				if(bus_lost_ticks < 60000) bus_lost_ticks++;
 				if((hmi_seen && hmi_lost_ticks >= COMM_CUT_TICKS) ||

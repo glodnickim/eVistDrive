@@ -35,6 +35,7 @@ OF SUCH DAMAGE.
 #include "gd32f30x_it.h"
 #include "main.h"
 #include "systick.h"
+#include "can_rx_queue.h"
 
 /*!
     \brief      this function handles NMI exception
@@ -144,8 +145,16 @@ void SysTick_Handler(void)
 
 void CAN0_RX1_IRQHandler(void)
 {
-    /* check the receive message */
-    can_message_receive(CAN0, CAN_FIFO1, &receive_message);
-    receive_flag = SET;
+    can_receive_message_struct incoming;
+    can_rx_frame_t frame;
 
+    /* One hardware FIFO entry per IRQ; parsing and application work stay in main. */
+    can_message_receive(CAN0, CAN_FIFO1, &incoming);
+    can_rx_queue_note_received(incoming.rx_efid,
+        incoming.rx_ff == CAN_FF_EXTENDED,
+        incoming.rx_ft == CAN_FT_DATA);
+    frame.rx_efid = incoming.rx_efid;
+    frame.rx_dlen = incoming.rx_dlen;
+    for (uint8_t i = 0U; i < 8U; i++) frame.rx_data[i] = incoming.rx_data[i];
+    (void)can_rx_queue_push_from_isr(&frame); /* full is counted; old unread frames stay intact */
 }

@@ -122,8 +122,8 @@ int main(void)
 	}
 
 	/* --- location of the sender: keep the signature text the FW-110 guard also searches --- */
-	const char *s202 = strstr(clean, "void sendCAN_3202(void){");
-	CHECK(s202 != NULL, "setup: void sendCAN_3202(void){ found in CAN_Display.c");
+	const char *s202 = strstr(clean, "bool sendCAN_3202(void){");
+	CHECK(s202 != NULL, "setup: bool sendCAN_3202(void){ found in CAN_Display.c");
 	const char *s202_end = s202 ? strstr(s202 + 1, "\n}") : NULL;
 	CHECK(s202_end != NULL, "setup: end of sendCAN_3202() body found");
 	if (!s202 || !s202_end) {

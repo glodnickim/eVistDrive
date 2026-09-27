@@ -39,6 +39,7 @@ $inc = Join-Path $root 'inc'
 $mainCPathForward = (Join-Path $root 'src\main.c') -replace '\\', '/'
 $mainHPathForward = (Join-Path $root 'inc\main.h') -replace '\\', '/'
 $canDisplayCPathForward = (Join-Path $root 'src\CAN_Display.c') -replace '\\', '/'
+$gd32ItCPathForward = (Join-Path $root 'src\gd32f30x_it.c') -replace '\\', '/'
 $currentCalCPathForward = (Join-Path $root 'src\current_cal.c') -replace '\\', '/'
 $rideControlCPathForward = (Join-Path $root 'src\ride_control.c') -replace '\\', '/'
 $assistPipelineCPathForward = (Join-Path $root 'src\assist_pipeline.c') -replace '\\', '/'
@@ -197,6 +198,12 @@ $suites = @(
        Harness = Join-Path $PSScriptRoot 'can_tx_queue_host.c'
        Modules = @(Join-Path $root 'src\can_tx_queue.c')
        IncludeDirs = @(Join-Path $PSScriptRoot 'common') },
+    @{ Name = 'TQ-06 CAN RX FIFO burst retention + physical HMI liveness'
+       Harness = Join-Path $PSScriptRoot 'can_rx_queue_host.c'
+       Modules = @(Join-Path $root 'src\can_rx_queue.c')
+       IncludeDirs = @(Join-Path $PSScriptRoot 'common')
+       Defines = @("-DMAIN_C_PATH=$mainCPathForward", "-DCAN_DISPLAY_C_PATH=$canDisplayCPathForward",
+                   "-DGD32_IT_C_PATH=$gd32ItCPathForward") },
 @{ Name = 'FW-110 can_multiframe stop-and-wait multiframe producer'
         Harness = Join-Path $PSScriptRoot 'can_multiframe_host.c'
         # Linked TOGETHER with the real can_tx_queue.c it feeds - can_multiframe.c calls

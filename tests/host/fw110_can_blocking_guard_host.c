@@ -227,9 +227,9 @@ int main(void)
 				/* --- sendCAN_3100() must never compete for can_tx_queue's reserved slots ----- */
 				const char *mf3100_start = strstr(clean, "void sendCAN_3100(MotorState_t* MS){");
 				const char *mf3100_end = mf3100_start
-					? strstr(mf3100_start, "void sendCAN_3202(void){") : NULL;
+					? strstr(mf3100_start, "bool sendCAN_3202(void){") : NULL;
 				CHECK(mf3100_start != NULL, "setup: sendCAN_3100(MotorState_t* MS){ found in CAN_Display.c");
-				CHECK(mf3100_end != NULL, "setup: sendCAN_3202(void){ found after it, to bound its body");
+				CHECK(mf3100_end != NULL, "setup: bool sendCAN_3202(void){ found after it, to bound its body");
 				if (mf3100_start && mf3100_end) {
 					const char *enq = strstr(mf3100_start, "can_tx_queue_enqueue(");
 					CHECK(enq == NULL || enq >= mf3100_end,

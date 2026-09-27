@@ -7,6 +7,7 @@
 #include "../common/check.h"
 
 #include "can_tx_queue.h"
+#include "can_periodic_due.h"
 
 /* --- mock peripheral: fully scripted, counts every call the module makes on it -------------- */
 
@@ -51,6 +52,15 @@ static uint8_t mock_state(uint8_t mailbox)
 static const can_tx_ops_t mock_ops = { mock_transmit, mock_state };
 
 static const uint8_t sample_data[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+
+/* Exercise the same due/accepted contract used by main.c around production enqueue results. */
+static bool periodic_offer(uint16_t *counter, uint16_t period, uint32_t efid)
+{
+	if (!can_periodic_is_due(counter, period)) return false;
+	if (!can_tx_queue_enqueue(efid, 1U, sample_data)) return false;
+	can_periodic_enqueue_accepted(counter);
+	return true;
+}
 
 /* --- 1: mailbox busy through many calls - bounded cost, frame survives -------------------- */
 static void test_busy_bounded_cost(void)
@@ -261,6 +271,59 @@ static void test_tick_wraparound(void)
 	CHECK(can_tx_queue_failed_count() == 1U, "8: counted as a genuine give-up, not silently lost");
 }
 
+/* --- 9: a refused periodic HMI frame stays due until enqueue accepts it --------------------- */
+static void test_periodic_hmi_retry_after_full_queue(void)
+{
+	mock_reset();
+	can_tx_queue_init(&mock_ops);
+	for (int i = 0; i < MOCK_SCRIPT_LEN; i++) mock_transmit_script[i] = CANQ_NOMAILBOX;
+
+	for (int i = 0; i < 16; i++) {
+		CHECK(can_tx_queue_enqueue((uint32_t)(0x900U + (uint32_t)i), 1U, sample_data),
+			"9: non-periodic pressure fills the queue");
+	}
+	uint16_t hb_tick = 11U;
+	CHECK(!periodic_offer(&hb_tick, 12U, 0x02FF1200U),
+		"9: due 0x1200 enqueue is refused while the queue is full");
+	CHECK(hb_tick == 12U && can_periodic_is_due(&hb_tick, 12U),
+		"9: refused heartbeat remains saturated/due with one logical occurrence");
+	CHECK(can_tx_queue_dropped_count() == 1U,
+		"9: the forced saturation refusal is counted by the real queue");
+
+	/* Let one existing queued frame complete, freeing one slot. */
+	mock_transmit_script[mock_transmit_step] = 1U;
+	mock_state_script[mock_state_step] = CANQ_OK;
+	can_tx_queue_service(100U);
+	can_tx_queue_service(101U);
+	CHECK(can_tx_queue_depth() == 15U,
+		"9: servicing the real queue releases exactly one old frame slot");
+	CHECK(periodic_offer(&hb_tick, 12U, 0x02FF1200U),
+		"9: next scheduler opportunity accepts the still-due heartbeat");
+	CHECK(hb_tick == 0U && can_tx_queue_depth() == 16U,
+		"9: due state clears only after enqueue acceptance");
+	CHECK(can_tx_queue_dropped_count() == 1U,
+		"9: accepted retry does not create another drop");
+}
+
+static void test_canonical_periodic_hmi_load_has_no_drops(void)
+{
+	mock_reset();
+	can_tx_queue_init(&mock_ops);
+	uint16_t counters[8] = {0U};
+	const uint16_t periods[8] = {12U,50U,248U,6U,50U,99U,3U,25U};
+	const uint32_t ids[8] = {0x02FF1200U,0x02F8320FU,0x02F83000U,0x02F83201U,
+		0x02F83200U,0x02F83205U,0x02F83202U,0x82F83210U};
+	for (uint32_t tick = 0U; tick < 1000U; tick++) {
+		for (uint8_t i = 0U; i < 8U; i++) (void)periodic_offer(&counters[i], periods[i], ids[i]);
+		can_tx_queue_service(tick);
+		can_tx_queue_service(tick + 1000U); /* second pass resolves immediate mock completion */
+	}
+	CHECK(can_tx_queue_dropped_count() == 0U,
+		"9: paced canonical normal-HMI periodic cadence records zero queue drops");
+	CHECK(can_tx_queue_depth() <= 16U,
+		"9: paced normal-HMI periodic load stays within the fixed queue capacity");
+}
+
 int main(void)
 {
 	printf("FW-110 can_tx_queue.c non-blocking TX queue, against the shipped module\n");
@@ -273,6 +336,8 @@ int main(void)
 	test_diagnostic_never_displaces_critical();
 	test_saturated_stream_never_blocks();
 	test_tick_wraparound();
+	test_periodic_hmi_retry_after_full_queue();
+	test_canonical_periodic_hmi_load_has_no_drops();
 
 	if (host_test_failures == 0) {
 		printf("All can_tx_queue checks passed.\n");

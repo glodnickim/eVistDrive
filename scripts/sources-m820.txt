@@ -11,6 +11,7 @@ src/cadence_filter.c
 src/can_multiframe.c
 src/can_reply_effects.c
 src/can_tx_queue.c
+src/can_rx_queue.c
 src/current_cal.c
 src/pwm_geometry.c
 src/current_sample_ctx.c
