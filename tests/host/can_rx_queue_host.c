@@ -34,7 +34,17 @@ static char *read_file(const char *path)
 	if (!p) { fclose(f); return NULL; }
 	size_t got = fread(p, 1U, (size_t)n, f);
 	fclose(f);
-	p[got] = '\0';
+	/* Normalize CRLF/CR to LF: a Windows autocrlf checkout must match the same patterns. */
+	size_t out = 0U;
+	for (size_t i = 0U; i < got; i++) {
+		if (p[i] == '\r') {
+			p[out++] = '\n';
+			if (i + 1U < got && p[i + 1U] == '\n') i++;
+		} else {
+			p[out++] = p[i];
+		}
+	}
+	p[out] = '\0';
 	return p;
 }
 

@@ -54,11 +54,11 @@ static const can_tx_ops_t mock_ops = { mock_transmit, mock_state };
 static const uint8_t sample_data[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
 
 /* Exercise the same due/accepted contract used by main.c around production enqueue results. */
-static bool periodic_offer(uint16_t *counter, uint16_t period, uint32_t efid)
+static bool periodic_offer(can_periodic_schedule_t *s, unsigned i, uint32_t now, uint32_t efid)
 {
-	if (!can_periodic_is_due(counter, period)) return false;
+	if (!can_periodic_reached(now, s->next_due[i])) return false;
 	if (!can_tx_queue_enqueue(efid, 1U, sample_data)) return false;
-	can_periodic_enqueue_accepted(counter);
+	can_periodic_accepted(s, i, now);
 	return true;
 }
 
@@ -282,10 +282,11 @@ static void test_periodic_hmi_retry_after_full_queue(void)
 		CHECK(can_tx_queue_enqueue((uint32_t)(0x900U + (uint32_t)i), 1U, sample_data),
 			"9: non-periodic pressure fills the queue");
 	}
-	uint16_t hb_tick = 11U;
-	CHECK(!periodic_offer(&hb_tick, 12U, 0x02FF1200U),
+	can_periodic_schedule_t s;
+	can_periodic_init(&s, 0U);
+	CHECK(!periodic_offer(&s, 0U, 1980U, 0x02FF1200U),
 		"9: due 0x1200 enqueue is refused while the queue is full");
-	CHECK(hb_tick == 12U && can_periodic_is_due(&hb_tick, 12U),
+	CHECK(s.next_due[0] == 1980U && can_periodic_reached(1984U, s.next_due[0]),
 		"9: refused heartbeat remains saturated/due with one logical occurrence");
 	CHECK(can_tx_queue_dropped_count() == 1U,
 		"9: the forced saturation refusal is counted by the real queue");
@@ -297,9 +298,9 @@ static void test_periodic_hmi_retry_after_full_queue(void)
 	can_tx_queue_service(101U);
 	CHECK(can_tx_queue_depth() == 15U,
 		"9: servicing the real queue releases exactly one old frame slot");
-	CHECK(periodic_offer(&hb_tick, 12U, 0x02FF1200U),
+	CHECK(periodic_offer(&s, 0U, 1984U, 0x02FF1200U),
 		"9: next scheduler opportunity accepts the still-due heartbeat");
-	CHECK(hb_tick == 0U && can_tx_queue_depth() == 16U,
+	CHECK(s.next_due[0] == 3960U && can_tx_queue_depth() == 16U,
 		"9: due state clears only after enqueue acceptance");
 	CHECK(can_tx_queue_dropped_count() == 1U,
 		"9: accepted retry does not create another drop");
@@ -309,19 +310,64 @@ static void test_canonical_periodic_hmi_load_has_no_drops(void)
 {
 	mock_reset();
 	can_tx_queue_init(&mock_ops);
-	uint16_t counters[8] = {0U};
-	const uint16_t periods[8] = {12U,50U,248U,6U,50U,99U,3U,25U};
+	can_periodic_schedule_t s;
+	can_periodic_init(&s, 0U);
 	const uint32_t ids[8] = {0x02FF1200U,0x02F8320FU,0x02F83000U,0x02F83201U,
 		0x02F83200U,0x02F83205U,0x02F83202U,0x82F83210U};
-	for (uint32_t tick = 0U; tick < 1000U; tick++) {
-		for (uint8_t i = 0U; i < 8U; i++) (void)periodic_offer(&counters[i], periods[i], ids[i]);
+	for (uint32_t tick = 0U; tick < 80000U; tick++) {
+		int i = can_periodic_next_due(&s, tick);
+		if (i >= 0) (void)periodic_offer(&s, (unsigned)i, tick, ids[i]);
 		can_tx_queue_service(tick);
-		can_tx_queue_service(tick + 1000U); /* second pass resolves immediate mock completion */
+		can_tx_queue_service(tick); /* second pass resolves immediate mock completion */
 	}
 	CHECK(can_tx_queue_dropped_count() == 0U,
 		"9: paced canonical normal-HMI periodic cadence records zero queue drops");
 	CHECK(can_tx_queue_depth() <= 16U,
 		"9: paced normal-HMI periodic load stays within the fixed queue capacity");
+}
+
+static void test_foreground_stall_can_clock(void)
+{
+    const unsigned stalls[] = {4U,40U,200U,400U,2000U}; /* 1/10/50/100/500 ms */
+    for (unsigned wrap = 0; wrap < 2; ++wrap) {
+        const uint32_t start = wrap ? UINT32_MAX - 1000U : 0U;
+        for (unsigned k = 0; k < sizeof(stalls)/sizeof(stalls[0]); ++k) {
+            can_periodic_schedule_t s;
+            can_periodic_init(&s, start);
+            unsigned sent[8] = {0};
+            uint32_t last_offer = 0U;
+            bool offered = false;
+            for (uint32_t elapsed = 0; elapsed < 120000U; ++elapsed) {
+                /* Repeated real stalls, followed by a dense service window. No
+                 * reg_ADC_processing calls exist in this test's time source. */
+                if ((elapsed % 4000U) < stalls[k]) continue;
+                const uint32_t now = start + elapsed;
+                int i = can_periodic_next_due(&s, now);
+                if (i < 0) continue;
+                CHECK(!offered || elapsed-last_offer >= 4U, "stall: no catch-up burst");
+                offered=true; last_offer=elapsed;
+                CHECK(elapsed >= can_periodic_periods[i], "stall: never offer early");
+                can_periodic_accepted(&s, (unsigned)i, now);
+                ++sent[i];
+                CHECK(!can_periodic_reached(now, s.next_due[i]), "stall: next deadline in future");
+                CHECK((uint32_t)(s.next_due[i]-start) % can_periodic_periods[i] == 0U,
+                      "stall: phase remains anchored to hardware ticks");
+                CHECK(can_periodic_next_due(&s, now) < 0, "stall: dense main calls do not advance clock");
+            }
+            for (unsigned i=0;i<8;++i) CHECK(sent[i]>0, "stall: every ID eventually sent");
+            CHECK(sent[2]==3U, "stall: 9.9-second heartbeat does not drift with call count");
+        }
+    }
+    /* Single severe outage: one latest state per ID, never one per lost period. */
+    can_periodic_schedule_t s;
+    can_periodic_init(&s, 0U);
+    unsigned recovered[8]={0};
+    for (uint32_t now=400000U;now<400032U;++now) {
+        int i=can_periodic_next_due(&s,now);
+        if(i>=0) { ++recovered[i]; can_periodic_accepted(&s,(unsigned)i,now); }
+    }
+    for(unsigned i=0;i<8;++i) CHECK(recovered[i]==1U, "outage: exactly one latest occurrence per ID");
+    puts("FOREGROUND_STALL_CAN_CLOCK: PASS (1/10/50/100/500 ms, wrap, long outage, no burst)");
 }
 
 int main(void)
@@ -338,6 +384,7 @@ int main(void)
 	test_tick_wraparound();
 	test_periodic_hmi_retry_after_full_queue();
 	test_canonical_periodic_hmi_load_has_no_drops();
+	test_foreground_stall_can_clock();
 
 	if (host_test_failures == 0) {
 		printf("All can_tx_queue checks passed.\n");

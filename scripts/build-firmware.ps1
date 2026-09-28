@@ -205,6 +205,7 @@ $compilerFlags = $commonFlags + $profileFlags + @(
     "-fsigned-char",
     "-ffunction-sections",
     "-fdata-sections",
+    "-fstack-usage",
     "-Wall"
 ) + $definitions + $includeFlags
 
@@ -237,7 +238,13 @@ try {
 
         $objectName = ($entry -replace '[\\/:]', '_') + ".o"
         $objectPath = Join-Path $objectDir $objectName
-        & $gcc @compilerFlags -c $sourcePath -o $objectPath
+        # Same narrowly scoped target policy as tools/build_firmware.py.
+        $sourceFlags = @()
+        if ($entry -in @('src/g53_port.c', 'src/g53_port_chain.c',
+                         'src/g53_port_boundaries.c', 'src/g53_port_pas.c')) {
+            $sourceFlags = @('-O2')
+        }
+        & $gcc @compilerFlags @sourceFlags -c $sourcePath -o $objectPath
         Assert-NativeSuccess "compile $entry"
         $objects += $objectPath
     }
@@ -316,6 +323,16 @@ try {
     if (-not $diagnosticsEnabled -and $hasDiagnosticSymbol) {
         throw "Normal build unexpectedly contains diag_session_dump_step."
     }
+
+    # Same stack-budget gate as tools/build_firmware.py, on this final ELF and its .su files.
+    $python = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $python) { $python = Get-Command py -ErrorAction SilentlyContinue }
+    if (-not $python) { throw "Python is required for the M820 stack gate." }
+    $stackGateReport = Join-Path $variantWorkDir "$artifactBase.stack-gate.json"
+    & $python.Source (Join-Path $repoRoot "tools\m820_stack_gate.py") --elf $elf `
+        --objdir $objectDir --toolbin $toolchainPath --variant $Variant `
+        --json $stackGateReport | Out-Host
+    Assert-NativeSuccess "stack gate"
 
     $appFlashStart = Get-SymbolAddress $symbols "__app_flash_start"
     $appFlashLimit = Get-SymbolAddress $symbols "__app_flash_limit"

@@ -884,6 +884,28 @@ extern volatile uint16_t cmd3005_seen;      //FW-132: 0x3005 frames seen (CAN_Di
 extern volatile uint8_t  cmd3005_last_target; //FW-132: whom the last one was addressed to
 uint8_t auto_off_minutes=AUTO_OFF_MINUTES; //runtime auto-off timeout [min]; overwritten by HMI 0x6303
 
+static can_periodic_schedule_t hmi_schedule;
+
+/* Foreground is only the executor. Deadlines belong to control_time_ticks,
+ * never the slow-loop call count. One latest-state offer per hardware ms. */
+static void can_periodic_hmi_step(uint32_t now)
+{
+    const int due = can_periodic_next_due(&hmi_schedule, now);
+    bool accepted = false;
+    switch (due) {
+    case 0: accepted = sendCAN_status_frame(&MS, 0); break;
+    case 1: accepted = sendCAN_status_frame(&MS, 1); break;
+    case 2: accepted = sendCAN_status_frame(&MS, 2); break;
+    case 3: accepted = sendCAN_Poll(&MP, &MS, 0x3201); break;
+    case 4: accepted = sendCAN_Poll(&MP, &MS, 0x3200); break;
+    case 5: accepted = sendCAN_Poll(&MP, &MS, 0x3205); break;
+    case 6: accepted = sendCAN_3202(); break;
+    case 7: accepted = sendCAN_3210(); break;
+    default: break;
+    }
+    if (accepted) can_periodic_accepted(&hmi_schedule, (unsigned)due, now);
+}
+
 static void can_rx_consume_liveness_events(void)
 {
 	/* The ISR is the only producer. Mask it only while exchanging the byte so an
@@ -1289,6 +1311,7 @@ int main(void)
     prev_metric_why_backward = false;
     prev_metric_why_notlatched = false;
 
+    can_periodic_init(&hmi_schedule, control_time_ticks);
     while (1){
     	fwdgt_counter_reload();
 
@@ -1317,6 +1340,7 @@ int main(void)
     	//its own hardware interrupt flag, it just no longer sets a flag nothing reads.
     	if(Speed_flag)Speed_processing();
     	if(reg_ADC_flag)reg_ADC_processing();
+        can_periodic_hmi_step(control_time_ticks);
     	/*
     	 * FW-110: one non-blocking step each of the critical-frame queue and the multiframe
     	 * producer that feeds it (HMI protocol replies, the status/poll/heartbeat frames the
@@ -1446,40 +1470,7 @@ int main(void)
  */
             	p++;
 
-            	/*
-            	 * FW-133: cyclic frames to the HMI, now on the STOCK periods.
-            	 *
-            	 * The reference table in BAFANG_CAN_STOCK_VERIFIED_REFERENCE.md SS10 is read out of the
-            	 * factory firmware's own descriptor table, not estimated from a capture, so these are
-            	 * the numbers the display was designed around. We were sending 0x3000 twenty times
-            	 * and 0x3205 twelve times more often than the factory does, and 0x1200/0x320F/0x3000
-            	 * all in one tick - three frames at once into a 16-slot queue that drops silently
-            	 * when full (FW-132). Net effect of this change is roughly a quarter less traffic
-            	 * from us, and normally one frame offered per pass instead of a burst.
-            	 *
-            	 * The counts below are the stock period divided by this branch's 40 ms, rounded to
-            	 * the nearest whole tick. Two cannot be hit exactly on a 40 ms base and are called
-            	 * out honestly:
-            	 *
-            	 *   0x3202  stock 99 ms  -> 3 ticks = 120 ms (+21 %). 2 ticks would be 80 ms, i.e.
-            	 *                          FASTER than stock and more traffic - the wrong direction.
-            	 *   0x3201  stock 247 ms -> 6 ticks = 240 ms (-3 %), better than the old 7 (280 ms).
-            	 *
-            	 * uint16_t on purpose: 0x3000's divider is 248, which is close enough to a uint8_t's
-            	 * ceiling that a future edit could silently wrap it.
-            	 */
-			static uint16_t hb1200_tick=0, hb320F_tick=0, hb3000_tick=0,
-            	                speed_tick=0, cad_tick=0, misc_tick=0, s202_tick=0, s3210_tick=0;
-			if(can_periodic_is_due(&hb1200_tick,12U) && sendCAN_status_frame(&MS,0)) can_periodic_enqueue_accepted(&hb1200_tick); // 480 ms (stock 495)
-			if(can_periodic_is_due(&hb320F_tick,50U) && sendCAN_status_frame(&MS,1)) can_periodic_enqueue_accepted(&hb320F_tick); // 2000 ms (stock 1980)
-			if(can_periodic_is_due(&hb3000_tick,248U) && sendCAN_status_frame(&MS,2)) can_periodic_enqueue_accepted(&hb3000_tick); // 9920 ms (stock 9900)
-			if(can_periodic_is_due(&speed_tick,6U) && sendCAN_Poll(&MP,&MS,0x3201)) can_periodic_enqueue_accepted(&speed_tick); // 240 ms (stock 247)
-			if(can_periodic_is_due(&cad_tick,50U) && sendCAN_Poll(&MP,&MS,0x3200)) can_periodic_enqueue_accepted(&cad_tick); // 2000 ms (stock 1980)
-			if(can_periodic_is_due(&misc_tick,99U) && sendCAN_Poll(&MP,&MS,0x3205)) can_periodic_enqueue_accepted(&misc_tick); // 3960 ms
-			if(can_periodic_is_due(&s202_tick,3U) && sendCAN_3202()) can_periodic_enqueue_accepted(&s202_tick); // 120 ms (stock 99)
-            	//FW-134: the frame whose bytes 4..5 the stock controller steps once per second while
-            	//moving. 25 x 40 ms = 1000 ms; stock table says 990 ms. See sendCAN_3210().
-			if(can_periodic_is_due(&s3210_tick,25U) && sendCAN_3210()) can_periodic_enqueue_accepted(&s3210_tick); // 1000 ms (stock 990)
+                /* Periodic HMI CAN is serviced above from hardware deadlines. */
             	// filtr EMA /16 surowego ADC temperatury (wzorzec jak filtr napiecia), tlumi szum/glitch
             	// TODO(temp-sensor): detekcja rozwartego (ADC~4095) / zwartego (ADC~0) NTC i fail-safe
             	static uint32_t temp_adc_cumulated = 0;

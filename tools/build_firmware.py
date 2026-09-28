@@ -24,10 +24,15 @@ EXPECTED_GCC = "13.2.1"
 FLASH_ORIGIN = 0x08005000
 CONFIG_A_ORIGIN = 0x0803E800
 RAM_ORIGIN = 0x20000000
+G53_OPTIMIZED_SOURCES = {
+    "src/g53_port.c", "src/g53_port_chain.c",
+    "src/g53_port_boundaries.c", "src/g53_port_pas.c",
+}
 VERSION_STATE_ROOT = ROOT.parent / ".ebics-version-state"
 
 sys.path.insert(0, str(ROOT / "tools"))
 from prepare_m820_bl820 import build_container
+import m820_stack_gate
 
 
 def run(cmd: list[str], *, capture=False) -> str:
@@ -192,12 +197,13 @@ def _build_one(version: str, variant: str, version_source: str, entries: list[st
            f"-I{ROOT/'Firmware/CMSIS/GD/GD32F30x/Include'}",
            f"-I{ROOT/'Firmware/GD32F30x_standard_peripheral/Include'}"]
     cflags = common + ["-O0", "-g3", "-fmessage-length=0", "-fsigned-char",
-                       "-ffunction-sections", "-fdata-sections", "-Wall"] + defs + inc
+                       "-ffunction-sections", "-fdata-sections", "-fstack-usage", "-Wall"] + defs + inc
 
     objects: list[str] = []
     for entry in entries:
         obj = objdir / (re.sub(r"[\\/:]", "_", entry) + ".o")
-        run([gcc, *cflags, "-c", str(ROOT / entry), "-o", str(obj)])
+        source_flags = ["-O2"] if entry in G53_OPTIMIZED_SOURCES else []
+        run([gcc, *cflags, *source_flags, "-c", str(ROOT / entry), "-o", str(obj)])
         objects.append(str(obj))
     startup_obj = objdir / "startup_gd32f30x_hd.S.o"
     run([gcc, *common, *defs, *inc, "-x", "assembler-with-cpp", "-c",
@@ -238,6 +244,10 @@ def _build_one(version: str, variant: str, version_source: str, entries: list[st
     diag_symbol = "diag_session_dump_step" in symbols
     if diag_symbol != (variant == "diagnostic"):
         raise SystemExit("diagnostic link-marker mismatch")
+    stack_json = work/f"{base}.stack-gate.json"
+    stack = m820_stack_gate.run_gate(str(elf), str(objdir), toolbin, variant, str(stack_json))
+    if stack["verdict"] != "PASS":
+        raise SystemExit(f"stack gate failed for {variant}; see {stack_json}")
 
     cols = size_out.strip().splitlines()[-1].split()
     if len(cols) < 4:
@@ -267,6 +277,12 @@ def _build_one(version: str, variant: str, version_source: str, entries: list[st
         "toolchain": "Arm GNU Toolchain arm-none-eabi", "toolchain_version": gcc_version,
         "linker": "ldscripts/gd32f30x_flash.ld", "source_manifest": "scripts/sources-m820.txt",
         "source_count": len(entries),
+        "optimization_default": "-O0",
+        "optimization_overrides": {s: "-O2" for s in sorted(G53_OPTIMIZED_SOURCES)},
+        "stack_usage_files": str(objdir / "*.su"),
+        "stack_gate": {k: stack[k] for k in (
+            "verdict", "sp", "heap_end", "ebss", "reserved_stack_bytes", "foreground_bytes",
+            "isr_addition_bytes", "total_worst_bytes", "margin_bytes", "min_margin_bytes")},
         "flash": {"origin": f"0x{app_start:08X}", "image_end": f"0x{image_end:08X}",
                   "limit": f"0x{app_limit:08X}", "config_a": f"0x{config_a:08X}",
                   "text_bytes": text_b, "gnu_size_data_bytes": data_b,
@@ -509,7 +525,7 @@ def main() -> int:
            f"-I{ROOT/'Firmware/CMSIS/GD/GD32F30x/Include'}",
            f"-I{ROOT/'Firmware/GD32F30x_standard_peripheral/Include'}"]
     cflags = common + ["-O0", "-g3", "-fmessage-length=0", "-fsigned-char",
-                       "-ffunction-sections", "-fdata-sections", "-Wall"] + defs + inc
+                       "-ffunction-sections", "-fdata-sections", "-fstack-usage", "-Wall"] + defs + inc
 
     objects: list[str] = []
     for entry in entries:
