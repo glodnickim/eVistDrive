@@ -38,8 +38,12 @@ psuć wspomaganie i komunikację z wyświetlaczem: za mały stos oraz ramki do H
 szybkością pętli głównej zamiast zegarem sprzętowym.
 
 **Co zrobiono:** Stos zwiększono z 2 KB do 6 KB, a tylko nowy moduł wspomagania (G53) jest
-kompilowany z optymalizacją, co zmniejsza jego zapotrzebowanie na stos i czas procesora
-około 3,5×. Ramki okresowe do HMI są wysyłane według zegara sprzętowego, z fabrycznymi
+kompilowany z optymalizacją. Zmniejsza to jego zapotrzebowanie na stos z 3128 B do 1624 B
+oraz daje około 3,5× mniejszą liczbę wykonanych instrukcji ARM dla zmierzonego obciążenia
+G53 (approximately 3.5x reduction in executed ARM instruction count for the measured G53
+workload). Liczbę instrukcji zmierzono metodą emulacji rzeczywistego ARM ELF; liczby cykli
+sprzętowych ani rzeczywistego czasu wykonania na mikrokontrolerze NIE mierzono.
+Ramki okresowe do HMI są wysyłane według zegara sprzętowego, z fabrycznymi
 okresami. Dodano automatyczną bramkę, która odrzuca build, gdy stos przestaje się mieścić.
 Naprawiono test, który fałszywie nie przechodził na Windows.
 
@@ -243,3 +247,24 @@ watchdog hardening jako osobny task.
 Independent reviewer: review the implementation commit on `fix/TQ06-prebench-e30-can-transport`
 against this report; on ACCEPT, the owner flashes the NORMAL DEV-NONCANONICAL candidate
 (SHA256 above) for the bench/bike retest.
+
+## Corrections (append-only)
+
+```text
+CORRECTION_TIMESTAMP: 2026-09-28T13:50:59+02:00
+SOURCE: independent final review of 09530fb (verdict FAIL on tooling/evidence only)
+```
+
+**K1 — CPU-time overclaim (supersedes the original sentence in "DLA UŻYTKOWNIKA", which said
+the optimization reduces G53 stack and "czas procesora" about 3.5×).** Correct statement:
+approximately 3.5x reduction in executed ARM instruction count for the measured G53 workload
+(O0 mean 44 374 → O2 mean 12 443 instructions per logical step; 64-step 2.67–2.73 M →
+0.66–0.67 M). Instruction counts were measured by executing the real ARM ELF in a Cortex-M4
+emulator. Hardware cycle count was NOT measured. Physical MCU wall-clock execution time was NOT
+measured. The stack reduction is a separate figure: foreground 3128 B → 1624 B (NORMAL). The
+confirmed stack-corruption finding (RC1, CONFIRMED_CODE / target ELF) is unchanged.
+
+**K2 — stack gate was not fail-closed (supersedes the "STACK GATE ... qualification" claim).**
+The 09530fb gate accepted direct recursion, missing/unrelated .su records and a dynamic
+`mov sp, r2`. Fixed in the follow-up execution
+EXEC-TQ06-PREBENCH-M820-STACK-GATE-FAILCLOSED-20260928; firmware BINs unchanged.

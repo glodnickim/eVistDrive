@@ -62,6 +62,8 @@ def target_build(require, variant):
         if require: print(msg,file=sys.stderr); raise SystemExit(3)
         print(msg); return
     toolbin=str(Path(gcc).resolve().parent)
+    step('M820 stack gate fail-closed self-test (negative + known-bad O0/2K firmware)',
+         [sys.executable,'tools/test_m820_stack_gate.py','--toolchain',toolbin])
     cmd=[sys.executable,'tools/build_firmware.py','--variant',variant,'--mode','developer',
          '--toolchain',toolbin,'--output-dir',str(R/'.build/verify-target')]
     step('exact ARM target build',cmd)

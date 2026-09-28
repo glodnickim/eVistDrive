@@ -329,7 +329,7 @@ try {
     if (-not $python) { $python = Get-Command py -ErrorAction SilentlyContinue }
     if (-not $python) { throw "Python is required for the M820 stack gate." }
     $stackGateReport = Join-Path $variantWorkDir "$artifactBase.stack-gate.json"
-    & $python.Source (Join-Path $repoRoot "tools\m820_stack_gate.py") --elf $elf `
+    & $python.Source (Join-Path $repoRoot "tools\m820_stack_gate.py") --elf $elf --map $map `
         --objdir $objectDir --toolbin $toolchainPath --variant $Variant `
         --json $stackGateReport | Out-Host
     Assert-NativeSuccess "stack gate"

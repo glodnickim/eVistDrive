@@ -164,8 +164,12 @@ def reserve_canonical_version_pair(state_root: Path) -> list[str]:
 
 
 def _build_one(version: str, variant: str, version_source: str, entries: list[str],
-               toolchain: str | None, output_dir: str) -> dict:
-    """Build a single variant. Returns dict with version, variant, release_bin path."""
+               toolchain: str | None, output_dir: str, g53_optimized: bool = True,
+               extra_link_flags: tuple[str, ...] = ()) -> dict:
+    """Build a single variant. Returns dict with version, variant, release_bin path.
+
+    g53_optimized/extra_link_flags exist only so tools/test_m820_stack_gate.py can rebuild
+    the known-bad O0/2K image and prove the stack gate rejects it; defaults = product build."""
     gcc = find_tool("arm-none-eabi-gcc", toolchain)
     toolbin = str(Path(gcc).resolve().parent)
     objcopy = find_tool("arm-none-eabi-objcopy", toolbin)
@@ -202,7 +206,7 @@ def _build_one(version: str, variant: str, version_source: str, entries: list[st
     objects: list[str] = []
     for entry in entries:
         obj = objdir / (re.sub(r"[\\/:]", "_", entry) + ".o")
-        source_flags = ["-O2"] if entry in G53_OPTIMIZED_SOURCES else []
+        source_flags = ["-O2"] if g53_optimized and entry in G53_OPTIMIZED_SOURCES else []
         run([gcc, *cflags, *source_flags, "-c", str(ROOT / entry), "-o", str(obj)])
         objects.append(str(obj))
     startup_obj = objdir / "startup_gd32f30x_hd.S.o"
@@ -221,7 +225,7 @@ def _build_one(version: str, variant: str, version_source: str, entries: list[st
     link = [gcc, *common, f"-T{linker}", "-Wl,--gc-sections", "-Wl,--print-memory-usage",
             f"-Wl,-Map,{mapf}", "-Wl,--start-group", *objects,
             f"-L{ROOT/'Firmware/CMSIS'}", "-larm_cortexM4lf_math", "-specs=nano.specs", "-specs=nosys.specs",
-            "-Wl,--end-group", "-o", str(elf)]
+            "-Wl,--end-group", *extra_link_flags, "-o", str(elf)]
     run(link)
     run([objcopy, "-O", "binary", str(elf), str(rawbin)])
     run([objcopy, "-O", "ihex", str(elf), str(hexp)])
@@ -245,7 +249,7 @@ def _build_one(version: str, variant: str, version_source: str, entries: list[st
     if diag_symbol != (variant == "diagnostic"):
         raise SystemExit("diagnostic link-marker mismatch")
     stack_json = work/f"{base}.stack-gate.json"
-    stack = m820_stack_gate.run_gate(str(elf), str(objdir), toolbin, variant, str(stack_json))
+    stack = m820_stack_gate.run_gate(str(elf), str(objdir), str(mapf), toolbin, variant, str(stack_json))
     if stack["verdict"] != "PASS":
         raise SystemExit(f"stack gate failed for {variant}; see {stack_json}")
 
