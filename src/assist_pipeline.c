@@ -18,6 +18,9 @@
 typedef struct {
     int32_t ceiling;
     bool ceiling_valid;
+    /* The request published on the previous tick: the reference a non-forward tick may not
+     * rise above. 0 after every reset and after every veto, so nothing waits behind one. */
+    int32_t last_final_iq;
     assist_pipeline_telemetry_t tlm;
     g53_port_output_t g53;
 } ap2_pipeline_ctx_t;
@@ -139,6 +142,16 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
         AP2_CEILING_RISE_MS,AP2_CEILING_FALL_MS,used_ticks);
     cmd->iq_ceiling=ctx.ceiling;
     cmd->final_iq_request=lim.final_iq;
+    /*
+     * RIDER GATES on the G53 request. normal_permission (m298==2) is a BDE8 drive mode, not a
+     * pedal permission, so it gates nothing here.
+     *   assist off     -> exactly zero in the same tick.
+     *   not forward    -> never a new or a rising request: an already valid pedal demand may
+     *                     only hold or decay (G53's own release), and 0 stays 0.
+     */
+    if(assist_off) cmd->final_iq_request=0;
+    else if(!in->forward_valid && cmd->final_iq_request>ctx.last_final_iq)
+        cmd->final_iq_request=ctx.last_final_iq;
     bool quiet=false;
     if(in->direction_inhibit) { /* P2, before P3/P4. */
         cmd->final_iq_request=0; cmd->slew_mode=FIS_MODE_FORCE_ZERO; quiet=true;
@@ -151,6 +164,7 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
         quiet=cmd->final_iq_request==0 && (assist_off || !in->forward_valid);
     }
     cmd->zero_policy=quiet && !in->service_cut ? FIS_ZERO_POLICY_QUIET : FIS_ZERO_POLICY_NONE;
+    ctx.last_final_iq=cmd->final_iq_request;
     const bool was_permitted=ctx.tlm.assist_permitted;
     const uint16_t seq=ctx.tlm.engage_seq;
     memset(&ctx.tlm,0,sizeof(ctx.tlm)); /* Frozen DEPRECATE_ZERO fields. */

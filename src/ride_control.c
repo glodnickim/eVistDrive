@@ -51,7 +51,8 @@ static bool walk_was_active;
 typedef enum {
 	RIDE_OWNER_ASSIST = 0,
 	RIDE_OWNER_WALK = 1,
-	RIDE_OWNER_CALIBRATION = 2
+	RIDE_OWNER_CALIBRATION = 2,
+	RIDE_OWNER_COMM_INHIBIT = 3
 } ride_owner_t;
 
 static ride_owner_t ride_owner_prev;
@@ -199,7 +200,25 @@ void ride_control_update(const ride_control_input_t *input)
 	 * "exactly one producer of Iq_requested, one of Iq_allowed, one final publish" a property
 	 * of the CODE SHAPE rather than a rule three separate exit paths each have to remember.
 	 */
-	if (input->position_calibration_active) {
+	if (input->comm_inhibit) {
+		/*
+		 * COMMUNICATION LOSS. The display or the whole bus has gone silent: nothing may pull.
+		 * Exact zero through the fast owner, ahead of EVERY owner - position calibration, Walk
+		 * and pedal assist - and this is the iteration's only publication, so no later owner
+		 * can overwrite it. The calibration branch below, and with it the only EEPROM write of
+		 * its phase 2, cannot run under the inhibit; main.c aborts the calibration. Entering this
+		 * owner resets the pipeline (G53 included), so no demand survives the loss; the
+		 * rider's selected level is not touched.
+		 */
+		ride_enter_owner(RIDE_OWNER_COMM_INHIBIT);
+		requested = 0;
+		cmd.final_iq_request = 0;
+		cmd.slew_mode = FIS_MODE_FORCE_ZERO;
+		cmd.step_mag_8 = 0U;
+		cmd.release_ticks_16k = 0U;
+		cmd.zero_policy = FIS_ZERO_POLICY_NONE;
+		cmd.iq_ceiling = 0;
+	} else if (input->position_calibration_active) {
 		/*
 		 * SERVICE MODE. Position-sensor calibration owns Iq outright and bypasses the
 		 * ride-feel trajectory: on the completion tick the calibration code sets Iq to 0,

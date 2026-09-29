@@ -485,7 +485,35 @@ $suites = @(
     @{ Name = 'FW-145 continuous Level-4 ride telemetry (real module pacing, priority and wire schema)'
        Harness = Join-Path $PSScriptRoot 'ride_telemetry_host.c'
        Modules = @((Join-Path $root 'src\ride_telemetry.c'))
-       Defines = @('-DCAN_DIAGNOSTICS_ENABLE=1', '-DCAN_RIDE_TELEMETRY_ENABLE=1') }
+       Defines = @('-DCAN_DIAGNOSTICS_ENABLE=1', '-DCAN_RIDE_TELEMETRY_ENABLE=1') },
+    @{ Name = 'M820 uncontrolled-Iq safety: hidden PA6 throttle, forward/OFF gates, comm inhibit, contract 10b'
+       # The 50b8758 bench incident, end to end through the production PAS front-end,
+       # ride_control, the G53 pipeline, ap2_limits and the 16 kHz owner: the exact replayed
+       # PA6 failure (m820_pa6_hidden_throttle_regression), the PA6 x speed x level x PAS
+       # matrix, hidden demand under real_stop, the comm-inhibit final owner and 10b.
+       Harness = Join-Path $PSScriptRoot 'm820_uncontrolled_iq_safety_host.c'
+       Modules = @((Join-Path $root 'src\rider_input.c'),
+                   (Join-Path $root 'src\assist_modes.c'),
+                   (Join-Path $root 'src\torque_input.c'),
+                   (Join-Path $root 'src\tuning_config.c'),
+                   (Join-Path $root 'src\ride_control.c'),
+                   (Join-Path $root 'src\g53_port.c'),
+                   (Join-Path $root 'src\g53_port_boundaries.c'),
+                   (Join-Path $root 'src\g53_port_pas.c'),
+                   (Join-Path $root 'src\g53_port_chain.c'),
+                   (Join-Path $root 'src\ap2_limits.c'),
+                   (Join-Path $root 'src\assist_pipeline.c'),
+                   (Join-Path $root 'src\fast_iq_slew.c'),
+                   (Join-Path $root 'src\battery_iq_cap.c'),
+                   (Join-Path $root 'src\iq_chain.c'),
+                   (Join-Path $root 'src\motor_core.c'),
+                   (Join-Path $root 'src\pas_sampler.c'),
+                   (Join-Path $root 'src\pas_quadrature.c'),
+                   (Join-Path $root 'src\pas_direction.c'),
+                   (Join-Path $root 'src\pas_liveness.c'),
+                   (Join-Path $PSScriptRoot 'common\map_adapter.c'))
+       IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common'))
+       Defines = @('-Wno-type-limits', "-DASSIST_PIPELINE_C_PATH=$assistPipelineCPathForward") }
 )
 
 function Find-HostCompiler {

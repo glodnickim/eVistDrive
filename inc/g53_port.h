@@ -31,5 +31,8 @@ void g53_port_init(void);
 void g53_port_reset(void);
 void g53_port_update(const g53_port_input_t *in, g53_port_output_t *out);
 const g53_port_trace_t *g53_port_trace(void);
+/* Filtered PA6 (Boundary A-x arithmetic) for diagnostics. On M820 it never reaches the G53
+ * throttle input: throttle is disabled by product policy (src/g53_port.c). */
+uint16_t g53_port_pa6_ax_observed(void);
 
 #endif

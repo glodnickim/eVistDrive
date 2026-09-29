@@ -377,12 +377,19 @@ static void production_wiring_checks(void)
 	 * breath (hall_calibration_iq_request's own comment: "nothing is left regulating"). The span
 	 * is 1200 rather than the original 900 because QZERO added its own reset to the same block
 	 * (the DISABLE anchor now sits at 934); sized with headroom, not tight to it. */
+	/* M820 comm-inhibit fix: the reset moved, unchanged, into hall_calibration_bridge_off() -
+	 * the one exit shared by the verified completion and the comms-loss abort. */
 	{
 		const char *hall_cal = strstr(main_c, "uint16_t hall_calibration_iq_request(void){");
+		const char *exit_fn = strstr(main_c, "static void hall_calibration_bridge_off(void)");
+		while (exit_fn && exit_fn[45] == ';') /* skip the prototype, keep the definition */
+			exit_fn = strstr(exit_fn + 1, "static void hall_calibration_bridge_off(void)");
 		CHECK(hall_cal != NULL &&
-			span_contains(hall_cal, hall_cal + 1200, "PI_iq.integral_part=0;") &&
-			span_contains(hall_cal, hall_cal + 1200, "PI_id.integral_part=0;") &&
-			span_contains(hall_cal, hall_cal + 1200, "timer_primary_output_config(TIMER0,DISABLE)"),
+			span_contains(hall_cal, hall_cal + 1200, "hall_calibration_bridge_off();") &&
+			exit_fn != NULL &&
+			span_contains(exit_fn, exit_fn + 1200, "PI_iq.integral_part=0;") &&
+			span_contains(exit_fn, exit_fn + 1200, "PI_id.integral_part=0;") &&
+			span_contains(exit_fn, exit_fn + 1200, "timer_primary_output_config(TIMER0,DISABLE)"),
 			"T9: hall calibration's explicit reset is preserved, still coherent with bridge-off");
 	}
 

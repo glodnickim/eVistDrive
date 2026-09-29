@@ -5,11 +5,34 @@
 /* M820 adapter: 4 control periods (4 kHz) per logical tick. This is an explicit
  * product timebase, not a claim about the original G53 oscillator. */
 enum { CONTROL_TICKS_PER_LOGICAL=4, MAX_CATCHUP_LOGICAL_TICKS=64 };
+
+/*
+ * M820 PRODUCT POLICY: THROTTLE IS NOT ENABLED.
+ *
+ * Boundary A-x feeds the imported G53 throttle state machine. On M820 that turned raw PA6
+ * into a hidden, level-independent motor owner: with no pedal load, no cadence and no
+ * forward pedalling, PA6=2048 at 15 km/h gave A-x 246 -> throttle output 2142 -> M2AA 3399
+ * -> Iq 237, released as a one-tick step by a single PAS edge (offline root-cause replay,
+ * m820_pa6_hidden_throttle_regression). The G53 arming thresholds (x>120, raw ~1000) do not
+ * match the stock M820 PA6 mapper (min 1737, own fault machine) and no validated M820
+ * throttle mapping exists.
+ *
+ * So PA6 is still sampled and filtered for diagnostics (g53_port_pa6_ax_observed()), but the
+ * G53 command input is held at 0 - the cold-boot value, below every throttle threshold, which
+ * keeps the FSM in its idle state with zero output. Enabling a throttle is a new, separately
+ * validated feature, not a flag flip.
+ */
+#define M820_G53_THROTTLE_ENABLED 0
+#define G53_AX_THROTTLE_INACTIVE  0u
+_Static_assert(M820_G53_THROTTLE_ENABLED == 0,
+    "M820 G53 throttle requires a validated PA6 mapping before it may be enabled");
+
 static g53_port_trace_t port_trace;
 static g53_pas_ctx_t pas;
 static uint8_t control_remainder;
 static bool normal_permission;
 static uint32_t dropped_ticks;
+static uint16_t pa6_ax_observed;
 
 /* P9-G5: translate native M820 A/B coordinates only at the G53 behavior seam.
  * Native PAS decoding and safety continue to consume the original packed value. */
@@ -29,6 +52,7 @@ void g53_port_reset(void)
     control_remainder=0;
     normal_permission=false;
     dropped_ticks=0;
+    pa6_ax_observed=0;
 }
 void g53_port_init(void) { g53_port_reset(); }
 
@@ -50,7 +74,8 @@ void g53_port_update(const g53_port_input_t *in,g53_port_output_t *out)
     while(steps--) {
         g53_chain_input_t ci={0};
         g53_chain_output_t co;
-        ci.x=g53_ax_step(in->raw_pa6_adc);
+        pa6_ax_observed=g53_ax_step(in->raw_pa6_adc);   /* diagnostics only */
+        ci.x=M820_G53_THROTTLE_ENABLED ? pa6_ax_observed : G53_AX_THROTTLE_INACTIVE;
         ci.pas=g53_pas_step(&pas,g53_pas_coordinate(in->pas_ab),level);
         const g53_ad7ec_feedback_t feedback={
             .cadence=ci.pas.cadence,
@@ -80,3 +105,4 @@ void g53_port_update(const g53_port_input_t *in,g53_port_output_t *out)
      * external_inhibit, diag aliases or extra behavioral demand gates. */
 }
 const g53_port_trace_t *g53_port_trace(void) { return &port_trace; }
+uint16_t g53_port_pa6_ax_observed(void) { return pa6_ax_observed; }

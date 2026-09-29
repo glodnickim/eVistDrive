@@ -161,9 +161,14 @@ static void test_production_wiring_and_reversed_parser_mapping(void)
 	const char *physical_events = strstr(mainc, "can_rx_consume_liveness_events(void)");
 	CHECK(pop && parser && parser > pop,
 		"wiring: FIFO dequeue copies into receive_message then reaches processCAN_Rx in main");
+	/* M820 comm-inhibit fix: the consume-then-count pair moved from the slow-loop body into
+	 * comm_watchdog_step(), which the slow loop calls (and position calibration phase 1, whose
+	 * blocking loop would otherwise freeze the watchdog). Same order, same independence. */
+	const char *watchdog = strstr(mainc, "static void comm_watchdog_step(void)");
 	CHECK(physical_events && strstr(physical_events, "CAN_RX_EVENT_HMI") &&
 		strstr(physical_events, "hmi_lost_ticks=0U") &&
-		strstr(mainc, "can_rx_consume_liveness_events();\n\t\t\t\tif(hmi_lost_ticks") != NULL,
+		watchdog && strstr(watchdog, "can_rx_consume_liveness_events();\n\tif(hmi_lost_ticks") != NULL &&
+		strstr(mainc, "comm_watchdog_step();   //3 s -> comm_inhibit") != NULL,
 		"wiring: physical HMI RX event is consumed independently of parser progress");
 	CHECK(strstr(display, "if(Ext_ID_Rx.command==0x6300)") != NULL &&
 		strstr(display, "level_code=receive_message.rx_data[1]") != NULL &&

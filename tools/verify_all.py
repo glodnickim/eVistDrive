@@ -82,6 +82,10 @@ def main():
          [sys.executable,'tools/build_firmware.py','--check-only'])
     step('independent BL820 container regression',[sys.executable,'tests/tools_prepare_m820_bl820.py'])
     step('real-module host suites',[sys.executable,'tools/run_host_tests.py'])
+    # main.c's Walk / comms watchdog / position calibration and CAN_Display.c's 0x6300 decoder
+    # cannot be linked; this runs their CURRENT text against the production control chain.
+    step('M820 Walk/CAN/calibration safety (production main.c + CAN_Display.c text)',
+         [sys.executable,'tests/test_m820_walk_can_safety.py'])
     step('whole-pipeline deterministic regression',[sys.executable,'tools/run_regression.py'])
     # The one property the assist pipeline exists for: the motor must not reproduce the
     # pedal ripple. Measured from the traces the step above just produced.

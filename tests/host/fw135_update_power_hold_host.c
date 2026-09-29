@@ -217,16 +217,23 @@ int main(void)
 			"T5: the inactivity timer is NOT gated by the update hold either");
 	}
 
-	/* ==== T6: a dead bus still stops the motor ==== */
+	/* ==== T6: a dead bus still stops the motor ====
+	 * UPDATED (M820 uncontrolled-Iq/CAN safety fix): the old expectation - the watchdog writes
+	 * MS.assist_level=0 and calls ride_control_force_final_iq_zero() - was unsafe/wrong on two
+	 * counts proven by replay: the forced zero was overwritten by the next ride_control_update(),
+	 * and the level never came back because the 0x6300 debounce stayed saturated on the same
+	 * code. The cut is now a separate comm_inhibit that the single final-Iq arbitration owns
+	 * (behaviour: m820_uncontrolled_iq_safety_host.c, tests/test_m820_walk_can_safety.py). */
 	{
 		const char *cut = strstr(mainc,
-			"if((hmi_seen && hmi_lost_ticks >= COMM_CUT_TICKS) || (bus_seen && bus_lost_ticks >= COMM_CUT_TICKS)){");
+			"comm_inhibit = ((hmi_seen && hmi_lost_ticks >= COMM_CUT_TICKS) || (bus_seen && bus_lost_ticks >= COMM_CUT_TICKS)) ? 1U : 0U;");
 		CHECK(cut != NULL,
 			"T6: assist is cut by EITHER counter - a pulled cable stops the motor even if the "
 			"display never identified itself as source 3");
-		const char *zero = cut ? strstr(cut, "ride_control_force_final_iq_zero();") : NULL;
-		CHECK(zero != NULL && span_contains(cut, zero, "MS.assist_level=0;"),
-			"T6: and the cut still goes to exact zero through the fast owner");
+		CHECK(strstr(mainc, "MS.assist_level=0;") == NULL,
+			"T6: the comms watchdog no longer destroys the rider's selected level");
+		CHECK(strstr(mainc, ".comm_inhibit = comm_inhibit != 0U,") != NULL,
+			"T6: and the inhibit reaches the one final-Iq arbitration in ride_control_update()");
 	}
 
 	/* ==== T7: a hold shorter than the threshold it suspends would suspend nothing ==== */

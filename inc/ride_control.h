@@ -55,6 +55,15 @@ typedef struct {
 	bool walk_active;
 	bool position_calibration_active;
 	/*
+	 * Communication loss (HMI or bus silent beyond COMM_CUT_TICKS). A SAFETY INHIBIT, not a
+	 * level change: the rider's selected level is untouched. While set, ride_control_update()
+	 * publishes exact zero (FORCE_ZERO, ceiling 0) ahead of EVERY owner - position
+	 * calibration, Walk and pedal assist - and is the only publication of the iteration.
+	 * main.c aborts a running position calibration on it (no EEPROM write, RAM result
+	 * restored), so the service owner cannot resume after the inhibit clears.
+	 */
+	bool comm_inhibit;
+	/*
 	 * The NON-DIRECTION hard-cut reasons only - brake / overtemp cutoff / torque-sensor fault
 	 * / torque calibration. A reverse step and an illegal PAS transition are not folded in
 	 * here: both are their own fact, read straight from rider_input_t.direction_inhibit_active

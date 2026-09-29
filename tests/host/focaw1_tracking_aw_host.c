@@ -764,10 +764,17 @@ static void production_wiring_checks(void)
 			span_contains(dwell_failsafe, dwell_failsafe + 1500, "bridge_lifecycle = BRIDGE_LIFECYCLE_IDLE;"),
 			"W20: the dwell-timeout failsafe resets tracking as the bridge goes IDLE");
 
-		/* Hall-calibration service path, disabling the bridge in the same breath. */
+		/* Hall-calibration service path, disabling the bridge in the same breath. M820
+		 * comm-inhibit fix: that exit moved, unchanged, into hall_calibration_bridge_off(),
+		 * shared by the verified completion and the comms-loss abort. */
+		const char *exit_fn = strstr(main_c, "static void hall_calibration_bridge_off(void)");
+		while (exit_fn && exit_fn[45] == ';') /* skip the prototype, keep the definition */
+			exit_fn = strstr(exit_fn + 1, "static void hall_calibration_bridge_off(void)");
 		CHECK(hall_cal != NULL &&
-			span_contains(hall_cal, hall_cal + 1100, "foc_aw_tracking_reset();") &&
-			span_contains(hall_cal, hall_cal + 1100, "timer_primary_output_config(TIMER0,DISABLE)"),
+			span_contains(hall_cal, hall_cal + 1100, "hall_calibration_bridge_off();") &&
+			exit_fn != NULL &&
+			span_contains(exit_fn, exit_fn + 1100, "foc_aw_tracking_reset();") &&
+			span_contains(exit_fn, exit_fn + 1100, "timer_primary_output_config(TIMER0,DISABLE)"),
 			"W21: the hall-calibration service reset includes tracking, still coherent with bridge-off");
 	}
 

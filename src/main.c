@@ -172,6 +172,12 @@ void can_networking_init(void);
 int32_t speed_PLL (int32_t ist, int32_t soll, uint8_t speedadapt);
 void runPIcontrol(void);
 void autodetect(void);
+/* Position calibration: snapshot/restore of its RAM result and the abort on comm_inhibit. */
+static void hall_calibration_snapshot(void);
+static void hall_calibration_restore(void);
+static void hall_calibration_bridge_off(void);
+static void hall_calibration_abort(void);
+extern volatile uint8_t comm_inhibit;
 int32_t map (int32_t x, int32_t in_min, int32_t in_max, int32_t out_min, int32_t out_max);
 void get_standstill_position(void);
 void fmc_program_hall_angles(void);
@@ -523,6 +529,7 @@ static volatile uint8_t hall_calibration_pending = 0U;
 bool hall_calibration_request(void)
 {
 	if(!hall_calibration_standstill_confirmed()) return false;
+	if(comm_inhibit) return false;   //no service drive while the comms inhibit owns the motor
 	hall_calibration_pending = 1U;
 	return true;
 }
@@ -618,6 +625,7 @@ uint8_t ui8_SPEED_control_flag=0;
 uint8_t ui8_walk_btn_counter=0;
 uint8_t ui8_walk_btn_state=0;
 uint8_t ui8_wa_speed_paused=0;
+uint8_t ui8_wa_comm_block=0;  /* set by comm_inhibit; PA4 must be released before Walk may start again */
 uint32_t voltage_raw_cumulated=0;
 uint16_t voltage_raw_filtered=0;
 //--- torque sensor fault state (zero/drift ownership moved to torque_input) ---
@@ -880,6 +888,12 @@ volatile uint8_t  hmi_seen=0;          //1 after the first display frame -> arms
 volatile uint16_t bus_lost_ticks=0;    //slow-loop ticks since the last frame of any kind
 volatile uint8_t  bus_seen=0;          //1 after the first frame of any kind -> arms the power-off
 volatile uint16_t update_hold_ticks=0; //>0 = an update session is in progress, do not power off
+/* Communication-loss SAFETY INHIBIT, set/cleared only by the slow-loop comms watchdog. It is not
+ * a level change: MS.assist_level is left as the rider selected it, so the same level code
+ * resumes assist when the display comes back. ride_control_update() owns the resulting exact
+ * zero; the Walk block cancels Walk on it. */
+volatile uint8_t  comm_inhibit=0;
+extern uint8_t walk_can_counter;       //CAN_Display.c: 0x6300 Walk-code debounce
 extern volatile uint16_t cmd3005_seen;      //FW-132: 0x3005 frames seen (CAN_Display.c)
 extern volatile uint8_t  cmd3005_last_target; //FW-132: whom the last one was addressed to
 uint8_t auto_off_minutes=AUTO_OFF_MINUTES; //runtime auto-off timeout [min]; overwritten by HMI 0x6303
@@ -917,6 +931,26 @@ static void can_rx_consume_liveness_events(void)
 	__set_PRIMASK(primask);
 	if(events & CAN_RX_EVENT_BUS){ bus_lost_ticks=0U; bus_seen=1U; }
 	if(events & CAN_RX_EVENT_HMI){ hmi_lost_ticks=0U; hmi_seen=1U; }
+}
+
+/*
+ * FW-135 comms watchdog, one 40 ms slow-loop period. 3 s of silence -> safety inhibit
+ * (fail-safe: broken cable / dead HMI). It used to write MS.assist_level=0 and force a zero
+ * that the next ride_control_update() overwrote; the level then never came back, because the
+ * 0x6300 debounce was already saturated on the same code. The inhibit is a separate fact the
+ * single final-Iq arbitration (ride_control.c) owns, and it clears by itself.
+ *
+ * Called from the slow loop and - because position calibration phase 1 blocks the main loop
+ * for >5 s - from autodetect()'s own loop at the same period, so the inhibit covers a service
+ * run too.
+ */
+static void comm_watchdog_step(void)
+{
+	can_rx_consume_liveness_events();
+	if(hmi_lost_ticks < 60000) hmi_lost_ticks++;
+	if(bus_lost_ticks < 60000) bus_lost_ticks++;
+	comm_inhibit = ((hmi_seen && hmi_lost_ticks >= COMM_CUT_TICKS) ||
+	                (bus_seen && bus_lost_ticks >= COMM_CUT_TICKS)) ? 1U : 0U;
 }
 
 uint32_t Speedx100_cumulated=0;
@@ -1584,15 +1618,7 @@ int main(void)
 				//    ASSIST needs a live display. The bus counter is allowed to cut assist too:
 				//    a bus that has gone completely silent is a pulled cable, and that must stop
 				//    the motor whether or not the display ever identified itself as source 3.
-				can_rx_consume_liveness_events();
-				if(hmi_lost_ticks < 60000) hmi_lost_ticks++;
-				if(bus_lost_ticks < 60000) bus_lost_ticks++;
-				if((hmi_seen && hmi_lost_ticks >= COMM_CUT_TICKS) ||
-				   (bus_seen && bus_lost_ticks >= COMM_CUT_TICKS)){ //3 s -> kill assist (fail-safe: broken cable / dead HMI)
-					MS.assist_level=0;
-					/* COMM LOSS classification: exact zero through the fast owner. */
-					ride_control_force_final_iq_zero();
-				}
+				comm_watchdog_step();   //3 s -> comm_inhibit, never a level change
 
 				//    POWER only needs a live BUS. During a DISPLAY firmware update the updater
 				//    talks to node 3 for minutes, so nothing arrives for us - but cutting power
@@ -3151,6 +3177,20 @@ void reg_ADC_processing(void)
                             (wa_press_edge && ui8_wa_latch_active);
     uint8_t wa_hard_stop=MS.brake_active_flag || MS.error_state || !walk_speed_ok;
 
+    //--- COMM LOSS: Walk must not outlive the communication inhibit. The CAN request, its
+    //debounce and any latch are cancelled, and a PA4 still held must be RELEASED before Walk
+    //may start again once the display is back - a restored bus is not a new rider request.
+    if(comm_inhibit){
+        MS.walk_can_request=RESET;
+        walk_can_counter=0;
+        ui8_wa_latch_active=0;
+        ui32_wa_latch_ticks=0;
+        ui8_wa_hold_armed=0;
+        ui8_wa_comm_block=1;
+    }else if(ui8_wa_comm_block && !ui8_walk_btn_state){
+        ui8_wa_comm_block=0;
+    }
+
     if(!wa_latch_enabled){
         ui8_wa_latch_active=0;
         ui8_wa_latch_cancel_block=0;
@@ -3174,7 +3214,7 @@ void reg_ADC_processing(void)
            adc_value[5]>=2800U){
             ui8_wa_latch_cancel_block=0;
         }
-        if(!ui8_wa_latch_active && !ui8_wa_latch_cancel_block &&
+        if(!ui8_wa_latch_active && !ui8_wa_latch_cancel_block && !ui8_wa_comm_block &&
            MS.walk_can_request && ui8_walk_btn_state && !wa_hard_stop){
             ui8_wa_hold_armed=1;
         }
@@ -3192,9 +3232,10 @@ void reg_ADC_processing(void)
     }
 
     // Normal dead-man request or the optional timed latch, with the same safety gates.
-    uint8_t walk_request=(MS.walk_can_request && ui8_walk_btn_state &&
-                          !ui8_wa_latch_cancel_block) ||
-                         ui8_wa_latch_active;
+    uint8_t walk_request=((MS.walk_can_request && ui8_walk_btn_state &&
+                           !ui8_wa_latch_cancel_block) ||
+                          ui8_wa_latch_active) &&
+                         !ui8_wa_comm_block;
     uint8_t walk_active=walk_request
                      && walk_speed_ok
                      && !MS.brake_active_flag
@@ -3297,6 +3338,9 @@ void reg_ADC_processing(void)
          * longer any part of the ride session's own decision, and no longer a second independent
          * reading of the raw decoder - see pas_direction.c.
          */
+        /* Comms lost during calibration phase 2: abort it here, before the owner is chosen.
+         * ride_control_update() already gives the inhibit priority over the service owner. */
+        if(comm_inhibit && MS.hall_angle_detect_flag > 1U) hall_calibration_abort();
         bool non_direction_safety_cut = MS.brake_active_flag || overtemp_stage >= 2 ||
             torque_fault || torque_input_calibration_active();
         ride_control_input_t ride_input = {
@@ -3325,6 +3369,7 @@ void reg_ADC_processing(void)
 			.offroad = MS.offroadflag != RESET,
             .walk_active = MS.pushassist_flag != RESET,
 			.position_calibration_active = MS.hall_angle_detect_flag > 1,
+            .comm_inhibit = comm_inhibit != 0U,
             .safety_cut_non_direction = non_direction_safety_cut,
             //QZERO: the SERVICE subset of the line above, for the zero-policy only. It changes no
             //cut decision - a load calibration still hard-cuts through safety_cut_non_direction.
@@ -3899,6 +3944,8 @@ void autodetect(void) {
 	 * returns, several seconds later.
 	 */
 	if(!hall_calibration_standstill_confirmed()) return;
+	if(comm_inhibit) return;         //the comms inhibit owns the motor: no service drive
+	hall_calibration_snapshot();     //an aborted run must leave the stored result untouched
 	// Position calibration owns the bridge directly. Clear retained diagnostic
 	// fields before phase 1; normal ride has no soft-cutoff transaction.
 	pwm_cutoff_active=0;
@@ -3922,6 +3969,10 @@ void autodetect(void) {
 		delay_1ms(5);
 
 		fwdgt_counter_reload(); //procedure blocks main loop >5 s: keep watchdog from resetting
+		if((i%8)==7){ //every 40 ms, the slow-loop period: the comms watchdog keeps running
+			comm_watchdog_step();
+			if(comm_inhibit) break; //abort: the bridge is shut down below, nothing is stored
+		}
 		if((i%50)==0){ //~every 250 ms: keep HMI link alive (heartbeat+telemetry) -> no E30 (comm timeout)
 			sendCAN_status_broadcast(&MS);
 			sendCAN_Poll(&MP,&MS,0x3201);
@@ -4023,6 +4074,11 @@ void autodetect(void) {
     MS.u_q=0;
 	motor_core_set_id_target(0);
     uint32_tics_filtered=1000000;
+
+	if(comm_inhibit){ //comms lost during phase 1: no phase 2, previous result restored
+		hall_calibration_abort();
+		return;
+	}
 
 
 	if (i8_recent_rotor_direction == 1) {
@@ -6096,20 +6152,7 @@ uint16_t hall_calibration_iq_request(void){
 		else if ((MP.reverse*temp6>>4)<-50)MP.angle_correction-=one_deg;
 		else {
 			cal_iq=0;
-			PI_iq.integral_part=0;
-			PI_id.integral_part=0;
-			foc_aw_tracking_reset(); //FOC-AW1: service path, disabling the bridge in the same breath
-			quiet_zero_reset(&quiet_zero_state); //QZERO: same service path, same breath
-				rotor_angle_reset(&rotor_angle_state); //FW-131: same service path
-			timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,_T>>1);
-			timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,_T>>1);
-			timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,_T>>1);
-			timer_primary_output_config(TIMER0,DISABLE); //Disable PWM
-			ui_8_PWM_ON_Flag=0;
-			foc_current_feedback_invalidate();
-			pwm_cutoff_active=0;
-			pwm_cutoff_tick=0;
-			uint16_half_rotation_counter=0;
+			hall_calibration_bridge_off();
 			write_virtual_eeprom();
 			MS.hall_angle_detect_flag=1;
 		}
@@ -6117,6 +6160,65 @@ uint16_t hall_calibration_iq_request(void){
 	//The deliberate integral reset above stays: there the bridge is switched off in the same
 	//breath, so nothing is left regulating.
 	return (uint16_t)cal_iq;
+}
+
+/*
+ * The one exit of the calibration service owner, shared by the verified completion above and
+ * by the comms-loss abort below: bridge off in the same breath as the regulators are cleared.
+ */
+static void hall_calibration_bridge_off(void)
+{
+	PI_iq.integral_part=0;
+	PI_id.integral_part=0;
+	foc_aw_tracking_reset(); //FOC-AW1: service path, disabling the bridge in the same breath
+	quiet_zero_reset(&quiet_zero_state); //QZERO: same service path, same breath
+	rotor_angle_reset(&rotor_angle_state); //FW-131: same service path
+	timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_0,_T>>1);
+	timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_1,_T>>1);
+	timer_channel_output_pulse_value_config(TIMER0,TIMER_CH_2,_T>>1);
+	timer_primary_output_config(TIMER0,DISABLE); //Disable PWM
+	ui_8_PWM_ON_Flag=0;
+	foc_current_feedback_invalidate();
+	pwm_cutoff_active=0;
+	pwm_cutoff_tick=0;
+	uint16_half_rotation_counter=0;
+}
+
+/*
+ * COMMS LOSS DURING POSITION CALIBRATION. The run's RAM result (Hall table, order, angle
+ * correction) is unverified until phase 2 converges, and ANY later write_virtual_eeprom() -
+ * a bank or torque-calibration save at standstill - would persist it. So an aborted run puts
+ * back what was there before it started, never writes the EEPROM itself, shuts the bridge
+ * down through the same exit as a completed run, and leaves the service mode for good: the
+ * procedure does not resume when the bus comes back; the operator requests a new run.
+ */
+static struct {
+	int32_t order, h13, h32, h26, h64, h45, h51;
+	q31_t angle_correction;
+} hall_cal_saved;
+
+static void hall_calibration_snapshot(void)
+{
+	hall_cal_saved.order = i32_hall_order;
+	hall_cal_saved.h13 = Hall_13; hall_cal_saved.h32 = Hall_32; hall_cal_saved.h26 = Hall_26;
+	hall_cal_saved.h64 = Hall_64; hall_cal_saved.h45 = Hall_45; hall_cal_saved.h51 = Hall_51;
+	hall_cal_saved.angle_correction = MP.angle_correction;
+}
+
+static void hall_calibration_restore(void)
+{
+	i32_hall_order = hall_cal_saved.order;
+	Hall_13 = hall_cal_saved.h13; Hall_32 = hall_cal_saved.h32; Hall_26 = hall_cal_saved.h26;
+	Hall_64 = hall_cal_saved.h64; Hall_45 = hall_cal_saved.h45; Hall_51 = hall_cal_saved.h51;
+	MP.angle_correction = hall_cal_saved.angle_correction;
+}
+
+static void hall_calibration_abort(void)
+{
+	hall_calibration_bridge_off();
+	motor_core_set_id_target(0);
+	hall_calibration_restore();
+	MS.hall_angle_detect_flag=1;   //back to normal operation with the previous, stored result
 }
 
 
