@@ -96,6 +96,11 @@ int main(void)
 		      strstr(m, "if(battery_trip_latched()) return;") != NULL &&
 		      strstr(m, "if(battery_trip_latched()) break;") != NULL,
 		      "T6h. the trip refuses and aborts position calibration like the comms inhibit (review F-06)");
+		CHECK(m && strstr(m, ".battery_soc_derate_q12 = (uint16_t)(G53_G1_Q12_ONE - g53_g1_soc_factor_m820(") != NULL &&
+		      strstr(m, "(int32_t)(MS.soc_display*10.0f), MP.limp_soc_limit, MP.limp_soc_limit_stage2)),") != NULL,
+		      "T6i. step 2: main.c feeds SOC x10 and Para1[10]/[11] in the right order (review S2-01)");
+		CHECK(m && strstr(m, "thermal_factor_m820") == NULL && strstr(m, "battery_thermal_derate_q12") == NULL,
+		      "T6j. variant A: no thermal input to the G53 limit - the M820 Iq derate owns temperature");
 		CHECK(m && strstr(m, ".battery_trip_latched = battery_trip_latched(),") != NULL,
 		      "T6c. ride_control gets the latch every control tick");
 		CHECK(m && strstr(m, "battery_trip_service(MS.Speedx100==0 && MS.cadence==0, 40U);") != NULL,

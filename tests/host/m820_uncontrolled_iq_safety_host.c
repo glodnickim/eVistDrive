@@ -84,6 +84,8 @@ typedef struct {
 	bool calibration;
 	bool comm_inhibit;
 	bool battery_trip;       /* TQ-06-G1: hard battery-overcurrent trip latched */
+	uint16_t soc_derate;     /* TQ-06-G1 step 2: Q12 SOC derate of the G53 limit */
+	int16_t temp_c;          /* controller temperature; 0 in base() means the old fixed 25 degC */
 } sim_in_t;
 
 static struct {
@@ -222,7 +224,7 @@ static void tick(const sim_in_t *in)
 	ci.current_iq = ms.i_q_setpoint;
 	ci.voltage_raw = (uint16_t)(42000 / CAL_BAT_V);
 	ci.voltage_min_raw = VOLTAGE_MIN;
-	ci.controller_temperature_c = 25;
+	ci.controller_temperature_c = in->temp_c ? in->temp_c : 25;
 	ci.cadence_filtered_x8 = (uint16_t)(S.cadence * 8U);
 	ci.speed_limit_x100 = SPEEDLIMIT;
 	ci.legal_enabled = true;
@@ -230,6 +232,7 @@ static void tick(const sim_in_t *in)
 	ci.position_calibration_active = in->calibration;
 	ci.comm_inhibit = in->comm_inhibit;
 	ci.battery_trip_latched = in->battery_trip;
+	ci.battery_soc_derate_q12 = in->soc_derate;
 	ci.safety_cut_non_direction = in->brake || !in->torque_valid;
 	ci.start_phase = S.start_phase != 0U;
 	ci.elapsed_ticks = 1U;
@@ -531,6 +534,34 @@ static void t5b_battery_trip(void)
 	CHECK(no_step, "T5b: re-arming mid-pedal releases no step of demand");
 }
 
+/* TASK-EVD-TQ-06-G1 step 2 through ride_control_update() (reviews S2-01, S2-02):
+ * - the SOC derate reaches the G53 limit: full derate -> limit = 50 % knee of battery_current_max;
+ * - Walk keeps the M820 Iq thermal derate: at 95 degC its request is 0, at 25 degC it is not. */
+static void t5c_step2_paths(void)
+{
+	puts("T5c step 2: SOC derate pass-through, Walk thermal derate");
+	sim_in_t in;
+	establish_assist(&in, 3U);
+	in.soc_derate = 0x1000;
+	for (uint32_t k = 0; k < 50U; k++) tick(&in);
+	CHECK(g53_port_g1_state()->limit == (uint16_t)((BATTERYCURRENT_MAX / 10) * G53_G1_SOC_KNEE_PCT / 100),
+		"T5c: full SOC derate through ride_control -> G53 limit at the 50 % knee");
+	in.soc_derate = 0;
+	for (uint32_t k = 0; k < 50U; k++) tick(&in);
+	CHECK(g53_port_g1_state()->limit == (uint16_t)(BATTERYCURRENT_MAX / 10),
+		"T5c: no SOC derate -> G53 limit back at the configured limit");
+	in.load_ctrl = 0U; in.crank_rpm = 0; in.pas_force = 0;
+	walk_iq_stub = 120U; in.walk = true; in.temp_c = 25;
+	bool walk_cool = false;
+	for (uint32_t k = 0; k < SEC(0.5); k++) { tick(&in); if (S.iq > 0) walk_cool = true; }
+	CHECK(walk_cool, "T5c: Walk pulls at 25 degC");
+	in.temp_c = 95;
+	bool walk_hot_zero = true;
+	for (uint32_t k = 0; k < SEC(0.5); k++) { tick(&in); if (k > 10U && mb->target != 0) walk_hot_zero = false; }
+	CHECK(walk_hot_zero, "T5c: Walk at 95 degC is taken to zero by the M820 Iq thermal derate");
+	in.walk = false; walk_iq_stub = 0U; in.temp_c = 0;
+}
+
 static void t5_hard_inhibits(void)
 {
 	puts("T5 hard inhibits: comm_inhibit / direction / brake / torque fault");
@@ -753,6 +784,7 @@ int main(void)
 	t4_veto_and_dip();
 	t5_hard_inhibits();
 	t5b_battery_trip();
+	t5c_step2_paths();
 	t6_release_and_off();
 	t7_contract_10b();
 	if (host_test_failures == 0) {

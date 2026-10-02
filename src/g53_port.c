@@ -36,12 +36,14 @@ static uint16_t pa6_ax_observed;
 
 /*
  * TASK-EVD-TQ-06-G1 / ADR-013: the G53 PI #1 battery-current limiter, the producer of g1.
+ * Step 2: the SOC knee factor comes from M820 (g53_g1_soc_factor_m820 in main.c), passed as a
+ * derate so a zero-initialised caller means "no derate". Thermal factors stay 1.0 (variant A).
  *
  * Its state is NOT part of g53_port_reset(). On the G5300 it lives outside the BDE8 command
  * state and survives stops, vetoes and owner changes; only power-on (and a level percentage of
  * 0) clears it. Resetting it with the pipeline would replay the ~0.2 s soft start on every
- * restart. Step 1 inputs: level 100 %, SOC and thermal factors 1.0, taper 1.0 - M820 keeps its
- * own SOC, thermal and speed protections (ADR-013 D3/D4).
+ * restart. Inputs: level 100 % and taper 1.0 (ADR-013 D4); SOC factor from M820 (step 2); M820
+ * keeps its own Iq thermal derate, speed taper, cutoff and undervoltage protections.
  */
 static g53_g1_state_t g1_limiter;
 static int32_t g1_configured_limit;
@@ -57,7 +59,12 @@ static void g1_configure(int32_t limit_centiamp)
         .p_offset = G53_G1_DEFAULT_P_OFFSET, .kp = G53_G1_DEFAULT_KP, .ki = G53_G1_DEFAULT_KI,
         .out_min = G53_G1_DEFAULT_OUT_MIN, .out_max = G53_G1_DEFAULT_OUT_MAX,
         .limit = (int16_t)limit_centiamp,
-        .knee_soc = G53_G1_DEFAULT_KNEE, .knee_temp = G53_G1_DEFAULT_KNEE,
+        /* Step 2 (ADR-013 D3): SOC knee = 50 % of the limit (owner). The thermal knee is inert -
+         * its factors are held at 1.0 (variant A) - and 0 keeps CFG1 valid for every limit.
+         * The G5300 used 5 A / 5 A (N4 §2.2); the knees are M820 product values. */
+        .knee_soc = (int16_t)((limit_centiamp * G53_G1_SOC_KNEE_PCT) / 100 > 0 ?
+                              (limit_centiamp * G53_G1_SOC_KNEE_PCT) / 100 : 1),
+        .knee_temp = 0,
         .floor = 0, .limit_reduction = 0
     };
     g1_m314 = g53_g1_configure(&g1_limiter, &c, g1_m314);
@@ -108,6 +115,8 @@ void g53_port_update(const g53_port_input_t *in,g53_port_output_t *out)
     const uint32_t diag_word=(in->safety_cut || !in->torque_sensor_valid) ? 0x10u : 0u;
     if(in->battery_limit_centiamp!=g1_configured_limit) g1_configure(in->battery_limit_centiamp);
     const uint16_t g1_feedback=(uint16_t)in->battery_feedback_centiamp; /* G5300 reads it as u16 */
+    const uint16_t g1_soc_factor=(uint16_t)(in->battery_soc_derate_q12>=G53_G1_Q12_ONE ?
+        0u : G53_G1_Q12_ONE-in->battery_soc_derate_q12);
     /* Missed ticks use this update's held input. Lost edge history is never
      * reconstructed. Catch-up is bounded; any excess is explicitly counted. */
     while(steps--) {
@@ -139,7 +148,7 @@ void g53_port_update(const g53_port_input_t *in,g53_port_output_t *out)
             const g53_g1_limit_input_t li={
                 .bde8_state=(uint8_t)co.trace.bde8_q50,
                 .level_pct=100, .level_pct_state6=100, .base_select=0,
-                .soc_factor=G53_G1_Q12_ONE, .thermal_a=G53_G1_Q12_ONE, .thermal_b=G53_G1_Q12_ONE
+                .soc_factor=g1_soc_factor, .thermal_a=G53_G1_Q12_ONE, .thermal_b=G53_G1_Q12_ONE
             };
             (void)g53_g1_limit_update(&g1_limiter,&li);
         }

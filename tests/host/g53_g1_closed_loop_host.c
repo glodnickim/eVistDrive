@@ -32,7 +32,7 @@ typedef struct {
 	int tripped;
 } result_t;
 
-static result_t run(double limit_a, double i_full, double tau_ms, int limiter_enabled)
+static result_t run_f(double limit_a, double i_full, double tau_ms, int limiter_enabled, uint16_t socf, uint16_t thf)
 {
 	g53_g1_state_t s;
 	result_t r = { 0, 0, 0, 0 };
@@ -40,10 +40,12 @@ static result_t run(double limit_a, double i_full, double tau_ms, int limiter_en
 		.step = G53_G1_DEFAULT_STEP, .step_hi = G53_G1_DEFAULT_STEP, .p_offset = G53_G1_DEFAULT_P_OFFSET,
 		.kp = G53_G1_DEFAULT_KP, .ki = G53_G1_DEFAULT_KI, .out_min = G53_G1_DEFAULT_OUT_MIN,
 		.out_max = G53_G1_DEFAULT_OUT_MAX, .limit = (int16_t)(limit_a * 100.0 + 0.5),
-		.knee_soc = G53_G1_DEFAULT_KNEE, .knee_temp = G53_G1_DEFAULT_KNEE, .floor = 0, .limit_reduction = 0
+		/* the knees g53_port.c configures in step 2: SOC 50 % of the limit, thermal 0 (inert, variant A) */
+		.knee_soc = (int16_t)(limit_a * 100.0 * G53_G1_SOC_KNEE_PCT / 100.0), .knee_temp = 0,
+		.floor = 0, .limit_reduction = 0
 	};
 	const g53_g1_limit_input_t li = { .bde8_state = 7, .level_pct = 100, .level_pct_state6 = 100,
-		.base_select = 0, .soc_factor = G53_G1_Q12_ONE, .thermal_a = G53_G1_Q12_ONE, .thermal_b = G53_G1_Q12_ONE };
+		.base_select = 0, .soc_factor = socf, .thermal_a = thf, .thermal_b = G53_G1_Q12_ONE };
 	const double a = 1.0 - exp(-0.25 / tau_ms);
 	double i = 0.0, tmin = 1e9, tmax = -1e9, tsum = 0.0;
 	int tn = 0, q5c = 0, cmd = 0, g1 = 0;
@@ -83,6 +85,11 @@ static result_t run(double limit_a, double i_full, double tau_ms, int limiter_en
 	return r;
 }
 
+static result_t run(double limit_a, double i_full, double tau_ms, int limiter_enabled)
+{
+	return run_f(limit_a, i_full, tau_ms, limiter_enabled, G53_G1_Q12_ONE, G53_G1_Q12_ONE);
+}
+
 int main(void)
 {
 	static const double limits[] = { 10.0, 15.0, 20.0 };
@@ -108,6 +115,16 @@ int main(void)
 			}
 		}
 	}
+	/* Step 2 knees (ADR-013 D3), same plant. */
+	{
+		result_t r = run_f(15.0, 45.0, 20.0, 1, 0, G53_G1_Q12_ONE);
+		printf("  SOC factor 0   : steady %5.2f A\n", r.steady_a);
+		CHECK(fabs(r.steady_a - 7.5) < 0.25 && !r.tripped, "CL SOC factor 0: the limit falls to the 50 % knee (7.5 A of 15 A)");
+		r = run_f(15.0, 45.0, 20.0, 1, 2048, G53_G1_Q12_ONE);
+		CHECK(fabs(r.steady_a - (7.5 + 0.5 * 7.5)) < 0.25, "CL SOC factor 0.5: knee + half of the rest");
+		/* Temperature does not go through this limiter (variant A, review S2-04). */
+	}
+
 	/* The trip is not decorative: with the limiter defeated it must fire. */
 	{
 		const result_t r = run(15.0, 80.0, 5.0, 0);

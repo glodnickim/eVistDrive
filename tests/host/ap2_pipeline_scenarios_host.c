@@ -289,6 +289,27 @@ static void scenarios(void)
 	in.battery_current_limiter_centiamp = 0;
 	in.battery_current_max = 15000;
 
+	/* P7d (variant A, review S2-04), on a fresh positive request: the M820 Iq thermal derate stays on
+	 * the PEDAL path - it limits the phase current that heats the bridge. At 95 degC (above the 90 degC
+	 * band end) it takes the request to 0 in the same tick; the fixture's PAS ends at establish. */
+	reset_all(); in = base_input(); establish_positive(&in, &cmd);
+	in.controller_temperature_c = 95;
+	pipeline_tick(&in, &cmd);
+	CHECK(cmd.final_iq_request == 0 && assist_pipeline_telemetry()->thermal_limited &&
+		assist_pipeline_g53()->trace.g1 == G53_G1_Q12_ONE,
+		"P7d: PEDAL keeps the M820 Iq thermal derate; the G53 limit is not involved");
+	in.controller_temperature_c = 30;
+	in.battery_current_limiter_centiamp = 1000;  /* 10 A: under 15 A, over the 7.5 A SOC knee */
+	for (unsigned i = 0; i < 600U; ++i) pipeline_tick(&in, &cmd);
+	CHECK(assist_pipeline_g53()->trace.g1 == G53_G1_Q12_ONE, "P7e: setup - g1 back at 1.0 with 10 A under 15 A");
+	/* P7e: full SOC derate takes the limit to the 50 % knee (7.5 A of 15 A): 10 A is now over it. */
+	in.battery_soc_derate_q12 = 0x1000;
+	for (unsigned i = 0; i < 600U; ++i) pipeline_tick(&in, &cmd);
+	CHECK(assist_pipeline_g53()->trace.g1 == 0 && g53_port_g1_state()->limit == 750,
+		"P7e: the SOC derate acts through the G53 limit (knee 50 % = 7.5 A)");
+	in.battery_soc_derate_q12 = 0;
+	in.battery_current_limiter_centiamp = 0;
+
 	/* P6: no forward PAS lets the native G53 request decay; QUIET is granted only at zero. */
 	reset_all(); in = base_input(); establish_positive(&in, &cmd);
 	CHECK(assist_pipeline_g53()->m2aa_native > 0 &&

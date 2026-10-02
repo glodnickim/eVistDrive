@@ -113,6 +113,7 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
         .phase_current_max=in->phase_current_max,
         .battery_feedback_centiamp=in->battery_current_limiter_centiamp,
         .battery_limit_centiamp=in->battery_current_max/10,
+        .battery_soc_derate_q12=in->battery_soc_derate_q12,
         .torque_sensor_valid=in->torque_sensor_valid,
         .direction_inhibit=in->direction_inhibit, .real_stop=in->real_stop,
         .safety_cut=in->safety_cut

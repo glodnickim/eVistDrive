@@ -107,6 +107,23 @@ typedef struct {
 #define G53_G1_DEFAULT_KNEE      500     /* P1[9] "max current on low charge" 5 A; P2[59] 5 A */
 #define G53_G1_Q12_ONE           0x1000u
 
+/*
+ * M820 INPUT ADAPTER (TASK-EVD-TQ-06-G1 step 2, ADR-013 D3). NOT part of the G5300 port: the G5300
+ * SOC estimator is not ported (N4 R1/R11). This maps M820's own SOC onto the LIM SOC-knee factor, Q12.
+ *
+ * SOC (owner decision): full limit above point 1 (Para1[10]), linear down to the knee at point 2
+ * (Para1[11]), and the knee - a fixed 50 % of the limit (owner 2026-10-02, was 15 %) - below it.
+ * Point 1 = 0 or 0xFF disables;
+ * point 2 = 0, 0xFF or >= point 1 means "ramp all the way to 0 % SOC".
+ * Temperature (owner, variant A after review S2-04): NOT through this limiter. The M820 Iq thermal
+ * derate (ap2_limits stage 5, 75 -> 90 degC) stays on every path, because it limits the phase
+ * current that heats the bridge; a battery-current limit barely acts at low speed. The LIM thermal
+ * factors are therefore held at 1.0.
+ */
+#define G53_G1_SOC_KNEE_PCT        50
+#define G53_G1_SOC_POINT_DISABLED  0xFFu
+uint16_t g53_g1_soc_factor_m820(int32_t soc_x10, uint8_t point1_pct, uint8_t point2_pct);
+
 /* Zero state, as after the original RAM clear. */
 void g53_g1_reset(g53_g1_state_t *s);
 

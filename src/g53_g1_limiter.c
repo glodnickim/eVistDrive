@@ -64,6 +64,20 @@ static void pi_step(g53_g1_pi_t *pi)
     }
 }
 
+/* ---- M820 input adapters (see the header) -------------------------------------------------- */
+uint16_t g53_g1_soc_factor_m820(int32_t soc_x10, uint8_t point1_pct, uint8_t point2_pct)
+{
+    int32_t p2;
+    if (point1_pct == 0u || point1_pct == G53_G1_SOC_POINT_DISABLED || point1_pct > 100u) {
+        return (uint16_t)G53_G1_Q12_ONE;
+    }
+    p2 = (point2_pct == 0u || point2_pct == G53_G1_SOC_POINT_DISABLED || point2_pct >= point1_pct)
+        ? 0 : (int32_t)point2_pct;
+    if (soc_x10 >= (int32_t)point1_pct * 10) return (uint16_t)G53_G1_Q12_ONE;
+    if (soc_x10 <= p2 * 10) return 0u;
+    return (uint16_t)(((soc_x10 - p2 * 10) * (int32_t)G53_G1_Q12_ONE) / (((int32_t)point1_pct - p2) * 10));
+}
+
 void g53_g1_reset(g53_g1_state_t *s)
 {
     if (s) {

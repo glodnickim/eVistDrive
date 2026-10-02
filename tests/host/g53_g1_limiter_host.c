@@ -270,6 +270,29 @@ static void behaviour_checks(void)
     (void)g53_g1_limit_update(&s, &off);
     CHECK(s.limit == 0 && s.pi.i_term == 0 && s.pi.out == 0, "level 0 % resets PI #1");
 
+    /* Step 2 M820 adapters (ADR-013 D3). */
+    CHECK(g53_g1_soc_factor_m820(500, 0xFF, 0xFF) == 0x1000, "SOC: point 1 disabled -> 1.0");
+    CHECK(g53_g1_soc_factor_m820(500, 0, 10) == 0x1000, "SOC: point 1 = 0 -> disabled");
+    CHECK(g53_g1_soc_factor_m820(300, 25, 5) == 0x1000, "SOC above point 1 -> 1.0");
+    CHECK(g53_g1_soc_factor_m820(150, 25, 5) == 2048, "SOC midway between points -> 0.5");
+    CHECK(g53_g1_soc_factor_m820(50, 25, 5) == 0 && g53_g1_soc_factor_m820(0, 25, 5) == 0,
+          "SOC at/below point 2 -> 0 (limit = knee), never rising again (DISC-008)");
+    CHECK(g53_g1_soc_factor_m820(125, 25, 0xFF) == 2048 && g53_g1_soc_factor_m820(125, 25, 30) == 2048,
+          "SOC: point 2 disabled or >= point 1 -> ramp to 0 % SOC");
+    {
+        int monotone = 1;
+        uint16_t prev = 0;
+        for (int soc = 0; soc <= 1000; soc++) {
+            const uint16_t f = g53_g1_soc_factor_m820(soc, 25, 5);
+            if (f < prev) monotone = 0;
+            prev = f;
+        }
+        CHECK(monotone, "SOC factor is monotonic in SOC over 0..100 %");
+    }
+    CHECK(g53_g1_soc_factor_m820(250, 25, 25) == 0x1000 && g53_g1_soc_factor_m820(249, 25, 25) < 0x1000 &&
+          g53_g1_soc_factor_m820(125, 25, 25) == 2048,
+          "SOC: point 2 == point 1 ramps to 0 % SOC (no step from the full limit to the knee, review S2-05)");
+
     /* Invalid configuration is flagged, not silently accepted. */
     c = stock_config(400); /* limit below the knees */
     CHECK((g53_g1_configure(&s, &c, 0) & 1u) == 1 && s.cfg_invalid == 1, "limit below knee is flagged invalid");

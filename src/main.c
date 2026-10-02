@@ -3390,6 +3390,10 @@ void reg_ADC_processing(void)
             /* TASK-EVD-TQ-06-G1: the 1/8 limiter tap, same CAL_BAT_I scale, in 0.01 A. */
             .battery_current_limiter_centiamp =
                 (int32_t)((float)battery_current_limiter_adc()*CAL_BAT_I/10.0f),
+            /* TASK-EVD-TQ-06-G1 step 2 (ADR-013 D3): M820 SOC drives the SOC knee of the G53 limit.
+             * Temperature stays with the M820 Iq thermal derate in ap2_limits (variant A). */
+            .battery_soc_derate_q12 = (uint16_t)(G53_G1_Q12_ONE - g53_g1_soc_factor_m820(
+                (int32_t)(MS.soc_display*10.0f), MP.limp_soc_limit, MP.limp_soc_limit_stage2)),
             .u_abs = MS.u_abs,
             .cal_i = CAL_I,
             .current_iq = MS.i_q_setpoint,

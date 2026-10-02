@@ -319,6 +319,7 @@ void ride_control_update(const ride_control_input_t *input)
 		pipe_in.battery_current_ma = input->battery_current_mA;
 		pipe_in.battery_current_max = input->battery_current_max;
 		pipe_in.battery_current_limiter_centiamp = input->battery_current_limiter_centiamp;
+		pipe_in.battery_soc_derate_q12 = input->battery_soc_derate_q12;
 		pipe_in.u_abs = input->u_abs;
 		pipe_in.cal_i = input->cal_i;
 		/*

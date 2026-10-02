@@ -19,6 +19,10 @@ typedef struct {
      * fast-tap battery current; the limit is the configured battery current limit. Both 0.01 A. */
     int32_t battery_feedback_centiamp;
     int32_t battery_limit_centiamp;
+    /* Step 2 (ADR-013 D3): how much the SOC knee takes away, Q12. 0 = nothing - the value every
+     * zero-initialised caller gets; the LIM SOC factor is 0x1000 - derate. Temperature is not an
+     * input here (variant A): the M820 Iq thermal derate stays in ap2_limits. */
+    uint16_t battery_soc_derate_q12;
     bool torque_sensor_valid;
     bool direction_inhibit;
     bool real_stop;
