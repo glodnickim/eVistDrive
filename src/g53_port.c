@@ -34,6 +34,36 @@ static bool normal_permission;
 static uint32_t dropped_ticks;
 static uint16_t pa6_ax_observed;
 
+/*
+ * TASK-EVD-TQ-06-G1 / ADR-013: the G53 PI #1 battery-current limiter, the producer of g1.
+ *
+ * Its state is NOT part of g53_port_reset(). On the G5300 it lives outside the BDE8 command
+ * state and survives stops, vetoes and owner changes; only power-on (and a level percentage of
+ * 0) clears it. Resetting it with the pipeline would replay the ~0.2 s soft start on every
+ * restart. Step 1 inputs: level 100 %, SOC and thermal factors 1.0, taper 1.0 - M820 keeps its
+ * own SOC, thermal and speed protections (ADR-013 D3/D4).
+ */
+static g53_g1_state_t g1_limiter;
+static int32_t g1_configured_limit;
+static uint8_t g1_phase;
+static uint16_t g1_m314;
+
+static void g1_configure(int32_t limit_centiamp)
+{
+    if (limit_centiamp < 0) limit_centiamp = 0;
+    if (limit_centiamp > 32767) limit_centiamp = 32767;
+    const g53_g1_config_t c = {
+        .step = G53_G1_DEFAULT_STEP, .step_hi = G53_G1_DEFAULT_STEP,
+        .p_offset = G53_G1_DEFAULT_P_OFFSET, .kp = G53_G1_DEFAULT_KP, .ki = G53_G1_DEFAULT_KI,
+        .out_min = G53_G1_DEFAULT_OUT_MIN, .out_max = G53_G1_DEFAULT_OUT_MAX,
+        .limit = (int16_t)limit_centiamp,
+        .knee_soc = G53_G1_DEFAULT_KNEE, .knee_temp = G53_G1_DEFAULT_KNEE,
+        .floor = 0, .limit_reduction = 0
+    };
+    g1_m314 = g53_g1_configure(&g1_limiter, &c, g1_m314);
+    g1_configured_limit = limit_centiamp;
+}
+
 /* P9-G5: translate native M820 A/B coordinates only at the G53 behavior seam.
  * Native PAS decoding and safety continue to consume the original packed value. */
 static uint8_t g53_pas_coordinate(uint8_t native_pas_ab)
@@ -54,7 +84,14 @@ void g53_port_reset(void)
     dropped_ticks=0;
     pa6_ax_observed=0;
 }
-void g53_port_init(void) { g53_port_reset(); }
+void g53_port_init(void)
+{
+    g53_port_reset();
+    g53_g1_reset(&g1_limiter);
+    g1_configured_limit = -1;
+    g1_phase = 0;
+    g1_m314 = 0;
+}
 
 void g53_port_update(const g53_port_input_t *in,g53_port_output_t *out)
 {
@@ -69,6 +106,8 @@ void g53_port_update(const g53_port_input_t *in,g53_port_output_t *out)
     const uint8_t level=g53_chain_level(in->assist_level);
     const uint32_t speed=in->speed_x100/10u;
     const uint32_t diag_word=(in->safety_cut || !in->torque_sensor_valid) ? 0x10u : 0u;
+    if(in->battery_limit_centiamp!=g1_configured_limit) g1_configure(in->battery_limit_centiamp);
+    const uint16_t g1_feedback=(uint16_t)in->battery_feedback_centiamp; /* G5300 reads it as u16 */
     /* Missed ticks use this update's held input. Lost edge history is never
      * reconstructed. Catch-up is bounded; any excess is explicitly counted. */
     while(steps--) {
@@ -88,10 +127,22 @@ void g53_port_update(const g53_port_input_t *in,g53_port_output_t *out)
         ci.speed_native=(int16_t)feedback.speed_native;
         ci.diag_word=diag_word;
         ci.external_inhibit=0;
-        ci.g1_q12=0x1000; ci.g2_q12=0x1000;
+        /* G5300 tick order: PI #1 (0x0800C6B4) before BDE8, LIM (0x0800C5BA) after it in
+         * phase 5 of 10. g2 stays 1.0: PI #2 is disabled in the G5300 default (M+0x27A = 0). */
+        ci.g1_q12=g53_g1_step(&g1_limiter,G53_G1_Q12_ONE,g1_feedback);
+        ci.g2_q12=0x1000;
         g53_chain_step(&ci,&co);
         port_trace=co.trace;
         normal_permission=co.normal_permission;
+        if(++g1_phase>=10u) g1_phase=0;
+        if(g1_phase==5u) {
+            const g53_g1_limit_input_t li={
+                .bde8_state=(uint8_t)co.trace.bde8_q50,
+                .level_pct=100, .level_pct_state6=100, .base_select=0,
+                .soc_factor=G53_G1_Q12_ONE, .thermal_a=G53_G1_Q12_ONE, .thermal_b=G53_G1_Q12_ONE
+            };
+            (void)g53_g1_limit_update(&g1_limiter,&li);
+        }
     }
     port_trace.raw_pa6_adc=in->raw_pa6_adc;
     port_trace.diag=diag_word;
@@ -105,4 +156,5 @@ void g53_port_update(const g53_port_input_t *in,g53_port_output_t *out)
      * external_inhibit, diag aliases or extra behavioral demand gates. */
 }
 const g53_port_trace_t *g53_port_trace(void) { return &port_trace; }
+const g53_g1_state_t *g53_port_g1_state(void) { return &g1_limiter; }
 uint16_t g53_port_pa6_ax_observed(void) { return pa6_ax_observed; }

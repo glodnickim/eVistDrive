@@ -228,22 +228,66 @@ static void scenarios(void)
 		assist_pipeline_g53()->normal_permission &&
 		assist_pipeline_g53()->iq_request_pre_limits > 0 && cmd.final_iq_request > 0,
 		"P7: limiter scenario starts from a real positive G53/final request");
+	/* ADR-013 / TASK-EVD-TQ-06-G1: on the PEDAL path the battery current is owned by the ported
+	 * G53 PI #1 (g1 inside BDE8), not by the ap2 battery stage. The P7 property is unchanged: a
+	 * limiter zero while forward demand remains is BYPASS/NONE, never QUIET. The limiter now
+	 * acts BEFORE Boundary B: BDE8 stays in its drive state (normal_permission) while M2AA,
+	 * the request before limits and the final request all go to 0. */
 	in.battery_current_ma = 15000;
-	in.battery_current_max = 1;
+	in.battery_current_max = 10000;                 /* limit 10 A */
+	in.battery_current_limiter_centiamp = 3000;     /* measured 30 A: sustained overload */
 	for (unsigned i = 0; i < 100U; ++i) pipeline_tick(&in, &cmd);
 	tlm = assist_pipeline_telemetry();
 	CHECK(cmd.final_iq_request == 0 && cmd.slew_mode == FIS_MODE_BYPASS &&
 		cmd.zero_policy == FIS_ZERO_POLICY_NONE && tlm->battery_limited &&
-		assist_pipeline_g53()->m2aa_native > 0 &&
+		assist_pipeline_g53()->trace.g1 == 0 &&
 		assist_pipeline_g53()->normal_permission &&
-		assist_pipeline_g53()->iq_request_pre_limits > 0,
-		"P7: battery limiter zero while forward demand remains uses BYPASS/NONE");
+		assist_pipeline_battery_limited(),
+		"P7: battery limiter (G53 g1) zero while forward demand remains uses BYPASS/NONE");
+	{
+		/* P7b: the same limiter gives the current back once the measured current falls. */
+		bool recovered = false;
+		in.battery_current_limiter_centiamp = 0;
+		for (unsigned i = 0; i < 400U && !recovered; ++i) {
+			pipeline_tick(&in, &cmd);
+			recovered = cmd.final_iq_request > 0;
+		}
+		CHECK(recovered && assist_pipeline_g53()->trace.g1 > 0 && cmd.slew_mode == FIS_MODE_BYPASS,
+			"P7b: g1 recovers and assist returns when the battery current falls below the limit");
+		in.battery_current_max = 15000;
+	}
+	{
+		/* P7c (review F-02): the PEDAL path does NOT run the M820 ap2 battery stage any more. A
+		 * filtered battery current far above battery_current_max must leave the ap2 latch idle
+		 * and the request positive while the G53 limiter (fed by its own tap) sees no overload. */
+		int32_t before;
+		in.battery_current_limiter_centiamp = 0;
+		for (unsigned i = 0; i < 400U; ++i) pipeline_tick(&in, &cmd);
+		before = cmd.final_iq_request;
+		in.battery_current_ma = 40000;
+		in.battery_current_max = 15000;
+		for (unsigned i = 0; i < 100U; ++i) pipeline_tick(&in, &cmd);
+		CHECK(before > 0 && cmd.final_iq_request > 0 && !ap2_limits_battery_active() &&
+			!assist_pipeline_telemetry()->battery_limited,
+			"P7c: PEDAL path skips the ap2 battery stage (ADR-013: G53 PI #1 owns battery current)");
+		in.battery_current_ma = 15000;
+	}
 
-	/* P1 also covers zeroes reached through assist-off, and remains default-deny. */
+	/* P1 also covers zeroes reached through assist-off, and remains default-deny. The zero must
+	 * really be limiter-created at the moment of the check (review NEW-01): P7b/P7c above gave the
+	 * current back, so drive g1 to zero again first. */
+	in.battery_current_limiter_centiamp = 3000;
+	in.battery_current_max = 10000;
+	for (unsigned i = 0; i < 100U; ++i) pipeline_tick(&in, &cmd);
+	CHECK(cmd.final_iq_request == 0 && assist_pipeline_g53()->trace.g1 == 0,
+		"P1/P7: setup - the zero is created by the G53 battery limiter");
 	in.service_cut = true;
 	pipeline_tick(&in, &cmd);
-	CHECK(cmd.zero_policy == FIS_ZERO_POLICY_NONE && cmd.slew_mode == FIS_MODE_BYPASS,
+	CHECK(cmd.final_iq_request == 0 && assist_pipeline_g53()->trace.g1 == 0 &&
+		cmd.zero_policy == FIS_ZERO_POLICY_NONE && cmd.slew_mode == FIS_MODE_BYPASS,
 		"P1/P7: service policy remains NONE on a limiter-created zero");
+	in.battery_current_limiter_centiamp = 0;
+	in.battery_current_max = 15000;
 
 	/* P6: no forward PAS lets the native G53 request decay; QUIET is granted only at zero. */
 	reset_all(); in = base_input(); establish_positive(&in, &cmd);

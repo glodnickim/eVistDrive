@@ -241,7 +241,8 @@ try {
         # Same narrowly scoped target policy as tools/build_firmware.py.
         $sourceFlags = @()
         if ($entry -in @('src/g53_port.c', 'src/g53_port_chain.c',
-                         'src/g53_port_boundaries.c', 'src/g53_port_pas.c')) {
+                         'src/g53_port_boundaries.c', 'src/g53_port_pas.c',
+                         'src/g53_g1_limiter.c')) {
             $sourceFlags = @('-O2')
         }
         & $gcc @compilerFlags @sourceFlags -c $sourcePath -o $objectPath

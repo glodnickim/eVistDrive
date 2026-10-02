@@ -81,7 +81,7 @@ def metric(rows,k):
 # The whole assist chain, exactly as the firmware links it.
 assist_mod=['torque_input.c','rider_input.c','assist_modes.c','tuning_config.c',
             'ap2_pas_state.c','ap2_rider_demand.c','ap2_estimators.c','ap2_profiles.c',
-            'g53_port.c','g53_port_boundaries.c','g53_port_pas.c','g53_port_chain.c',
+            'g53_port.c','g53_port_boundaries.c','g53_port_pas.c','g53_port_chain.c','g53_g1_limiter.c',
             'ap2_limits.c','battery_iq_cap.c','fast_iq_slew.c','assist_pipeline.c']
 ride_mod=assist_mod+['ride_control.c','iq_chain.c','motor_core.c']
 

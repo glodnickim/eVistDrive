@@ -52,7 +52,8 @@ typedef enum {
 	RIDE_OWNER_ASSIST = 0,
 	RIDE_OWNER_WALK = 1,
 	RIDE_OWNER_CALIBRATION = 2,
-	RIDE_OWNER_COMM_INHIBIT = 3
+	RIDE_OWNER_COMM_INHIBIT = 3,
+	RIDE_OWNER_BATTERY_TRIP = 4
 } ride_owner_t;
 
 static ride_owner_t ride_owner_prev;
@@ -162,6 +163,7 @@ static int32_t walk_iq_through_shared_limits(const ride_control_input_t *input, 
 	lim_in.cal_i = input->cal_i;
 	lim_in.battery_current_ma = input->battery_current_mA;
 	lim_in.battery_current_max = input->battery_current_max;
+	lim_in.battery_stage_owned_upstream = false; /* Walk keeps the M820 battery stage (ADR-013) */
 	/* Walk has no assist level, so no level ceiling applies to it. Said with the named value,
 	 * not with 0 - 0 is now a ceiling of zero, which would stop Walk outright. */
 	lim_in.level_iq_limit = AP2_LIMITS_NO_LEVEL_CEILING;
@@ -211,6 +213,20 @@ void ride_control_update(const ride_control_input_t *input)
 		 * rider's selected level is not touched.
 		 */
 		ride_enter_owner(RIDE_OWNER_COMM_INHIBIT);
+		requested = 0;
+		cmd.final_iq_request = 0;
+		cmd.slew_mode = FIS_MODE_FORCE_ZERO;
+		cmd.step_mag_8 = 0U;
+		cmd.release_ticks_16k = 0U;
+		cmd.zero_policy = FIS_ZERO_POLICY_NONE;
+		cmd.iq_ceiling = 0;
+	} else if (input->battery_trip_latched) {
+		/*
+		 * HARD BATTERY-OVERCURRENT TRIP (ADR-013 D1). The ISR has already switched the bridge
+		 * off; nothing may ask for current again until the trip re-arms at standstill. Same
+		 * exact-zero publication as the comms inhibit, ahead of calibration, Walk and assist.
+		 */
+		ride_enter_owner(RIDE_OWNER_BATTERY_TRIP);
 		requested = 0;
 		cmd.final_iq_request = 0;
 		cmd.slew_mode = FIS_MODE_FORCE_ZERO;
@@ -302,6 +318,7 @@ void ride_control_update(const ride_control_input_t *input)
 		pipe_in.battery_voltage_mv = input->battery_voltage_mv;
 		pipe_in.battery_current_ma = input->battery_current_mA;
 		pipe_in.battery_current_max = input->battery_current_max;
+		pipe_in.battery_current_limiter_centiamp = input->battery_current_limiter_centiamp;
 		pipe_in.u_abs = input->u_abs;
 		pipe_in.cal_i = input->cal_i;
 		/*

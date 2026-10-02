@@ -10,7 +10,7 @@ PROD=['src/torque_input.c','src/rider_input.c','src/assist_modes.c','src/cadence
       'src/tuning_config.c','src/ride_control.c',
       'src/ap2_pas_state.c','src/ap2_rider_demand.c','src/ap2_estimators.c',
       'src/ap2_profiles.c','src/g53_port.c','src/g53_port_boundaries.c',
-      'src/g53_port_pas.c','src/g53_port_chain.c','src/ap2_limits.c','src/assist_pipeline.c',
+      'src/g53_port_pas.c','src/g53_port_chain.c','src/g53_g1_limiter.c','src/ap2_limits.c','src/assist_pipeline.c',
       'src/fast_iq_slew.c','src/battery_iq_cap.c','src/iq_chain.c',
       'src/motor_core.c','src/walk_assist_motor.c','src/walk_speed_controller.c',
       'tests/host/common/map_adapter.c','tests/host/common/motor_service_stub.c']

@@ -19,7 +19,7 @@ PROD=[
  'src/tuning_config.c',
     'src/ap2_pas_state.c','src/ap2_rider_demand.c','src/ap2_estimators.c',
     'src/ap2_profiles.c','src/g53_port.c','src/g53_port_boundaries.c',
-    'src/g53_port_pas.c','src/g53_port_chain.c','src/ap2_limits.c','src/assist_pipeline.c',
+    'src/g53_port_pas.c','src/g53_port_chain.c','src/g53_g1_limiter.c','src/ap2_limits.c','src/assist_pipeline.c',
  'src/ride_control.c','src/fast_iq_slew.c','src/battery_iq_cap.c','src/iq_chain.c',
  'src/motor_core.c',
  'src/pas_quadrature.c','src/pas_direction.c','src/pas_liveness.c','src/pas_sampler.c','src/pas_cadence.c',

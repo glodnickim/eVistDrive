@@ -37,6 +37,7 @@ src/pas_quadrature.c
 src/pas_sampler.c
 src/pas_cadence.c
 src/battery_current.c
+src/battery_trip.c
 src/battery_iq_cap.c
 src/soc_core.c
 src/fast_iq_slew.c
@@ -90,3 +91,4 @@ src/g53_port_boundaries.c
 src/g53_port_pas.c
 src/g53_port_chain.c
 src/g53_port.c
+src/g53_g1_limiter.c

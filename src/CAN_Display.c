@@ -27,6 +27,7 @@
 #include "current_feedback.h"
 #include "current_sample_ctx.h"
 #include "assist_pipeline.h"
+#include "battery_trip.h"
 #include "assist_modes.h"
 #include "tuning_config.h"
 #include "torque_input.h"
@@ -1149,13 +1150,14 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 				int32_t cur_iqs = MS->i_q_setpoint; if(cur_iqs>32767)cur_iqs=32767; else if(cur_iqs<-32768)cur_iqs=-32768;
 				int32_t peak_iqs = diag_peak_iq_set; if(peak_iqs<0)peak_iqs=0; if(peak_iqs>32767)peak_iqs=32767;
 				int32_t d7ec_rider = g53->trace.d7ec_rider; if(d7ec_rider<0)d7ec_rider=0; if(d7ec_rider>65535)d7ec_rider=65535;
-				uint8_t dg[72];
+				uint8_t dg[78];
 				/*
-				 * 'D''G' ver8 (71 B). Same length and CRC; v1-v7 remain historical. This frozen
-				 * map reports native G53 stages and safety/limiter facts without presenting retired
-				 * AP2 estimators or profiles as active owners. See protocol/RIDE_DIAGNOSTICS_6029.md.
+				 * 'D''G' ver9 (77 B): the v8 map, bytes 0..68 unchanged in meaning except bytes 34/44
+				 * (battery-current facts, ADR-013), plus the G53 PI #1 limiter and the hard trip in
+				 * 69..74 and the CRC moved to 75..76. v1-v8 remain historical. See
+				 * protocol/RIDE_DIAGNOSTICS_6029.md.
 				 */
-				dg[0]=0x44; dg[1]=0x47; dg[2]=8;
+				dg[0]=0x44; dg[1]=0x47; dg[2]=9;
 				dg[3]=DIAG_ENGINE_ID_RIDE_CORE; //deprecated protocol field, see the define
 				uint32_t bcur = diag_peak_motor_w ? ((uint32_t)diag_peak_motor_w*1000000UL)/(MS->Voltage?MS->Voltage:40000) : 0; if(bcur>65535)bcur=65535;
 				int32_t iqr = diag_peak_iq_req; if(iqr>32767)iqr=32767; else if(iqr<0)iqr=0;
@@ -1176,7 +1178,8 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 				dg[30]=envelope&0xFF; dg[31]=(envelope>>8)&0xFF;                  //D7EC envelope, native
 				int32_t cur_iqm=MS->i_q; if(cur_iqm>32767)cur_iqm=32767; else if(cur_iqm<-32768)cur_iqm=-32768; //measured i_q (signed, actual FOC current)
 				dg[32]=cur_iqm&0xFF; dg[33]=(cur_iqm>>8)&0xFF;                     //FW-033: measured i_q (command vs actual test)
-				dg[34]=(BC_limit_flag?0x01:0);                                    //FW-033: bit0 = battery-current limiter active
+				dg[34]=(uint8_t)((BC_limit_flag?0x01:0) |                          //bit0: battery-current limiter active (G53 g1 or Walk stage)
+				                 (battery_trip_latched()?0x02:0));                 //v9 bit1: hard battery-overcurrent trip latched
 				int32_t accel=g53->trace.d7ec_accel; if(accel<0)accel=0; if(accel>65535)accel=65535;
 				dg[35]=accel&0xFF; dg[36]=(accel>>8)&0xFF;                        //D7EC accel, native
 				int32_t e1e8=g53->trace.e1e8_output; if(e1e8<0)e1e8=0; if(e1e8>65535)e1e8=65535;
@@ -1219,8 +1222,18 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 					dg[65]=cur->motor_power_w&0xFF; dg[66]=(cur->motor_power_w>>8)&0xFF;            //requested motor power [W], live
 					dg[67]=u16_uabs&0xFF; dg[68]=(u16_uabs>>8)&0xFF;                                //live u_abs, pairs with dg[43] cadence
 				}
-				uint16_t c=0xFFFF; for(uint8_t i=0;i<69;i++){c^=(uint16_t)dg[i]<<8; for(uint8_t b=0;b<8;b++)c=(c&0x8000)?((c<<1)^0x1021):(c<<1);}
-				dg[69]=c&0xFF; dg[70]=(c>>8)&0xFF;
+				/* v9: G53 PI #1 battery-current limiter and the hard trip (TASK-EVD-TQ-06-G1). */
+				{
+					const g53_g1_state_t *g1s = g53_port_g1_state();
+					int32_t g1v = g53->trace.g1; if(g1v<0)g1v=0; if(g1v>65535)g1v=65535;
+					const uint16_t fb = g1s->pi.fb;                                       //exact u16 the limiter read, 0.01 A two's complement
+					uint32_t trips = battery_trip_count(); if(trips>65535U)trips=65535U;
+					dg[69]=g1v&0xFF; dg[70]=(g1v>>8)&0xFF;                               //g1, Q12 (4096 = no limiting)
+					dg[71]=fb&0xFF; dg[72]=(fb>>8)&0xFF;                                 //limiter feedback, i16 0.01 A
+					dg[73]=trips&0xFF; dg[74]=(trips>>8)&0xFF;                           //hard-trip count since power-on, saturating
+				}
+				uint16_t c=0xFFFF; for(uint8_t i=0;i<75;i++){c^=(uint16_t)dg[i]<<8; for(uint8_t b=0;b<8;b++)c=(c&0x8000)?((c<<1)^0x1021):(c<<1);}
+				dg[75]=c&0xFF; dg[76]=(c>>8)&0xFF;
 				//FW-110 v4: diag_peak_reset is NOT set here. send_multiframe() returning true only
 				//proves the snapshot was ARMED; the reset must fire only when this exact transfer
 				//is CONFIRMED delivered end to end (its last fragment reaches CAN_TRANSMIT_OK),
@@ -1228,7 +1241,7 @@ void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS){
 				//main.c's loop. The transfer id is remembered here, at arm time.
 				{
 					can_multiframe_id_t xfer_id;
-					if(send_multiframe_tracked(Ext_ID_Rx.command, (char*)&dg[0], 71, &xfer_id)){
+					if(send_multiframe_tracked(Ext_ID_Rx.command, (char*)&dg[0], 77, &xfer_id)){
 						can_reply_effects_6029_armed(xfer_id);
 					}
 				}

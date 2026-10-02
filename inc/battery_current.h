@@ -89,6 +89,17 @@ void battery_current_sample(uint16_t raw, uint8_t scan_complete);
  */
 int32_t battery_current_filtered_adc(void);
 
+/*
+ * TASK-EVD-TQ-06-G1 (ADR-013 D2): the same samples through a 1/8 pole (time constant about
+ * 7.5 sample periods = 1.9 ms at 4 kHz), in ADC counts, for the G53 PI #1 battery-current
+ * limiter only. 0 until armed. Every other consumer keeps battery_current_filtered_adc().
+ */
+int32_t battery_current_limiter_adc(void);
+
+/* The latest raw sample minus the startup zero, unfiltered, in ADC counts; for the hard
+ * battery-overcurrent trip, which runs in the same ISR right after battery_current_sample(). */
+int32_t battery_current_last_delta_adc(void);
+
 const battery_current_stats_t *battery_current_get_stats(void);
 
 #endif /* BATTERY_CURRENT_H_ */

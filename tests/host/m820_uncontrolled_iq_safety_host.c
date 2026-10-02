@@ -83,6 +83,7 @@ typedef struct {
 	bool walk;
 	bool calibration;
 	bool comm_inhibit;
+	bool battery_trip;       /* TQ-06-G1: hard battery-overcurrent trip latched */
 } sim_in_t;
 
 static struct {
@@ -228,6 +229,7 @@ static void tick(const sim_in_t *in)
 	ci.walk_active = in->walk;
 	ci.position_calibration_active = in->calibration;
 	ci.comm_inhibit = in->comm_inhibit;
+	ci.battery_trip_latched = in->battery_trip;
 	ci.safety_cut_non_direction = in->brake || !in->torque_valid;
 	ci.start_phase = S.start_phase != 0U;
 	ci.elapsed_ticks = 1U;
@@ -500,6 +502,35 @@ static void establish_assist(sim_in_t *in, uint8_t level)
 	for (uint32_t k = 0; k < SEC(3.0); k++) tick(in);
 }
 
+/* TASK-EVD-TQ-06-G1 (review F-11): the hard battery-overcurrent trip is an exact-zero owner like
+ * the comms inhibit - same update, FORCE_ZERO, ceiling 0, ahead of Walk and calibration - and its
+ * release at standstill hands back no step of demand. */
+static void t5b_battery_trip(void)
+{
+	puts("T5b hard battery-overcurrent trip owner");
+	sim_in_t in;
+	establish_assist(&in, 3U);
+	CHECK(S.iq > 0 && mb->target > 0, "T5b: positive assist before the trip");
+	in.battery_trip = true;
+	tick(&in);
+	CHECK(mb->target == 0 && mb->mode == (uint32_t)FIS_MODE_FORCE_ZERO && mb->iq_ceiling == 0 &&
+	      S.iq == 0 && ride_control_final_iq_requested() == 0,
+		"T5b: trip -> target 0, FORCE_ZERO, ceiling 0 and MS.i_q_setpoint 0 in the same update");
+	walk_iq_stub = 120U; in.walk = true;
+	cal_iq_stub = 100U; in.calibration = true; cal_calls = 0U;
+	bool owners_zero = true;
+	for (uint32_t k = 0; k < SEC(0.5); k++) {
+		tick(&in);
+		if (S.iq != 0 || mb->target != 0 || mb->iq_ceiling != 0) owners_zero = false;
+	}
+	CHECK(owners_zero && cal_calls == 0U, "T5b: neither Walk nor position calibration can publish Iq while the trip is latched");
+	in.walk = false; walk_iq_stub = 0U; in.calibration = false; cal_iq_stub = 0U;
+	in.battery_trip = false;
+	bool no_step = true;
+	for (uint32_t k = 0; k < SEC(1.0); k++) { tick(&in); if (S.iq != 0) no_step = false; }
+	CHECK(no_step, "T5b: re-arming mid-pedal releases no step of demand");
+}
+
 static void t5_hard_inhibits(void)
 {
 	puts("T5 hard inhibits: comm_inhibit / direction / brake / torque fault");
@@ -721,6 +752,7 @@ int main(void)
 	t3_loaded_matrix();
 	t4_veto_and_dip();
 	t5_hard_inhibits();
+	t5b_battery_trip();
 	t6_release_and_off();
 	t7_contract_10b();
 	if (host_test_failures == 0) {

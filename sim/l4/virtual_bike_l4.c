@@ -427,6 +427,7 @@ static void l4_tick(l4_t *s,FILE *csv)
     in.battery_voltage_mv=(uint32_t)lroundf(s->batt.terminal_v*1000.0f);
     in.iq_scale=PH_CURRENT_MAX; in.ride_core_iq_limit=iq_limit; in.phase_current_max=iq_limit;
     in.battery_current_mA=batt_ma; in.battery_current_max=DEFAULT_BATTERY_CURRENT_MAX_MA;
+    in.battery_current_limiter_centiamp=batt_ma/10; /* TQ-06-G1: feeds the G53 PI #1 limiter (review F-05) */
     in.u_abs=s->ms.u_abs; in.cal_i=CAL_I; in.current_iq=s->ms.i_q; in.current_id=s->ms.i_d;
     in.voltage_raw=voltage_raw; in.voltage_min_raw=VOLTAGE_MIN;
     in.controller_temperature_c=(int16_t)lroundf(s->controller_temp_c);

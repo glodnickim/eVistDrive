@@ -280,6 +280,35 @@ int main(void)
 		      "B1-10b. ...and the sample is still used - rank 0 is written first, so it is valid");
 	}
 
+	/* --- B1-13: TQ-06-G1 limiter tap and raw delta (ADR-013 D2) -------------------------------- */
+	{
+		int i, n63 = -1;
+		armed_reset();
+		for (i = 0; i < 400; i++) {
+			battery_current_sample((uint16_t)(ZERO + 300), 1U);
+			if (n63 < 0 && battery_current_limiter_adc() >= 189) n63 = i + 1;
+		}
+		CHECK(battery_current_limiter_adc() == 300, "B1-13a. limiter tap has DC gain 1");
+		CHECK(n63 >= 7 && n63 <= 9, "B1-13b. limiter tap reaches 63 % in about 8 samples (2 ms at 4 kHz)");
+		{
+			int32_t ref_acc = 0, ref = 0;
+			int k;
+			for (k = 0; k < 400; k++) { ref_acc -= ref_acc >> 6; ref_acc += 300; ref = ref_acc >> 6; }
+			CHECK(battery_current_filtered_adc() == ref,
+			      "B1-13c. the 1/64 filter equals the unchanged production law sample for sample");
+		}
+		battery_current_sample((uint16_t)(ZERO - 40), 1U);
+		CHECK(battery_current_last_delta_adc() == -40, "B1-13d. raw delta = raw - zero, unfiltered, signed");
+		for (i = 0; i < 400; i++) battery_current_sample((uint16_t)(ZERO - 1), 1U);
+		CHECK(battery_current_limiter_adc() == -1, "B1-13e. limiter tap floor bias stays sub-count");
+		battery_current_init();
+		for (i = 0; i < 50; i++) battery_current_sample((uint16_t)(ZERO + 500), 1U);
+		CHECK(battery_current_limiter_adc() == 0 && battery_current_last_delta_adc() == 0,
+		      "B1-13f. unarmed: limiter tap and raw delta stay 0");
+		battery_current_set_offset(ZERO);
+		CHECK(battery_current_limiter_adc() == 0, "B1-13g. arming starts the limiter tap from 0");
+	}
+
 	/* --- B1-11 / B1-12: nothing else moved ---------------------------------------------------- */
 	{
 		char *m = read_whole_file(STRINGIZE(MAIN_C_PATH));

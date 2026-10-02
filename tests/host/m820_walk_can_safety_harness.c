@@ -24,6 +24,7 @@
  *       with exact zero, no EEPROM write, RAM result restored and no resume. Positive control: a
  *       converged phase 2 does write, so the harness can see a write.
  */
+#include "battery_trip.h"   /* TQ-06-G1: extracted main.c blocks call battery_trip_latched() */
 #include "check.h"
 
 #include <stdbool.h>

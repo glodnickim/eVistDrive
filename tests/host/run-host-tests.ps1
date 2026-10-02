@@ -401,6 +401,17 @@ $suites = @(
        Modules = @(Join-Path $root 'src\battery_current.c')
        IncludeDirs = @(Join-Path $PSScriptRoot 'common')
        Defines = @("-DMAIN_C_PATH=$mainCPathForward") },
+    @{ Name = 'TQ-06-G1 hard battery-overcurrent trip (real module + main.c/ride_control.c wiring guards)'
+       Harness = Join-Path $PSScriptRoot 'battery_trip_host.c'
+       Modules = @(Join-Path $root 'src\battery_trip.c')
+       IncludeDirs = @(Join-Path $PSScriptRoot 'common')
+       Defines = @("-DMAIN_C_PATH=$mainCPathForward", "-DRIDE_CONTROL_C_PATH=$rideControlCPathForward") },
+    @{ Name = 'TQ-06-G1 closed loop: real limiter + battery-current tap + hard trip vs assumed plant (36 cases)'
+       Harness = Join-Path $PSScriptRoot 'g53_g1_closed_loop_host.c'
+       Modules = @((Join-Path $root 'src\g53_g1_limiter.c'),
+                   (Join-Path $root 'src\battery_current.c'),
+                   (Join-Path $root 'src\battery_trip.c'))
+       IncludeDirs = @(Join-Path $PSScriptRoot 'common') },
     @{ Name = 'FW-128B0 battery current scale (model + main.c/config.h source guard)'
        Harness = Join-Path $PSScriptRoot 'fw128b0_battery_scale_host.c'
        Modules = @()
@@ -440,6 +451,7 @@ $suites = @(
                     (Join-Path $root 'src\g53_port_boundaries.c'),
                     (Join-Path $root 'src\g53_port_pas.c'),
                     (Join-Path $root 'src\g53_port_chain.c'),
+                    (Join-Path $root 'src\g53_g1_limiter.c'),
                     (Join-Path $root 'src\ap2_limits.c'),
                     (Join-Path $root 'src\assist_pipeline.c'),
                     (Join-Path $root 'src\assist_modes.c'),
@@ -475,12 +487,16 @@ $suites = @(
     @{ Name = 'TQ-06 G53 chain (real module)'
        Harness = Join-Path $PSScriptRoot 'g53_port_chain_host.c'
        Modules = @((Join-Path $root 'src\g53_port_chain.c'), (Join-Path $root 'src\g53_port_pas.c')) },
+    @{ Name = 'TQ-06-G1 G53 PI #1 battery-current limiter: bit-exact vs G5300 transcription (300 000 vectors) + behaviour'
+       Harness = Join-Path $PSScriptRoot 'g53_g1_limiter_host.c'
+       Modules = @((Join-Path $root 'src\g53_g1_limiter.c')) },
     @{ Name = 'TQ-06 G53 integration (real modules)'
        Harness = Join-Path $PSScriptRoot 'g53_port_integration_host.c'
        Modules = @((Join-Path $root 'src\g53_port.c'),
                    (Join-Path $root 'src\g53_port_boundaries.c'),
                    (Join-Path $root 'src\g53_port_pas.c'),
                    (Join-Path $root 'src\g53_port_chain.c'),
+                   (Join-Path $root 'src\g53_g1_limiter.c'),
                    (Join-Path $root 'src\pas_quadrature.c')) },
     @{ Name = 'FW-145 continuous Level-4 ride telemetry (real module pacing, priority and wire schema)'
        Harness = Join-Path $PSScriptRoot 'ride_telemetry_host.c'
@@ -501,6 +517,7 @@ $suites = @(
                    (Join-Path $root 'src\g53_port_boundaries.c'),
                    (Join-Path $root 'src\g53_port_pas.c'),
                    (Join-Path $root 'src\g53_port_chain.c'),
+                   (Join-Path $root 'src\g53_g1_limiter.c'),
                    (Join-Path $root 'src\ap2_limits.c'),
                    (Join-Path $root 'src\assist_pipeline.c'),
                    (Join-Path $root 'src\fast_iq_slew.c'),

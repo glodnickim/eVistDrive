@@ -238,6 +238,7 @@ int main(int argc,char **argv)
         ci.battery_voltage_mv=(uint32_t)llround(vb*1000.0); ci.iq_scale=PH_CURRENT_MAX;
         ci.ride_core_iq_limit=PH_CURRENT_MAX; ci.phase_current_max=PH_CURRENT_MAX;
         ci.battery_current_mA=(int32_t)llround(ia*1000.0); ci.battery_current_max=BATTERYCURRENT_MAX;
+        ci.battery_current_limiter_centiamp=(int32_t)llround(ia*100.0); /* TQ-06-G1: G53 PI #1 feedback (review F-05) */
         ci.u_abs=cfg_u_abs; ci.cal_i=CAL_I; ci.current_iq=iq_actual; ci.current_id=0;
         ci.voltage_raw=(uint16_t)llround(vb*1000.0/(double)CAL_BAT_V); ci.voltage_min_raw=VOLTAGE_MIN;
         ci.controller_temperature_c=25; ci.cadence_filtered_x8=(uint16_t)cadence*8U; ci.speed_limit_x100=SPEEDLIMIT;

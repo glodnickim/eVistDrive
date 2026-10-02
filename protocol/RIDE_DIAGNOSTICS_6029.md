@@ -180,3 +180,22 @@ Byte 52 is live: bits0..3 `fis_mode_t` (0..6); bit4 is set for
 On v8, the replaced slots do not describe AUTO factor, a SPORT profile, attack/release times,
 rider aggression, terrain estimator, or AP2 PAS lifecycle. A downstream decoder must recognize
 version 8 explicitly and continue to reject unknown versions.
+
+## v9 — G53 battery-current limiter and hard trip (TASK-EVD-TQ-06-G1, ADR-013)
+
+v9 keeps bytes 0..68 of v8 with the same type and packing. Two bits change their meaning,
+and three fields are appended. The CRC moves to the end. The envelope grows from 71 to 77 bytes.
+A decoder must recognize version 9 explicitly and keep rejecting unknown versions.
+
+| Offset | v8 disposition | v9 meaning | Type / unit | Source and packing |
+|---|---|---|---|---|
+| 2 | replace | version = 9 | u8 | exact constant |
+| 34 | extend | battery-current facts | u8 bits | bit0: battery-current limiter active, meaning the G53 PI #1 `g1 < 4096` on the PEDAL path or the ap2 battery stage on Walk (`BC_limit_flag`). bit1: hard battery-overcurrent trip latched. bits2..7 zero |
+| 44 | extend | limiter facts | u8 bits | as v8; bit1 now also set while the G53 PI #1 limits (`g1 < 4096`) |
+| 69..70 | new | `g1` | u16 Q12 | `g53_port_output_t.trace.g1`, clamp 0..65535; 4096 = no limiting |
+| 71..72 | new | limiter feedback | i16 0.01 A | `g53_port_g1_state()->pi.fb`, the exact u16 the limiter read (two's complement) |
+| 73..74 | new | hard-trip count | u16 | `battery_trip_count()` since power-on, saturating |
+| 75..76 | move | CRC-16/CCITT-FALSE | u16 | over bytes 0..74, little-endian |
+
+`g1` is the multiplier the original G5300 applies to the whole BDE8 command (N4 §2.6). The feedback
+is the fast-tap battery current (1/8 pole at 4 kHz). Neither field feeds control.

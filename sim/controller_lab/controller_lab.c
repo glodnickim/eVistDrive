@@ -768,6 +768,7 @@ static void lab_tick(lab_t *s, const lab_cfg_t *cfg, bool emit)
         in.ride_core_iq_limit = iq_limit;
         in.phase_current_max = iq_limit;
         in.battery_current_mA = 0;
+        in.battery_current_limiter_centiamp = 0; /* no battery model: G53 PI #1 never acts (TQ-06-G1 review F-05) */
         in.battery_current_max = DEFAULT_BATTERY_CURRENT_MAX_MA;
         in.u_abs = 0;
         in.cal_i = CAL_I;

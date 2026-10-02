@@ -12,6 +12,13 @@ static int32_t          offset;       /* the startup zero, in ADC counts        
 static volatile int32_t published;    /* filtered ADC delta, signed               */
 static volatile uint8_t armed;
 
+/* TASK-EVD-TQ-06-G1 (ADR-013 D2): a second, faster tap of the SAME samples for the G53 PI #1
+ * limiter, and the raw delta for the hard overcurrent trip. The 1/64 law above is untouched:
+ * SOC, telemetry and every existing consumer keep reading `published`. */
+static int32_t          fast_acc;     /* private IIR accumulator, fixed point 8x  */
+static volatile int32_t published_fast;
+static volatile int32_t last_delta;   /* raw - offset of the latest sample        */
+
 static battery_current_stats_t stats;
 
 void battery_current_init(void)
@@ -19,6 +26,9 @@ void battery_current_init(void)
 	acc = 0;
 	offset = 0;
 	published = 0;
+	fast_acc = 0;
+	published_fast = 0;
+	last_delta = 0;
 	armed = 0U;
 	stats.sample_count = 0U;
 	stats.update_count = 0U;
@@ -32,6 +42,9 @@ void battery_current_set_offset(int32_t new_offset)
 	 * sampler can never observe an armed module holding state from the wrong offset domain. */
 	acc = 0;
 	published = 0;
+	fast_acc = 0;
+	published_fast = 0;
+	last_delta = 0;
 	offset = new_offset;
 	armed = 1U;
 }
@@ -59,12 +72,28 @@ void battery_current_sample(uint16_t raw, uint8_t scan_complete)
 	acc -= acc >> 6;
 	acc += (int32_t)raw - offset;
 	published = acc >> 6;
+	/* Same law with a 1/8 pole: about 7.5 sample periods = 1.9 ms at 4 kHz, the G5300 limiter's
+	 * own feedback bandwidth (1.6 ms). DC gain exactly 1, same sub-count floor bias. */
+	fast_acc -= fast_acc >> 3;
+	fast_acc += (int32_t)raw - offset;
+	published_fast = fast_acc >> 3;
+	last_delta = (int32_t)raw - offset;
 	stats.update_count++;
 }
 
 int32_t battery_current_filtered_adc(void)
 {
 	return published;
+}
+
+int32_t battery_current_limiter_adc(void)
+{
+	return published_fast;
+}
+
+int32_t battery_current_last_delta_adc(void)
+{
+	return last_delta;
 }
 
 const battery_current_stats_t *battery_current_get_stats(void)

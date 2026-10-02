@@ -180,6 +180,16 @@ bit 6 a non-zero request was taken all the way to zero by a limit
 bit 7 the start segment is in force
 ```
 
+**Battery-current bits since TASK-EVD-TQ-06-G1 / ADR-013** (`flags16` bit 0, `limit_flags` bit 1,
+the FW-028 diag `0x00010204` `flags2` bit 6, and DG byte 34 bit 0 / byte 44 bit 1). The wire layout
+is unchanged. The bit means "a battery-current limiter is acting":
+- on the PEDAL path: the ported G53 PI #1, `g1 < 4096`. G53 also trims by up to 6% when the current is
+  within 5 A below the limit (P offset 500). Expect the bit to be set during the ~0.2 s soft start after
+  power-on, and permanently when the configured limit is below the 5 A knee.
+- on Walk: the M820 ap2 battery stage, as before.
+
+The hard battery-overcurrent trip is reported separately (DG v9 byte 34 bit 1, bytes 73..74).
+
 Byte 2 (`permission_bits`) and byte 3 (`debug_flags`) keep their positions but, under schema 2,
 carry the assist chain's own answers: byte 2 is the lifecycle and profile
 (low nibble `ap2_pas_state_t`, high nibble `ap2_profile_id_t`) and byte 3 is the

@@ -26,7 +26,7 @@ CONFIG_A_ORIGIN = 0x0803E800
 RAM_ORIGIN = 0x20000000
 G53_OPTIMIZED_SOURCES = {
     "src/g53_port.c", "src/g53_port_chain.c",
-    "src/g53_port_boundaries.c", "src/g53_port_pas.c",
+    "src/g53_port_boundaries.c", "src/g53_port_pas.c", "src/g53_g1_limiter.c",
 }
 VERSION_STATE_ROOT = ROOT.parent / ".ebics-version-state"
 

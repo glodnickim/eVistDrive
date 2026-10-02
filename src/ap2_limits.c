@@ -137,16 +137,22 @@ void ap2_limits_apply(const ap2_limits_input_t *in, ap2_limits_output_t *out)
 		ceiling = cap;
 	}
 
-	/* ---- 2. BATTERY CURRENT ---------------------------------------------------------- */
-	battery_iq_cap_update(in->battery_current_ma, in->battery_current_max, phase_max,
-		iq, in->u_abs, in->cal_i, &battery_cap_state);
-	out->battery_cap = battery_cap_state.iq_battery_cap;
-	if (battery_cap_state.iq_battery_cap < iq) {
-		iq = battery_cap_state.iq_battery_cap;
-		out->battery_limited = true;
-	}
-	if (battery_cap_state.iq_battery_cap < ceiling) {
-		ceiling = battery_cap_state.iq_battery_cap;
+	/* ---- 2. BATTERY CURRENT ----------------------------------------------------------
+	 * Skipped when the caller's battery current is already limited upstream (ADR-013: G53
+	 * PI #1 on the PEDAL path). The latch is then neither evaluated nor changed. */
+	if (in->battery_stage_owned_upstream) {
+		out->battery_cap = phase_max;
+	} else {
+		battery_iq_cap_update(in->battery_current_ma, in->battery_current_max, phase_max,
+			iq, in->u_abs, in->cal_i, &battery_cap_state);
+		out->battery_cap = battery_cap_state.iq_battery_cap;
+		if (battery_cap_state.iq_battery_cap < iq) {
+			iq = battery_cap_state.iq_battery_cap;
+			out->battery_limited = true;
+		}
+		if (battery_cap_state.iq_battery_cap < ceiling) {
+			ceiling = battery_cap_state.iq_battery_cap;
+		}
 	}
 
 	/* ---- 3. PHASE / Iq CEILING -------------------------------------------------------

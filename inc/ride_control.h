@@ -41,6 +41,8 @@ typedef struct {
 	 */
 	int32_t battery_current_mA;
 	int32_t battery_current_max;
+	/* TASK-EVD-TQ-06-G1: battery current through the fast limiter tap, 0.01 A, signed. */
+	int32_t battery_current_limiter_centiamp;
 	int32_t u_abs;
 	int32_t cal_i;
 	int32_t current_iq;
@@ -63,6 +65,9 @@ typedef struct {
 	 * restored), so the service owner cannot resume after the inhibit clears.
 	 */
 	bool comm_inhibit;
+	/* TASK-EVD-TQ-06-G1 (ADR-013 D1): hard battery-overcurrent trip latched - exact zero, like
+	 * the comms inhibit, until the trip re-arms at standstill. */
+	bool battery_trip_latched;
 	/*
 	 * The NON-DIRECTION hard-cut reasons only - brake / overtemp cutoff / torque-sensor fault
 	 * / torque calibration. A reverse step and an illegal PAS transition are not folded in

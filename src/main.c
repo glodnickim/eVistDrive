@@ -65,6 +65,7 @@ OF SUCH DAMAGE.
 #include "pas_cadence.h"         /* PRE-FW128: cadence period, epoch and validity      */
 #include "cadence_filter.h"      /* FW-140: stable control cadence, raw kept for diag */
 #include "battery_current.h"     /* FW-128B1: battery-current filter on the sample clock */
+#include "battery_trip.h"        /* TASK-EVD-TQ-06-G1: hard battery-overcurrent trip (ADR-013 D1) */
 #include "soc_core.h"            /* FW-144: production SOC math shared with Level-4 SIL */
 #include "diag_budget.h"      /* FW-126.5: the RAM budget this probe is asserted against */
 #if CAN_DIAGNOSTICS_ENABLE
@@ -212,6 +213,7 @@ void soc_state_save(void);
 void power_off_controller(void);  //self power-off: save SOC, stop PWM, drop DC/DC + display (button/auto-off/comms watchdog)
 uint32_t soc_crc32(const uint8_t* data, uint32_t len);
 float compute_limp_factor(float soc);
+void battery_trip_update_threshold(void);
 float default_wh_km_for_level(uint8_t lvl);
 void Speed_processing(void);
 int16_t T_NTC(uint16_t ADC);
@@ -530,6 +532,7 @@ bool hall_calibration_request(void)
 {
 	if(!hall_calibration_standstill_confirmed()) return false;
 	if(comm_inhibit) return false;   //no service drive while the comms inhibit owns the motor
+	if(battery_trip_latched()) return false; //TASK-EVD-TQ-06-G1: nor while the hard trip is latched
 	hall_calibration_pending = 1U;
 	return true;
 }
@@ -1110,6 +1113,7 @@ int main(void)
      * that state never exists, rather than existing and having to be corrected.
      */
     battery_current_init();
+    battery_trip_init();
     timer1_config(); //trigger regular ADC for testing
     timer2_config(); //for hall sensor handling
 
@@ -1287,6 +1291,7 @@ int main(void)
          * after this point (soc_init() included).
          */
         battery_current_set_offset(bat_current_offset);
+        battery_trip_update_threshold();
     }
 
     /*
@@ -1620,6 +1625,11 @@ int main(void)
 				//    the motor whether or not the display ever identified itself as source 3.
 				comm_watchdog_step();   //3 s -> comm_inhibit, never a level change
 
+				//--- TASK-EVD-TQ-06-G1: hard-trip threshold follows the configured limit (no setting
+				//    of its own); the latch re-arms only after ~100 ms of standstill.
+				battery_trip_update_threshold();
+				battery_trip_service(MS.Speedx100==0 && MS.cadence==0, 40U);
+
 				//    POWER only needs a live BUS. During a DISPLAY firmware update the updater
 				//    talks to node 3 for minutes, so nothing arrives for us - but cutting power
 				//    there cuts the display's own supply mid-flash. The hold covers the quiet
@@ -1644,7 +1654,10 @@ int main(void)
              * torque. Permission to produce torque is GATE B further down, and that one does
              * require a valid calibration.
              */
-            if(ride_control_final_iq_requested() > 0){
+            /* TASK-EVD-TQ-06-G1 (review F-01): the trip can latch in the TIMER1 ISR AFTER this
+             * iteration's ride_control_update() already published a positive request; that request
+             * stays stale until the next control tick. The latch itself therefore closes Gate A. */
+            if(ride_control_final_iq_requested() > 0 && !battery_trip_latched()){
                 if(!ui_8_PWM_ON_Flag){
 				pwm_cutoff_active=0;        //clear retained legacy diagnostic state
 			get_standstill_position();
@@ -1761,11 +1774,19 @@ int main(void)
 			if(bridge_lifecycle == BRIDGE_LIFECYCLE_ARMED_ZERO && MS.i_q_setpoint > 0){
 				bridge_lifecycle = BRIDGE_LIFECYCLE_RUN;
 			}
+            /* TASK-EVD-TQ-06-G1 (ADR-013 D1): a latched hard battery-overcurrent trip retires the
+             * bridge through THIS failsafe - the one allowed bridge-off reset site - instead of a
+             * second copy. The ISR has already cleared MOE. Gate A cannot reopen while the trip
+             * is latched: its own condition checks the latch (a demand published before the latch
+             * may be stale for one control tick), and ride_control publishes zero from the next
+             * tick until the trip re-arms at standstill. */
+            const uint8_t battery_trip_retire = battery_trip_latched() &&
+                (ui_8_PWM_ON_Flag || bridge_lifecycle != BRIDGE_LIFECYCLE_IDLE);
             // STEP 2A: failsafe — dwell timeout forces bridge off
             // Count main-loop iterations while in MOE_ON; if dwell counter stuck, kill bridge.
             {
             	static uint16_t dwell_timeout_counter = 0;
-            	if(bridge_lifecycle == BRIDGE_LIFECYCLE_MOE_ON || bridge_lifecycle == BRIDGE_LIFECYCLE_NEUTRAL_DWELL){
+                if(battery_trip_retire || bridge_lifecycle == BRIDGE_LIFECYCLE_MOE_ON || bridge_lifecycle == BRIDGE_LIFECYCLE_NEUTRAL_DWELL){
             		/* FW-126.7: one failsafe, two budgets. A calibrating start legitimately needs a
             		 * longer dwell than a normal one; both are bounded, and the calibration has its
             		 * own hard cap in ISR cycles on top of this. The lifecycle still owns the
@@ -1774,7 +1795,7 @@ int main(void)
             			? (uint16_t)START_CAL_DWELL_TIMEOUT_CYCLES
             			: (uint16_t)START_DWELL_TIMEOUT_CYCLES;
             		dwell_timeout_counter++;
-            		if(dwell_timeout_counter >= dwell_budget){
+                    if(battery_trip_retire || dwell_timeout_counter >= dwell_budget){
             			timer_primary_output_config(TIMER0,DISABLE);
             			ui_8_PWM_ON_Flag=0;
 					foc_current_feedback_invalidate();
@@ -2380,6 +2401,15 @@ void TIMER1_IRQHandler(void) // regular ADC processing and common slow timing ta
              */
             battery_current_sample((uint16_t)adc_value[0],
                                    (uint8_t)(((DMA_CHCNT(DMA0, DMA_CH0) & DMA_CHANNEL_CNT_MASK) == 9U) ? 1U : 0U));
+            /*
+             * TASK-EVD-TQ-06-G1 (ADR-013 D1): the hard battery-overcurrent trip sees the SAME
+             * sample, unfiltered. On the latching sample the bridge outputs go off here, at once;
+             * the main loop then retires the bridge state and ride_control forces zero demand
+             * until the bike has stood still (battery_trip.h).
+             */
+            if (battery_trip_sample(battery_current_last_delta_adc())) {
+                timer_primary_output_config(TIMER0, DISABLE);
+            }
 #if CAN_DIAGNOSTICS_ENABLE
             /*
              * FW-106: the raw PAS line recorder. Still sampled in the ISR, now from the SAME
@@ -3341,6 +3371,7 @@ void reg_ADC_processing(void)
         /* Comms lost during calibration phase 2: abort it here, before the owner is chosen.
          * ride_control_update() already gives the inhibit priority over the service owner. */
         if(comm_inhibit && MS.hall_angle_detect_flag > 1U) hall_calibration_abort();
+        if(battery_trip_latched() && MS.hall_angle_detect_flag > 1U) hall_calibration_abort(); //TASK-EVD-TQ-06-G1
         bool non_direction_safety_cut = MS.brake_active_flag || overtemp_stage >= 2 ||
             torque_fault || torque_input_calibration_active();
         ride_control_input_t ride_input = {
@@ -3356,6 +3387,9 @@ void reg_ADC_processing(void)
             .phase_current_max = MP.phase_current_max,
             .battery_current_mA = MS.Battery_Current,   //QS-3C: upstream battery Iq cap
             .battery_current_max = MP.battery_current_max,
+            /* TASK-EVD-TQ-06-G1: the 1/8 limiter tap, same CAL_BAT_I scale, in 0.01 A. */
+            .battery_current_limiter_centiamp =
+                (int32_t)((float)battery_current_limiter_adc()*CAL_BAT_I/10.0f),
             .u_abs = MS.u_abs,
             .cal_i = CAL_I,
             .current_iq = MS.i_q_setpoint,
@@ -3370,6 +3404,7 @@ void reg_ADC_processing(void)
             .walk_active = MS.pushassist_flag != RESET,
 			.position_calibration_active = MS.hall_angle_detect_flag > 1,
             .comm_inhibit = comm_inhibit != 0U,
+            .battery_trip_latched = battery_trip_latched(),
             .safety_cut_non_direction = non_direction_safety_cut,
             //QZERO: the SERVICE subset of the line above, for the zero-policy only. It changes no
             //cut decision - a load calibration still hard-cuts through safety_cut_non_direction.
@@ -3945,6 +3980,7 @@ void autodetect(void) {
 	 */
 	if(!hall_calibration_standstill_confirmed()) return;
 	if(comm_inhibit) return;         //the comms inhibit owns the motor: no service drive
+	if(battery_trip_latched()) return; //TASK-EVD-TQ-06-G1: nor does a latched hard trip
 	hall_calibration_snapshot();     //an aborted run must leave the stored result untouched
 	// Position calibration owns the bridge directly. Clear retained diagnostic
 	// fields before phase 1; normal ride has no soft-cutoff transaction.
@@ -3972,6 +4008,7 @@ void autodetect(void) {
 		if((i%8)==7){ //every 40 ms, the slow-loop period: the comms watchdog keeps running
 			comm_watchdog_step();
 			if(comm_inhibit) break; //abort: the bridge is shut down below, nothing is stored
+			if(battery_trip_latched()) break; //TASK-EVD-TQ-06-G1: same abort on a hard trip
 		}
 		if((i%50)==0){ //~every 250 ms: keep HMI link alive (heartbeat+telemetry) -> no E30 (comm timeout)
 			sendCAN_status_broadcast(&MS);
@@ -5618,6 +5655,13 @@ uint32_t soc_crc32(const uint8_t* data, uint32_t len){
 		}
 	}
 	return ~crc;
+}
+
+/* TASK-EVD-TQ-06-G1: trip threshold = configured battery limit + 15 A, in ADC counts above the
+ * zero, with the same CAL_BAT_I scale every battery-current consumer uses. */
+void battery_trip_update_threshold(void){
+	battery_trip_set_threshold_counts((int32_t)(((float)MP.battery_current_max +
+		(float)BATTERY_TRIP_MARGIN_MA) / CAL_BAT_I));
 }
 
 float compute_limp_factor(float soc){

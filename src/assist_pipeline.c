@@ -38,7 +38,9 @@ void assist_pipeline_init(void) { assist_pipeline_reset(); ap2_limits_reset(); }
 const assist_pipeline_telemetry_t *assist_pipeline_telemetry(void) { return &ctx.tlm; }
 const g53_port_output_t *assist_pipeline_g53(void) { return &ctx.g53; }
 ap2_pas_state_t assist_pipeline_pas_state(void) { return (ap2_pas_state_t)ctx.tlm.pas_state; }
-bool assist_pipeline_battery_limited(void) { return ap2_limits_battery_active(); }
+/* ADR-013: on the PEDAL path the battery current is limited by G53 PI #1 (g1 < 1.0), the Walk
+ * path still by the ap2 battery stage; either one is "battery limited". */
+bool assist_pipeline_battery_limited(void) { return ap2_limits_battery_active() || ctx.tlm.battery_limited; }
 uint8_t assist_pipeline_state_byte(void) { return ctx.tlm.pas_state & 0x0fu; }
 uint8_t assist_pipeline_reason_bits(void)
 {
@@ -109,6 +111,8 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
         .pas_ab=in->pas_ab, .assist_level=assist_off ? 0 : in->assist_level_index,
         .speed_x100=in->speed_x100, .elapsed_ticks=used_ticks,
         .phase_current_max=in->phase_current_max,
+        .battery_feedback_centiamp=in->battery_current_limiter_centiamp,
+        .battery_limit_centiamp=in->battery_current_max/10,
         .torque_sensor_valid=in->torque_sensor_valid,
         .direction_inhibit=in->direction_inhibit, .real_stop=in->real_stop,
         .safety_cut=in->safety_cut
@@ -126,6 +130,7 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
     lim_in.cal_i=in->cal_i;
     lim_in.battery_current_ma=in->battery_current_ma;
     lim_in.battery_current_max=in->battery_current_max;
+    lim_in.battery_stage_owned_upstream=true; /* G53 PI #1 owns it (ADR-013) */
     lim_in.voltage_raw=in->voltage_raw;
     lim_in.voltage_min_raw=in->voltage_min_raw;
     lim_in.controller_temperature_c=in->controller_temperature_c;
@@ -176,7 +181,8 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
     ctx.tlm.final_iq_request=cmd->final_iq_request;
     ctx.tlm.iq_ceiling=ctx.ceiling;
     ctx.tlm.power_limited=lim.power_limited;
-    ctx.tlm.battery_limited=lim.battery_limited;
+    ctx.tlm.battery_limited=lim.battery_limited ||
+        (ctx.g53.trace.g1>=0 && ctx.g53.trace.g1<(int32_t)G53_G1_Q12_ONE); /* G53 PI #1 acting */
     ctx.tlm.phase_limited=lim.phase_limited;
     ctx.tlm.voltage_limited=lim.voltage_limited;
     ctx.tlm.thermal_limited=lim.thermal_limited;

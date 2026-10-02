@@ -24,7 +24,7 @@ CC = os.environ.get('CC', 'gcc')
 EXE_SUFFIX = '.exe' if os.name == 'nt' else ''
 
 MODULES = ['torque_input', 'rider_input', 'assist_modes', 'tuning_config', 'ride_control',
-           'g53_port', 'g53_port_boundaries', 'g53_port_pas', 'g53_port_chain', 'ap2_limits',
+           'g53_port', 'g53_port_boundaries', 'g53_port_pas', 'g53_port_chain', 'g53_g1_limiter', 'battery_trip', 'ap2_limits',
            'assist_pipeline', 'fast_iq_slew', 'battery_iq_cap', 'iq_chain', 'motor_core',
            'walk_assist_motor', 'walk_speed_controller', 'pas_sampler', 'pas_quadrature',
            'pas_direction', 'pas_liveness']

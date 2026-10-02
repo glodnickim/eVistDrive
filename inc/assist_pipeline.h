@@ -85,6 +85,8 @@ typedef struct {
 	uint32_t battery_voltage_mv;
 	int32_t battery_current_ma;
 	int32_t battery_current_max;
+	/* TASK-EVD-TQ-06-G1: fast-tap battery current, 0.01 A, feedback of the G53 PI #1 limiter. */
+	int32_t battery_current_limiter_centiamp;
 	int32_t u_abs;
 	int32_t cal_i;
 	int32_t level_iq_limit;

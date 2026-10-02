@@ -114,7 +114,9 @@ int main(void)
 
 	/* --- S1: entering the neutral bridge state does NOT depend on calibration ------------- */
 	{
-		const char *gate = strstr(m, "if(ride_control_final_iq_requested() > 0){");
+		/* TASK-EVD-TQ-06-G1: the hard battery trip also closes the gate (review F-01); still no
+		 * calibration term. */
+		const char *gate = strstr(m, "if(ride_control_final_iq_requested() > 0 && !battery_trip_latched()){");
 		CHECK(gate != NULL,
 		      "S1a. the bridge-entry gate is demand only - no calibration term");
 		CHECK(strstr(m, "if(ride_control_final_iq_requested() > 0 && current_cal_foc_allowed") == NULL,

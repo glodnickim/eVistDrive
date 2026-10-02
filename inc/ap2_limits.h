@@ -88,6 +88,13 @@ typedef struct {
 	/* BATTERY */
 	int32_t battery_current_ma;
 	int32_t battery_current_max;
+	/*
+	 * ADR-013 / TASK-EVD-TQ-06-G1: the battery current is limited UPSTREAM, by the ported G53
+	 * PI #1 (g1 inside the G53 chain), so this stage must not act a second time. Set true only
+	 * by the PEDAL path (assist_pipeline.c). false - the zero value - keeps the stage, which is
+	 * what Walk and every memset-initialised caller get.
+	 */
+	bool battery_stage_owned_upstream;
 
 	/* PHASE / Iq */
 	/*

@@ -712,6 +712,7 @@ static void sim_ctrl_tick(sim_t *s, FILE *csv)
     in.ride_core_iq_limit = s->phase_current_max;
     in.phase_current_max = s->phase_current_max;
     in.battery_current_mA = 0;
+    in.battery_current_limiter_centiamp = 0; /* no battery model here: the G53 PI #1 limiter never acts (review F-05) */
     in.battery_current_max = 15000;
     in.u_abs =
 #ifdef EVD_SIL_REAL_FOC
