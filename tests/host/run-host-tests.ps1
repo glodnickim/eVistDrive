@@ -466,6 +466,25 @@ $suites = @(
                     (Join-Path $root 'src\fast_iq_slew.c'))
        IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common'))
        Defines = @('-Wno-type-limits') },
+    @{ Name = 'TASK-EVD-TQ-06-G2 I1 reverse/invalid PAS step: moving -> bounded G53-following ramp, standstill -> exact zero'
+       # Production pedal path end to end (G53 chain, limits, 16 kHz owner). Pins owner decision
+       # OWNER-DEC-2026-10-05-TQ06G2-A: while moving a direction inhibit may only decay (never rise,
+       # exactly zero within 200 ms); at standstill and for every other cut it stays a same-tick zero.
+       Harness = Join-Path $PSScriptRoot 'reverse_ramp_host.c'
+       Modules = @((Join-Path $root 'src\g53_port.c'),
+                   (Join-Path $root 'src\g53_port_boundaries.c'),
+                   (Join-Path $root 'src\g53_port_pas.c'),
+                   (Join-Path $root 'src\g53_port_chain.c'),
+                   (Join-Path $root 'src\g53_g1_limiter.c'),
+                   (Join-Path $root 'src\ap2_limits.c'),
+                   (Join-Path $root 'src\assist_pipeline.c'),
+                   (Join-Path $root 'src\assist_modes.c'),
+                   (Join-Path $root 'src\torque_input.c'),
+                   (Join-Path $root 'src\tuning_config.c'),
+                   (Join-Path $root 'src\battery_iq_cap.c'),
+                   (Join-Path $root 'src\fast_iq_slew.c'))
+       IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common'))
+       Defines = @('-Wno-type-limits') },
     @{ Name = 'stored assist bank contract (round trip, restart, and the meaning of zero)'
        # The path the app writes through and the controller restores through at every boot. It
        # had no test at all, which is how the firmware came to REJECT ITS OWN DEFAULT BANK:
