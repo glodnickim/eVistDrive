@@ -5,7 +5,10 @@ A small real ARM ELF fixture is generated with the SAME vector slots and NVIC pr
 the gate fingerprints for M820, so it passes every check except the defect injected by a
 test. A positive control must PASS first; every negative test must exit non-zero AND report
 its specific rejection. Test G rebuilds the real firmware in the known-bad configuration
-(G53 at -O0, 2 KiB stack) and requires the build and the gate to reject it.
+(G53 at -O0, 2 KiB stack) and requires the build and the gate to reject it. Tests M*/N*
+(REV-50B8758-STACK-01/02) cover conditional calls and literal call targets that a call or an
+unproven path invalidates; `--gate <old gate>` runs everything against another gate version
+(the gate of 880ea55 must FAIL this self-test).
 """
 from __future__ import annotations
 import argparse, json, os, shutil, subprocess, sys
@@ -57,6 +60,47 @@ DEFECTS = {
                            "  __asm volatile(\"mov sp, r7\\n\\tbx lr\");\n"
                            "}\nstatic void defect(void) { unset_fp(); }\n",
     "NONE": "static void defect(void) { }\n",
+    # --- REV-50B8758-STACK-01: a conditional call is a call (review reproduction, verbatim) ---
+    "COND_CALL": "void deep(void) { volatile int pad[2048]; pad[0] = sink; sink = pad[0]; }\n"
+                 "static void defect(void) {\n"
+                 "  __asm volatile(\"movs r0, #1\\n\\tcmp r0, #0\\n\\tit ne\\n\\tblne deep\"\n"
+                 "                 ::: \"r0\", \"r1\", \"r2\", \"r3\", \"lr\", \"cc\", \"memory\");\n"
+                 "}\n",
+    "COND_PRIORITY_CALL": "void extra_cfg(void) {\n"
+                          "  __asm volatile(\"movs r0, #8\\n\\tmovs r1, #2\\n\\tmovs r2, #0\\n\\tcmp r0, #0\\n\\t\"\n"
+                          "                 \"it ne\\n\\tblne nvic_irq_enable\"\n"
+                          "                 ::: \"r0\", \"r1\", \"r2\", \"r3\", \"ip\", \"lr\", \"cc\", \"memory\");\n"
+                          "}\nstatic void defect(void) { extra_cfg(); }\n",
+    "PC_WRITE": "__attribute__((naked)) void pc_write(void) { __asm volatile(\"ldr.w pc, [r0]\"); }\n"
+                "static void defect(void) { pc_write(); }\n",
+    "INTRA_CALL_RECURSION": "__attribute__((naked)) void intra_rec(void) {\n"
+                            "  __asm volatile(\"push {r4, lr}\\n1:\\tpush {r5, lr}\\n\\tcbz r0, 2f\\n\\t\"\n"
+                            "                 \"subs r0, #1\\n\\tbl 1b\\n2:\\tpop {r5, pc}\");\n"
+                            "}\nstatic void defect(void) { intra_rec(); }\n",
+    # --- REV-50B8758-STACK-02: a literal value does not survive a call or an unproven path ---
+    "CALL_CLOBBER_NULL": "void deep(void) { volatile int pad[2048]; pad[0] = sink; sink = pad[0]; }\n"
+                         "__attribute__((naked)) void set_r3(void) { __asm volatile(\"ldr r3, =deep\\n\\tbx lr\"); }\n"
+                         "static void defect(void) {\n"
+                         "  __asm volatile(\"ldr r3, 1f\\n\\tbl set_r3\\n\\tblx r3\\n\\tb 2f\\n\\t.align 2\\n1: .word 0\\n2:\"\n"
+                         "                 ::: \"r0\", \"r1\", \"r2\", \"r3\", \"lr\", \"memory\");\n"
+                         "}\n",
+    "CALL_RETARGET": "void small_fn(void) { sink++; }\n"
+                     "void deep(void) { volatile int pad[2048]; pad[0] = sink; sink = pad[0]; }\n"
+                     "__attribute__((naked)) void set_r3(void) { __asm volatile(\"ldr r3, =deep\\n\\tbx lr\"); }\n"
+                     "static void defect(void) {\n"
+                     "  __asm volatile(\"ldr r3, =small_fn\\n\\tbl set_r3\\n\\tblx r3\"\n"
+                     "                 ::: \"r0\", \"r1\", \"r2\", \"r3\", \"lr\", \"memory\");\n"
+                     "}\n",
+    "LITERAL_PATH_CBZ": "void deep(void) { volatile int pad[2048]; pad[0] = sink; sink = pad[0]; }\n"
+                        "static void defect(void) {\n"
+                        "  __asm volatile(\"movs r0, #0\\n\\tldr r3, =deep\\n\\tcbz r0, 4f\\n\\tldr r3, 1f\\n\"\n"
+                        "                 \"4:\\tblx r3\\n\\tb 2f\\n\\t.align 2\\n1: .word 0\\n2:\"\n"
+                        "                 ::: \"r0\", \"r1\", \"r2\", \"r3\", \"lr\", \"memory\");\n"
+                        "}\n",
+    "WEAK_NULL_PROVEN": "static void defect(void) {\n"
+                        "  __asm volatile(\"ldr r3, 1f\\n\\tcbz r3, 2f\\n\\tblx r3\\n\\tb 2f\\n\\t.align 2\\n1: .word 0\\n2:\"\n"
+                        "                 ::: \"r0\", \"r1\", \"r2\", \"r3\", \"lr\", \"memory\");\n"
+                        "}\n",
 }
 
 
@@ -97,8 +141,8 @@ def fixture_source(defect: str, extra_slot: int | None = None) -> str:
 
 
 class Runner:
-    def __init__(self, toolbin: str, work: Path):
-        self.toolbin, self.work = toolbin, work
+    def __init__(self, toolbin: str, work: Path, gate_path: Path = ROOT / "tools/m820_stack_gate.py"):
+        self.toolbin, self.work, self.gate_path = toolbin, work, gate_path
         self.gcc = gate._tool(toolbin, "arm-none-eabi-gcc")
         self.failures: list[str] = []
         self.results: list[tuple[str, str]] = []
@@ -120,7 +164,7 @@ class Runner:
 
     def gate(self, fx: dict, tag: str) -> tuple[int, dict]:
         js = self.work / f"{tag}.gate.json"
-        p = subprocess.run([sys.executable, str(ROOT / "tools/m820_stack_gate.py"), "--elf", fx["elf"],
+        p = subprocess.run([sys.executable, str(self.gate_path), "--elf", fx["elf"],
                             "--map", fx["map"], "--objdir", fx["objdir"], "--toolbin", self.toolbin,
                             "--variant", tag, "--json", str(js)], capture_output=True, text=True)
         return p.returncode, json.loads(js.read_text(encoding="utf-8"))
@@ -139,7 +183,7 @@ class Runner:
             self.failures.append(name)
 
 
-def firmware_known_bad(toolbin: str, work: Path) -> tuple[int, dict, int]:
+def firmware_known_bad(toolbin: str, work: Path, gate_path: Path) -> tuple[int, dict, int]:
     """Rebuild the real NORMAL firmware with G53 at -O0 and a 2 KiB stack (the configuration of
     base aab3c3c): the build must refuse it, and the gate CLI must reject the produced ELF."""
     out = work / "known-bad-o0-2k"
@@ -154,7 +198,7 @@ def firmware_known_bad(toolbin: str, work: Path) -> tuple[int, dict, int]:
     final = out / "M820_BL820" / "DEV-NONCANONICAL_M820_BL820.bin"
     if final.exists():
         rep.setdefault("errors", []).append("known-bad build produced a final BIN")
-    q = subprocess.run([sys.executable, str(ROOT / "tools/m820_stack_gate.py"),
+    q = subprocess.run([sys.executable, str(gate_path),
                         "--elf", str(wd / "DEV-NONCANONICAL.elf"), "--map", str(wd / "DEV-NONCANONICAL.map"),
                         "--objdir", str(wd / "objects"), "--toolbin", toolbin, "--variant", "known-bad"],
                        capture_output=True, text=True)
@@ -165,15 +209,40 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--toolchain", required=True, help="Arm GNU toolchain bin directory")
     ap.add_argument("--skip-firmware", action="store_true", help="skip test G (full firmware rebuild)")
+    ap.add_argument("--gate", type=Path, help="run the fixtures against this gate script instead of "
+                    "tools/m820_stack_gate.py (mutation check: a defective gate must make this FAIL)")
     a = ap.parse_args()
-    work = ROOT / ".build" / "stack-gate-selftest"
+    work = ROOT / ".build" / ("stack-gate-selftest" if a.gate is None else f"stack-gate-selftest-{a.gate.stem}")
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
-    r = Runner(a.toolchain, work)
+    r = Runner(a.toolchain, work, *(() if a.gate is None else (a.gate.resolve(),)))
 
     base = r.build("positive", "NONE")
     rc, rep = r.gate(base, "positive")
     r.expect("POSITIVE CONTROL (M820-shaped fixture)", rc, rep, True)
+
+    # A literal null call proven at the call site (the weak-undefined tm_clones pattern of the
+    # production image) stays resolved: no address-taken function exists, so an unresolved
+    # call would fail with UNRESOLVED INDIRECT CALL.
+    fx = r.build("P2-weak-null-call-proven", "WEAK_NULL_PROVEN")
+    rc, rep = r.gate(fx, "P2-weak-null-call-proven")
+    r.expect("P2-weak-null-call-proven", rc, rep, True)
+
+    # REV-50B8758-STACK-01/02: deep() has an 8200 B frame against a 4096 B reserve; each case
+    # passed (356 B) on the gate of 880ea55 because the call to deep() was dropped.
+    for tag, defect, needle in (("M1-conditional-call", "COND_CALL", "STACK BUDGET UNSAFE"),
+                                ("M2-conditional-priority-call", "COND_PRIORITY_CALL",
+                                 "IRQ TOPOLOGY UNDECODABLE: extra_cfg"),
+                                ("M3-unsupported-pc-write", "PC_WRITE",
+                                 "UNSUPPORTED CONTROL FLOW: pc_write"),
+                                ("M4-intra-function-call-recursion", "INTRA_CALL_RECURSION",
+                                 "UNSUPPORTED CONTROL FLOW: intra_rec"),
+                                ("N1-literal-call-clobber-null", "CALL_CLOBBER_NULL", "STACK BUDGET UNSAFE"),
+                                ("N2-literal-call-retarget", "CALL_RETARGET", "STACK BUDGET UNSAFE"),
+                                ("N3-literal-unproven-path", "LITERAL_PATH_CBZ", "STACK BUDGET UNSAFE")):
+        fx = r.build(tag, defect)
+        rc, rep = r.gate(fx, tag)
+        r.expect(tag, rc, rep, False, needle)
 
     for tag, defect, needle in (("A-direct-recursion", "DIRECT_REC", "RECURSIVE CALL GRAPH: rec_a -> rec_a"),
                                 ("B-indirect-recursion", "INDIRECT_REC", "rec_a -> rec_b -> rec_a"),
@@ -237,7 +306,7 @@ def main() -> int:
     r.expect("L-missing-elf", rc, rep, False, "missing ELF")
 
     if not a.skip_firmware:
-        rc_build, rep, rc_gate = firmware_known_bad(a.toolchain, work)
+        rc_build, rep, rc_gate = firmware_known_bad(a.toolchain, work, r.gate_path)
         fg, total = rep.get("foreground_bytes", 0), rep.get("total_worst_bytes", 0)
         ok = (rc_build != 0 and rc_gate != 0 and rep.get("verdict") == "FAIL"
               and rep.get("reserved_stack_bytes") == 2048 and 3000 <= fg <= 3300 and 4200 <= total <= 4500

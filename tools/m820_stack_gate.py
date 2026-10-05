@@ -16,10 +16,18 @@ Method (reviewed in TQ-06 E30 root-cause review, 2026-09-28; hardened after the 
     record, qualifier "static", equal to the audited disassembly). A missing .su file, missing
     record, duplicate record or contradiction fails. Functions from toolchain libraries or
     assembly (no .su exists) use the audited disassembly frame as the verified alternative;
-  * call graph from direct bl/blx/b<cond> to a function start (self edges included; tail
-    calls counted as calls = over-approximation). Every indirect call (blx/bx rN) may reach any
-    address-taken function (address in an allocated data section, a .text literal or a
-    movw/movt pair, outside the vector table). Any reachable cycle, direct or indirect, fails;
+  * every instruction is classified by its effect on PC (_flow); a PC write that is not a
+    branch/call/return form or a switch table proven to stay in its function is UNSUPPORTED
+    CONTROL FLOW and fails when reachable (never skipped);
+  * call graph from direct bl/blx/b to a function start, conditional or not (bl<cond> in an IT
+    block is a call; self edges included; tail calls counted as calls = over-approximation).
+    A bl into the function's own body is accepted only when nothing reachable from its target
+    decrements SP. Every indirect call (blx/bx rN) may reach any address-taken function (address
+    in an allocated data section, a .text literal or a movw/movt pair, outside the vector table),
+    unless the register value is PROVEN at the call site: last write an unconditional literal
+    load on a straight fall-through path with no call, branch target or conditional/unknown
+    write in between (a call may change any register). Any reachable cycle, direct or
+    indirect, fails;
   * foreground = Reset_Handler graph; ISR addition = realistic nesting of the CURRENT M820
     NVIC topology: one priority-0 entry (ADC/TIMER/CAN/SysTick/default; equal preemption), or
     one lower-priority EXTI handler preempted by one priority-0 handler. Exception frames:
@@ -98,9 +106,12 @@ def _base(op: str) -> tuple[str, bool]:
     b = op.split(".")[0]
     if b in _NO_DEST or b in ("pop", "vpop", "ldmia", "ldm", "add", "sub", "mov", "ldr"):
         return b, False
+    for br in ("blx", "bl", "bx", "b"):   # longest first: blne = bl+ne, bls = b+ls, blle = bl+le
+        if b.startswith(br) and b[len(br):] in _COND:
+            return br, True
     for c in _COND:
         if b.endswith(c) and len(b) > len(c) and b[:-len(c)] in (
-                "pop", "vpop", "push", "add", "sub", "mov", "ldr", "ldmia", "ldm", "b", "bx"):
+                "pop", "vpop", "push", "add", "sub", "mov", "ldr", "ldmia", "ldm"):
             return b[:-len(c)], True
     for c in ("s",):   # flag-setting forms: adds/subs/movs
         if b.endswith(c) and b[:-1] in ("add", "sub", "mov"):
@@ -129,10 +140,12 @@ def _imm(s: str) -> int | None:
 
 
 def _parse_disassembly(text: str):
-    """Functions (address -> name, instructions) and .text literal words (address -> value).
+    """Functions (address -> name, instructions), .text literal words (address -> value), referenced
+    addresses and the .text data bytes (address -> byte, from .word/.short/.byte; switch tables).
     Each instruction is (address, mnemonic, operands, pc-relative literal address or None)."""
     funcs: dict[int, dict] = {}
     words: dict[int, int] = {}
+    data: dict[int, int] = {}
     refs: set[int] = set()
     cur = None
     for line in text.splitlines():
@@ -146,16 +159,20 @@ def _parse_disassembly(text: str):
             raw = m.group(3)
             op, args = m.group(2), raw.split("@")[0].strip()
             lit = re.search(r"@\s*\(([0-9a-f]+)\s", raw)
-            if op == ".word":
+            if op in (".word", ".short", ".byte"):
                 try:
-                    words[int(m.group(1), 16)] = int(args.split()[0], 16)
-                except ValueError:
-                    pass
+                    v, at = int(args.split()[0], 16), int(m.group(1), 16)
+                except (ValueError, IndexError):
+                    continue
+                for k in range({".word": 4, ".short": 2, ".byte": 1}[op]):
+                    data[at + k] = (v >> (8 * k)) & 0xFF
+                if op == ".word":
+                    words[at] = v
             else:
                 cur["ins"].append((int(m.group(1), 16), op, args, int(lit.group(1), 16) if lit else None))
                 if not op.startswith(("b", "cb")):
                     refs.update(int(x, 16) for x in re.findall(r"([0-9a-f]{7,8}) <", raw))
-    return funcs, words, refs
+    return funcs, words, refs, data
 
 
 def _writes(op: str, args: str, reg: str) -> bool:
@@ -163,12 +180,12 @@ def _writes(op: str, args: str, reg: str) -> bool:
     b, _ = _base(op)
     if b.startswith(("pop", "vpop", "ldm", "vldm")) and reg in _regs(args):
         return True
-    if re.search(rf"\[{reg}(,[^\]]*)?\]!|\[{reg}\],", args):          # base writeback
+    if re.search(rf"\[{reg}(,[^\]]*)?\]!|\[{reg}\],", args) or args.startswith(reg + "!"):  # writeback
         return True
     if b in _NO_DEST:
         return False
     ops = [o.strip() for o in args.split(",")]
-    if b in ("ldrd", "ldrexd", "umull", "smull", "umlal", "smlal", "vmov") and reg in ops[:2]:
+    if b in ("ldrd", "ldrexd", "umull", "smull", "umlal", "smlal", "umaal", "vmov") and reg in ops[:2]:
         return True
     return ops[0] == reg
 
@@ -276,54 +293,214 @@ def _audit_function(f: dict) -> tuple[int, bool, list[str]]:
     return frame, uses_fp, bad
 
 
-def _literal_call_target(f: dict, idx: int, reg: str, words: dict[int, int]) -> int | None:
-    """Value of `reg` at instruction idx if it is PROVABLY loaded by `ldr reg, [pc, #]` from a
-    .text literal, with no write to reg and no in-function branch target in between.
-    Returns the literal value, or None when not provable (caller then stays conservative)."""
+def _it_conditional(ins: list) -> list[bool]:
+    """Per instruction: executes under an IT block (conditional), from the IT mask length."""
+    out, left = [], 0
+    for _a, op, _args, _lit in ins:
+        if left:
+            out.append(True)
+            left -= 1
+            continue
+        out.append(False)
+        b = op.split(".")[0]
+        if re.fullmatch(r"it[te]{0,3}", b):
+            left = len(b) - 1
+    return out
+
+
+def _switch_bound(ins: list, i: int) -> tuple[str, int] | None:
+    """Index register and its maximum for a switch dispatch at ins[i]: the guard
+    `cmp rN, #K` + `bhi` directly before it (unsigned index 0..K). None when not proven."""
+    if i < 2:
+        return None
+    _a, op, args, _ = ins[i - 1]
+    if _base(op) != ("b", True) or not op.startswith("bhi"):
+        return None
+    m = re.fullmatch(r"(r\d+|ip|sl|fp|lr),\s*#(\d+)", ins[i - 2][2])
+    if ins[i - 2][1].split(".")[0] != "cmp" or not m:
+        return None
+    return m.group(1), int(m.group(2))
+
+
+def _flow(f: dict, words: dict[int, int], data: dict[int, int]) -> list[tuple]:
+    """Classify EVERY instruction by its effect on PC: (kind, conditional, target).
+      seq   - does not write PC
+      jump  - b/b<cond>/cbz/cbnz to a label (target address)
+      call  - bl/blx to a label, conditional or not (target address)
+      icall - blx <reg>; ijump - bx <reg> other than lr (target = register name)
+      ret   - bx lr, pop/ldm sp! {.., pc}, ldr pc, [sp], #imm
+      table - switch dispatch (tbb/tbh, adr + ldr pc table) whose bounded entries all land on
+              instructions of this function (target = tuple of addresses)
+      bad   - any other PC write / unprovable table (target = reason). Never silently skipped."""
     ins = f["ins"]
-    targets = set()
-    for a, op, args, _ in ins:
+    itc = _it_conditional(ins)
+    own = {a for a, _o, _g, _l in ins}
+    out = []
+    for i, (a, op, args, _lit) in enumerate(ins):
+        b, cond = _base(op)
+        cond = cond or itc[i]
+        bare = op.split(".")[0]
         m = _TGT.match(args)
-        if _base(op)[0] == "b" and m and m.group(2) == f["name"]:
-            targets.add(int(m.group(1), 16))
+        if bare in ("cbz", "cbnz"):
+            t = re.search(r",\s*([0-9a-f]+)\s+<", args)
+            out.append(("jump", True, int(t.group(1), 16)) if t else ("bad", cond, "cbz/cbnz without target"))
+        elif b in ("b", "bl", "blx", "bx") and m:
+            out.append(("jump" if b == "b" else "call" if b in ("bl", "blx") else "bad", cond,
+                        int(m.group(1), 16) if b != "bx" else "bx to a label"))
+        elif b == "blx":
+            out.append(("icall", cond, args.strip()))
+        elif b == "bx":
+            out.append(("ret" if args.strip() == "lr" else "ijump", cond, args.strip()))
+        elif b in ("b", "bl"):
+            out.append(("bad", cond, "branch without a decodable target"))
+        elif bare in ("tbb", "tbh"):
+            bound = _switch_bound(ins, i)
+            mi = re.fullmatch(r"\[pc,\s*(r\d+|ip|sl|fp|lr)(,\s*lsl #1)?\]", args)
+            tg = None
+            if bound and mi and mi.group(1) == bound[0] and (bare == "tbh") == bool(mi.group(2)):
+                size, tg = (2 if bare == "tbh" else 1), []
+                for k in range(bound[1] + 1):
+                    raw = [data.get(a + 4 + size * k + n) for n in range(size)]
+                    if None in raw:
+                        tg = None
+                        break
+                    tg.append(a + 4 + 2 * int.from_bytes(bytes(raw), "little"))
+            if tg and all(t in own for t in tg):
+                out.append(("table", cond, tuple(tg)))
+            else:
+                out.append(("bad", cond, "switch table not proven to stay in the function"))
+        elif _writes(op, args, "pc"):
+            regs = _regs(args)
+            if (b == "pop" or (b.startswith("ldm") and args.startswith("sp!"))) and "pc" in regs:
+                out.append(("ret", cond, None))
+            elif b == "ldr" and re.fullmatch(r"pc,\s*\[sp\],\s*#\d+", args):
+                out.append(("ret", cond, None))
+            else:
+                tg = None
+                mt = re.fullmatch(r"pc,\s*\[(r\d+|ip),\s*(r\d+|ip),\s*lsl #2\]", args)
+                bound = _switch_bound(ins, i - 1) if mt and i >= 1 else None
+                pa, pop, pargs, _ = ins[i - 1] if i >= 1 else (0, "", "", None)
+                madr = re.fullmatch(rf"{mt.group(1)},\s*pc,\s*#(\d+)", pargs) if mt else None
+                if mt and bound and bound[0] == mt.group(2) and pop.split(".")[0] in ("add", "adr") and madr:
+                    base = ((pa + 4) & ~3) + int(madr.group(1))
+                    vals = [words.get(base + 4 * k) for k in range(bound[1] + 1)]
+                    if None not in vals and all(v & 1 for v in vals):
+                        tg = [v & ~1 for v in vals]
+                if tg and all(t in own for t in tg):
+                    out.append(("table", cond, tuple(tg)))
+                else:
+                    out.append(("bad", cond, "unsupported write to pc"))
+        else:
+            out.append(("seq", cond, None))
+    return out
+
+
+def _branch_targets(flows: dict) -> set[int]:
+    """Every address control can arrive at other than by fall-through."""
+    out: set[int] = set()
+    for fl in flows.values():
+        for kind, _c, t in fl:
+            if kind in ("jump", "call") and isinstance(t, int):
+                out.add(t)
+            elif kind == "table":
+                out.update(t)
+    return out
+
+
+def _reg_value(f: dict, flow: list, idx: int, reg: str, words: dict[int, int],
+               targets: set[int]) -> int | None:
+    """Value of `reg` at instruction idx when it is PROVABLY the .text literal of the last
+    `ldr reg, [pc, #]` on the ONLY path to idx: straight-line fall-through with no branch
+    target (from anywhere in the image), no call (a callee may write any register), no
+    exception-raising instruction and no conditional or unknown write of reg in between.
+    Returns None when not provable (the caller must then stay conservative)."""
+    ins = f["ins"]
     for j in range(idx - 1, -1, -1):
         a, op, args, lit = ins[j]
         if ins[j + 1][0] in targets:
             return None
+        kind, cond, _t = flow[j]
+        if kind in ("call", "icall", "bad") or op.split(".")[0] in ("svc", "bkpt"):
+            return None
+        if kind != "seq":
+            if not cond:
+                return None                 # unconditional transfer: ins[j+1] is not its fall-through
+            continue                        # conditional branch/return not taken on this path
         if _writes(op, args, reg):
-            if _base(op)[0] == "ldr" and lit is not None and re.match(rf"{reg},\s*\[pc", args):
+            if (not cond and _base(op)[0] == "ldr" and lit is not None
+                    and re.fullmatch(rf"{reg},\s*\[pc,\s*#\d+\]", args)):
                 return words.get(lit)
             return None
     return None
 
 
-def _edges(addr: int, f: dict, starts: set[int], words: dict[int, int], sorted_starts: list[int]):
-    """Direct callees (self CALLS kept: recursion), unresolved indirect call sites, and jumps
-    into the body of another function. A jump into another function's body is treated as a
-    call of that whole function (its frame is added: over-approximation). An indirect call
-    through a provable literal is resolved: 0 -> no call (weak undefined), function -> edge."""
+def _intra_call_problem(f: dict, flow: list, start: int) -> str | None:
+    """A bl into the function's own body runs part of the function as a nested activation.
+    The audited frame (sum of all SP decrements of the function) bounds it only when nothing
+    reachable from the call target can decrement SP again. Returns the reason it cannot be
+    proven, else None."""
+    ins = f["ins"]
+    idx = {a: i for i, (a, _o, _g, _l) in enumerate(ins)}
+    if start not in idx:
+        return f"call target {start:08x} is not an instruction of {f['name']}"
+    todo, seen = [idx[start]], set()
+    while todo:
+        i = todo.pop()
+        if i in seen or i >= len(ins):
+            continue
+        seen.add(i)
+        a, op, args, _ = ins[i]
+        if _sp_effect(op, args)[0] not in ("rel", "none"):
+            return f"nested activation reaches SP write {a:08x} {op} {args}"
+        kind, cond, t = flow[i]
+        if kind == "bad":
+            return f"nested activation reaches {a:08x} {op} {args} ({t})"
+        if kind == "table":
+            todo += [idx[x] for x in t]
+        elif kind in ("jump", "call") and t in idx:
+            todo.append(idx[t])
+            if cond or kind == "call":
+                todo.append(i + 1)
+        elif kind == "jump" or kind in ("ret", "ijump"):
+            if cond:
+                todo.append(i + 1)          # leaves the function unless the condition fails
+        else:
+            todo.append(i + 1)
+    return None
+
+
+def _edges(addr: int, f: dict, flow: list, starts: set[int], words: dict[int, int],
+           sorted_starts: list[int], targets: set[int]):
+    """Direct callees (self CALLS kept: recursion), unresolved indirect call sites, and
+    unsupported control flow. Conditional calls and branches are edges exactly like
+    unconditional ones. A jump into another function's body is treated as a call of that whole
+    function (its frame is added: over-approximation). An indirect call is resolved only when the
+    register value is proven at the call site (_reg_value): 0 -> no call (weak undefined: the
+    branch would fault, fault handlers are terminal), function -> edge; anything else stays an
+    unresolved indirect call (every address-taken function)."""
     direct, indirect, cross = set(), [], []
     for i, (a, op, args, _) in enumerate(f["ins"]):
-        b, _ = _base(op)
-        if b not in ("b", "bl", "blx", "bx"):
-            continue
-        m = _TGT.match(args)
-        if m:
-            tgt = int(m.group(1), 16)
-            if m.group(3) is None and tgt in starts:
-                if b in ("bl", "blx") or tgt != addr:     # a plain jump to its own start is a loop
-                    direct.add(tgt)
-            elif m.group(2) != f["name"]:
-                k = _bisect_right(sorted_starts, tgt) - 1
-                if k < 0:
-                    cross.append(f"{a:08x} {op} {args}")
-                else:
-                    direct.add(sorted_starts[k])
-        elif b == "blx" or (b == "bx" and args.strip() != "lr"):
-            reg = args.strip()
-            val = _literal_call_target(f, i, reg, words)
+        kind, _cond, t = flow[i]
+        if kind == "bad":
+            cross.append(f"{a:08x} {op} {args} ({t})")
+        elif kind in ("jump", "call"):
+            if t in starts:
+                if kind == "call" or t != addr:           # a plain jump to its own start is a loop
+                    direct.add(t)
+                continue
+            k = _bisect_right(sorted_starts, t) - 1
+            if k < 0:
+                cross.append(f"{a:08x} {op} {args}")
+            elif sorted_starts[k] != addr:
+                direct.add(sorted_starts[k])
+            elif kind == "call":
+                why = _intra_call_problem(f, flow, t)
+                if why:
+                    cross.append(f"{a:08x} {op} {args} (call into own body: {why})")
+        elif kind in ("icall", "ijump"):
+            val = _reg_value(f, flow, i, t, words, targets)
             if val == 0:
-                continue                                   # weak undefined: guarded null call
+                continue                                   # proven null at the call site
             if val is not None and (val & 1) and (val & ~1) in starts:
                 direct.add(val & ~1)
                 continue
@@ -457,11 +634,17 @@ def _load_su(path: str) -> tuple[dict[str, list[int]], list[str]]:
     return recs, problems
 
 
-def _decode_args(ins: list, idx: int, nargs: int) -> tuple | None:
+def _decode_args(ins: list, idx: int, nargs: int, targets: set[int]) -> tuple | None:
+    """r0..r(nargs-1) at the call ins[idx], set by `mov rN, #imm` on the straight-line path
+    directly before it (stops at any branch, call, IT block or incoming branch target)."""
     vals: dict[str, int] = {}
-    for a, op, args, _lit in reversed(ins[max(0, idx - 12):idx]):
+    for j in range(idx - 1, max(0, idx - 12) - 1, -1):
+        a, op, args, _lit = ins[j]
         b, _ = _base(op)
-        if b in ("b", "bl", "blx", "bx", "cbz", "cbnz", "pop") or b.startswith("it"):
+        if ins[j + 1][0] in targets:
+            break
+        if b in ("b", "bl", "blx", "bx", "cbz", "cbnz", "pop", "tbb", "tbh") or b.startswith("it") \
+                or _writes(op, args, "pc"):
             break
         for r in (f"r{i}" for i in range(nargs)):
             if r in vals or not _writes(op, args, r):
@@ -477,7 +660,7 @@ def _decode_args(ins: list, idx: int, nargs: int) -> tuple | None:
     return tuple(vals[f"r{i}"] for i in range(nargs))
 
 
-def _irq_topology(vec, funcs, by_addr, name_to_addr) -> list[str]:
+def _irq_topology(vec, funcs, by_addr, name_to_addr, flows, targets) -> list[str]:
     errs = []
     counts: dict[int, int] = {}
     for w in vec[1:]:
@@ -494,18 +677,22 @@ def _irq_topology(vec, funcs, by_addr, name_to_addr) -> list[str]:
                 errs.append(f"IRQ TOPOLOGY CHANGED: vector slot {slot} has new handler {sorted(names)}")
         elif exp not in names:
             errs.append(f"IRQ TOPOLOGY CHANGED: vector slot {slot} expected {exp}, found {sorted(names) or 'none'}")
-    targets = {name_to_addr[n]: n for n in PRIORITY_FUNCS if n in name_to_addr}
+    prio = {name_to_addr[n]: n for n in PRIORITY_FUNCS if n in name_to_addr}
     found: dict[str, list] = {}
     for addr, f in funcs.items():
         caller = f["name"]
         for i, (a, op, args, _lit) in enumerate(f["ins"]):
-            m = _TGT.match(args)
-            if _base(op)[0] != "bl" or not m or int(m.group(1), 16) not in targets:
+            kind, cond, t = flows[addr][i]
+            if kind not in ("jump", "call") or t not in prio:
                 continue
-            callee = targets[int(m.group(1), 16)]
+            callee = prio[t]
             if caller in LIBRARY_INTERNAL_CALLERS:
                 continue
-            decoded = _decode_args(f["ins"], i, PRIORITY_FUNCS[callee])
+            if kind != "call" or cond:      # conditional or tail call: execution not provable
+                errs.append(f"IRQ TOPOLOGY UNDECODABLE: {caller} {a:08x} {op} to {callee} "
+                            f"(conditional or tail call)")
+                continue
+            decoded = _decode_args(f["ins"], i, PRIORITY_FUNCS[callee], targets)
             if decoded is None:
                 errs.append(f"IRQ TOPOLOGY UNDECODABLE: {caller} {a:08x} call to {callee}")
                 continue
@@ -539,7 +726,8 @@ def check(elf: str, objdir: str, mapfile: str, toolbin: str, variant: str) -> di
     if vec[0] != sp:
         errors.append(f"initial MSP 0x{vec[0]:08X} != _sp 0x{sp:08X}")
 
-    funcs, text_words, text_refs = _parse_disassembly(_run([objdump, "-d", "--no-show-raw-insn", elf]))
+    funcs, text_words, text_refs, text_data = _parse_disassembly(
+        _run([objdump, "-d", "--no-show-raw-insn", elf]))
     if not funcs:
         raise GateError("no functions in disassembly")
     starts = set(funcs)
@@ -549,11 +737,14 @@ def check(elf: str, objdir: str, mapfile: str, toolbin: str, variant: str) -> di
         if a in funcs:
             for n in names:
                 name_to_addr.setdefault(n, a)
-    errors += _irq_topology(vec, funcs, by_addr, name_to_addr)
+    flows = {a: _flow(f, text_words, text_data) for a, f in funcs.items()}
+    branch_targets = _branch_targets(flows)
+    errors += _irq_topology(vec, funcs, by_addr, name_to_addr, flows, branch_targets)
 
     audit = {a: _audit_function(f) for a, f in funcs.items()}
     sorted_starts = sorted(starts)
-    graph = {a: _edges(a, f, starts, text_words, sorted_starts) for a, f in funcs.items()}
+    graph = {a: _edges(a, f, flows[a], starts, text_words, sorted_starts, branch_targets)
+             for a, f in funcs.items()}
     vector_targets = {w & ~1 for w in vec[1:] if w}
     taken = set(text_words.values()) | _alloc_data_words(objdump, readelf, elf) | _movw_movt_words(funcs)
     address_taken = {w & ~1 for w in taken if (w & 1) and (w & ~1) in starts} | (text_refs & starts)
@@ -614,7 +805,7 @@ def check(elf: str, objdir: str, mapfile: str, toolbin: str, variant: str) -> di
         if graph[a][1] and not address_taken:
             errors.append(f"UNRESOLVED INDIRECT CALL: {name[a]} and no address-taken functions")
         for c in graph[a][2]:
-            errors.append(f"UNSUPPORTED CONTROL FLOW: {name[a]} jumps into another function: {c}")
+            errors.append(f"UNSUPPORTED CONTROL FLOW: {name[a]}: {c}")
 
     # Frames: build objects need their own exact .su record; libraries use audited disassembly.
     sections = _map_objects(mapfile)
