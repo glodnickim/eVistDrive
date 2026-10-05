@@ -333,6 +333,17 @@ $suites = @(
                     (Join-Path $root 'src\tuning_config.c'))
         IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common'))
         Defines = @('-Wno-type-limits') },
+    @{ Name = 'QZERO bumpless exit on re-engage while rolling (real quiet_zero.c state machine + production FOC/PI on a SIL placeholder dq plant)'
+       # TASK-EVD-TQ-06-G2 I3. Section A pins the exit law and the byte-identical no-re-engage stop;
+       # section B runs production FOC.c + foc_current_loop.c + pwm_geometry.c against the dq plant
+       # of sim/foc_electrical_sil.c (SIL placeholder motor, observation grade).
+       Harness = Join-Path $PSScriptRoot 'qzero_bumpless_exit_host.c'
+       Modules = @((Join-Path $root 'src\quiet_zero.c'),
+                   (Join-Path $root 'src\FOC.c'),
+                   (Join-Path $root 'src\foc_current_loop.c'),
+                   (Join-Path $root 'src\pwm_geometry.c'))
+       IncludeDirs = @((Join-Path $root 'sim\full_host_stubs'), (Join-Path $PSScriptRoot 'common'))
+       Defines = @('-Wno-type-limits', '-Wno-unused-parameter') },
     @{ Name = 'QZERO Quiet Zero PI integral fade at Iq_ref=0 (real quiet_zero.c + real 16 kHz slew owner + PI_control replica + wiring guards)'
        Harness = Join-Path $PSScriptRoot 'qzero_quiet_zero_host.c'
        # Links the REAL state machine and the REAL 16 kHz slew owner, so the entry edge is the
