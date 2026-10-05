@@ -1173,9 +1173,11 @@ static int run_stop_reverse_axis(bool reverse, axis_result_t *out)
         return 1;
     }
     out->iq_at_event = s.MS.i_q_setpoint;
-    /* The normal ride is BYPASS, so profile release_ms is zero here. A true
-     * native real-stop selects SAFETY and owns the fixed 200 ms trajectory. */
-    out->release_ms = reverse ? 0U : AXIS_REAL_STOP_SAFETY_MS;
+    /* The normal ride is BYPASS, so profile release_ms is zero here. A true native real-stop
+     * selects SAFETY and owns the fixed 200 ms trajectory. A reverse crank step on this MOVING
+     * bike follows the G53 decay and is bounded by the same 200 ms (TASK-EVD-TQ-06-G2,
+     * OWNER-DEC-2026-10-05-TQ06G2-A), so both carry the 200 ms figure. */
+    out->release_ms = AXIS_REAL_STOP_SAFETY_MS;
     out->last_edge_tick = pas_sampler_last_transition_tick();
     out->event_tick = s.tick;
 
@@ -1228,10 +1230,13 @@ static int report_axis(const axis_result_t *a)
 
     if (a->reverse) {
         /*
-         * §19: no filter, no sustained term and no ramp-down may keep pulling the motor once the
-         * crank is going backwards. The software criterion is that the reference is gone in the
-         * first control tick that consumes the inhibit - the same contract scenario S5 asserts,
-         * measured here from the physical edge instead of from inside the pipeline.
+         * §19, as amended by TASK-EVD-TQ-06-G2 (owner decision OWNER-DEC-2026-10-05-TQ06G2-A):
+         * no filter, no sustained term and no ramp may keep PULLING the motor once the crank is
+         * going backwards - the permission leaves FORWARD in the first control tick that consumes
+         * the inhibit and the request may never rise. On a MOVING bike (this scenario) the request
+         * then decays along the G53 chain's own output (the G5300 ramp) instead of stepping to
+         * zero, and is exactly zero within the 200 ms bound. At standstill it is still a
+         * same-tick zero (reverse_ramp_host.c).
          *
          * Detection itself is bounded by the quadrature, not by a timer: pas_direction needs
          * physical reverse steps before it will call it a reverse, which at this cadence is a
@@ -1240,7 +1245,7 @@ static int report_axis(const axis_result_t *a)
          */
         if (to_detect > 120.0) bad = 1;
         if (to_perm > 0.25 + 1e-9) bad = 1;            /* one control tick */
-        if (to_ref > 0.25 + 1e-9) bad = 1;             /* the reference goes with it */
+        if (to_ref > (double)a->release_ms + 1.0) bad = 1;   /* gone within the 200 ms bound */
         /* Not one count more drive than the rider was already getting: no kick, no lurch. */
         if (a->peak_drive_after_detect > (double)a->iq_at_event) bad = 1;
     } else {
