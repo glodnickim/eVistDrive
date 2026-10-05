@@ -4,7 +4,7 @@
  *
  * The expected numbers follow the original application's machines (inc/pa4_buttons.h): a sample
  * every 32 ticks, 3 samples to confirm, the hold count from 2 to 200, the on/off power-off
- * > 2000 ticks after the long press, the Walk bridge of 250 one-millisecond samples, the button
+ * > 2000 ticks after the long press, the Walk bridge of 250 ms (1000 ticks, any call rate), the button
  * circuit test (PB8 up ~5 ms every 256 ms while idle) and error 36.
  *
  * Every scenario starts with settle(): the button released until the press the bike was switched
@@ -69,10 +69,41 @@ static void settle(uint32_t t0)
 	for (n = 0; n < 100000U && pa4_buttons_power_samples() < 3U; n++) step_to(++g_t, RELEASED);
 }
 
+static void start_at(uint32_t t0) { settle(t0); }
+
 static void feed(uint32_t ticks, uint16_t pa4)
 {
 	uint32_t k;
 	for (k = 0; k < ticks; k++) step_to(++g_t, pa4);
+}
+
+/* The module called once every `step` ticks for `ticks` ticks (a slower foreground loop). */
+static void feed_every(uint32_t ticks, uint32_t step, uint16_t pa4)
+{
+	uint32_t k;
+	for (k = step; k <= ticks; k += step) { g_t += step; step_to(g_t, pa4); }
+}
+
+/* The module called at irregular intervals (1..7 ms) for at least `ticks` ticks. */
+static void feed_irregular(uint32_t ticks, uint16_t pa4)
+{
+	static const uint32_t gaps[] = { 4U, 12U, 8U, 28U, 4U, 20U, 8U, 16U };
+	static unsigned gi;
+	uint32_t done = 0U;
+	while (done < ticks) {
+		const uint32_t g = gaps[gi++ % (sizeof gaps / sizeof gaps[0])];
+		g_t += g; done += g;
+		step_to(g_t, pa4);
+	}
+}
+
+/* Walk held with Walk active for 2 s (bridge armed), the module called every `step` ticks. */
+static bool walk_armed_every(uint32_t t0, uint32_t step)
+{
+	g_walk = true;
+	start_at(t0);
+	feed_every(((LONG_TICK + 400U) / step) * step, step, DOWN);
+	return pa4_buttons_walk_held() && pa4_buttons_down_hold() > PA4_LONG_COUNT;
 }
 
 /* Runs a pattern for `ticks` after settle(start), the module called every `step` ticks; returns
@@ -116,7 +147,6 @@ static uint32_t run_inherited_power(uint32_t ticks, pa4_fn pa4)
 	return NONE;
 }
 
-static void start_at(uint32_t t0) { settle(t0); }
 
 static char *read_whole_file(const char *path)
 {
@@ -266,6 +296,83 @@ int main(void)
 	feed(LONG_TICK + 2U * ST, DOWN);
 	feed(ST, RELEASED);
 	CHECK(!pa4_buttons_walk_held(), "D4. button held 1.6 s without Walk: a dropout is not bridged");
+
+	/* D7: the Walk bridge is bounded by elapsed time, not by how often the loop calls the module
+	 * (REVIEW-EVD-PWR-001-001, PWR-REV-001). 1 ms calls = the original's 1 ms tick. */
+	ok = walk_armed_every(0U, 4U);
+	feed_every(250U * 4U, 4U, RELEASED);
+	ok = ok && pa4_buttons_walk_held();
+	feed_every(4U, 4U, DOWN);
+	CHECK(ok && pa4_buttons_walk_held(), "D7a. 1 ms calls: a 250 ms dropout is bridged");
+	ok = walk_armed_every(0U, 4U);
+	feed_every(300U * 4U, 4U, RELEASED);
+	CHECK(ok && !pa4_buttons_walk_held(), "D7b. 1 ms calls: a 300 ms dropout stops Walk");
+
+	ok = walk_armed_every(0U, 8U);
+	feed_every(250U * 4U, 8U, RELEASED);
+	ok = ok && pa4_buttons_walk_held();
+	feed_every(8U, 8U, DOWN);
+	CHECK(ok && pa4_buttons_walk_held(), "D7c. 2 ms calls: a 250 ms dropout is bridged");
+	ok = walk_armed_every(0U, 8U);
+	feed_every(252U * 4U, 8U, RELEASED);
+	CHECK(ok && !pa4_buttons_walk_held(), "D7d. 2 ms calls: a 252 ms dropout stops Walk (next call after 250 ms)");
+	ok = walk_armed_every(0U, 8U);
+	feed_every(300U * 4U, 8U, RELEASED);
+	CHECK(ok && !pa4_buttons_walk_held(), "D7e. 2 ms calls: a 300 ms dropout stops Walk (was held until ~502 ms)");
+	{
+		/* the release is seen within one call of the 250 ms deadline */
+		uint32_t calls = 0U;
+		ok = walk_armed_every(0U, 8U);
+		while (pa4_buttons_walk_held() && calls < 1000U) { feed_every(8U, 8U, RELEASED); calls++; }
+		CHECK(ok && calls * 8U > 1000U && calls * 8U <= 1000U + 8U,
+		      "D7f. 2 ms calls: Walk ends on the first call after 250 ms released");
+	}
+
+	ok = walk_armed_every(0U, 4U);
+	feed_irregular(200U * 4U, RELEASED);
+	ok = ok && pa4_buttons_walk_held();
+	feed_irregular(4U, DOWN);
+	CHECK(ok && pa4_buttons_walk_held(), "D7g. irregular 1..7 ms calls: a 200 ms dropout is bridged");
+	ok = walk_armed_every(0U, 4U);
+	feed_irregular(300U * 4U, RELEASED);
+	CHECK(ok && !pa4_buttons_walk_held(), "D7h. irregular 1..7 ms calls: a 300 ms dropout stops Walk");
+
+	/* long stall: one late call sees the whole dropout */
+	ok = walk_armed_every(0U, 4U);
+	feed_every(400U * 4U, 400U * 4U, RELEASED);
+	CHECK(ok && !pa4_buttons_walk_held(), "D7i. a 400 ms stall, first call released: Walk stops on that call");
+	ok = walk_armed_every(0U, 4U);
+	feed_every(200U * 4U, 200U * 4U, RELEASED);
+	ok = ok && pa4_buttons_walk_held();
+	feed_every(100U * 4U, 100U * 4U, RELEASED);
+	CHECK(ok && !pa4_buttons_walk_held(), "D7j. stalls of 200 + 100 ms released: bridged after 200, stopped after 300");
+
+	/* 32-bit wrap inside the dropout */
+	{
+		uint32_t before;
+		ok = walk_armed_every(0xFFFFFFFFU - (LONG_TICK + 400U) - 600U, 8U);
+		before = g_t;
+		feed_every(250U * 4U, 8U, RELEASED);
+		ok = ok && g_t < before && pa4_buttons_walk_held();
+		feed_every(8U, 8U, DOWN);
+		ok = ok && pa4_buttons_walk_held();
+		feed_every(300U * 4U, 8U, RELEASED);
+		CHECK(ok && !pa4_buttons_walk_held(), "D7k. across the 32-bit tick wrap: 250 ms bridged, 300 ms stops Walk");
+	}
+
+	/* a new press after the bridge ended: fresh confirmation, and no bridge until 1.6 s again */
+	ok = walk_armed_every(0U, 8U);
+	feed_every(300U * 4U, 8U, RELEASED);
+	feed_every(10U * ST, 8U, RELEASED);         /* press over */
+	ok = ok && pa4_buttons_down_state() == 0U;
+	feed_every(2U * ST, 8U, DOWN);
+	ok = ok && !pa4_buttons_walk_held();
+	feed_every(2U * ST, 8U, DOWN);
+	ok = ok && pa4_buttons_walk_held();
+	feed_every(100U * 4U, 8U, DOWN);
+	feed_every(3U * ST, 8U, RELEASED);
+	CHECK(ok && !pa4_buttons_walk_held(),
+	      "D7l. pressed again: confirmed by 3 samples, and a dropout is not bridged before 1.6 s");
 
 	/* D5: down window edges */
 	g_walk = false;

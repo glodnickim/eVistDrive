@@ -23,12 +23,13 @@ static pa4_machine_t pw;           /* on/off */
 static pa4_machine_t dn;           /* down / Walk */
 static bool     pw_fired;          /* the long press of THIS on/off press has fired */
 static bool     pw_boot_guard;     /* a press present since power-on has not ended yet */
-static uint16_t dn_bridge;         /* remaining 1 ms samples of the Walk dropout bridge */
+static bool     dn_bridge_armed;   /* Walk bridge: a pressed sample was seen in bridge mode */
+static uint32_t dn_pressed_at;     /* Walk bridge: tick of the last pressed sample       */
 static bool     off_latched;
 static uint32_t off_since;
 static bool     off_due;
 
-/* Button circuit test (original 0x08017328) and error 36 flags (original 0x20000354). */
+/* Button circuit test (original 0x08017308) and error 36 flags (original 0x20000354). */
 static uint32_t probe_last;        /* 1 ms step clock of the test                       */
 static uint8_t  probe_step;        /* original 0x20000356: 0 = PB8 up, >5 = PB8 down    */
 static uint8_t  probe_fail;        /* original 0x20000355: 0..2                         */
@@ -50,7 +51,8 @@ void pa4_buttons_init(uint32_t now_tick)
 	machine_init(&dn, now_tick);
 	pw_fired = false;
 	pw_boot_guard = true;
-	dn_bridge = 0U;
+	dn_bridge_armed = false;
+	dn_pressed_at = now_tick;
 	off_latched = false;
 	off_since = now_tick;
 	off_due = false;
@@ -117,7 +119,7 @@ static void power_sample(bool pressed, uint32_t now_tick)
 		if (pw_boot_guard && pw.state == PB_IDLE && !pressed) pw_boot_guard = false;
 		if (machine_common(&pw, pressed)) {
 			pw_fired = false;
-			fault_stuck = false;               /* original 0x08017930 */
+			fault_stuck = false;               /* original 0x08017910 */
 		}
 		if (pw.state == PB_HELD && pw_boot_guard) pw_fired = true;
 		return;
@@ -135,7 +137,7 @@ static void power_sample(bool pressed, uint32_t now_tick)
 			}
 		}
 	} else if (pw.hold > PA4_STUCK_COUNT) {
-		fault_stuck = true;                    /* original 0x08017900 */
+		fault_stuck = true;                    /* original 0x080178e0 */
 	}
 }
 
@@ -159,19 +161,28 @@ static bool probe_step_1ms(uint16_t pa4_raw)
 	return probe_step <= 5U;
 }
 
-static void down_sample(bool pressed, bool walk_active)
+static void down_sample(bool pressed, bool walk_active, uint32_t now_tick)
 {
 	if (dn.state != PB_HELD) {
+		dn_bridge_armed = false;
 		(void)machine_common(&dn, pressed);
 		return;
 	}
 	if (dn.hold < 0xFFFFU) dn.hold++;
 	if (dn.hold > PA4_LONG_COUNT && walk_active) {
-		/* Walk running for ~1.6 s: bridge a dropout of up to 250 one-millisecond samples. */
-		if (pressed) dn_bridge = PA4_WALK_BRIDGE_SAMPLES;
-		else if (dn_bridge > 0U) dn_bridge--;
-		else dn.state = PB_GAP1;
+		/* Walk running for ~1.6 s: bridge a dropout of up to 250 ms. The original counts 250
+		 * samples of its 1 ms IRQ tick; this module runs in the foreground loop, so the bridge is
+		 * bounded by elapsed 4 kHz ticks since the last pressed sample, not by how many samples a
+		 * slow or irregular loop managed to take (REVIEW-EVD-PWR-001-001, PWR-REV-001). */
+		if (pressed) {
+			dn_bridge_armed = true;
+			dn_pressed_at = now_tick;
+		} else if (!dn_bridge_armed || (uint32_t)(now_tick - dn_pressed_at) > PA4_WALK_BRIDGE_TICKS) {
+			dn_bridge_armed = false;
+			dn.state = PB_GAP1;
+		}
 	} else {
+		dn_bridge_armed = false;
 		dn.state = pressed ? PB_HELD : PB_GAP1;
 	}
 }
@@ -182,7 +193,7 @@ void pa4_buttons_update(uint32_t now_tick, uint16_t pa4_raw, bool walk_active)
 	const bool down_pressed = pa4_raw >= PA4_DOWN_MIN && pa4_raw <= PA4_DOWN_MAX;
 
 	/* Button circuit test: only while both buttons are idle; a press freezes it and clears the
-	 * failure count (original 0x080176ca..0x080176ee). */
+	 * failure count (original 0x080176aa..0x080176ce). */
 	bool probing = false;
 	if ((uint32_t)(now_tick - probe_last) >= PA4_FAST_SAMPLE_TICKS) {
 		probe_last += PA4_FAST_SAMPLE_TICKS;
@@ -202,7 +213,7 @@ void pa4_buttons_update(uint32_t now_tick, uint16_t pa4_raw, bool walk_active)
 		/* The original samples the down machine every call (1 ms) while Walk may be bridged. */
 		const bool fast = dn.state == PB_HELD && dn.hold >= PA4_LONG_COUNT && walk_active;
 		if (sample_due(&dn, now_tick, fast ? PA4_FAST_SAMPLE_TICKS : PA4_SAMPLE_TICKS)) {
-			down_sample(down_pressed, walk_active);
+			down_sample(down_pressed, walk_active, now_tick);
 		}
 	}
 

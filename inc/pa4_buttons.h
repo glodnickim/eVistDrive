@@ -14,26 +14,30 @@
  * Walk start, see below) does neither. Reverse: integration/discoveries/DISC-010.md.
  *
  * ORIGINAL APPLICATION (stock CRX30PC3612E102003.5; 1 ms tick, each machine samples every 8 ms):
- *  - windows: on/off 2048..2730 (0x08013650), "down" 2854..3723 (0x080134d0), both inclusive;
+ *  - windows: on/off 2048..2730 (0x08013630), "down" 2854..3723 (0x080134b0), both inclusive;
  *  - one machine per button (0x20001080 on/off, 0x20001098 down), states 0..5:
  *    0 -> 1 -> 2 on pressed samples (3 in a row confirm the press), 2 -> 3 sets the hold count to 2,
  *    3 counts +1 per sample (also on the first sample outside the window) and goes to 4 when outside,
  *    4 and 5 return to 3 on a pressed sample with the hold count intact; a 3rd sample outside ends
  *    the press (5 -> 0);
  *  - on/off: hold count 200 (~1.6 s) latches the power-off, which happens > 500 ms later whatever
- *    the button does (0x080174f4, 0x0801742a) - ~2.1 s with the button held the whole time;
- *  - down / Walk: Walk is active while the down machine is in state 3 (0x080171f8) and the display
+ *    the button does (0x080174d4, 0x0801740a) - ~2.1 s with the button held the whole time;
+ *  - down / Walk: Walk is active while the down machine is in state 3 (0x080171d8) and the display
  *    selects Walk (level 6). Once the hold count is >= 200 (~1.6 s) with Walk active the machine
- *    samples every 1 ms and a dropout is bridged for 250 samples = 250 ms (0x08017b78, 0x08017c1a);
+ *    samples every 1 ms and a dropout is bridged for 250 samples = 250 ms (0x08017b58, 0x08017bfa);
+ *    the original runs this from its 1 ms timer IRQ, so 250 samples are 250 ms. Here the module
+ *    runs in the foreground loop, so the bridge is bounded by elapsed time since the last pressed
+ *    sample (PA4_WALK_BRIDGE_TICKS), whatever the loop rate; release is seen on the first sample
+ *    after the deadline, i.e. within one loop iteration of it;
  *  - the stock start requires the 1.6 s hold (event 6) before Walk may run; FT removes that
  *    condition (cmp r4,#6 ; bne -> nop ; nop) and so do we: Walk follows state 3 at once.
  *
- *  - button circuit test (0x08017328): while both buttons are idle, every 256 ms PB8 goes up for
+ *  - button circuit test (0x08017308): while both buttons are idle, every 256 ms PB8 goes up for
  *    ~5 ms and PA4 must fall below 1240 on steps 2..4; three failing samples in a row (without a
  *    good one) set the circuit fault, a passing test clears it. The machines do not sample while
  *    PB8 owns the line; a press freezes the test;
- *  - on/off held > 800 samples (6.4 s) sets the stuck flag (0x08017900), cleared when the press
- *    ends; either flag is error 36 on the display (0x08018e72) and blocks Walk (0x0800fb9c) -
+ *  - on/off held > 800 samples (6.4 s) sets the stuck flag (0x080178e0), cleared when the press
+ *    ends; either flag is error 36 on the display (0x08018e52) and blocks Walk (0x0800fb7c) -
  *    main.c maps it to MS.error_state = ERR_BUTTON;
  *  - the press the bike was switched on with is consumed by the original's power-on event; here
  *    the press present since init must end before an on/off press can switch the bike off.
@@ -53,7 +57,7 @@
 #define PA4_FAST_SAMPLE_TICKS       4U     /* 1 ms: down machine while Walk is bridged          */
 #define PA4_HOLD_START              2U     /* hold count on entering state 3                    */
 #define PA4_LONG_COUNT              200U   /* ~1.6 s: on/off long press, Walk bridge armed       */
-#define PA4_WALK_BRIDGE_SAMPLES     250U   /* 1 ms samples = 250 ms dropout bridged during Walk */
+#define PA4_WALK_BRIDGE_TICKS       1000U  /* 250 ms dropout bridged during Walk (elapsed time)  */
 #define PA4_POWER_OFF_DELAY_TICKS   2000U  /* > 500 ms from the long press to power-off         */
 #define PA4_STUCK_COUNT             800U   /* on/off hold count above which the button is stuck  */
 #define PA4_PROBE_MAX               1240U  /* 0x4D8: PA4 must be below this while PB8 is up      */
