@@ -654,7 +654,10 @@ static void t5_hard_inhibits(void)
 		printf("  %s: Iq %d -> 0 after %u control ticks\n", NAME[kind], at, zero_at);
 		CHECK(at > 0 && req_zero && mono && exact_zero && zero_at <= 3200U / 4U + 4U,
 			"T5: a hard inhibit requests exactly zero at once and the reference only falls to exact zero within 200 ms");
-		if (kind == 0) CHECK(zero_at == 0, "T5: the direction inhibit is exact zero in the same update");
+		/* TASK-EVD-TQ-06-G2: a reverse step on a moving bike decays along the G53 output (here
+		 * 666 control ticks = 166 ms) instead of stepping to zero; the 200 ms bound is the check
+		 * above. The same-update zero stays for standstill (reverse_ramp_host.c). */
+		if (kind == 0) CHECK(zero_at > 0, "T5: the direction inhibit on a moving bike is a decay, not a same-update step");
 	}
 }
 

@@ -225,7 +225,10 @@ sprint on the flat and a slow climb ask for opposite dynamics from similar torqu
         |                                 v
         +------------------------------ STOPPING --resumed--> FORWARD
 
-     any state --reverse crank step--> REVERSE   (assist blocked immediately)
+     any state --reverse crank step--> REVERSE   (assist blocked immediately: no new/rising demand;
+                                                  at standstill the request is zero in the same tick,
+                                                  while moving it decays with the G53 output and is
+                                                  zero within 200 ms - TASK-EVD-TQ-06-G2)
      any state --illegal transition--> INVALID   (assist blocked immediately)
      REVERSE / INVALID --inhibit cleared--> STOPPED
 ```

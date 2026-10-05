@@ -180,13 +180,23 @@ static void scenarios(void)
 		cmd.release_ticks_16k == 3200U && cmd.zero_policy == FIS_ZERO_POLICY_NONE,
 		"P1/P4: service cut preserves real-stop SAFETY/200 ms and suppresses QUIET");
 
-	/* P2: direction inhibit is same-update exact zero. */
+	/* P2: direction inhibit at standstill is same-update exact zero. On a MOVING bike it is a
+	 * bounded, never-rising decay of the G53 output instead (TASK-EVD-TQ-06-G2,
+	 * OWNER-DEC-2026-10-05-TQ06G2-A; the full ramp is pinned in reverse_ramp_host.c). */
 	reset_all(); in = base_input(); establish_positive(&in, &cmd);
+	in.speed_x100 = 9U;
 	in.direction_inhibit = true;
 	pipeline_tick(&in, &cmd);
 	CHECK(cmd.final_iq_request == 0 && cmd.slew_mode == FIS_MODE_FORCE_ZERO &&
 		cmd.zero_policy == FIS_ZERO_POLICY_QUIET && iq_ref == 0,
-		"P2: direction inhibit commands same-update exact zero and QUIET");
+		"P2: direction inhibit at standstill commands same-update exact zero and QUIET");
+	reset_all(); in = base_input(); establish_positive(&in, &cmd);
+	const int32_t moving_before = cmd.final_iq_request;
+	in.direction_inhibit = true;
+	pipeline_tick(&in, &cmd);
+	CHECK(cmd.final_iq_request <= moving_before && cmd.slew_mode != FIS_MODE_SAFETY &&
+		(cmd.final_iq_request > 0 ? cmd.slew_mode == FIS_MODE_BYPASS : true),
+		"P2: direction inhibit while moving never rises and does not step through the safety release");
 
 	/* P3/P4: hard vetoes own the 200 ms safety release; held references cannot rise. */
 	reset_all(); in = base_input(); establish_positive(&in, &cmd);

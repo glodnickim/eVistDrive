@@ -1032,8 +1032,8 @@ static void production_wiring_checks(void)
 			count_in_span(update, update_end, "AP2_SAFETY_RELEASE_MS*AP2_FOC_TICKS_PER_MS") == 1,
 			"T14: native safety and true stop retain the 200 ms SAFETY owner");
 		CHECK(update && update_end && count_in_span(update, update_end,
-			"cmd->slew_mode=FIS_MODE_BYPASS") == 1,
-			"T14: normal and limiter paths retain the G53 BYPASS owner");
+			"cmd->slew_mode=FIS_MODE_BYPASS") == 2,
+			"T14: normal and limiter paths retain the G53 BYPASS owner (+ the moving-bike direction decay, TQ-06-G2)");
 		CHECK(update && update_end && count_in_span(update, update_end,
 			"quiet=cmd->final_iq_request==0 && (assist_off || !in->forward_valid);") == 1 &&
 			count_in_span(update, update_end, "cmd->final_iq_request=lim.final_iq;") == 1,

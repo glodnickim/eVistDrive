@@ -178,9 +178,19 @@ static void check_moving_ramp(const scn_t *s)
 	}
 	snprintf(m, sizeof m, "%s: published request never rises", s->name);
 	CHECK(!rose, m);
-	snprintf(m, sizeof m, "%s: max fall %d/ms <= G53 own fall %d/ms + 1", s->name,
-		(int)max_fall, (int)max_g53_fall);
-	CHECK(max_fall <= max_g53_fall + 1, m);
+	if (s->load_held) {
+		/* The rider keeps pushing: the G53 chain itself does not decay, so the request is held
+		 * (not rising) until the 200 ms hard bound forces the zero - that single step is the
+		 * bound, not the chain. Everything before it must be the unchanged held value. */
+		bool held = true;
+		for (int k = 0; k < RELEASE_BOUND_MS - 1; ++k) if (r.final_iq[k] != r.before_stop) held = false;
+		snprintf(m, sizeof m, "%s: request held at %d until the 200 ms bound", s->name, (int)r.before_stop);
+		CHECK(held, m);
+	} else {
+		snprintf(m, sizeof m, "%s: max fall %d/ms <= G53 own fall %d/ms + 1", s->name,
+			(int)max_fall, (int)max_g53_fall);
+		CHECK(max_fall <= max_g53_fall + 1, m);
+	}
 	const int z = first_zero(r.final_iq);
 	snprintf(m, sizeof m, "%s: request reaches 0 within %d ms (at %d ms)", s->name,
 		RELEASE_BOUND_MS, z);

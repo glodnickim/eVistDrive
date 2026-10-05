@@ -66,8 +66,12 @@ assist path. The rules that are not negotiable:
 
 - `assist_pipeline_update()` is the ONLY place pedal assist becomes a current request. Do not add
   a second writer, a floor, a boost or an override beside or after it.
-- A reverse crank step, a safety cut or assist level 0 means the request is exactly zero in the
-  SAME tick. No hold, estimator or ramp may carry a positive value past that point.
+- A safety cut or assist level 0 means the request is exactly zero in the SAME tick, and so does a
+  reverse/invalid crank step at standstill (speed_x100 <= 9). No hold, estimator or ramp may carry
+  a positive value past that point. Exception (TASK-EVD-TQ-06-G2, owner decision
+  OWNER-DEC-2026-10-05-TQ06G2-A): a reverse/invalid crank step on a MOVING bike (speed_x100 >= 10)
+  with no native cut and no real stop never lets the request rise, follows the G53 chain's own
+  decay (the G5300 ramp) and is forced to exactly zero no later than 200 ms after the inhibit began.
 - There is ONE filter on the measurement path and two dynamics primitives (`inc/ap2_math.h`).
   If a change seems to need a third mechanism in the signal path, the block it sits in is
   modelled wrongly - fix the model, do not add a filter.

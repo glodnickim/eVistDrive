@@ -21,6 +21,9 @@ typedef struct {
     /* The request published on the previous tick: the reference a non-forward tick may not
      * rise above. 0 after every reset and after every veto, so nothing waits behind one. */
     int32_t last_final_iq;
+    /* 4 kHz ticks the direction inhibit has been continuously active (saturating). It bounds
+     * the moving-bike decay below; 0 whenever the inhibit is not active. */
+    uint32_t inhibit_ticks;
     assist_pipeline_telemetry_t tlm;
     g53_port_output_t g53;
 } ap2_pipeline_ctx_t;
@@ -159,8 +162,32 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
     else if(!in->forward_valid && cmd->final_iq_request>ctx.last_final_iq)
         cmd->final_iq_request=ctx.last_final_iq;
     bool quiet=false;
-    if(in->direction_inhibit) { /* P2, before P3/P4. */
-        cmd->final_iq_request=0; cmd->slew_mode=FIS_MODE_FORCE_ZERO; quiet=true;
+    if(in->direction_inhibit) {
+        if(ctx.inhibit_ticks<UINT32_MAX-used_ticks) ctx.inhibit_ticks+=used_ticks;
+        else ctx.inhibit_ticks=UINT32_MAX;
+    } else ctx.inhibit_ticks=0;
+    /*
+     * P2, before P3/P4. TASK-EVD-TQ-06-G2 / OWNER-DEC-2026-10-05-TQ06G2-A: a reverse or invalid
+     * crank step on a MOVING bike (the speed G53 itself sees, speed_x100/10 > 0) must not be a
+     * step to zero: stock G5300 ramps the demand down while the wheel turns and cuts at once only
+     * at standstill. The direction authority therefore becomes "never rise, bounded decay":
+     *   - the published request is the G53 chain's own output (it already decays like G5300),
+     *     clamped so it never exceeds the previous tick's published value;
+     *   - it is exactly zero no later than AP2_SAFETY_RELEASE_MS after the inhibit began, whatever
+     *     the chain does (hard bound, FORCE_ZERO from then on).
+     * Everything else keeps the same-tick exact zero: standstill, assist off, and any native cut
+     * (brake / fault / calibration / invalid sensor) or real stop that coincides with the inhibit.
+     */
+    const bool moving=in->speed_x100>=10u;
+    if(in->direction_inhibit) {
+        const bool bounded_decay=moving && !assist_off && !native_cut && !in->real_stop &&
+            !in->service_cut && ctx.inhibit_ticks<AP2_SAFETY_RELEASE_MS*AP2_TICKS_PER_MS;
+        if(bounded_decay) {
+            if(cmd->final_iq_request>ctx.last_final_iq) cmd->final_iq_request=ctx.last_final_iq;
+            cmd->slew_mode=FIS_MODE_BYPASS; quiet=cmd->final_iq_request==0;
+        } else {
+            cmd->final_iq_request=0; cmd->slew_mode=FIS_MODE_FORCE_ZERO; quiet=true;
+        }
     } else if(native_cut || in->real_stop) {
         cmd->final_iq_request=0; cmd->slew_mode=FIS_MODE_SAFETY;
         cmd->release_ticks_16k=AP2_SAFETY_RELEASE_MS*AP2_FOC_TICKS_PER_MS;
