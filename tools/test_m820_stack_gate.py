@@ -104,7 +104,21 @@ DEFECTS = {
 }
 
 
-def fixture_source(defect: str, extra_slot: int | None = None) -> str:
+# REV-A1R-01: the first reviewed nvic_config call replaced by asm whose argument is written
+# under an IT condition that is FALSE at run time - the textual value equals the reviewed one,
+# the executed one does not, so the decoder must refuse it.
+_NVIC_CLOBBER = '::: "r0", "r1", "r2", "r3", "ip", "lr", "cc", "memory"'
+NVIC_FIRST_CALL = {
+    # review fixture Z3 (verbatim): executes nvic_irq_enable(8, 0, 0)
+    "COND_ARG_R0": '__asm volatile("movs r0, #8\\n\\tcmp r0, #8\\n\\tit ne\\n\\tmovne r0, #21\\n\\t'
+                   'movs r1, #0\\n\\tmovs r2, #0\\n\\tbl nvic_irq_enable" ' + _NVIC_CLOBBER + ');',
+    # conditional r2 before unconditional r0/r1: executes nvic_irq_enable(21, 0, 7)
+    "COND_ARG_R2": '__asm volatile("movs r2, #7\\n\\tcmp r2, #7\\n\\tit ne\\n\\tmovne r2, #0\\n\\t'
+                   'movs r0, #21\\n\\tmovs r1, #0\\n\\tbl nvic_irq_enable" ' + _NVIC_CLOBBER + ');',
+}
+
+
+def fixture_source(defect: str, extra_slot: int | None = None, nvic_first: str | None = None) -> str:
     slots = dict(gate.EXPECTED_VECTOR_SLOTS)
     if extra_slot is not None:
         slots[extra_slot] = "TIMER4_IRQHandler"
@@ -117,6 +131,9 @@ def fixture_source(defect: str, extra_slot: int | None = None) -> str:
             "void NVIC_SetPriority(int irq, unsigned pri) { sink = irq + (int)pri; }"]
     for caller, calls in gate.EXPECTED_PRIORITY_CALLS.items():
         body = " ".join(f"{fn}({', '.join(str(v) for v in args)});" for fn, args in calls)
+        if nvic_first is not None and caller == "nvic_config":
+            first = f"{calls[0][0]}({', '.join(str(v) for v in calls[0][1])});"
+            body = body.replace(first, NVIC_FIRST_CALL[nvic_first], 1)
         out.append(f"void {caller}(void) {{ {body} }}")
     out.append(DEFECTS[defect])
     out += ["static int work_leaf(int x) { volatile int pad[8]; pad[0] = x; return pad[0] + 1; }",
@@ -147,12 +164,13 @@ class Runner:
         self.failures: list[str] = []
         self.results: list[tuple[str, str]] = []
 
-    def build(self, tag: str, defect: str, extra_slot: int | None = None) -> dict:
+    def build(self, tag: str, defect: str, extra_slot: int | None = None,
+              nvic_first: str | None = None) -> dict:
         d = self.work / tag
         objdir = d / "objects"
         objdir.mkdir(parents=True, exist_ok=True)
         src = d / "src_fixture.c"
-        src.write_text(fixture_source(defect, extra_slot), encoding="ascii")
+        src.write_text(fixture_source(defect, extra_slot, nvic_first), encoding="ascii")
         (d / "fixture.ld").write_text(LINKER, encoding="ascii")
         obj = objdir / "src_fixture.c.o"
         subprocess.run([self.gcc, *CPU, "-O0", "-g", "-ffreestanding", "-fstack-usage",
@@ -243,6 +261,13 @@ def main() -> int:
         fx = r.build(tag, defect)
         rc, rep = r.gate(fx, tag)
         r.expect(tag, rc, rep, False, needle)
+
+    # REV-A1R-01: an NVIC priority argument written under an IT condition is not decodable.
+    for tag, variant in (("M5-conditional-nvic-arg-r0", "COND_ARG_R0"),
+                         ("M6-conditional-nvic-arg-r2", "COND_ARG_R2")):
+        fx = r.build(tag, "NONE", nvic_first=variant)
+        rc, rep = r.gate(fx, tag)
+        r.expect(tag, rc, rep, False, "IRQ TOPOLOGY UNDECODABLE: nvic_config")
 
     for tag, defect, needle in (("A-direct-recursion", "DIRECT_REC", "RECURSIVE CALL GRAPH: rec_a -> rec_a"),
                                 ("B-indirect-recursion", "INDIRECT_REC", "rec_a -> rec_b -> rec_a"),

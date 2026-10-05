@@ -634,13 +634,15 @@ def _load_su(path: str) -> tuple[dict[str, list[int]], list[str]]:
     return recs, problems
 
 
-def _decode_args(ins: list, idx: int, nargs: int, targets: set[int]) -> tuple | None:
-    """r0..r(nargs-1) at the call ins[idx], set by `mov rN, #imm` on the straight-line path
-    directly before it (stops at any branch, call, IT block or incoming branch target)."""
+def _decode_args(ins: list, flow: list, idx: int, nargs: int, targets: set[int]) -> tuple | None:
+    """r0..r(nargs-1) at the call ins[idx], set by an UNCONDITIONAL `mov rN, #imm` on the
+    straight-line path directly before it (stops at any branch, call, IT block or incoming
+    branch target). A conditional write (IT block) of an argument makes it undecodable."""
     vals: dict[str, int] = {}
     for j in range(idx - 1, max(0, idx - 12) - 1, -1):
         a, op, args, _lit = ins[j]
         b, _ = _base(op)
+        cond = flow[j][1]
         if ins[j + 1][0] in targets:
             break
         if b in ("b", "bl", "blx", "bx", "cbz", "cbnz", "pop", "tbb", "tbh") or b.startswith("it") \
@@ -650,7 +652,7 @@ def _decode_args(ins: list, idx: int, nargs: int, targets: set[int]) -> tuple | 
             if r in vals or not _writes(op, args, r):
                 continue
             m = re.fullmatch(rf"{r},\s*#(-?\d+)", args)
-            if b in ("mov", "movw") and m:
+            if b in ("mov", "movw") and m and not cond:
                 v = int(m.group(1)) & 0xFFFFFFFF
                 vals[r] = v - (1 << 32) if v & 0x80000000 else v
             else:
@@ -692,7 +694,7 @@ def _irq_topology(vec, funcs, by_addr, name_to_addr, flows, targets) -> list[str
                 errs.append(f"IRQ TOPOLOGY UNDECODABLE: {caller} {a:08x} {op} to {callee} "
                             f"(conditional or tail call)")
                 continue
-            decoded = _decode_args(f["ins"], i, PRIORITY_FUNCS[callee], targets)
+            decoded = _decode_args(f["ins"], flows[addr], i, PRIORITY_FUNCS[callee], targets)
             if decoded is None:
                 errs.append(f"IRQ TOPOLOGY UNDECODABLE: {caller} {a:08x} call to {callee}")
                 continue
