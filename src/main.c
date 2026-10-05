@@ -66,7 +66,7 @@ OF SUCH DAMAGE.
 #include "cadence_filter.h"      /* FW-140: stable control cadence, raw kept for diag */
 #include "battery_current.h"     /* FW-128B1: battery-current filter on the sample clock */
 #include "battery_trip.h"        /* TASK-EVD-TQ-06-G1: hard battery-overcurrent trip (ADR-013 D1) */
-#include "power_button.h"        /* DISC-010: on/off button power-off as in the original application */
+#include "pa4_buttons.h"         /* DISC-010: the PA4 button line (on/off, down/Walk) as in the original application */
 #include "soc_core.h"            /* FW-144: production SOC math shared with Level-4 SIL */
 #include "diag_budget.h"      /* FW-126.5: the RAM budget this probe is asserted against */
 #if CAN_DIAGNOSTICS_ENABLE
@@ -626,7 +626,6 @@ uint16_t gap_count=0, gap_min=0xFFFF, gap_max=0, gap_last=0;
 uint8_t  gap_hist[8]={0,0,0,0,0,0,0,0};
 uint8_t ui8_overflow_flag=0;
 uint8_t ui8_SPEED_control_flag=0;
-uint8_t ui8_walk_btn_counter=0;
 uint8_t ui8_walk_btn_state=0;
 uint8_t ui8_wa_speed_paused=0;
 uint8_t ui8_wa_comm_block=0;  /* set by comm_inhibit; PA4 must be released before Walk may start again */
@@ -1351,7 +1350,7 @@ int main(void)
     prev_metric_why_notlatched = false;
 
     can_periodic_init(&hmi_schedule, control_time_ticks);
-    power_button_init(control_time_ticks); //DISC-010
+    pa4_buttons_init(control_time_ticks); //DISC-010
     while (1){
     	fwdgt_counter_reload();
 
@@ -1491,10 +1490,10 @@ int main(void)
             } //40/4000Hz=10ms torque sensor emulation (dev telemetry - OFF by default, own flag, own best-effort path outside can_tx_queue - FW-110)
 #endif
 
-            /* DISC-010: the on/off button runs on its own 8 ms sampling, as in the original
+            /* DISC-010: the PA4 buttons run on their own 8 ms sampling, as in the original
              * application, not on the 40 ms slow loop. The power-off itself stays in the slow loop
-             * beside the other two power-off paths. */
-            power_button_update(control_time_ticks, adc_value[5]);
+             * beside the other two power-off paths; Walk reads pa4_buttons_walk_held(). */
+            pa4_buttons_update(control_time_ticks, adc_value[5], MS.pushassist_flag != RESET);
 
             if (slow_loop_counter > SLOW_LOOP_TICKS){ //slow loop base tick 40ms (160/4000Hz); CAN messages use own counters
             	//FW-132: how late this pass actually was, kept as a running worst case. Without it
@@ -1602,8 +1601,8 @@ int main(void)
 				else slow_loop_counter = 0;
 
 				//DISC-010: PA4 4095 released, "down" 2854..3723, on/off 2048..2730 (original application windows).
-				//Long press ~1.6 s latches the power-off, which follows > 500 ms later (src/power_button.c).
-				if(power_button_power_off_due()){
+				//Long press ~1.6 s latches the power-off, which follows > 500 ms later (src/pa4_buttons.c).
+				if(pa4_buttons_power_off_due()){
 					power_off_controller(); //on/off button held -> self power-off
 				}
 
@@ -1611,7 +1610,7 @@ int main(void)
 				//FW-087: start_phase counts as activity. It used to be covered implicitly by the
 				//fake 1 rpm sitting in MS.cadence; pedalling that has begun but not yet produced a
 				//cadence reading must not look like inactivity to the auto-off timer.
-				if(MS.Speedx100>0 || MS.cadence>0 || start_phase || MS.i_q_setpoint>0 || MS.brake_active_flag || adc_value[5]<3300){
+				if(MS.Speedx100>0 || MS.cadence>0 || start_phase || MS.i_q_setpoint>0 || MS.brake_active_flag || pa4_buttons_any_activity()){ //DISC-010: was raw PA4 < 3300
 					idle_ticks_slow=0;
 				}
 				else if(idle_ticks_slow < 0xFFFFFFFF){
@@ -1923,7 +1922,8 @@ void gpio_config(void)
     gpio_init(GPIOC, GPIO_MODE_AIN, GPIO_OSPEED_MAX, GPIO_PIN_3|GPIO_PIN_4); //Battery Voltage
     gpio_init(GPIOB, GPIO_MODE_AIN, GPIO_OSPEED_MAX, GPIO_PIN_1); // Motor Temp
 
-    gpio_init(GPIOB, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_12);
+    gpio_init(GPIOB, GPIO_MODE_OUT_PP, GPIO_OSPEED_50MHZ, GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_8|GPIO_PIN_12);
+    GPIO_BC(GPIOB) = GPIO_PIN_8; //DISC-010: PB8 driven low, its idle level in the original application (was left floating)
 
 	//delay_1ms(200);
     GPIO_BOP(GPIOB) = GPIO_PIN_4; //set Pin4 (set by Bootloader on BL38)
@@ -3169,15 +3169,11 @@ void reg_ADC_processing(void)
     //report's list of remaining main-loop-dependent counters.
     //FW-103/104: control_time_ticks replaces Speed_counter - incremented in TIMER1_IRQHandler itself.
     if(uint16_half_rotation_counter<64000)uint16_half_rotation_counter++;
-    //--- Walk Assist physical button (PA4), debounce z histereza (press + release) ---
-    uint8_t wa_btn_in_range=(adc_value[5]>=WA_BUTTON_THRESHOLD_LOW && adc_value[5]<=WA_BUTTON_THRESHOLD_HIGH);
-    if(!ui8_walk_btn_state){
-        if(wa_btn_in_range){ if(++ui8_walk_btn_counter>=WA_BUTTON_DEBOUNCE){ui8_walk_btn_state=1; ui8_walk_btn_counter=0;} }
-        else ui8_walk_btn_counter=0;
-    }else{
-        if(!wa_btn_in_range){ if(++ui8_walk_btn_counter>=WA_BUTTON_RELEASE){ui8_walk_btn_state=0; ui8_walk_btn_counter=0;} }
-        else ui8_walk_btn_counter=0;
-    }
+    //--- Walk Assist physical button (PA4) ---
+    //DISC-010: the down button as in the original application (src/pa4_buttons.c): window
+    //2854..3723, 3 x 8 ms to confirm, a 1..2-sample dropout resumes Walk at once, and after ~1.6 s
+    //of Walk a dropout of up to 250 ms is bridged. Walk starts at once (FT), no 1.6 s hold.
+    ui8_walk_btn_state = pa4_buttons_walk_held() ? 1U : 0U;
 
     //--- wheel-speed safety pause; resume automatically 0.5 km/h below the cut-off ---
     uint16_t wa_speed_limit=assist_modes_get_wa_max_wheel_x100();
@@ -3207,7 +3203,7 @@ void reg_ADC_processing(void)
     uint8_t wa_down_edge=(MS.button_down_flag!=RESET) && !ui8_wa_down_prev;
     uint8_t wa_light_changed=(uint8_t)(MS.light_flag!=RESET) != ui8_wa_light_prev;
     uint8_t wa_level_changed=MS.assist_level != ui8_wa_level_prev;
-    uint8_t wa_power_pressed=adc_value[5]<2800U;
+    uint8_t wa_power_pressed=pa4_buttons_power_pressed() ? 1U : 0U; //DISC-010: was raw PA4 < 2800
     uint8_t wa_cancel_event=wa_up_edge || wa_down_edge || wa_light_changed ||
                             wa_level_changed || wa_power_pressed ||
                             (wa_press_edge && ui8_wa_latch_active);
@@ -3247,7 +3243,7 @@ void reg_ADC_processing(void)
            !ui8_walk_btn_state &&
            MS.button_up_flag==RESET &&
            MS.button_down_flag==RESET &&
-           adc_value[5]>=2800U){
+           !pa4_buttons_power_pressed()){
             ui8_wa_latch_cancel_block=0;
         }
         if(!ui8_wa_latch_active && !ui8_wa_latch_cancel_block && !ui8_wa_comm_block &&

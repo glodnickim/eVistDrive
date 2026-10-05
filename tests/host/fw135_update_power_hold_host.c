@@ -202,7 +202,7 @@ int main(void)
 
 	/* ==== T5: the hold gates the silence path only ==== */
 	{
-		const char *button = strstr(mainc, "if(power_button_power_off_due()){"); /* DISC-010 */
+		const char *button = strstr(mainc, "if(pa4_buttons_power_off_due()){"); /* DISC-010 */
 		CHECK(button != NULL, "T5: the on/off button power-off exists");
 		const char *button_off = button ? strstr(button, "power_off_controller();") : NULL;
 		CHECK(button_off != NULL, "T5: and still calls power_off_controller()");

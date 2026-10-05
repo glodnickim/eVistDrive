@@ -51,6 +51,7 @@
 #include "tuning_config.h"
 #include "torque_input.h"
 #include "walk_assist_motor.h"
+#include "pa4_buttons.h"     /* DISC-010: the extracted Walk block reads the PA4 owner */
 
 /* ---------------- main.c / CAN_Display.c globals, same names and types ---------------- */
 MotorState_t MS;
@@ -229,6 +230,7 @@ static void power_on(void)
 	motor_core_init(&MS); ride_control_init();
 	pas_sampler_init(0U); pas_direction_init(); pas_liveness_init();
 	walk_motor_reset(); walk_motor_release();
+	pa4_buttons_init(0U);                       /* DISC-010: the PA4 owner, as main() before while(1) */
 	mb = ride_control_final_iq_slew_mailbox();
 }
 
@@ -286,6 +288,8 @@ static void tick(void)
 	/* [GLUE] the bridge-on path of the main loop, which phase 2 relies on for ui_8_PWM_ON_Flag */
 	if (MS.i_q_setpoint > 0) { ui_8_PWM_ON_Flag = 1U; pwm_enabled = true; }
 
+	/* [GLUE] DISC-010: main()'s while(1) feeds the PA4 owner every iteration */
+	pa4_buttons_update(G.now, adc_value[5], MS.pushassist_flag != RESET);
 	walk_block();
 #include "x_phase2_abort.inc"
 	ride_control_input_t ci; memset(&ci, 0, sizeof(ci));

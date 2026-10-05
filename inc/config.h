@@ -836,10 +836,7 @@
 
 //---------------------------------------------------------------------
 //Walk Assist safety settings
-#define WA_BUTTON_THRESHOLD_LOW  3000
-#define WA_BUTTON_THRESHOLD_HIGH 3700
-#define WA_BUTTON_DEBOUNCE       20
-#define WA_BUTTON_RELEASE        20    // probki poza zakresem [LOW,HIGH] by wylaczyc przycisk (anty-chatter)
+// DISC-010: the PA4 down-button window and debounce live in inc/pa4_buttons.h (original application).
 #define WA_SPEED_RESUME_HYST_X100 50   // restart 0.5 km/h below the per-bank wheel cut-off
 
 //---------------------------------------------------------------------

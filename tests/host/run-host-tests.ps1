@@ -406,9 +406,9 @@ $suites = @(
        Modules = @(Join-Path $root 'src\battery_trip.c')
        IncludeDirs = @(Join-Path $PSScriptRoot 'common')
        Defines = @("-DMAIN_C_PATH=$mainCPathForward", "-DRIDE_CONTROL_C_PATH=$rideControlCPathForward") },
-    @{ Name = 'DISC-010 on/off button power-off as in the original application (real module + main.c wiring guards)'
-       Harness = Join-Path $PSScriptRoot 'power_button_host.c'
-       Modules = @(Join-Path $root 'src\power_button.c')
+    @{ Name = 'DISC-010 PA4 buttons (on/off power-off, down/Walk) as in the original application (real module + main.c wiring guards)'
+       Harness = Join-Path $PSScriptRoot 'pa4_buttons_host.c'
+       Modules = @(Join-Path $root 'src\pa4_buttons.c')
        IncludeDirs = @(Join-Path $PSScriptRoot 'common')
        Defines = @("-DMAIN_C_PATH=$mainCPathForward") },
     @{ Name = 'TQ-06-G1 closed loop: real limiter + battery-current tap + hard trip vs assumed plant (36 cases)'
