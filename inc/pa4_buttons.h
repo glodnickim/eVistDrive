@@ -28,10 +28,18 @@
  *  - the stock start requires the 1.6 s hold (event 6) before Walk may run; FT removes that
  *    condition (cmp r4,#6 ; bne -> nop ; nop) and so do we: Walk follows state 3 at once.
  *
- * Deliberately NOT copied: the 0x02F83204 CAN notice during the power-off delay, the button
- * circuit test with PB8 pulses and error 36, the stuck-button flag, combined-button events, the
- * service mode (0x20000357) and the power-on hold check. PB8 is held low (its idle level in the
- * original application) by main.c.
+ *  - button circuit test (0x08017328): while both buttons are idle, every 256 ms PB8 goes up for
+ *    ~5 ms and PA4 must fall below 1240 on steps 2..4; three failing samples in a row (without a
+ *    good one) set the circuit fault, a passing test clears it. The machines do not sample while
+ *    PB8 owns the line; a press freezes the test;
+ *  - on/off held > 800 samples (6.4 s) sets the stuck flag (0x08017900), cleared when the press
+ *    ends; either flag is error 36 on the display (0x08018e72) and blocks Walk (0x0800fb9c) -
+ *    main.c maps it to MS.error_state = ERR_BUTTON;
+ *  - the press the bike was switched on with is consumed by the original's power-on event; here
+ *    the press present since init must end before an on/off press can switch the bike off.
+ *
+ * Deliberately NOT copied: the 0x02F83204 CAN notice during the power-off delay, combined-button
+ * events, the service mode (0x20000357) and the power-on hold check (see DISC-010).
  *
  * Timebase: control_time_ticks (4 kHz). Called from main()'s while(1); a late loop only delays a
  * sample, it never produces a burst of catch-up samples.
@@ -47,6 +55,8 @@
 #define PA4_LONG_COUNT              200U   /* ~1.6 s: on/off long press, Walk bridge armed       */
 #define PA4_WALK_BRIDGE_SAMPLES     250U   /* 1 ms samples = 250 ms dropout bridged during Walk */
 #define PA4_POWER_OFF_DELAY_TICKS   2000U  /* > 500 ms from the long press to power-off         */
+#define PA4_STUCK_COUNT             800U   /* on/off hold count above which the button is stuck  */
+#define PA4_PROBE_MAX               1240U  /* 0x4D8: PA4 must be below this while PB8 is up      */
 
 void pa4_buttons_init(uint32_t now_tick);
 
@@ -69,5 +79,13 @@ uint16_t pa4_buttons_power_hold(void);
 bool     pa4_buttons_power_off_latched(void);
 uint8_t  pa4_buttons_down_state(void);
 uint16_t pa4_buttons_down_hold(void);
+
+/* Button circuit test output: main.c drives PB8 from this after every update. */
+bool pa4_buttons_pb8_high(void);
+/* Error 36: circuit fault or stuck on/off button. */
+bool pa4_buttons_fault(void);
+bool pa4_buttons_fault_circuit(void);
+bool pa4_buttons_fault_stuck(void);
+uint32_t pa4_buttons_power_samples(void);   /* diagnostics: on/off samples taken since init */
 
 #endif

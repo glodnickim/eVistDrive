@@ -1494,6 +1494,8 @@ int main(void)
              * application, not on the 40 ms slow loop. The power-off itself stays in the slow loop
              * beside the other two power-off paths; Walk reads pa4_buttons_walk_held(). */
             pa4_buttons_update(control_time_ticks, adc_value[5], MS.pushassist_flag != RESET);
+            //DISC-010: the button circuit test owns PB8 (up ~5 ms every 256 ms while no button is pressed)
+            if(pa4_buttons_pb8_high()) GPIO_BOP(GPIOB) = GPIO_PIN_8; else GPIO_BC(GPIOB) = GPIO_PIN_8;
 
             if (slow_loop_counter > SLOW_LOOP_TICKS){ //slow loop base tick 40ms (160/4000Hz); CAN messages use own counters
             	//FW-132: how late this pass actually was, kept as a running worst case. Without it
@@ -1563,8 +1565,10 @@ int main(void)
             		else if(torque_fault){ MS.error_state=ERR_TORQUE; err_pulse_counter=0; } //torque sensor signal failure
             		else if(overtemp_stage==1){ //pulsed: ON for ERR_PULSE_ON_S, OFF for ERR_PULSE_OFF_S (HMI blinks)
             			if(++err_pulse_counter>=(ERR_PULSE_ON_S+ERR_PULSE_OFF_S)) err_pulse_counter=0;
-            			MS.error_state=(err_pulse_counter<ERR_PULSE_ON_S)?ERR_OVERTEMP:0;
-            		} else { MS.error_state=0; err_pulse_counter=0; }
+						MS.error_state=(err_pulse_counter<ERR_PULSE_ON_S)?ERR_OVERTEMP:(pa4_buttons_fault()?ERR_BUTTON:0);
+					}
+					else if(pa4_buttons_fault()){ MS.error_state=ERR_BUTTON; err_pulse_counter=0; } //DISC-010: button circuit / stuck on/off (blocks Walk)
+					else { MS.error_state=0; err_pulse_counter=0; }
             	}
             	//toggle speed pin
             	//gpio_bit_write(GPIOB, GPIO_PIN_0,(bit_status)(1-gpio_input_bit_get(GPIOB, GPIO_PIN_0)));

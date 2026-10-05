@@ -4,7 +4,13 @@
  *
  * The expected numbers follow the original application's machines (inc/pa4_buttons.h): a sample
  * every 32 ticks, 3 samples to confirm, the hold count from 2 to 200, the on/off power-off
- * > 2000 ticks after the long press, the Walk bridge of 250 one-millisecond samples.
+ * > 2000 ticks after the long press, the Walk bridge of 250 one-millisecond samples, the button
+ * circuit test (PB8 up ~5 ms every 256 ms while idle) and error 36.
+ *
+ * Every scenario starts with settle(): the button released until the press the bike was switched
+ * on with is no longer pending, ending exactly on an on/off sample, so a pattern that starts
+ * there sees its first sample 32 ticks later - the timing the expected numbers assume. The
+ * simulated circuit pulls PA4 down while PB8 is up (g_circuit_ok), as the original expects.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,6 +26,7 @@
 #define DOWN      3300U   /* nominal down reading              */
 #define RELEASED  4095U
 #define NOISE     2800U   /* between the windows: neither      */
+#define PULLED    500U    /* PA4 while PB8 is up, healthy circuit */
 
 #define NONE      0xFFFFFFFFU
 #define ST        PA4_SAMPLE_TICKS
@@ -30,16 +37,54 @@
 
 typedef uint16_t (*pa4_fn)(uint32_t sample_index);
 
-static bool g_walk;   /* the walk_active input fed to the module */
+static bool g_walk;           /* the walk_active input fed to the module            */
+static bool g_circuit_ok = true;
+static uint32_t g_t;          /* current tick                                        */
+static int  g_pb8_rises;      /* PB8 low -> high transitions seen                    */
+static bool g_pb8_while_pressed;
+static bool g_pb8_prev;
 
-/* Runs the module for `ticks` from `start`, called every `step` ticks; returns the tick
- * (relative to start) at which the power-off became due, or NONE. */
+/* What the ADC sees: the requested button level, or the pull-down while PB8 is up. */
+static uint16_t hw(uint16_t requested)
+{
+	return (pa4_buttons_pb8_high() && g_circuit_ok) ? PULLED : requested;
+}
+
+static void step_to(uint32_t now, uint16_t requested)
+{
+	pa4_buttons_update(now, hw(requested), g_walk);
+	const bool pb8 = pa4_buttons_pb8_high();
+	if (pb8 && !g_pb8_prev) g_pb8_rises++;
+	if (pb8 && pa4_buttons_any_activity()) g_pb8_while_pressed = true;
+	g_pb8_prev = pb8;
+}
+
+/* Init, then released until the power-on press guard is over, ending ON an on/off sample. */
+static void settle(uint32_t t0)
+{
+	uint32_t n;
+	g_t = t0;
+	g_pb8_rises = 0; g_pb8_while_pressed = false; g_pb8_prev = false;
+	pa4_buttons_init(t0);
+	for (n = 0; n < 100000U && pa4_buttons_power_samples() < 3U; n++) step_to(++g_t, RELEASED);
+}
+
+static void feed(uint32_t ticks, uint16_t pa4)
+{
+	uint32_t k;
+	for (k = 0; k < ticks; k++) step_to(++g_t, pa4);
+}
+
+/* Runs a pattern for `ticks` after settle(start), the module called every `step` ticks; returns
+ * the tick (relative to the pattern start) at which the power-off became due, or NONE. */
 static uint32_t run(uint32_t start, uint32_t ticks, uint32_t step, pa4_fn pa4)
 {
-	uint32_t t;
-	pa4_buttons_init(start);
+	uint32_t t, base;
+	settle(start);
+	base = g_t;
 	for (t = step; t <= ticks; t += step) {
-		pa4_buttons_update(start + t, pa4(t / ST), g_walk);
+		g_t = base + t;
+		step_to(g_t, pa4(t / ST));
 		if (pa4_buttons_power_off_due()) return t;
 	}
 	return NONE;
@@ -71,14 +116,7 @@ static uint32_t run_inherited_power(uint32_t ticks, pa4_fn pa4)
 	return NONE;
 }
 
-/* Drives the module tick by tick with a per-tick PA4 value; returns whether walk is held at the end. */
-static uint32_t g_t;
-static void feed(uint32_t ticks, uint16_t pa4)
-{
-	uint32_t k;
-	for (k = 0; k < ticks; k++) { g_t++; pa4_buttons_update(g_t, pa4, g_walk); }
-}
-static void start_at(uint32_t t0) { g_t = t0; pa4_buttons_init(t0); }
+static void start_at(uint32_t t0) { settle(t0); }
 
 static char *read_whole_file(const char *path)
 {
@@ -120,11 +158,11 @@ int main(void)
 
 	/* P1: a clean press, button held the whole time: long press at 1.608 s, power-off at 2.108 s */
 	CHECK(run(0U, 20000U, 1U, clean_press) == OFF_TICK, "P1a. held button: power-off due LONG + 500 ms + 1 tick (2.108 s)");
-	pa4_buttons_init(0U);
-	for (t = 1U; t < LONG_TICK; t++) pa4_buttons_update(t, PRESSED, false);
+	start_at(0U);
+	feed(LONG_TICK - 1U, PRESSED);
 	CHECK(!pa4_buttons_power_off_latched() && pa4_buttons_power_hold() == PA4_LONG_COUNT - 1U,
 	      "P1b. one tick before the 201st sample: hold count 199, nothing latched");
-	pa4_buttons_update(LONG_TICK, PRESSED, false);
+	feed(1U, PRESSED);
 	CHECK(pa4_buttons_power_off_latched() && !pa4_buttons_power_off_due(),
 	      "P1c. the 201st sample latches the power-off but does not perform it yet");
 
@@ -156,10 +194,11 @@ int main(void)
 	/* P5: a late main loop only delays samples, never bursts them */
 	t = run(0U, 60000U, 200U, clean_press);
 	CHECK(t != NONE && t >= OFF_TICK, "P5a. called every 50 ms: still switches off, not earlier");
-	pa4_buttons_init(0U);
-	pa4_buttons_update(10000U, PRESSED, false);
+	start_at(0U);
+	g_t += 10000U;
+	step_to(g_t, PRESSED);
 	CHECK(pa4_buttons_power_state() == 1U, "P5b. a long stall yields ONE sample, not a burst");
-	pa4_buttons_update(10000U, PRESSED, false);
+	step_to(g_t, PRESSED);
 	CHECK(pa4_buttons_power_state() == 1U, "P5c. and no second sample in the same tick");
 
 	/* P6/P7: wrap and init */
@@ -245,6 +284,67 @@ int main(void)
 	start_at(0U); feed(4U * ST, PRESSED);
 	CHECK(!pa4_buttons_walk_held(), "D6b. on/off does not hold Walk");
 
+	/* ==== ERROR 36 / BUTTON CIRCUIT TEST ==== */
+	g_walk = false;
+
+	/* E1: healthy circuit, released: PB8 pulses every 256 ms, ~5 ms long, no fault */
+	g_circuit_ok = true;
+	start_at(0U);
+	g_pb8_rises = 0;
+	feed(4U * 256U * 4U, RELEASED);              /* 1.024 s */
+	CHECK(g_pb8_rises == 4, "E1a. PB8 goes up once every 256 ms while no button is pressed");
+	CHECK(!pa4_buttons_fault(), "E1b. a healthy circuit never raises error 36");
+
+	/* E2: broken circuit (PA4 does not follow PB8): fault after the first test */
+	g_circuit_ok = false;
+	start_at(0U);
+	CHECK(pa4_buttons_fault_circuit() && pa4_buttons_fault(), "E2. PA4 not pulled down by PB8: circuit fault (error 36)");
+
+	/* E3: the fault clears by itself once a test passes again */
+	g_circuit_ok = true;
+	feed(300U * 4U, RELEASED);
+	CHECK(!pa4_buttons_fault(), "E3. the next passing test clears error 36");
+
+	/* E4: PB8 never goes up while a button is pressed, and the test does not disturb the buttons */
+	g_circuit_ok = true;
+	g_walk = true;
+	start_at(0U);
+	g_pb8_while_pressed = false;
+	feed(3U * 4000U, DOWN);                      /* 3 s of Walk */
+	ok = pa4_buttons_walk_held();
+	feed(500U, RELEASED);
+	feed(10U * 1000U, PRESSED);                  /* on/off held 2.5 s */
+	CHECK(ok && !g_pb8_while_pressed, "E4a. no PB8 pulse during a press (the test is frozen)");
+	CHECK(pa4_buttons_power_off_due(), "E4b. on/off still switches off with the test running between presses");
+	g_walk = false;
+
+	/* E5: on/off held > 800 samples (6.4 s): stuck flag; cleared when the press ends */
+	start_at(0U);
+	feed(6U * 4000U, PRESSED);
+	ok = !pa4_buttons_fault_stuck();
+	feed(1U * 4000U, PRESSED);                   /* 7 s */
+	CHECK(ok && pa4_buttons_fault_stuck() && pa4_buttons_fault(), "E5a. stuck after > 6.4 s, not at 6 s");
+	feed(4U * ST, RELEASED);
+	CHECK(!pa4_buttons_fault_stuck(), "E5b. released: the stuck flag clears");
+
+	/* ==== POWER-ON PRESS GUARD ==== */
+
+	/* B1: the press the bike was switched on with never switches it off, however long it lasts */
+	g_t = 0U; pa4_buttons_init(0U);
+	feed(10U * 4000U, PRESSED);
+	CHECK(!pa4_buttons_power_off_latched(), "B1. held from power-on for 10 s: no power-off");
+
+	/* B2: a stray sample inside the power-on press does not end the guard */
+	g_t = 0U; pa4_buttons_init(0U);
+	feed(40U * ST, PRESSED); feed(ST, NOISE); feed(400U * ST, PRESSED);
+	CHECK(!pa4_buttons_power_off_latched(), "B2. one stray sample during the power-on press: still guarded");
+
+	/* B3: after the power-on press is released, the next press switches off as usual */
+	feed(10U * ST, RELEASED);
+	t = g_t;
+	feed(LONG_TICK + PA4_POWER_OFF_DELAY_TICKS + 200U, PRESSED);
+	CHECK(pa4_buttons_power_off_due() && t > 0U, "B3. released, then pressed again: switches off");
+
 	/* ==== WIRING ==== */
 	{
 		char *mainc = read_whole_file(STRINGIZE(MAIN_C_PATH));
@@ -274,8 +374,18 @@ int main(void)
 			CHECK(strstr(mainc, "MS.brake_active_flag || pa4_buttons_any_activity()){") != NULL,
 			      "W9. auto-off counts a button press as activity through the module");
 			CHECK(strstr(mainc, "GPIO_PIN_6|GPIO_PIN_8|GPIO_PIN_12);") != NULL &&
-			      strstr(mainc, "GPIO_BC(GPIOB) = GPIO_PIN_8;") != NULL,
-			      "W10. PB8 is an output driven low, as idle in the original application");
+			      strstr(mainc, "GPIO_BC(GPIOB) = GPIO_PIN_8; //DISC-010") != NULL,
+			      "W10. PB8 is an output, low from init (idle level in the original application)");
+			{
+				const char *pb8 = strstr(mainc, "if(pa4_buttons_pb8_high()) GPIO_BOP(GPIOB) = GPIO_PIN_8; else GPIO_BC(GPIOB) = GPIO_PIN_8;");
+				CHECK(pb8 && upd && pb8 > upd && pb8 < upd + 400,
+				      "W11. PB8 follows the module right after every update");
+			}
+			{
+				const char *e = strstr(mainc, "else if(pa4_buttons_fault()){ MS.error_state=ERR_BUTTON;");
+				const char *torque = strstr(mainc, "else if(torque_fault){ MS.error_state=ERR_TORQUE;");
+				CHECK(e && torque && e > torque, "W12. error 36 is reported, below errors 10 and 25 (original order)");
+			}
 			free(mainc);
 		}
 	}

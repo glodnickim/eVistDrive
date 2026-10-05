@@ -812,6 +812,7 @@
 #define TEMP_CUTOFF 90     // degC: power -> 0 + stage 2 (solid Error 10)
 #define TEMP_CLEAR 68      // degC: clear thermal state (hysteresis)
 #define ERR_OVERTEMP 10    // Bafang error code 10 = motor/overtemperature
+#define ERR_BUTTON   36    // DISC-010: Bafang error 36 = button circuit fault or on/off held > 6.4 s (original 0x08018e72)
 #define ERR_PULSE_ON_S 2   // stage 1: seconds the error code is reported (HMI shows it)
 #define ERR_PULSE_OFF_S 6  // stage 1: seconds the error code is cleared (so HMI blinks, not too often)
 #define TEMP_OFFSET_C 0    // global calibration offset added to int_Temperature at source (affects CAN, thermal, HMI). Was +11 as a hack for the estimated Beta curve; zeroed when T_NTC switched to the exact stock M820 LUT (FW-115) - keep 0 unless hardware calibration proves otherwise
