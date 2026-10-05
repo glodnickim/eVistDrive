@@ -2,6 +2,18 @@
 
 Indeks wykona?; raporty cross-repository w integration/task-reports.
 
+- 2026-10-05T10:24:18+02:00 — EVD / EXEC-EVD-PWR-001-04, TASK-EVD-PWR-001, CROSS_REPOSITORY,
+  COMPLETED (PC), READY_FOR_REVIEW, PROBLEM_FLAG=YES. Mostek Walk ograniczony czasem (PWR-REV-001, D7a-D7l),
+  adresy stock w komentarzach na runtime (PWR-REV-002); commit 880ea55; full gate PASS; wsady 0.624/0.625
+  (0.626/0.627 duplikat); HW NOT_RUN. [Raport](../integration/task-reports/EXEC-EVD-PWR-001-04.md).
+
+- 2026-10-05T09:54:37+02:00 — EVD / EXEC-EVD-PWR-001-REVIEW-01, TASK-EVD-PWR-001,
+  CROSS_REPOSITORY, COMPLETED (niezależny review), CHANGES_REQUIRED, PROBLEM_FLAG=YES.
+  AC10 FAIL przy 2 ms calls (bridge >250 ms); stock header0x20 wymaga korekty map/skryptów.
+  Full gate i ARM normal/diagnostic PASS; HW NOT_RUN; kod produkcyjny bez zmian.
+  [Raport wykonania](../integration/task-reports/EXEC-EVD-PWR-001-REVIEW-01.md)
+  · [Review](../integration/task-reports/REVIEW-EVD-PWR-001-001.md).
+
 - 2026-09-08T14:22:34+02:00 ? EXEC-2026-09-08-004, TASK NONE, USER, CROSS_REPOSITORY ? COMPLETED (audyt i plan), READY_FOR_REVIEW, REVIEW NOT_RUN. Globalna mapa toru wspomagania, konfiguracja CANable, 34 pr?by host, plan przebudowy; produkcyjny kod nietkni?ty, naprawa jeszcze niewdro?ona. [Raport](../integration/task-reports/EXEC-2026-09-08-004.md), [master plan](documentation/ASSIST_PIPELINE_MASTER_PLAN.md).
 
 - 2026-09-08T19:19:45+02:00 ? uzupe?nienie EXEC-2026-09-08-004 na polecenie USER: firmware-first; obecne CANable nie ogranicza architektury. Dodano kontrakt docelowego toru silnika, projekt CANable odroczony do ustalenia firmware. Kod produkcyjny bez zmian. [Raport](../integration/task-reports/EXEC-2026-09-08-004.md).
