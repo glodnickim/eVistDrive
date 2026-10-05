@@ -66,6 +66,7 @@ OF SUCH DAMAGE.
 #include "cadence_filter.h"      /* FW-140: stable control cadence, raw kept for diag */
 #include "battery_current.h"     /* FW-128B1: battery-current filter on the sample clock */
 #include "battery_trip.h"        /* TASK-EVD-TQ-06-G1: hard battery-overcurrent trip (ADR-013 D1) */
+#include "power_button.h"        /* DISC-010: on/off button power-off as in the original application */
 #include "soc_core.h"            /* FW-144: production SOC math shared with Level-4 SIL */
 #include "diag_budget.h"      /* FW-126.5: the RAM budget this probe is asserted against */
 #if CAN_DIAGNOSTICS_ENABLE
@@ -697,7 +698,6 @@ int32_t i32_full_rotation_flag =-1;
 int32_t q31_PLL_error=0;
 int32_t q31_rotorposition_PLL=0;
 uint8_t ui_8_PLL_counter=0;
-uint8_t shutoffcounter=0;
 //FW-050: offroadcode / offroadcounter removed — the gesture no longer builds a decimal number.
 uint16_t pulse_counter=0;
 /* Hardware bridge state mirror: 1 exactly while TIMER0 MOE/POEN is enabled in a
@@ -1351,6 +1351,7 @@ int main(void)
     prev_metric_why_notlatched = false;
 
     can_periodic_init(&hmi_schedule, control_time_ticks);
+    power_button_init(control_time_ticks); //DISC-010
     while (1){
     	fwdgt_counter_reload();
 
@@ -1490,6 +1491,11 @@ int main(void)
             } //40/4000Hz=10ms torque sensor emulation (dev telemetry - OFF by default, own flag, own best-effort path outside can_tx_queue - FW-110)
 #endif
 
+            /* DISC-010: the on/off button runs on its own 8 ms sampling, as in the original
+             * application, not on the 40 ms slow loop. The power-off itself stays in the slow loop
+             * beside the other two power-off paths. */
+            power_button_update(control_time_ticks, adc_value[5]);
+
             if (slow_loop_counter > SLOW_LOOP_TICKS){ //slow loop base tick 40ms (160/4000Hz); CAN messages use own counters
             	//FW-132: how late this pass actually was, kept as a running worst case. Without it
             	//"the heartbeat rhythm slips" stays an argument; with it, it is a number in the log.
@@ -1595,9 +1601,9 @@ int main(void)
 				if(slow_loop_counter < 2U*SLOW_LOOP_TICKS) slow_loop_counter -= SLOW_LOOP_TICKS;
 				else slow_loop_counter = 0;
 
-				if(adc_value[5]<2800)shutoffcounter++; //raw value is 4095 without button pressed, about 3300 with "down" button pressed and about 2400 with on/off button pressed.
-				else shutoffcounter=0;
-				if(shutoffcounter>62){ //62x40ms=2480ms, poprzednio 50x50ms=2500ms
+				//DISC-010: PA4 4095 released, "down" 2854..3723, on/off 2048..2730 (original application windows).
+				//Long press ~1.6 s latches the power-off, which follows > 500 ms later (src/power_button.c).
+				if(power_button_power_off_due()){
 					power_off_controller(); //on/off button held -> self power-off
 				}
 
