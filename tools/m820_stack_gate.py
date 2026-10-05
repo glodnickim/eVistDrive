@@ -109,9 +109,10 @@ def _base(op: str) -> tuple[str, bool]:
     for br in ("blx", "bl", "bx", "b"):   # longest first: blne = bl+ne, bls = b+ls, blle = bl+le
         if b.startswith(br) and b[len(br):] in _COND:
             return br, True
-    for c in _COND:
+    for c in _COND:   # every SP-writing form may be conditional inside an IT block (REV-A1R-07)
         if b.endswith(c) and len(b) > len(c) and b[:-len(c)] in (
-                "pop", "vpop", "push", "add", "sub", "mov", "ldr", "ldmia", "ldm"):
+                "pop", "vpop", "push", "vpush", "add", "addw", "sub", "subw", "mov", "ldr", "ldrd",
+                "str", "strd", "ldmia", "ldm", "ldmfd", "vldmia", "stmdb", "stmfd", "vstmdb"):
             return b[:-len(c)], True
     for c in ("s",):   # flag-setting forms: adds/subs/movs
         if b.endswith(c) and b[:-1] in ("add", "sub", "mov"):
@@ -171,7 +172,7 @@ def _parse_disassembly(text: str):
             else:
                 cur["ins"].append((int(m.group(1), 16), op, args, int(lit.group(1), 16) if lit else None))
                 if not op.startswith(("b", "cb")):
-                    refs.update(int(x, 16) for x in re.findall(r"([0-9a-f]{7,8}) <", raw))
+                    refs.update(int(x, 16) for x in re.findall(r"\b([0-9a-f]{7,8}) <", raw))
     return funcs, words, refs, data
 
 
@@ -185,7 +186,10 @@ def _writes(op: str, args: str, reg: str) -> bool:
     if b in _NO_DEST:
         return False
     ops = [o.strip() for o in args.split(",")]
-    if b in ("ldrd", "ldrexd", "umull", "smull", "umlal", "smlal", "umaal", "vmov") and reg in ops[:2]:
+    # two destination registers: ldrd/ldrexd/vmov pairs and every long multiply(-accumulate),
+    # including the DSP forms smlald(x)/smlsld(x)/smlal<xy> (REV-A1R-02)
+    if (b in ("ldrd", "ldrexd", "vmov") or b.startswith(("smlal", "smlsl", "umlal", "smull", "umull",
+                                                         "umaal"))) and reg in ops[:2]:
         return True
     return ops[0] == reg
 
@@ -392,7 +396,67 @@ def _flow(f: dict, words: dict[int, int], data: dict[int, int]) -> list[tuple]:
                     out.append(("bad", cond, "unsupported write to pc"))
         else:
             out.append(("seq", cond, None))
+    _check_bx_lr(ins, out)
     return out
+
+
+def _lr_restore(op: str, args: str) -> bool:
+    """lr loaded back from the stack (pop/ldm sp!, ldr lr, [sp], #imm or ldr lr, [sp, #imm] as in
+    libgcc __aeabi_ldivmod). ASSUMPTION: a stack slot read into lr holds the saved return address;
+    the gate does not track stack slot contents."""
+    b = _base(op)[0]
+    return ((b == "pop" or (b in ("ldmia", "ldm", "ldmfd") and args.startswith("sp!"))) and "lr" in _regs(args)) \
+        or (b == "ldr" and re.fullmatch(r"lr,\s*\[sp(,\s*#\d+)?\](,\s*#\d+)?", args) is not None)
+
+
+def _check_bx_lr(ins: list, out: list) -> None:
+    """`bx lr` is a return only while lr holds a return address (REV-A1R-06). Forward dataflow over
+    the function from its entry: R = caller's return address, I = an address inside this function
+    set by a call (bl into its own body, or the instruction after any call: Zerobss `bl main;
+    bx lr`), X = lr explicitly written. A `bx lr` reachable with X becomes UNSUPPORTED CONTROL
+    FLOW. lr restored from the stack (incl. the crtn `pop {r3}; mov lr, r3`) counts as R."""
+    idx = {a: i for i, (a, _o, _g, _l) in enumerate(ins)}
+    state: list[set] = [set() for _ in ins]
+    todo = [(0, frozenset("R"))] if ins else []
+    while todo:
+        i, s = todo.pop()
+        if i >= len(ins) or s <= state[i]:
+            continue
+        state[i] |= s
+        cur = frozenset(state[i])
+        a, op, args, _l = ins[i]
+        kind, cond, t = out[i]
+        nxt = cur
+        if kind == "seq":
+            m = re.fullmatch(r"lr,\s*(r\d+)", args)
+            crtn = (_base(op)[0] == "mov" and m and i > 0 and _base(ins[i - 1][1])[0] == "pop"
+                    and _regs(ins[i - 1][2]) == [m.group(1)])     # crtn: pop {r3}; mov lr, r3
+            if _lr_restore(op, args) or crtn:
+                nxt = frozenset("R") | (cur if cond else frozenset())
+            elif _writes(op, args, "lr"):
+                nxt = frozenset("X") | (cur if cond else frozenset())
+            todo.append((i + 1, nxt))
+        elif kind == "call":
+            if t in idx:                                  # nested activation of this function
+                todo.append((idx[t], frozenset("I")))
+                todo.append((i + 1, frozenset("I") | (cur if cond else frozenset())))
+            else:   # lr = the instruction after the call: a later bx lr stays inside this function
+                todo.append((i + 1, frozenset("I") | (cur if cond else frozenset())))
+        elif kind == "icall":
+            todo.append((i + 1, frozenset("I") | (cur if cond else frozenset())))
+        elif kind == "jump":
+            if t in idx:
+                todo.append((idx[t], cur))
+            if cond:
+                todo.append((i + 1, cur))
+        elif kind == "table":
+            todo += [(idx[x], cur) for x in t if x in idx]
+        elif kind in ("ret", "ijump", "bad"):
+            if cond:
+                todo.append((i + 1, cur))
+    for i, (a, op, args, _l) in enumerate(ins):
+        if out[i][0] == "ret" and _base(op)[0] == "bx" and "X" in state[i]:
+            out[i] = ("bad", out[i][1], "bx lr while lr may hold a value other than a return address")
 
 
 def _branch_targets(flows: dict) -> set[int]:
@@ -470,14 +534,17 @@ def _intra_call_problem(f: dict, flow: list, start: int) -> str | None:
 
 
 def _edges(addr: int, f: dict, flow: list, starts: set[int], words: dict[int, int],
-           sorted_starts: list[int], targets: set[int]):
+           sorted_starts: list[int], targets: set[int], frame: int = 0):
     """Direct callees (self CALLS kept: recursion), unresolved indirect call sites, and
     unsupported control flow. Conditional calls and branches are edges exactly like
     unconditional ones. A jump into another function's body is treated as a call of that whole
     function (its frame is added: over-approximation). An indirect call is resolved only when the
     register value is proven at the call site (_reg_value): 0 -> no call (weak undefined: the
     branch would fault, fault handlers are terminal), function -> edge; anything else stays an
-    unresolved indirect call (every address-taken function)."""
+    unresolved indirect call (every address-taken function). An unresolved indirect JUMP (bx rN)
+    may land anywhere, also inside a function where a register value was proven, so it is
+    unsupported (REV-A1R-03). A jump back to the function's own entry re-runs its prologue: with a
+    non-zero frame that is unbounded stack growth, not a loop (REV-A1R-05)."""
     direct, indirect, cross = set(), [], []
     for i, (a, op, args, _) in enumerate(f["ins"]):
         kind, _cond, t = flow[i]
@@ -485,8 +552,11 @@ def _edges(addr: int, f: dict, flow: list, starts: set[int], words: dict[int, in
             cross.append(f"{a:08x} {op} {args} ({t})")
         elif kind in ("jump", "call"):
             if t in starts:
-                if kind == "call" or t != addr:           # a plain jump to its own start is a loop
+                if kind == "call" or t != addr:
                     direct.add(t)
+                elif frame:
+                    cross.append(f"{a:08x} {op} {args} (jump back to its own entry with a {frame} B "
+                                 f"frame: unbounded stack growth)")
                 continue
             k = _bisect_right(sorted_starts, t) - 1
             if k < 0:
@@ -504,6 +574,9 @@ def _edges(addr: int, f: dict, flow: list, starts: set[int], words: dict[int, in
             if val is not None and (val & 1) and (val & ~1) in starts:
                 direct.add(val & ~1)
                 continue
+            if kind == "ijump":
+                cross.append(f"{a:08x} {op} {args} (indirect jump to an unproven target)")
+                continue
             indirect.append(a)
     return direct, indirect, cross
 
@@ -519,6 +592,23 @@ def _movw_movt_words(funcs: dict) -> set[int]:
                 lo[m.group(1)] = int(m.group(2))
             elif b == "movt" and m and m.group(1) in lo:
                 out.add((int(m.group(2)) << 16) | lo.pop(m.group(1)))
+    return out
+
+
+def _pcrel_addrs(funcs: dict) -> set[int]:
+    """Addresses formed pc-relatively (adr / add|addw|sub|subw rN, pc, #imm), which objdump prints
+    without a symbol: a function address taken this way is address-taken (REV-A1R-04)."""
+    out = set()
+    for f in funcs.values():
+        for a, op, args, _lit in f["ins"]:
+            b = _base(op)[0]
+            m = re.fullmatch(r"(r\d+|ip|lr|fp|sl),\s*pc,\s*#(\d+)", args)
+            if m and b in ("add", "addw", "adr", "sub", "subw"):
+                base = (a + 4) & ~3
+                out.add(base - int(m.group(2)) if b.startswith("sub") else base + int(m.group(2)))
+            m = re.match(r"(r\d+|ip|lr|fp|sl),\s*([0-9a-f]+)\s+<", args)
+            if m and b == "adr":
+                out.add(int(m.group(2), 16))
     return out
 
 
@@ -745,11 +835,17 @@ def check(elf: str, objdir: str, mapfile: str, toolbin: str, variant: str) -> di
 
     audit = {a: _audit_function(f) for a, f in funcs.items()}
     sorted_starts = sorted(starts)
-    graph = {a: _edges(a, f, flows[a], starts, text_words, sorted_starts, branch_targets)
+    graph = {a: _edges(a, f, flows[a], starts, text_words, sorted_starts, branch_targets, audit[a][0])
              for a, f in funcs.items()}
     vector_targets = {w & ~1 for w in vec[1:] if w}
     taken = set(text_words.values()) | _alloc_data_words(objdump, readelf, elf) | _movw_movt_words(funcs)
-    address_taken = {w & ~1 for w in taken if (w & 1) and (w & ~1) in starts} | (text_refs & starts)
+    address_taken = {w & ~1 for w in taken if (w & 1) and (w & ~1) in starts} | (text_refs & starts) \
+        | ({p & ~1 for p in _pcrel_addrs(funcs)} & starts)
+    # The NVIC fingerprint decodes direct calls only; a priority function whose address is taken
+    # may be called through a pointer or a register tail call it cannot see (REV-A1R-08).
+    for n in sorted(PRIORITY_FUNCS):
+        if name_to_addr.get(n) in address_taken:
+            errors.append(f"IRQ TOPOLOGY UNDECODABLE: {n} is address-taken (indirect call not decodable)")
 
     def succ(a: int) -> list[int]:
         direct, indirect, _ = graph[a]

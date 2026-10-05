@@ -104,6 +104,102 @@ DEFECTS = {
 }
 
 
+# Fixtures of the follow-up review (REVIEW-EVD-FW-0624-STACK-REWORK-001, counterexamples.py),
+# verbatim: REV-A1R-09 coverage (K*) and the hardening of REV-A1R-02..08.
+_CLOB = '::: "r0", "r1", "r2", "r3", "ip", "lr", "cc", "memory"'
+_DEEP = "void deep(void) { volatile int pad[2048]; pad[0] = sink; sink = pad[0]; }\n"
+_SMALL = "void small_fn(void) { sink++; }\n"
+_KEEP = "void (*volatile keep_ptr[2])(void) = { small_fn, deep };\n"
+_KEEP_SMALL = "void (*volatile keep_ptr[1])(void) = { small_fn };\n"
+DEFECTS.update({
+    "K01_BLXNE": _DEEP + _SMALL + _KEEP_SMALL + r'''
+static void defect(void) {
+  __asm volatile("ldr r3, =deep\n\tmovs r0, #1\n\tcmp r0, #0\n\tit ne\n\tblxne r3" ''' + _CLOB + r''');
+}
+''',
+    "K02_BXNE_TAIL": _DEEP + _SMALL + _KEEP_SMALL + r'''
+__attribute__((naked)) void tail_bx(void) {
+  __asm volatile("ldr r3, =deep\n\tmovs r0, #1\n\tcmp r0, #0\n\tit ne\n\tbxne r3\n\tbx lr");
+}
+static void defect(void) { tail_bx(); }
+''',
+    "K03_BNE_TAIL": _DEEP + r'''
+__attribute__((naked)) void tail_b(void) {
+  __asm volatile("movs r0, #1\n\tcmp r0, #0\n\tbne deep\n\tbx lr");
+}
+static void defect(void) { tail_b(); }
+''',
+    "K05A_ITTT": _DEEP + r'''
+static void defect(void) {
+  __asm volatile("movs r0, #1\n\tcmp r0, #0\n\titt ne\n\tmovne r1, #1\n\tblne deep" ''' + _CLOB + r''');
+}
+''',
+    "K05C_ITETE": _DEEP + _SMALL + r'''
+static void defect(void) {
+  __asm volatile("movs r0, #1\n\tcmp r0, #0\n\titete ne\n\tmovne r1, #1\n\tmoveq r2, #2\n\tmovne r1, #3\n\tbleq deep" ''' + _CLOB + r''');
+}
+''',
+    "W5_SMLALD": _DEEP + _SMALL + _KEEP + r'''
+static void defect(void) {
+  __asm volatile("ldr r3, =small_fn\n\tsmlald r2, r3, r0, r1\n\tblx r3" ''' + _CLOB + r''');
+}
+''',
+    "W7_SMLALBB": _DEEP + _SMALL + _KEEP + r'''
+static void defect(void) {
+  __asm volatile("ldr r3, =small_fn\n\tsmlalbb r2, r3, r0, r1\n\tblx r3" ''' + _CLOB + r''');
+}
+''',
+    "IJUMP_MID": _DEEP + _SMALL + r'''
+void (*volatile keep_ptr[1])(void) = { small_fn };
+__attribute__((naked)) void jmp_mid(void) {
+  __asm volatile("ldr r3, 2f\n\tadds r3, #1\n\tldr r2, 3f\n\tbx r2\n\tldr r3, =small_fn\n"
+                 "1:\tblx r3\n\tbx lr\n\t.align 2\n2:\t.word deep-1\n3:\t.word 1b+1");
+}
+static void defect(void) { jmp_mid(); }
+''',
+    # The review's T2 (`adr.w r3, deep` across sections) links to `subw r3, pc, #3` = its own
+    # address; this states that intent explicitly: a function address formed pc-relatively
+    # (no literal, no symbol in the disassembly) used for a self call through a register.
+    "ADR_TAKEN": _SMALL + _KEEP_SMALL + r'''
+__attribute__((naked)) void adr_self(void) {
+  __asm volatile("1:\tadr.w r3, 1b\n\tadds r3, #1\n\tblx r3\n\tbx lr");
+}
+static void defect(void) { adr_self(); }
+''',
+    "OWN_ENTRY_JUMP": r'''
+static void defect(void) {
+  volatile int pad[40];
+  pad[0] = sink;
+  if (sink != 77777) __asm volatile("b defect");
+}
+''',
+    "BXLR_LR_WRITTEN": _DEEP + r'''
+__attribute__((naked)) void lr_tail(void) {
+  __asm volatile("ldr lr, 1f\n\tbx lr\n\t.align 2\n1:\t.word deep");
+}
+static void defect(void) { lr_tail(); }
+''',
+    "COND_VPUSH": r'''
+__attribute__((naked)) void vp(void) {
+  __asm volatile("movs r0, #1\n\tcmp r0, #0\n\t.rept 50\n\tit ne\n\tvpushne {d8-d15}\n\t.endr\n\tbx lr");
+}
+static void defect(void) { vp(); }
+''',
+    "NVIC_VIA_POINTER": r'''
+static void defect(void) {
+  void (*volatile p)(int, unsigned char, unsigned char) = nvic_irq_enable;
+  p(8, 0, 0);
+}
+''',
+    "NVIC_TAIL_BX": r'''
+__attribute__((naked)) void nvtail(void) {
+  __asm volatile("movs r0, #8\n\tmovs r1, #0\n\tmovs r2, #0\n\tldr r3, =nvic_irq_enable\n\tbx r3");
+}
+static void defect(void) { nvtail(); }
+''',
+})
+
+
 # REV-A1R-01: the first reviewed nvic_config call replaced by asm whose argument is written
 # under an IT condition that is FALSE at run time - the textual value equals the reviewed one,
 # the executed one does not, so the decoder must refuse it.
@@ -268,6 +364,27 @@ def main() -> int:
         fx = r.build(tag, "NONE", nvic_first=variant)
         rc, rep = r.gate(fx, tag)
         r.expect(tag, rc, rep, False, "IRQ TOPOLOGY UNDECODABLE: nvic_config")
+
+    # Follow-up review fixtures (REV-A1R-02..09): every one is unsafe or model-breaking.
+    for tag, defect, needle in (
+            ("R01-blxne-literal", "K01_BLXNE", "STACK BUDGET UNSAFE"),
+            ("R02-bxne-tail-literal", "K02_BXNE_TAIL", "STACK BUDGET UNSAFE"),
+            ("R03-bne-tail", "K03_BNE_TAIL", "STACK BUDGET UNSAFE"),
+            ("R04-ittt-multi", "K05A_ITTT", "STACK BUDGET UNSAFE"),
+            ("R05-itete-fourth", "K05C_ITETE", "STACK BUDGET UNSAFE"),
+            ("R06-smlald-clobber", "W5_SMLALD", "STACK BUDGET UNSAFE"),
+            ("R07-smlalbb-clobber", "W7_SMLALBB", "STACK BUDGET UNSAFE"),
+            ("R08-indirect-jump-mid-function", "IJUMP_MID", "UNSUPPORTED CONTROL FLOW: jmp_mid"),
+            ("R09-adr-only-address-taken", "ADR_TAKEN", "RECURSIVE CALL GRAPH: adr_self -> adr_self"),
+            ("R10-jump-to-own-entry", "OWN_ENTRY_JUMP", "UNSUPPORTED CONTROL FLOW: defect"),
+            ("R11-bx-lr-after-lr-write", "BXLR_LR_WRITTEN", "UNSUPPORTED CONTROL FLOW: lr_tail"),
+            # naked: .su says 0 B, so counting the conditional vpush shows as the contradiction
+            ("R12-conditional-vpush", "COND_VPUSH", "STACK USAGE CONTRADICTION: vp .su 0 B != disassembly 3200 B"),
+            ("R13-nvic-via-pointer", "NVIC_VIA_POINTER", "IRQ TOPOLOGY UNDECODABLE: nvic_irq_enable is address-taken"),
+            ("R14-nvic-tail-via-register", "NVIC_TAIL_BX", "IRQ TOPOLOGY UNDECODABLE: nvic_irq_enable is address-taken")):
+        fx = r.build(tag, defect)
+        rc, rep = r.gate(fx, tag)
+        r.expect(tag, rc, rep, False, needle)
 
     for tag, defect, needle in (("A-direct-recursion", "DIRECT_REC", "RECURSIVE CALL GRAPH: rec_a -> rec_a"),
                                 ("B-indirect-recursion", "INDIRECT_REC", "rec_a -> rec_b -> rec_a"),
