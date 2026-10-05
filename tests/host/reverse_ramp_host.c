@@ -236,6 +236,133 @@ static void check_fault_during_ramp(const scn_t *s)
 	CHECK(r.final_iq[f] == 0 && r.mode[f] == FIS_MODE_FORCE_ZERO && r.iq_ref[f] == 0, m);
 }
 
+
+/* ------------------------------------------------------------------------------------------- *
+ * R1 (scope amendment): bumpless veto release. An M820 veto only zeroes the PUBLISHED request,
+ * the G53 chain keeps its demand while the rider keeps loading the pedal. When the veto clears,
+ * the request must climb back at the G5300 BDE8 rate (+50 m2aa/ms = P*50/10000 Iq/ms), never
+ * step. G5300 has no such veto, so its output never diverges from the chain and never steps.
+ * ------------------------------------------------------------------------------------------- */
+#define RESUME_MS 700
+#define RATE_IQ_PER_MS ((PHASE_MAX * 50 + 9999) / 10000)   /* 4 at 700 (3.5 exactly) */
+
+typedef struct {
+	const char *name;
+	int inhibit_ms;        /* direction inhibit (one reverse step at 0, forward again at inhibit_ms) */
+	int fwd_false_extra;   /* forward_valid stays false this long after the inhibit cleared */
+	int real_stop_ms;      /* real_stop asserted for this long (PAS keeps running forward) */
+} resume_t;
+
+static void run_resume(const resume_t *c, int32_t *fin, int32_t *g53)
+{
+	assist_pipeline_input_t in;
+	assist_pipeline_command_t cmd;
+	memset(&in, 0, sizeof(in));
+	in.torque_sensor_valid = true; in.pas_sensor_valid = true; in.forward_valid = true;
+	in.wheel_valid = true; in.assist_level_index = 3U;
+	in.phase_current_max = PHASE_MAX; in.battery_voltage_mv = 48000U;
+	in.battery_current_max = BATTERYCURRENT_MAX;
+	in.u_abs = 1024; in.cal_i = 95; in.voltage_raw = 4000U; in.voltage_min_raw = 2800;
+	in.controller_temperature_c = 30; in.speed_limit_x100 = 6000U; in.elapsed_ticks = 4U;
+	memset(&mailbox, 0, sizeof(mailbox)); iq_ref = 0; fast_iq_slew_reset(&mailbox);
+	assist_modes_init(); g53_port_init(); assist_pipeline_init();
+	double ph = 0.0; unsigned ci = 0U; uint8_t pas_ab = 0U;
+	for (int t = 0; t < STOP_MS + RESUME_MS; ++t) {
+		const int k = t - STOP_MS;
+		in.speed_x100 = t < SPEED_ON_MS ? 0U : 1500U;
+		in.torque_load_ctrl = t >= ENGAGE_MS ? 6000U : 0U;       /* the rider never lets go */
+		in.torque_load_centikg = (uint16_t)(in.torque_load_ctrl / 2U);
+		in.cadence_rpm = t >= ENGAGE_MS ? 60U : 0U;
+		bool step_fwd = t >= ENGAGE_MS;
+		if (k >= 0 && c->inhibit_ms > 0) {
+			if (k == 0) { ci = (ci + 3U) % 4U; pas_ab = fwd_cycle[ci]; ph = 0.0; }
+			step_fwd = k >= c->inhibit_ms;
+			in.direction_inhibit = k < c->inhibit_ms + 22;     /* two forward steps to re-prove */
+			in.inhibit_is_reverse = true;
+			in.forward_valid = !(k < c->inhibit_ms + 22 + c->fwd_false_extra);
+		}
+		in.real_stop = c->real_stop_ms > 0 && k >= 0 && k < c->real_stop_ms;
+		in.pas_ab = pas_ab;
+		assist_pipeline_update(&in, &cmd);
+		fast_iq_slew_publish(&mailbox, cmd.final_iq_request, cmd.slew_mode, cmd.step_mag_8,
+			cmd.release_ticks_16k, cmd.zero_policy, cmd.iq_ceiling);
+		for (unsigned i = 0; i < 4U; ++i) fast_iq_slew_tick(&mailbox, &iq_ref);
+		if (k >= 0) { fin[k] = cmd.final_iq_request; g53[k] = assist_pipeline_g53()->iq_request_pre_limits; }
+		if (step_fwd) {
+			ph += 96.0 * 60.0 / 60000.0;
+			if (ph >= 1.0) { ph -= 1.0; ci = (ci + 1U) % 4U; pas_ab = fwd_cycle[ci]; }
+		}
+	}
+}
+
+static void check_resume(const resume_t *c)
+{
+	static int32_t fin[RESUME_MS], g53[RESUME_MS];
+	char m[200];
+	run_resume(c, fin, g53);
+	printf("%s\n", c->name);
+	int32_t minv = 1 << 30, maxrise = 0; int minat = -1;
+	bool over = false;
+	for (int k = 0; k < RESUME_MS; ++k) {
+		if (fin[k] < minv) { minv = fin[k]; minat = k; }
+		if (k > 0 && fin[k] - fin[k - 1] > maxrise) maxrise = fin[k] - fin[k - 1];
+		if (fin[k] > g53[k]) over = true;
+	}
+	snprintf(m, sizeof m, "%s: the veto really pulled the request to 0 (min %d at %d ms)", c->name, (int)minv, minat);
+	CHECK(minv == 0, m);
+	snprintf(m, sizeof m, "%s: G53 chain still holds demand (%d) at the end", c->name, (int)g53[RESUME_MS - 1]);
+	CHECK(g53[RESUME_MS - 1] > 100, m);
+	snprintf(m, sizeof m, "%s: no step on resume, max rise %d/ms <= G5300 rate %d/ms + 1", c->name,
+		(int)maxrise, RATE_IQ_PER_MS);
+	CHECK(maxrise <= RATE_IQ_PER_MS + 1, m);
+	snprintf(m, sizeof m, "%s: request never exceeds the G53 request", c->name);
+	CHECK(!over, m);
+	snprintf(m, sizeof m, "%s: request rejoins the G53 request (final %d, G53 %d)", c->name,
+		(int)fin[RESUME_MS - 1], (int)g53[RESUME_MS - 1]);
+	CHECK(fin[RESUME_MS - 1] == g53[RESUME_MS - 1], m);
+	printf("  min=%d@%dms max-rise=%d/ms end final=%d g53=%d\n", (int)minv, minat, (int)maxrise,
+		(int)fin[RESUME_MS - 1], (int)g53[RESUME_MS - 1]);
+}
+
+/* R3(d): a normal engage from standstill is untouched - the published request IS the G53 request
+ * on every tick and keeps the BDE8 ramp (P1/P2: about 84 / 191 / 293 ms to 10 / 50 / 90 %). */
+static void check_engage_unchanged(void)
+{
+	assist_pipeline_input_t in;
+	assist_pipeline_command_t cmd;
+	char m[200];
+	memset(&in, 0, sizeof(in));
+	in.torque_sensor_valid = true; in.pas_sensor_valid = true; in.forward_valid = true;
+	in.wheel_valid = true; in.assist_level_index = 3U;
+	in.phase_current_max = PHASE_MAX; in.battery_voltage_mv = 48000U;
+	in.battery_current_max = BATTERYCURRENT_MAX;
+	in.u_abs = 1024; in.cal_i = 95; in.voltage_raw = 4000U; in.voltage_min_raw = 2800;
+	in.controller_temperature_c = 30; in.speed_limit_x100 = 6000U; in.elapsed_ticks = 4U;
+	in.speed_x100 = 1500U;
+	assist_modes_init(); g53_port_init(); assist_pipeline_init();
+	double ph = 0.0; unsigned ci = 0U; uint8_t pas_ab = 0U;
+	int t10 = -1, t50 = -1, t90 = -1; bool equal = true; int32_t last = 0;
+	for (int t = 0; t < 1500; ++t) {
+		const bool on = t >= ENGAGE_MS;
+		in.torque_load_ctrl = on ? 6000U : 0U; in.torque_load_centikg = (uint16_t)(in.torque_load_ctrl / 2U);
+		in.cadence_rpm = on ? 60U : 0U; in.pas_ab = pas_ab;
+		assist_pipeline_update(&in, &cmd);
+		const int32_t g = assist_pipeline_g53()->iq_request_pre_limits;
+		if (cmd.final_iq_request != g) equal = false;
+		last = cmd.final_iq_request;
+		const int e = t - ENGAGE_MS;
+		if (t10 < 0 && last >= 455 / 10) t10 = e;
+		if (t50 < 0 && last >= 455 / 2) t50 = e;
+		if (t90 < 0 && last >= 455 * 9 / 10) t90 = e;
+		if (on) { ph += 96.0 * 60.0 / 60000.0; if (ph >= 1.0) { ph -= 1.0; ci = (ci + 1U) % 4U; pas_ab = fwd_cycle[ci]; } }
+	}
+	printf("engage from standstill: 10/50/90 %% at %d/%d/%d ms after the stimulus\n", t10, t50, t90);
+	snprintf(m, sizeof m, "engage: the published request equals the G53 request on every tick");
+	CHECK(equal, m);
+	snprintf(m, sizeof m, "engage: BDE8 ramp unchanged (P1/P2 84/191/293 ms, got %d/%d/%d)", t10, t50, t90);
+	CHECK(t10 >= 0 && t10 <= 90 && t50 >= 180 && t50 <= 200 && t90 >= 285 && t90 <= 300 && last == 455, m);
+}
+
 int main(int argc, char **argv)
 {
 	trace_on = argc > 1 && strcmp(argv[1], "trace") == 0;
@@ -262,6 +389,15 @@ int main(int argc, char **argv)
 	const scn_t rstop = {"real_stop during the ramp (+20 ms)", 1500U, STEP_REVERSE, 1U, false, 20, true};
 	check_fault_during_ramp(&rstop);
 
+	{
+		const resume_t resumes[] = {
+			{"R3a: 15 km/h, load held, 1 reverse step, forward again after 250 ms (deadline zero)", 250, 0, 0},
+			{"R3b: same, forward_valid stays false 30 ms after the inhibit cleared", 250, 30, 0},
+			{"R3c: real_stop SAFETY release (100 ms), PAS keeps running, immediate re-press", 0, 0, 100},
+		};
+		for (size_t i = 0; i < sizeof resumes / sizeof resumes[0]; ++i) check_resume(&resumes[i]);
+		check_engage_unchanged();
+	}
 	if (failures == 0U) { puts("reverse ramp: ALL CHECKS PASSED"); return 0; }
 	printf("reverse ramp: %u CHECK(S) FAILED\n", failures);
 	return 1;
