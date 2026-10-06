@@ -194,6 +194,12 @@ void quiet_zero_reset(quiet_zero_t *qz);
  *        cap - leaves the regulators exactly as they are today.
  * EXIT   iq_ref > 0 leaves QZERO on the same tick, with no MOE toggle, no cold PREPARE and no
  *        neutral dwell: the very next regulator cycle is normal PI + FOC-AW1 again.
+ *        I3 bumpless exit: from BLEND / HOLD / HANDBACK, while the speed is fresh and
+ *        rotor_erps > 0 and erps_entry > 0, the exit tick also reports apply_integral with the
+ *        integral that nulls the current at the present speed (the HANDBACK target law:
+ *        iq = iq_integral_entry * erps_now / erps_entry, speed clamped to erps_entry; id = 0),
+ *        so a rider resuming pedalling on a rolling bike does not start from the braking state.
+ *        freeze_aw stays false. Otherwise nothing is applied (previous behaviour).
  * ABORT  |Iq| or |Id| >= abort_current during BLEND or HOLD ends the P-only hold and returns the
  *        full zero-current PI (integral free again). It does not re-arm: only a new qualifying
  *        release edge can enter QZERO again.

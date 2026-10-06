@@ -24,6 +24,26 @@ static inline int32_t qz_abs(int32_t v)
 	return (v < 0) ? -v : v;
 }
 
+/*
+ * The integral that nulls the q-axis current at the present speed: back-EMF is proportional to
+ * speed, so the integral captured at entry, scaled by how much the rotor has slowed since, IS
+ * that value to a first order. This is the one law shared by the low-speed HANDBACK fade (as its
+ * per-tick target) and by the bumpless exit on a re-engage (applied at once). The speed is
+ * clamped to the entry speed so a bad reading can never amplify; 0.0f when there is no usable
+ * entry speed or present speed.
+ */
+static float qz_matched_iq_integral(const quiet_zero_t *qz, int32_t rotor_erps)
+{
+	if (qz->erps_entry > 0 && rotor_erps > 0) {
+		int32_t erps_now = rotor_erps;
+		if (erps_now > qz->erps_entry) {
+			erps_now = qz->erps_entry;
+		}
+		return qz->iq_integral_entry * ((float)erps_now / (float)qz->erps_entry);
+	}
+	return 0.0f;
+}
+
 void quiet_zero_reset(quiet_zero_t *qz)
 {
 	if (qz == NULL) {
@@ -80,12 +100,30 @@ void quiet_zero_tick(
 
 	/*
 	 * EXIT. A positive reference means the rider (or anything else entitled to ask) wants
-	 * torque again. Leave on the same tick and report nothing to apply: the regulators get
-	 * their integral back untouched and FOC-AW1 resumes, with the residual cleared once so the
-	 * first active cycle does not correct against the held vector.
+	 * torque again. Leave on the same tick; FOC-AW1 resumes, with the residual cleared once so
+	 * the first active cycle does not correct against the held vector.
+	 *
+	 * I3 (TASK-EVD-TQ-06-G2, bumpless exit). The regulators used to get their integral back
+	 * "untouched", which from HOLD means exactly 0: the drive then started from the BRAKING
+	 * state (Iq negative for several ms, then a catch-up faster than the reference ramp - the
+	 * chain jerk when the rider resumes pedalling while the bike rolls). A stock live PI keeps
+	 * the matching integral and re-engages smoothly. So when the rotor is still turning and the
+	 * speed is fresh, hand back the integral that nulls the current at the present speed, by the
+	 * same law HANDBACK targets, applied at once on this tick: Iq = matched value, Id = 0 (as in
+	 * HANDBACK, with the q current at zero there is no cross-coupling left for u_d to cancel).
+	 * Applies from BLEND, HOLD and HANDBACK alike. freeze_aw stays false: the PI owns the axis.
+	 *
+	 * Fallback = the previous behaviour (nothing applied, integral left as it is) when there is
+	 * no usable matching value: speed not fresh (an old reading is not a BEMF measurement),
+	 * rotor_erps <= 0, or erps_entry == 0 (nothing to scale from).
 	 */
 	if (in->iq_ref > 0) {
 		if (qz->state != (uint32_t)QZERO_INACTIVE) {
+			if (in->speed_fresh && in->rotor_erps > 0 && qz->erps_entry > 0) {
+				out->apply_integral = true;
+				out->iq_integral = qz_matched_iq_integral(qz, in->rotor_erps);
+				out->id_integral = 0.0f;
+			}
 			qz->state = (uint32_t)QZERO_INACTIVE;
 			qz->blend_tick = 0U;
 			out->exited = true;
@@ -243,16 +281,7 @@ void quiet_zero_tick(
 	 * term left for u_d to cancel, so zero is the value that nulls it.
 	 */
 	if (qz->state == (uint32_t)QZERO_HANDBACK) {
-		float target = 0.0f;
-		if (qz->erps_entry > 0 && in->rotor_erps > 0) {
-			int32_t erps_now = in->rotor_erps;
-			/* Only ever handed back at a lower speed; clamp so a bad reading cannot amplify. */
-			if (erps_now > qz->erps_entry) {
-				erps_now = qz->erps_entry;
-			}
-			target = qz->iq_integral_entry *
-				((float)erps_now / (float)qz->erps_entry);
-		}
+		float target = qz_matched_iq_integral(qz, in->rotor_erps);
 		qz->blend_tick++;
 		out->apply_integral = true;
 		/* Rate-limit the integral itself, including a changing speed target. Starting

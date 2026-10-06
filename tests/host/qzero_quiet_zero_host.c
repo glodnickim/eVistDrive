@@ -323,8 +323,11 @@ static void state_machine_checks(void)
 		quiet_zero_tick(&qz, &in, &out);
 		CHECK(out.state == (uint32_t)QZERO_INACTIVE && out.exited && out.clear_aw_edge,
 			"T6: Iq_ref>0 leaves QZERO on the same tick and clears the AW residual once");
-		CHECK(!out.apply_integral && !out.freeze_aw,
-			"T6: after the exit tick the integrators are entirely their own owners again");
+		/* I3 (bumpless exit): the exit tick also hands back the integral that nulls the current at
+		 * the present speed (entry value x erps_now/erps_entry, Id = 0) instead of leaving the
+		 * faded zero; AW is not frozen, so after this tick the PI is its own owner again. */
+		CHECK(out.apply_integral && out.iq_integral == 900.0f && out.id_integral == 0.0f && !out.freeze_aw,
+			"T6: the exit tick hands back the matching integral (I3) and the PI is its own owner again");
 
 		in = make_input(200, true, 0.0f, 0.0f);
 		quiet_zero_tick(&qz, &in, &out);
@@ -692,8 +695,8 @@ static void mailbox_integration_checks(void)
 		quiet_zero_input_t in = make_input(iq_out, false, 800.0f, 0.0f);
 		quiet_zero_tick(&qz, &in, &out);
 		CHECK(iq_out > 0 && out.state == (uint32_t)QZERO_INACTIVE && out.exited &&
-			!out.apply_integral,
-			"T10: a re-press mid-fade exits immediately - the partly faded integral is kept, not reset");
+			out.apply_integral && !out.freeze_aw,
+			"T10: a re-press mid-fade exits immediately - the matching integral replaces the partly faded one (I3), AW free");
 	}
 }
 
@@ -798,8 +801,8 @@ static void regulator_effect_checks(void)
 		quiet_zero_input_t in = make_input(40, true, pi.integral_part, 0.0f);
 		in.iq_measured = (int32_t)lrintf(m.iq);
 		quiet_zero_tick(&qz, &in, &act);
-		CHECK(act.exited && !act.apply_integral,
-			"T12: setup - the re-press exits QZERO on its first tick");
+		CHECK(act.exited && act.apply_integral && !act.freeze_aw,
+			"T12: setup - the re-press exits QZERO on its first tick, handing back the matching integral (I3)");
 		cycle(&pi, &m, 40, &act);
 		CHECK(labs((long)pi.out - (long)out_before_exit) <= MODEL_MAX_STEP,
 			"T12: the exit tick moves PI.out by at most max_step - the slew limiter still owns it, no jump");
