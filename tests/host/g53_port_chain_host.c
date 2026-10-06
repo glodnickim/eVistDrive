@@ -4,7 +4,9 @@
 
 int main(void)
 {
-    /* The pinned G5300 transcription vector predates configurable M560 levels. */
+    /* The pinned 0.636 vector predates configurable M560 levels and S+ AUTO.
+     * Keep it as the fixed-ratio differential baseline. */
+    g53_chain_set_auto(0,2,10);
     const uint8_t accel[10]={1,8,8,8,8,8,8,8,8,8};
     const uint16_t ratio[10]={1,45,95,155,215,260,310,370,525,525};
     g53_chain_set_levels(accel,ratio);

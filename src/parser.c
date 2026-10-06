@@ -328,6 +328,18 @@ void parse_MOparams(MotorParams_t* MP){
 	}
 	Para0[28]=1000&0xFF;
 	Para0[29]=1000>>8;
+	/* G5300 P0 AUTO is volatile module configuration in this M560 task.
+	 * P0 WRITE [51..54] is deliberately ignored: MotorParams_t has no
+	 * corresponding fields. READ reports the effective Sport+ settings. */
+	{
+		uint8_t enable,step;
+		uint16_t scale;
+		g53_chain_get_auto(&enable,&scale,&step);
+		Para0[51]=(uint8_t)scale;
+		Para0[52]=(uint8_t)(scale>>8);
+		Para0[53]=enable;
+		Para0[54]=step;
+	}
 
 	update_checksum();
 	if(repaired || migrated)write_virtual_eeprom();

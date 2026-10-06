@@ -266,6 +266,12 @@ sampling in `pas_sampler.c`, conditioned cadence in `cadence_filter.c`.
 
 ## 8. Profiles, the characteristic, and AUTO
 
+The M560 G5300 chain also enables its own support-ratio AUTO on HMI 4 (Sport+),
+internal slot 8 in the five-level scheme. Stock P0 AUTO settings are enable 1,
+scale 2 and positive ratio rise step 10 per 10 ms D7EC update. HMI 1/2/3/5
+retain their fixed ratios. P0 READ bytes 51..54 show effective settings; writes
+to those bytes are ignored until a persistent-record contract is defined.
+
 `ap2_profiles.c`, 4 kHz.
 
 **A mode is not a percentage.** Each profile defines a whole behaviour:

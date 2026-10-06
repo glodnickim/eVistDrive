@@ -546,6 +546,22 @@ $suites = @(
                    (Join-Path $root 'src\g53_port_pas.c'),
                    (Join-Path $root 'src\g53_port_chain.c'),
                    (Join-Path $root 'src\g53_g1_limiter.c')) },
+    @{ Name = 'M560 Sport+ AUTO interpolation, ratio slew and 16 kHz Iq timing (a-e)'
+       Harness = Join-Path $PSScriptRoot 'm560_auto_splus_host.c'
+       Modules = @((Join-Path $root 'src\g53_port.c'),
+                   (Join-Path $root 'src\g53_port_boundaries.c'),
+                   (Join-Path $root 'src\g53_port_pas.c'),
+                   (Join-Path $root 'src\g53_port_chain.c'),
+                   (Join-Path $root 'src\g53_g1_limiter.c'),
+                   (Join-Path $root 'src\ap2_limits.c'),
+                   (Join-Path $root 'src\assist_pipeline.c'),
+                   (Join-Path $root 'src\assist_modes.c'),
+                   (Join-Path $root 'src\torque_input.c'),
+                   (Join-Path $root 'src\tuning_config.c'),
+                   (Join-Path $root 'src\battery_iq_cap.c'),
+                   (Join-Path $root 'src\fast_iq_slew.c'))
+       IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common'))
+       Defines = @('-Wno-type-limits') },
     @{ Name = 'M560 P0/P1 parser roundtrip, clipping and migration (real parser)'
        Harness = Join-Path $PSScriptRoot 'm560_parser_host.c'
        Modules = @((Join-Path $root 'src\parser.c'))

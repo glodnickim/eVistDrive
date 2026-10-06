@@ -21,6 +21,9 @@ void g53_port_set_levels(const uint8_t accel[10],const uint16_t ratio[10],const 
     memcpy(applied_ratio,ratio,sizeof(applied_ratio));
     memcpy(applied_power,power,sizeof(applied_power));
 }
+void g53_chain_get_auto(uint8_t *enable,uint16_t *scale,uint8_t *rise_step) {
+    *enable=1; *scale=2; *rise_step=10;
+}
 
 int main(void)
 {
@@ -32,6 +35,7 @@ int main(void)
     InitEEPROM(&mp);
     assert(writes==1);
     parse_MOparams(&mp);
+    assert(Para0[51]==2 && Para0[52]==0 && Para0[53]==1 && Para0[54]==10);
     assert(Para0[1]==4 && Para0[3]==5 && Para0[5]==6 && Para0[7]==7);
     assert(Para1[40]==15 && Para1[42]==30 && Para1[44]==60 && Para1[46]==70);
     assert(Para0[28]==232 && Para0[29]==3 && Para0[63]==0);
@@ -45,6 +49,7 @@ int main(void)
     Para0[1]=8; Para0[3]=8; Para0[5]=8; Para0[7]=8;
     Para1[40]=99; Para1[42]=99; Para1[44]=99; Para1[46]=99;
     Para0[28]=0; Para0[29]=0; Para0[63]=99;
+    Para0[51]=0; Para0[52]=255; Para0[53]=0; Para0[54]=0;
     parse_DPparams(&mp);
     apply_assist_levels(&mp);
     for(unsigned i=0;i<5;i++) {
@@ -58,6 +63,7 @@ int main(void)
     assert(applied_accel[1]==4 && applied_ratio[1]==45);
     assert(mp.assist_settings[1][0]>mp.assist_settings[5][0]);
     parse_MOparams(&mp);
+    assert(Para0[51]==2 && Para0[52]==0 && Para0[53]==1 && Para0[54]==10);
     assert(Para0[1]==4 && Para0[3]==5 && Para0[5]==6 && Para0[7]==7);
     assert(Para1[40]==15 && Para1[42]==30 && Para1[44]==60 && Para1[46]==70);
     assert(Para0[28]==232 && Para0[29]==3 && Para0[63]==0);
@@ -88,6 +94,6 @@ int main(void)
     assert(mp.assist_settings[1][0]==73 && mp.assist_settings[1][1]==46);
     assert(mp.assist_settings[2][0]==80 && mp.assist_settings[2][1]==100);
     assert(mp.assist_levels_magic==0xA560U);
-    puts("M560 parser roundtrip, clipping and migration: PASS");
+    puts("M560 parser roundtrip, clipping, migration and P0 AUTO READ/WRITE: PASS");
     return 0;
 }

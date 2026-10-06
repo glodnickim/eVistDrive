@@ -9,6 +9,9 @@
 enum { G=0x20000888, T=0x2000356c, D=0x200011e8, DG=D,
        M=0x200039a4, E=0x20001344, Q=0x20000f6c, HB=0x200012dc,
        DIAG=0x20000ee0, P=0x20003ec4, CUR1=0x200014cc };
+/* Five HMI levels map to 2/4/6/8/9. G5300's N=5 gives
+ * sport_idx=min(N+(N+1)/2,8)=8, the HMI 4 Sport+ slot. */
+enum { G53_HMI_LEVEL_COUNT=5 };
 static uint32_t chain_tick;
 static uint8_t fast_phase, supervisor_phase;
 static uint8_t state_0[576];
@@ -2024,6 +2027,29 @@ static void chain_bde8_model(void)
 
 static uint8_t level_accel[10] = {1,4,4,5,5,6,6,7,8,8};
 static uint16_t level_ratio[10] = {1,45,95,155,215,260,310,370,525,525};
+/* G5300 P0[51..54]. Keep these outside the resettable register image, as for
+ * the level table. The base ratio is D40[0]=1, so scale 1..655 keeps
+ * auto_den=100*scale representable and nonzero in its 16-bit register. */
+static uint8_t auto_enable = 1;
+static uint16_t auto_scale = 2;
+static uint8_t auto_rise_step = 10;
+
+void g53_chain_set_auto(uint8_t enable, uint16_t scale, uint8_t rise_step)
+{
+    auto_enable = enable;
+    auto_scale = scale < 1 ? 1 : (scale > 655 ? 655 : scale);
+    auto_rise_step = rise_step;
+    write_8(D + 0x78u, auto_enable);
+    write_16(D + 0x6eu, auto_scale);
+    write_8(D + 0x7au, auto_rise_step);
+}
+
+void g53_chain_get_auto(uint8_t *enable, uint16_t *scale, uint8_t *rise_step)
+{
+    if(enable) *enable = auto_enable;
+    if(scale) *scale = auto_scale;
+    if(rise_step) *rise_step = auto_rise_step;
+}
 
 static void g53_chain_apply_levels(void)
 {
@@ -2037,6 +2063,10 @@ static void g53_chain_apply_levels(void)
         write_16(0x20001210u+2u*slot,40960u/(250u-(uint16_t)(n-1u)*32u));
         write_16(0x20001228u+2u*slot,level_ratio[slot]>1000 ? 1000 : level_ratio[slot]);
     }
+    /* G5300 D78/D6E/D7A are configuration, not D7EC integrator state. */
+    write_8(D + 0x78u, auto_enable);
+    write_16(D + 0x6eu, auto_scale);
+    write_8(D + 0x7au, auto_rise_step);
 }
 
 void g53_chain_set_levels(const uint8_t accel[10], const uint16_t ratio[10])
@@ -2135,8 +2165,6 @@ void g53_chain_reset(void)
     write_8(0x2000123eu, 5);
     write_8(0x2000123fu, 5);
     g53_chain_apply_levels();
-    write_8(0x20001256u, 2);
-    write_8(0x20001262u, 10);
     write_8(0x20001270u, 232);
     write_8(0x20001271u, 3);
     write_8(0x20001272u, 232);
@@ -2291,7 +2319,7 @@ void g53_chain_step(const g53_chain_input_t *in, g53_chain_output_t *out)
     write_16(0x20003708,abs64(in->speed_native));
     chain_bde8_model();
     if(supervisor_phase==0) {
-        write_8(M+0x2e5,4); write_16(M+0x50,0); write_16(M+0x52,0);
+        write_8(M+0x2e5,G53_HMI_LEVEL_COUNT); write_16(M+0x50,0); write_16(M+0x52,0);
         write_8(M+0x2ed,0); write_8(M+0x29f,0);
         write_16(read_32(M+0x74),in->speed_native);
         write_16(CUR1,in->rider_input_native);
