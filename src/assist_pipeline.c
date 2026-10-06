@@ -24,6 +24,10 @@ typedef struct {
     /* 4 kHz ticks the direction inhibit has been continuously active (saturating). It bounds
      * the moving-bike decay below; 0 whenever the inhibit is not active. */
     uint32_t inhibit_ticks;
+    /* Bumpless veto release: true while the published request was held below the G53 request by
+     * an M820 veto/gate on the previous tick, and the remainder of the rise-rate budget. */
+    bool pulled_down;
+    uint32_t rise_acc;
     assist_pipeline_telemetry_t tlm;
     g53_port_output_t g53;
 } ap2_pipeline_ctx_t;
@@ -151,6 +155,7 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
         AP2_CEILING_RISE_MS,AP2_CEILING_FALL_MS,used_ticks);
     cmd->iq_ceiling=ctx.ceiling;
     cmd->final_iq_request=lim.final_iq;
+    const int32_t g53_request=lim.final_iq;
     /*
      * RIDER GATES on the G53 request. normal_permission (m298==2) is a BDE8 drive mode, not a
      * pedal permission, so it gates nothing here.
@@ -193,9 +198,25 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
         cmd->release_ticks_16k=AP2_SAFETY_RELEASE_MS*AP2_FOC_TICKS_PER_MS;
         quiet=true;
     } else {
+        /*
+         * BUMPLESS VETO RELEASE (TASK-EVD-TQ-06-G2 R1). The M820 vetoes above zero only the
+         * PUBLISHED request; the G53 chain keeps its own demand while the rider keeps loading
+         * the pedal. When the veto clears, the request may climb back toward the chain only at
+         * the G5300 BDE8 rate (+50 M2AA per 1 ms logical tick = phase_current_max*50/10000 Iq per
+         * ms), as G5300's Q5C would from the level actually being produced - never as a step.
+         * Decreases are never delayed, and a request that was not pulled down follows G53 as is.
+         */
+        if(ctx.pulled_down && cmd->final_iq_request>ctx.last_final_iq && in->phase_current_max>0) {
+            ctx.rise_acc+=(uint32_t)in->phase_current_max*50u*used_ticks;
+            const uint32_t step=ctx.rise_acc/(10000u*AP2_TICKS_PER_MS);
+            ctx.rise_acc-=step*(10000u*AP2_TICKS_PER_MS);
+            if((int64_t)cmd->final_iq_request>(int64_t)ctx.last_final_iq+(int64_t)step)
+                cmd->final_iq_request=(int32_t)(ctx.last_final_iq+(int32_t)step);
+        } else ctx.rise_acc=0;
         cmd->slew_mode=FIS_MODE_BYPASS;
         quiet=cmd->final_iq_request==0 && (assist_off || !in->forward_valid);
     }
+    ctx.pulled_down=cmd->final_iq_request<g53_request;
     cmd->zero_policy=quiet && !in->service_cut ? FIS_ZERO_POLICY_QUIET : FIS_ZERO_POLICY_NONE;
     ctx.last_final_iq=cmd->final_iq_request;
     const bool was_permitted=ctx.tlm.assist_permitted;
