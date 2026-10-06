@@ -103,6 +103,15 @@ static uint16_t rider_power_w(uint16_t load_centikg, uint8_t cadence_rpm)
 }
 
 
+/* G5300 fast slew step: 0.625*P Q8 per 4 kHz tick, half up, never 0 for P>0 (TQ-06-G2 I2). */
+static uint16_t fast_slew_step(int32_t phase_current_max)
+{
+    uint32_t step=((uint32_t)phase_current_max*5u+4u)/8u;
+    if(step==0u) step=1u;
+    if(step>UINT16_MAX) step=UINT16_MAX;
+    return (uint16_t)step;
+}
+
 void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_command_t *cmd)
 {
     if(!cmd) return;
@@ -163,9 +172,15 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
      *   not forward    -> never a new or a rising request: an already valid pedal demand may
      *                     only hold or decay (G53's own release), and 0 stays 0.
      */
+    /* Never above where the live reference really is, when it is known: the published target
+     * is compared with the PREVIOUS REQUEST, but the 16 kHz owner may still be below it (a
+     * binding fast rise), and a hold/decay must not lift it (review ISSUE 1). */
+    int32_t hold_cap=ctx.last_final_iq;
+    if(in->live_iq_valid && hold_cap>(in->live_iq_ref>0 ? in->live_iq_ref : 0))
+        hold_cap=in->live_iq_ref>0 ? in->live_iq_ref : 0;
     if(assist_off) cmd->final_iq_request=0;
-    else if(!in->forward_valid && cmd->final_iq_request>ctx.last_final_iq)
-        cmd->final_iq_request=ctx.last_final_iq;
+    else if(!in->forward_valid && cmd->final_iq_request>hold_cap)
+        cmd->final_iq_request=hold_cap;
     bool quiet=false;
     if(in->direction_inhibit) {
         if(ctx.inhibit_ticks<UINT32_MAX-used_ticks) ctx.inhibit_ticks+=used_ticks;
@@ -188,8 +203,14 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
         const bool bounded_decay=moving && !assist_off && !native_cut && !in->real_stop &&
             !in->service_cut && ctx.inhibit_ticks<AP2_SAFETY_RELEASE_MS*AP2_TICKS_PER_MS;
         if(bounded_decay) {
-            if(cmd->final_iq_request>ctx.last_final_iq) cmd->final_iq_request=ctx.last_final_iq;
-            cmd->slew_mode=FIS_MODE_BYPASS; quiet=cmd->final_iq_request==0;
+            if(cmd->final_iq_request>hold_cap) cmd->final_iq_request=hold_cap;
+            /* FALL (G5300 step), never BYPASS: BYPASS copies the target into the live
+             * accumulator and would lift a still-rising reference to the previous request. */
+            if(in->phase_current_max>0) {
+                cmd->step_mag_8=fast_slew_step(in->phase_current_max);
+                cmd->slew_mode=FIS_MODE_FALL;
+            } else cmd->slew_mode=FIS_MODE_BYPASS;
+            quiet=cmd->final_iq_request==0;
         } else {
             cmd->final_iq_request=0; cmd->slew_mode=FIS_MODE_FORCE_ZERO; quiet=true;
         }
@@ -228,10 +249,7 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
         if(assist_off || in->phase_current_max<=0) cmd->slew_mode=FIS_MODE_BYPASS;
         else if(stock_hard_zero) { cmd->final_iq_request=0; cmd->slew_mode=FIS_MODE_FORCE_ZERO; }
         else {
-            uint32_t step=((uint32_t)in->phase_current_max*5u+4u)/8u; /* 0.625*P, half up, Q8 per 4 kHz tick */
-            if(step==0u) step=1u;
-            if(step>UINT16_MAX) step=UINT16_MAX;
-            cmd->step_mag_8=(uint16_t)step;
+            cmd->step_mag_8=fast_slew_step(in->phase_current_max);
             cmd->slew_mode=cmd->final_iq_request>ctx.last_final_iq ? FIS_MODE_RISE : FIS_MODE_FALL;
         }
         quiet=cmd->final_iq_request==0 && (assist_off || !in->forward_valid);

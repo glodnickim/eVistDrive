@@ -123,6 +123,7 @@ static void run(const scn_t *s, result_t *r)
 		fast_iq_slew_publish(&mailbox, cmd.final_iq_request, cmd.slew_mode, cmd.step_mag_8,
 			cmd.release_ticks_16k, cmd.zero_policy, cmd.iq_ceiling);
 		for (unsigned i = 0; i < 4U; ++i) fast_iq_slew_tick(&mailbox, &iq_ref);
+		in.live_iq_ref = iq_ref; in.live_iq_valid = true;   /* as ride_control passes MS.i_q_setpoint */
 		if (k == -1) r->before_stop = cmd.final_iq_request;
 		if (k >= 0) {
 			r->final_iq[k] = cmd.final_iq_request;
@@ -287,6 +288,7 @@ static void run_resume(const resume_t *c, int32_t *fin, int32_t *g53)
 		fast_iq_slew_publish(&mailbox, cmd.final_iq_request, cmd.slew_mode, cmd.step_mag_8,
 			cmd.release_ticks_16k, cmd.zero_policy, cmd.iq_ceiling);
 		for (unsigned i = 0; i < 4U; ++i) fast_iq_slew_tick(&mailbox, &iq_ref);
+		in.live_iq_ref = iq_ref; in.live_iq_valid = true;   /* as ride_control passes MS.i_q_setpoint */
 		if (k >= 0) { fin[k] = cmd.final_iq_request; g53[k] = assist_pipeline_g53()->iq_request_pre_limits; }
 		if (step_fwd) {
 			ph += 96.0 * 60.0 / 60000.0;

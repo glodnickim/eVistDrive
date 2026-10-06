@@ -198,7 +198,7 @@ static void scenarios(void)
 	in.direction_inhibit = true;
 	pipeline_tick(&in, &cmd);
 	CHECK(cmd.final_iq_request <= moving_before && cmd.slew_mode != FIS_MODE_SAFETY &&
-		(cmd.final_iq_request > 0 ? cmd.slew_mode == FIS_MODE_BYPASS : true),
+		(cmd.final_iq_request > 0 ? cmd.slew_mode == FIS_MODE_FALL : true),
 		"P2: direction inhibit while moving never rises and does not step through the safety release");
 
 	/* P3/P4: hard vetoes own the 200 ms safety release; held references cannot rise. */

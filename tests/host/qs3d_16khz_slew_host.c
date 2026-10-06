@@ -601,11 +601,11 @@ static void test_production_static_guards(void)
 		"STATIC: native safety publishes the 200 ms SAFETY mode and direction inhibit publishes FORCE_ZERO");
 	CHECK(pipe_c && strstr(pipe_c, "cmd->slew_mode=FIS_MODE_BYPASS") != NULL &&
 		strstr(pipe_c, "trajectory(") == NULL &&
-		strstr(pipe_c, "cmd->slew_mode=FIS_MODE_RISE") == NULL &&
-		strstr(pipe_c, "cmd->slew_mode=FIS_MODE_FALL") == NULL &&
+		strstr(pipe_c, "cmd->slew_mode=FIS_MODE_RISE;") == NULL &&
+		strstr(pipe_c, "FIS_MODE_RISE : FIS_MODE_FALL") != NULL &&   /* TQ-06-G2 I2 fast slew */
 		strstr(pipe_c, "cmd->slew_mode=FIS_MODE_HOLD") == NULL &&
 		strstr(pipe_c, "cmd->slew_mode=FIS_MODE_RELEASE") == NULL,
-		"R2 STATIC: G53 normal output uses BYPASS; legacy AP2 trajectory modes and target-sign dispatch are absent");
+		"R2 STATIC: G53 normal output uses the G5300 fast slew RISE/FALL (TQ-06-G2 I2); legacy AP2 trajectory modes and target-sign dispatch are absent");
 	CHECK(strstr(main_c, "ride_control_force_final_iq_zero();") != NULL &&
 		strstr(ride_c, "hall_calibration_iq_request()") != NULL &&
 		strstr(ride_c, "motor_core_set_id_target(input->current_id);") != NULL,
