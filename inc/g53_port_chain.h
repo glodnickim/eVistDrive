@@ -151,6 +151,9 @@ typedef struct {
 
 uint8_t g53_chain_level(uint8_t assist_level);
 void g53_chain_reset(void);
+void g53_chain_set_levels(const uint8_t accel[10], const uint16_t ratio[10]);
+uint16_t g53_chain_rise_step(uint8_t slot);
+uint16_t g53_chain_ratio(uint8_t slot);
 void g53_chain_step(const g53_chain_input_t *in, g53_chain_output_t *out);
 
 #endif

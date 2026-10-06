@@ -334,6 +334,10 @@ static void check_safety_unchanged(void)
 
 int main(int argc, char **argv)
 {
+	/* Hold the old rise table for the pinned I2 engage timing fixture. */
+	const uint8_t accel[10]={1,8,8,8,8,8,8,8,8,8};
+	const uint16_t ratio[10]={1,45,95,155,215,260,310,370,525,525};
+	g53_chain_set_levels(accel,ratio);
 	trace_on = argc > 1 && strcmp(argv[1], "trace") == 0;
 	puts("TASK-EVD-TQ-06-G2 I2: G5300 fast current-reference slew on the normal PEDAL path");
 	check_step_and_mode(700);

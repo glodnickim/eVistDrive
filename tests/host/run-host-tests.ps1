@@ -551,6 +551,17 @@ $suites = @(
                    (Join-Path $root 'src\g53_port_chain.c'),
                    (Join-Path $root 'src\g53_g1_limiter.c'),
                    (Join-Path $root 'src\pas_quadrature.c')) },
+    @{ Name = 'M560 G53 level rise, ratio, power and reset (real modules)'
+       Harness = Join-Path $PSScriptRoot 'm560_levels_host.c'
+       Modules = @((Join-Path $root 'src\g53_port.c'),
+                   (Join-Path $root 'src\g53_port_boundaries.c'),
+                   (Join-Path $root 'src\g53_port_pas.c'),
+                   (Join-Path $root 'src\g53_port_chain.c'),
+                   (Join-Path $root 'src\g53_g1_limiter.c')) },
+    @{ Name = 'M560 P0/P1 parser roundtrip, clipping and migration (real parser)'
+       Harness = Join-Path $PSScriptRoot 'm560_parser_host.c'
+       Modules = @((Join-Path $root 'src\parser.c'))
+       IncludeDirs = @(Join-Path $PSScriptRoot 'm560_stubs') },
     @{ Name = 'FW-145 continuous Level-4 ride telemetry (real module pacing, priority and wire schema)'
        Harness = Join-Path $PSScriptRoot 'ride_telemetry_host.c'
        Modules = @((Join-Path $root 'src\ride_telemetry.c'))

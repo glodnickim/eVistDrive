@@ -91,6 +91,14 @@ void g53_port_reset(void)
     dropped_ticks=0;
     pa6_ax_observed=0;
 }
+static uint8_t level_power[10] = {0,100,100,100,100,100,100,100,100,100};
+
+void g53_port_set_levels(const uint8_t accel[10], const uint16_t ratio[10], const uint8_t power[10])
+{
+    uint8_t slot;
+    g53_chain_set_levels(accel,ratio);
+    for(slot=1;slot<10;slot++) level_power[slot]=power[slot]>100 ? 100 : power[slot];
+}
 void g53_port_init(void)
 {
     g53_port_reset();
@@ -147,7 +155,7 @@ void g53_port_update(const g53_port_input_t *in,g53_port_output_t *out)
         if(g1_phase==5u) {
             const g53_g1_limit_input_t li={
                 .bde8_state=(uint8_t)co.trace.bde8_q50,
-                .level_pct=100, .level_pct_state6=100, .base_select=0,
+                .level_pct=level_power[level], .level_pct_state6=100, .base_select=0,
                 .soc_factor=g1_soc_factor, .thermal_a=G53_G1_Q12_ONE, .thermal_b=G53_G1_Q12_ONE
             };
             (void)g53_g1_limit_update(&g1_limiter,&li);

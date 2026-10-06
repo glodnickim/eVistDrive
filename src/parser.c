@@ -7,6 +7,39 @@
 
 #include "main.h"
 #include "CAN_Display.h"
+#include "g53_port.h"
+
+#define ASSIST_LEVELS_MAGIC 0xA560U
+static const uint8_t factory_accel[10]={1,4,4,5,5,6,6,7,8,8};
+static const uint16_t factory_ratio[10]={1,45,95,155,215,260,310,370,525,525};
+static const uint8_t factory_power[10]={0,15,20,30,40,60,60,70,80,100};
+static const uint8_t level_slot[5]={2,4,6,8,9};
+
+static void reset_assist_levels(MotorParams_t* MP){
+	uint8_t i;
+	for(i=0;i<5;i++){
+		MP->assist_settings[i+1][2]=factory_accel[level_slot[i]];
+		MP->TQO_threshold[i+1]=factory_ratio[level_slot[i]];
+	}
+	MP->assist_levels_magic=ASSIST_LEVELS_MAGIC;
+}
+
+void apply_assist_levels(const MotorParams_t* MP){
+	uint8_t accel[10],power[10],i;
+	uint16_t ratio[10];
+	for(i=0;i<10;i++){
+		accel[i]=factory_accel[i];
+		ratio[i]=factory_ratio[i];
+		power[i]=factory_power[i];
+	}
+	for(i=0;i<5;i++){
+		uint8_t slot=level_slot[i];
+		accel[slot]=MP->assist_settings[i+1][2];
+		ratio[slot]=MP->TQO_threshold[i+1];
+		power[slot]=MP->assist_settings[i+1][0];
+	}
+	g53_port_set_levels(accel,ratio,power);
+}
 
 uint16_t l=0;
 
@@ -133,13 +166,16 @@ static uint8_t repair_motor_params(MotorParams_t* MP){
 			MP->assist_settings[k][1]=100;
 			repaired=1;
 		}
-		if(MP->assist_settings[k][2]<1 || MP->assist_settings[k][2]>7){
-			MP->assist_settings[k][2]=TQFILTER;
+		if(MP->assist_settings[k][2]<1){
+			MP->assist_settings[k][2]=1;
 			repaired=1;
 		}
-		if(MP->TQO_threshold[k]==0 ||
-		   MP->TQO_threshold[k]>=TQ_FULL_SCALE_MV){
-			MP->TQO_threshold[k]=TQ_PRESSURE_FLOOR_START_MV;
+		if(MP->assist_settings[k][2]>8){
+			MP->assist_settings[k][2]=8;
+			repaired=1;
+		}
+		if(MP->TQO_threshold[k]>1000){
+			MP->TQO_threshold[k]=1000;
 			repaired=1;
 		}
 		for(l=0;l<6;l++){
@@ -205,7 +241,7 @@ void parse_DPparams(MotorParams_t* MP){
 	for (k=0; k < 4; k++){
 		MP->assist_settings[k+1][0]=Para1[k*2+41]; //current limit (%)
 		MP->assist_settings[k+1][1]=Para1[k*2+50]; //speed limit (%)
-		MP->assist_settings[k+1][2]=Para0[k*2+2];  //ride mode (Acceleraton in Canable Tool)
+		MP->assist_settings[k+1][2]=Para0[k*2+2];  //M560 acceleration
 	}
 	MP->assist_settings[5][0]=Para1[48];
 	MP->assist_settings[5][1]=Para1[57];
@@ -222,13 +258,18 @@ void parse_DPparams(MotorParams_t* MP){
 		MP->TQO_threshold[k+1]=Para0[k*4+12]+(Para0[k*4+13]<<8);  // use field Assist ratio
 	}
 	MP->TQO_threshold[5]=Para0[26]+(Para0[27]<<8);
-	MP->TQO_threshold[0]=3299;
+	MP->TQO_threshold[0]=1;
+	MP->assist_levels_magic=ASSIST_LEVELS_MAGIC;
 	repair_motor_params(MP);
 }
 
 
 void parse_MOparams(MotorParams_t* MP){
-	uint8_t repaired=repair_motor_params(MP);
+	uint8_t migrated=MP->assist_levels_magic!=ASSIST_LEVELS_MAGIC;
+	uint8_t repaired;
+	uint8_t slot;
+	if(migrated) reset_assist_levels(MP);
+	repaired=repair_motor_params(MP);
 	Para1[0] = MP->system_voltage;
 	Para1[1] = MP->battery_current_max/1000;
 	Para1[2] = MP->max_voltage;
@@ -263,7 +304,7 @@ void parse_MOparams(MotorParams_t* MP){
 	for (k=0; k < 4; k++){
 		Para1[k*2+41]= MP->assist_settings[k+1][0]; //current limit (%)
 		Para1[k*2+50]= MP->assist_settings[k+1][1]; //speed limit (%)
-		Para0[k*2+2]= MP->assist_settings[k+1][2];  //ride mode (Acceleraton in Canable Tool)
+		Para0[k*2+2]= MP->assist_settings[k+1][2];  //M560 acceleration
 	}
 	Para1[48]= MP->assist_settings[5][0];
 	Para1[57]= MP->assist_settings[5][1];
@@ -278,9 +319,18 @@ void parse_MOparams(MotorParams_t* MP){
 
 	Para0[26]= MP->TQO_threshold[5]&0xFF;
 	Para0[27]= MP->TQO_threshold[5]>>8;
+	for(slot=1;slot<10;slot+=2){
+		if(slot==9) break;
+		Para0[slot]=factory_accel[slot];
+		Para0[10+2*(slot-1)]=factory_ratio[slot]&0xFF;
+		Para0[11+2*(slot-1)]=factory_ratio[slot]>>8;
+		Para1[39+slot]=factory_power[slot];
+	}
+	Para0[28]=1000&0xFF;
+	Para0[29]=1000>>8;
 
 	update_checksum();
-	if(repaired)write_virtual_eeprom();
+	if(repaired || migrated)write_virtual_eeprom();
 }
 
 void InitEEPROM(MotorParams_t* MP){
@@ -301,6 +351,7 @@ void InitEEPROM(MotorParams_t* MP){
 	MP->wheel_diameter_code[1]=WHEEL_DIAMETER_CODE_1;
 	MP->soc_full_magic=0; //FW-018: no configured full-charge voltage -> boot 100% anchor inactive
 	MP->soc_full_pack_10mv=0;
+	MP->assist_levels_magic=ASSIST_LEVELS_MAGIC;
 	MP->tuning_store_magic=0; //FW-010: no stored tuning -> compiled-in defaults
 	MP->reverse=REVERSE;
 	MP->Cadence_exponent=10;
@@ -336,20 +387,20 @@ void InitEEPROM(MotorParams_t* MP){
 	for (k=0; k < 4; k++){
 		MP->assist_settings[k+1][0]=(k+1)*20; //current limit: 20/40/60/80%
 		MP->assist_settings[k+1][1]=100; //speed limit (%)
-		MP->assist_settings[k+1][2]=TQFILTER;  //ride mode (Acceleraton in Canable Tool)
+		MP->assist_settings[k+1][2]=factory_accel[level_slot[k]];
 	}
 	MP->assist_settings[5][0]=100; //level 5 current limit
 	MP->assist_settings[5][1]=100;
-	MP->assist_settings[5][2]=TQFILTER;
+	MP->assist_settings[5][2]=factory_accel[9];
 
 	MP->assist_settings[0][0]=0;
 	MP->assist_settings[0][1]=0;
 	MP->assist_settings[0][2]=0;
 
 	for (k=0; k < 5; k++){
-		MP->TQO_threshold[k+1]=TQ_PRESSURE_FLOOR_START_MV;
+		MP->TQO_threshold[k+1]=factory_ratio[level_slot[k]];
 	}
-	MP->TQO_threshold[0]=TQ_PRESSURE_FLOOR_START_MV;
+	MP->TQO_threshold[0]=1;
 
 	write_virtual_eeprom();
 }
