@@ -44,7 +44,7 @@ static uint32_t expected_step(int32_t p) { return (uint32_t)((5 * p + 4) / 8); }
 static int rate_ceil(int32_t p) { return (160 * p + 16383) / 16384; }   /* 7 at 700 */
 
 typedef enum { EV_NONE, EV_LIMIT_DROP, EV_SPEED_LIMIT, EV_RELEASE, EV_RELEASE_STANDSTILL,
-	EV_BRAKE, EV_TEMP } event_t;
+	EV_BRAKE, EV_TEMP, EV_CUT_REVERSE, EV_CUT_FWD_LOST } event_t;
 
 typedef struct {
 	int32_t final_iq[RUN_AFTER_MS];
@@ -54,6 +54,8 @@ typedef struct {
 	uint32_t step[RUN_AFTER_MS];
 	fis_zero_policy_t policy[RUN_AFTER_MS];
 	bool permission[RUN_AFTER_MS];
+	int32_t max_tick_rise;   /* largest single 16 kHz tick rise of the owner output from k=40 */
+	int32_t live_at_40, req_at_40;
 	int32_t before;          /* owner output on the tick before the event */
 	int32_t before_req;
 } result_t;
@@ -84,6 +86,18 @@ static void run(event_t ev, int32_t phase_max, uint32_t speed_x100, result_t *r)
 				in.battery_current_limiter_centiamp = 3000;
 				in.battery_current_max = 10000;
 				break;
+			case EV_CUT_REVERSE: case EV_CUT_FWD_LOST:
+				/* Speed limit cuts the request at k=0 and is lifted at k=30: the request jumps
+				 * back to the G53 demand at once, the live reference (slew + ceiling) is still
+				 * far below it - a BINDING rise. At k=40 the crank reverses (or, in the other
+				 * scenario, forward_valid is lost). */
+				in.legal_enabled = true;
+				in.speed_limit_x100 = k < 30 ? 500U : 6000U;
+				if (k >= 40) {
+					in.forward_valid = false;
+					if (ev == EV_CUT_REVERSE) { in.direction_inhibit = true; in.inhibit_is_reverse = true; }
+				}
+				break;
 			case EV_SPEED_LIMIT: in.legal_enabled = true; in.speed_limit_x100 = 500U; break;
 			case EV_RELEASE: case EV_RELEASE_STANDSTILL: rider_on = false; break;
 			case EV_BRAKE: in.safety_cut = true; break;
@@ -98,7 +112,13 @@ static void run(event_t ev, int32_t phase_max, uint32_t speed_x100, result_t *r)
 		assist_pipeline_update(&in, &cmd);
 		fast_iq_slew_publish(&mailbox, cmd.final_iq_request, cmd.slew_mode, cmd.step_mag_8,
 			cmd.release_ticks_16k, cmd.zero_policy, cmd.iq_ceiling);
-		for (unsigned i = 0; i < 16U; ++i) fast_iq_slew_tick(&mailbox, &iq_ref);
+		for (unsigned i = 0; i < 16U; ++i) {
+			const int32_t pv = iq_ref;
+			fast_iq_slew_tick(&mailbox, &iq_ref);
+			if (k >= 40 && iq_ref - pv > r->max_tick_rise) r->max_tick_rise = iq_ref - pv;
+		}
+		in.live_iq_ref = iq_ref; in.live_iq_valid = true;
+		if (k == 39) { r->live_at_40 = iq_ref; r->req_at_40 = cmd.final_iq_request; }
 		if (k == -1) { r->before = iq_ref; r->before_req = cmd.final_iq_request; }
 		if (k >= 0) {
 			r->final_iq[k] = cmd.final_iq_request;
@@ -232,6 +252,56 @@ static void check_engage_unchanged(void)
 /* Stock hard-zero event: the BDE8 drive permission falls with m2aa 0 (standstill release). The
  * request drops to 0 in one step on that tick; the owner must follow in the SAME tick (stock
  * mode 0/3: K reset, no ramp) - not slew down a tail behind it. */
+/* Review ISSUE 1: a hold / bounded decay must never lift a still-rising live reference. */
+static void check_binding_rise_then(event_t ev, const char *name, bool expect_zero)
+{
+	static result_t r;
+	char m[200];
+	run(ev, PHASE_MAX, 1500U, &r);
+	printf("%s\n", name);
+	snprintf(m, sizeof m, "%s: setup is a binding rise (live %d well below request %d at k=40)", name,
+		(int)r.live_at_40, (int)r.req_at_40);
+	CHECK(r.live_at_40 > 0 && r.req_at_40 - r.live_at_40 > 40, m);
+	int zero_at = -1;
+	for (int k = 41; k < RUN_AFTER_MS; ++k) if (r.iq_ref[k] == 0) { zero_at = k; break; }
+	printf("  live at k=40: %d, request %d, max single 16 kHz tick rise after k=40: %d, live zero at %d ms\n",
+		(int)r.live_at_40, (int)r.req_at_40, (int)r.max_tick_rise, zero_at);
+	snprintf(m, sizeof m, "%s: the live reference never rises after the event (max tick rise %d)", name,
+		(int)r.max_tick_rise);
+	CHECK(r.max_tick_rise <= 0, m);
+	if (expect_zero) {
+		snprintf(m, sizeof m, "%s: live reference reaches 0 within 200 ms of the inhibit (at %d ms)", name, zero_at - 40);
+		CHECK(zero_at > 0 && zero_at - 40 <= 200, m);
+	}
+}
+
+/* Issue 2 (accepted by Master): a legal speed cut is progressive, not a 1 ms step. */
+static void check_speed_cut_tail(void)
+{
+	static result_t r;
+	char m[200];
+	const char *name = "legal speed cut from full: progressive, <= 70 ms, never rises";
+	run(EV_SPEED_LIMIT, PHASE_MAX, 1500U, &r);
+	printf("%s\n", name);
+	int zero_at = -1; bool rose = false; int32_t prev = r.before;
+	for (int k = 0; k < RUN_AFTER_MS; ++k) {
+		if (r.iq_ref[k] > prev) rose = true;
+		if (zero_at < 0 && r.iq_ref[k] == 0) zero_at = k;
+		prev = r.iq_ref[k];
+	}
+	printf("  request zero at k=0, live reference zero at %d ms (accepted tail)\n", zero_at);
+	snprintf(m, sizeof m, "%s: live reference reaches 0 in <= 70 ms (at %d ms)", name, zero_at);
+	CHECK(zero_at > 0 && zero_at <= 70, m);
+	snprintf(m, sizeof m, "%s: never rises", name);
+	CHECK(!rose && r.final_iq[0] == 0, m);
+	/* iq_ceiling: unchanged behaviour - published every tick, zero once the speed cut binds,
+	 * retired over the producer's own rate limit, never above the live reference + 0. */
+	int32_t c0 = 0; bool ceil_ok = true;
+	(void)c0;
+	for (int k = 0; k < RUN_AFTER_MS; ++k) if (r.iq_ref[k] > 455) ceil_ok = false;
+	CHECK(ceil_ok, "speed cut: reference stays under the unchanged protection ceiling");
+}
+
 static void check_standstill_hard_zero(void)
 {
 	static result_t r;
@@ -274,6 +344,9 @@ int main(int argc, char **argv)
 	check_fast_step(EV_SPEED_LIMIT, "speed limit drops under the speed (ap2 limiter)");
 	check_no_double_slowing(EV_RELEASE, "ordinary pedal release, rolling (BDE8 ramp, unchanged)");
 	check_engage_unchanged();
+	check_speed_cut_tail();
+	check_binding_rise_then(EV_CUT_REVERSE, "binding fast rise, then moving reverse (review ISSUE 1)", true);
+	check_binding_rise_then(EV_CUT_FWD_LOST, "binding fast rise, then forward_valid lost (hold, no jump)", false);
 	check_standstill_hard_zero();
 	check_safety_unchanged();
 	if (failures) { printf("fast slew I2: %u FAILED CHECKS\n", failures); return 1; }

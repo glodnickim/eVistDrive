@@ -331,6 +331,8 @@ void ride_control_update(const ride_control_input_t *input)
 			assist_modes_get_default_level(input->assist_level_index),
 			input->ride_core_iq_limit, input->phase_current_max);
 		pipe_in.phase_current_max = input->phase_current_max;
+		pipe_in.live_iq_ref = input->current_iq;
+		pipe_in.live_iq_valid = true;
 		pipe_in.voltage_raw = input->voltage_raw;
 		pipe_in.voltage_min_raw = input->voltage_min_raw;
 		pipe_in.controller_temperature_c = input->controller_temperature_c;

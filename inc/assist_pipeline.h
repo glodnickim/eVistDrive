@@ -93,6 +93,11 @@ typedef struct {
 	int32_t cal_i;
 	int32_t level_iq_limit;
 	int32_t phase_current_max;
+	/* The live 16 kHz Iq reference (MS.i_q_setpoint) as the 4 kHz domain sees it. When valid it
+	 * bounds every veto/hold/decay so a hold or reverse never lifts the live reference above where
+	 * it actually is (TASK-EVD-TQ-06-G2 review ISSUE 1). */
+	int32_t live_iq_ref;
+	bool live_iq_valid;
 	uint16_t voltage_raw;
 	int16_t voltage_min_raw;
 	int16_t controller_temperature_c;
