@@ -213,7 +213,27 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
             if((int64_t)cmd->final_iq_request>(int64_t)ctx.last_final_iq+(int64_t)step)
                 cmd->final_iq_request=(int32_t)(ctx.last_final_iq+(int32_t)step);
         } else ctx.rise_acc=0;
-        cmd->slew_mode=FIS_MODE_BYPASS;
+        /*
+         * G5300 FAST CURRENT-REFERENCE SLEW (TASK-EVD-TQ-06-G2 I2, stock 0x0801A26C): the final
+         * reference moves by at most +-10 Q14 per call, 16 calls per 1 ms = +-160 Q14/ms, where Q14
+         * 16384 is phase_current_max. That is 160*P/16384 Iq/ms = 0.625*P per 4 kHz tick in Q8
+         * (438 at P=700), rise and fall alike. The G53 BDE8 ramps (R1 3.5 Iq/ms engage, release
+         * ~3 Iq/ms) are slower, so ordinary riding is untouched; only a faster step of the request
+         * (limiter drop, g1) is now slewed instead of stepped. fast_iq_slew stays the single owner.
+         * The stock hard-zero events (BDE8 drive permission falls with m2aa 0: standstill release)
+         * reset the slew state in the stock (mode 0/3) and so stay FORCE_ZERO here. Assist off
+         * keeps its same-update exact zero. The protection ceiling still binds immediately.
+         */
+        const bool stock_hard_zero=!ctx.g53.normal_permission && ctx.g53.m2aa_native==0;
+        if(assist_off || in->phase_current_max<=0) cmd->slew_mode=FIS_MODE_BYPASS;
+        else if(stock_hard_zero) { cmd->final_iq_request=0; cmd->slew_mode=FIS_MODE_FORCE_ZERO; }
+        else {
+            uint32_t step=((uint32_t)in->phase_current_max*5u+4u)/8u; /* 0.625*P, half up, Q8 per 4 kHz tick */
+            if(step==0u) step=1u;
+            if(step>UINT16_MAX) step=UINT16_MAX;
+            cmd->step_mag_8=(uint16_t)step;
+            cmd->slew_mode=cmd->final_iq_request>ctx.last_final_iq ? FIS_MODE_RISE : FIS_MODE_FALL;
+        }
         quiet=cmd->final_iq_request==0 && (assist_off || !in->forward_valid);
     }
     ctx.pulled_down=cmd->final_iq_request<g53_request;

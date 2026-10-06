@@ -103,6 +103,9 @@ static assist_pipeline_input_t base_input(void)
 	return in;
 }
 
+/* TASK-EVD-TQ-06-G2 I2: the normal PEDAL path publishes the G5300 fast slew (RISE/FALL), not BYPASS. */
+static bool is_fast_slew(fis_mode_t m) { return m == FIS_MODE_RISE || m == FIS_MODE_FALL; }
+
 static void reset_all(void)
 {
 	control_tick = 0U;
@@ -129,7 +132,7 @@ static void pipeline_tick(assist_pipeline_input_t *in, assist_pipeline_command_t
 	assist_pipeline_update(in, cmd);
 	fast_iq_slew_publish(&mailbox, cmd->final_iq_request, cmd->slew_mode, cmd->step_mag_8,
 		cmd->release_ticks_16k, cmd->zero_policy, cmd->iq_ceiling);
-	for (unsigned i = 0; i < 4U; ++i) fast_iq_slew_tick(&mailbox, &iq_ref);
+	for (unsigned i = 0; i < 16U; ++i) fast_iq_slew_tick(&mailbox, &iq_ref);   /* 16 kHz x 1 ms */
 	++control_tick;
 }
 
@@ -142,9 +145,9 @@ static void establish_positive(assist_pipeline_input_t *in, assist_pipeline_comm
 	CHECK(assist_pipeline_g53()->m2aa_native > 0 &&
 		assist_pipeline_g53()->normal_permission &&
 		assist_pipeline_g53()->iq_request_pre_limits > 0 &&
-		cmd->final_iq_request > 0 && cmd->slew_mode == FIS_MODE_BYPASS &&
+		cmd->final_iq_request > 0 && is_fast_slew(cmd->slew_mode) &&
 		cmd->zero_policy == FIS_ZERO_POLICY_NONE,
-		"P6/P7/P8: fixture setup establishes real positive demand and BYPASS/NONE");
+		"P6/P7/P8: fixture setup establishes real positive demand and RISE|FALL/NONE");
 }
 
 static void scenarios(void)
@@ -160,8 +163,8 @@ static void scenarios(void)
 		assist_pipeline_g53()->iq_request_pre_limits > 0 &&
 		cmd.final_iq_request > 0 && iq_ref > 0,
 		"P8: M2AA, permission, pre-limit and final request are all real and positive");
-	CHECK(cmd.slew_mode == FIS_MODE_BYPASS && cmd.zero_policy == FIS_ZERO_POLICY_NONE,
-		"P8: normal positive G53 demand publishes BYPASS with policy NONE");
+	CHECK(is_fast_slew(cmd.slew_mode) && cmd.zero_policy == FIS_ZERO_POLICY_NONE,
+		"P8: normal positive G53 demand publishes the fast slew (RISE|FALL) with policy NONE");
 
 	/* P1 overrides each class of zero decision without changing its selected mode/request. */
 	in.service_cut = true; in.direction_inhibit = true;
@@ -248,12 +251,12 @@ static void scenarios(void)
 	in.battery_current_limiter_centiamp = 3000;     /* measured 30 A: sustained overload */
 	for (unsigned i = 0; i < 100U; ++i) pipeline_tick(&in, &cmd);
 	tlm = assist_pipeline_telemetry();
-	CHECK(cmd.final_iq_request == 0 && cmd.slew_mode == FIS_MODE_BYPASS &&
+	CHECK(cmd.final_iq_request == 0 && is_fast_slew(cmd.slew_mode) &&
 		cmd.zero_policy == FIS_ZERO_POLICY_NONE && tlm->battery_limited &&
 		assist_pipeline_g53()->trace.g1 == 0 &&
 		assist_pipeline_g53()->normal_permission &&
 		assist_pipeline_battery_limited(),
-		"P7: battery limiter (G53 g1) zero while forward demand remains uses BYPASS/NONE");
+		"P7: battery limiter (G53 g1) zero while forward demand remains uses the fast slew with NONE");
 	{
 		/* P7b: the same limiter gives the current back once the measured current falls. */
 		bool recovered = false;
@@ -262,7 +265,7 @@ static void scenarios(void)
 			pipeline_tick(&in, &cmd);
 			recovered = cmd.final_iq_request > 0;
 		}
-		CHECK(recovered && assist_pipeline_g53()->trace.g1 > 0 && cmd.slew_mode == FIS_MODE_BYPASS,
+		CHECK(recovered && assist_pipeline_g53()->trace.g1 > 0 && is_fast_slew(cmd.slew_mode),
 			"P7b: g1 recovers and assist returns when the battery current falls below the limit");
 		in.battery_current_max = 15000;
 	}
@@ -294,7 +297,7 @@ static void scenarios(void)
 	in.service_cut = true;
 	pipeline_tick(&in, &cmd);
 	CHECK(cmd.final_iq_request == 0 && assist_pipeline_g53()->trace.g1 == 0 &&
-		cmd.zero_policy == FIS_ZERO_POLICY_NONE && cmd.slew_mode == FIS_MODE_BYPASS,
+		cmd.zero_policy == FIS_ZERO_POLICY_NONE && is_fast_slew(cmd.slew_mode),
 		"P1/P7: service policy remains NONE on a limiter-created zero");
 	in.battery_current_limiter_centiamp = 0;
 	in.battery_current_max = 15000;
@@ -332,7 +335,7 @@ static void scenarios(void)
 		pipeline_tick(&in, &cmd);
 		if (cmd.final_iq_request > 0) {
 			saw_nonzero = true;
-			if (cmd.zero_policy != FIS_ZERO_POLICY_NONE || cmd.slew_mode != FIS_MODE_BYPASS)
+			if (cmd.zero_policy != FIS_ZERO_POLICY_NONE || !is_fast_slew(cmd.slew_mode))
 				invalid_release_mode = true;
 		} else if (cmd.zero_policy == FIS_ZERO_POLICY_QUIET) {
 			quiet_zero = true;
@@ -340,19 +343,21 @@ static void scenarios(void)
 		}
 	}
 	CHECK(saw_nonzero && quiet_zero && !invalid_release_mode &&
-		cmd.slew_mode == FIS_MODE_BYPASS && cmd.final_iq_request == 0,
-		"P6: G53 demand decays under BYPASS/NONE and grants QUIET only on the first final zero");
+		is_fast_slew(cmd.slew_mode) && cmd.final_iq_request == 0,
+		"P6: G53 demand decays under the fast slew/NONE and grants QUIET only on the first final zero");
 
 	/* T2b/T3/T7/T9/T11: zero with a live forward chain, limiter, or ordinary coast is NONE;
 	 * assist-off/no-forward grants only at zero and the pipeline never adds RISE/FALL shaping. */
 	reset_all(); in = base_input(); in.torque_load_ctrl = 0U;
 	for (unsigned i = 0; i < 12000U; ++i) pipeline_tick(&in, &cmd);
-	CHECK(cmd.final_iq_request == 0 && cmd.slew_mode == FIS_MODE_BYPASS &&
+	/* No load and no PAS: the BDE8 drive permission is down with m2aa 0 - the stock hard-zero
+	 * (TQ-06-G2 I2), same exact zero as the former BYPASS 0 - and QUIET is still not granted. */
+	CHECK(cmd.final_iq_request == 0 && cmd.slew_mode == FIS_MODE_FORCE_ZERO &&
 		cmd.zero_policy == FIS_ZERO_POLICY_NONE,
-		"T3/T9/T11: ordinary zero with live forward state is BYPASS/NONE");
-	CHECK(cmd.slew_mode != FIS_MODE_RISE && cmd.slew_mode != FIS_MODE_FALL &&
-		cmd.slew_mode != FIS_MODE_RELEASE && cmd.slew_mode != FIS_MODE_HOLD,
-		"T2b/T7: normal G53 path has no legacy ride-feel slew mode");
+		"T3/T9/T11: ordinary zero with live forward state is exact zero (stock hard-zero)/NONE");
+	CHECK(cmd.slew_mode != FIS_MODE_RELEASE && cmd.slew_mode != FIS_MODE_HOLD &&
+		cmd.step_mag_8 == 0U,
+		"T2b/T7: normal G53 path has no legacy ride-feel RELEASE/HOLD mode (live fast-slew step is pinned in fast_slew_i2_host.c)");
 }
 
 int main(void)

@@ -485,6 +485,24 @@ $suites = @(
                    (Join-Path $root 'src\fast_iq_slew.c'))
        IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common'))
        Defines = @('-Wno-type-limits') },
+    @{ Name = 'TASK-EVD-TQ-06-G2 I2 G5300 fast current-reference slew on the normal PEDAL path (RISE/FALL, step 0.625*P per 4 kHz tick)'
+       # G5300 0x0801A26C: +-160 Q14/ms = 6.84 Iq/ms at P=700. Pins mode/step, rate-bounded fall of fast request steps,
+       # unchanged engage/release, immediate stock hard-zero events and unchanged safety paths.
+       Harness = Join-Path $PSScriptRoot 'fast_slew_i2_host.c'
+       Modules = @((Join-Path $root 'src\g53_port.c'),
+                   (Join-Path $root 'src\g53_port_boundaries.c'),
+                   (Join-Path $root 'src\g53_port_pas.c'),
+                   (Join-Path $root 'src\g53_port_chain.c'),
+                   (Join-Path $root 'src\g53_g1_limiter.c'),
+                   (Join-Path $root 'src\ap2_limits.c'),
+                   (Join-Path $root 'src\assist_pipeline.c'),
+                   (Join-Path $root 'src\assist_modes.c'),
+                   (Join-Path $root 'src\torque_input.c'),
+                   (Join-Path $root 'src\tuning_config.c'),
+                   (Join-Path $root 'src\battery_iq_cap.c'),
+                   (Join-Path $root 'src\fast_iq_slew.c'))
+       IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common'))
+       Defines = @('-Wno-type-limits') },
     @{ Name = 'stored assist bank contract (round trip, restart, and the meaning of zero)'
        # The path the app writes through and the controller restores through at every boot. It
        # had no test at all, which is how the firmware came to REJECT ITS OWN DEFAULT BANK:
