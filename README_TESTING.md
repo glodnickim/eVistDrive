@@ -1,5 +1,7 @@
 # EVistDrive v3 — testable motor-control project
 
+Shared CAN/BLE communication authority: [eVistDrive communication registry](../integration/contracts/COMMUNICATION_REGISTRY.md). Every configuration change must define its motor, HMI, CANable and mobile mapping, units, capability, result and persistence. Preserve factory frame semantics; consult the registry and its detailed contract before changing handlers.
+
 This tree is based on `EvistDrive06092026v3.zip` and contains the production GD32/M820 sources,
 portable host/regression tests, closed-loop supervisory/electrical SIL backends, a Level-4 rider/bicycle/battery digital twin,
 and a cross-platform M820_BL820 developer build path.

@@ -2,6 +2,13 @@
 
 Indeks wykona?; raporty cross-repository w integration/task-reports.
 
+- 2026-10-05T11:06:39+02:00 - EVD / integration + motor-controller-firmware / EXEC-EVD-PWR-001-REVIEW-02,
+  TASK-EVD-PWR-001, CROSS_REPOSITORY, PARTIAL (review complete, HW_PENDING), PROBLEM_FLAG=NO in V2 scope.
+  Independent V2 PASS PC/reverse: PWR-REV-001/002 RESOLVED, full gate PASS, known-bad regression 8 FAIL,
+  repro 0.624/0.625 byte-identical; HW NOT_RUN.
+  [Execution](../integration/task-reports/EXEC-EVD-PWR-001-REVIEW-02.md)
+  - [Review](../integration/task-reports/REVIEW-EVD-PWR-001-002.md).
+
 - 2026-10-05T10:24:18+02:00 — EVD / EXEC-EVD-PWR-001-04, TASK-EVD-PWR-001, CROSS_REPOSITORY,
   COMPLETED (PC), READY_FOR_REVIEW, PROBLEM_FLAG=YES. Mostek Walk ograniczony czasem (PWR-REV-001, D7a-D7l),
   adresy stock w komentarzach na runtime (PWR-REV-002); commit 880ea55; full gate PASS; wsady 0.624/0.625
@@ -76,6 +83,8 @@ Indeks wykona?; raporty cross-repository w integration/task-reports.
 - 2026-09-26T23:57:00+02:00 — EVD / EXEC-TQ06-PHASE9-CONTINUATION-20260926-001, TASK-EVD-TQ-06, REPOSITORY_LOCAL, COMPLETED. Phase 9 offline gates zielone: host 64/64, Level-4 9/9 i fuzz 25/25 (EXPECTED_START 12/12), STOP_RESTART PASS, W1 6/6, ARM normal/diagnostic PASS; stan READY_FOR_INDEPENDENT_REVIEW. Dirty WIP zachowany, bez commit/push/merge/flash; Phase 10 nie rozpoczęta. [Raport](integration/evidence/evd-tq/TQ-06/EXEC-TQ06-PHASE9-CONTINUATION-20260926-001.md).
 
 - 2026-10-05T09:31:25+02:00 — EVD / EXEC-EVD-PWR-001-01..03, TASK-EVD-PWR-001, REPOSITORY_LOCAL, READY_FOR_REVIEW, HW_PENDING. Linia PA4 jak w oryginalnej aplikacji M820 / FT (DISC-010): wyłączanie trzymanym power (~2,1 s), przycisk Walk z tolerancją zaniku i mostkiem 250 ms, PB8, test obwodu i błąd 36, ochrona naciśnięcia z chwili włączenia; jeden właściciel PA4 `src/pa4_buttons.c`. Commity 00ca24d, 5589c16, 500e1ae na fix/power-button-ft-parity (od 001b143); wsady 0.622/0.623; host 70/70; review NOT_RUN. [Raport 03](../integration/task-reports/EXEC-EVD-PWR-001-03.md) · [Karta](../integration/tasks/TASK-EVD-PWR-001.md).
+
+- 2026-10-05T12:43:56+02:00 — EVD / motor-controller-firmware / EXEC-EVD-COMMUNICATION-REGISTRY-001, ad-hoc USER, CROSS_REPOSITORY, COMPLETED (dokumentacja), READY_FOR_REVIEW. Wspólny rejestr CAN/BLE i obowiązkowe odwzorowanie konfiguracji; odsyłacz produktu, ochrona factory i jawne luki obsługi. Zmiany dokumentacyjne; runtime/HW/BESST NOT_RUN. AFFECTED_REPOSITORIES: integration, motor-controller-firmware, hmi-firmware, canable-web, mobile-app. PROBLEM_FLAG: YES (COMM-GAP-01..09 w rejestrze). [Raport](../integration/task-reports/EXEC-EVD-COMMUNICATION-REGISTRY-001.md).
 
 - 2026-10-05T14:46:42+02:00 — EVD / EXEC-EVD-FW-0624-STACK-GATE-REWORK-001, A1 REWORK (REVIEW-EVD-FW-0624-LINE-001), CROSS_REPOSITORY, COMPLETED, review PASS. `tools/m820_stack_gate.py`: wywołania warunkowe w grafie i analizach NVIC, wartość literału nie przeżywa wywołania ani nieudowodnionej ścieżki, warunkowy argument NVIC nieodczytywalny (`600584c`, `6cfc232`); stałe testy M1–M6, N1–N3, P2; BIN NORMAL/DIAG bez zmian. [Raport](../integration/task-reports/EXEC-EVD-FW-0624-STACK-GATE-REWORK-001.md) · [Review 002](../integration/task-reports/REVIEW-EVD-FW-0624-STACK-REWORK-002.md).
 
