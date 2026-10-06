@@ -466,10 +466,9 @@ $suites = @(
                     (Join-Path $root 'src\fast_iq_slew.c'))
        IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common'))
        Defines = @('-Wno-type-limits') },
-    @{ Name = 'TASK-EVD-TQ-06-G2 I1 reverse/invalid PAS step: moving -> bounded G53-following ramp, standstill -> exact zero'
-       # Production pedal path end to end (G53 chain, limits, 16 kHz owner). Pins owner decision
-       # OWNER-DEC-2026-10-05-TQ06G2-A: while moving a direction inhibit may only decay (never rise,
-       # exactly zero within 200 ms); at standstill and for every other cut it stays a same-tick zero.
+    @{ Name = 'TASK-EVD-STOP-RAMP-001 G5300-only stop/reverse ramp (a-g)'
+       # Production pedal path end to end: G53 true-stop/reverse, limits and 16 kHz owner.
+       # OWNER-DEC-2026-10-06-G5300-ONLY: no native direction/liveness veto on PEDAL.
        Harness = Join-Path $PSScriptRoot 'reverse_ramp_host.c'
        Modules = @((Join-Path $root 'src\g53_port.c'),
                    (Join-Path $root 'src\g53_port_boundaries.c'),

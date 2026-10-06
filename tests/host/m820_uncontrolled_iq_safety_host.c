@@ -638,6 +638,7 @@ static void t5_hard_inhibits(void)
 		else if (kind == 1) in.brake = true;
 		else in.torque_valid = false;
 		bool armed = (kind != 0), req_zero = false, mono = true, exact_zero = false;
+		int32_t max_rise = 0;
 		int32_t prev = at;
 		uint32_t zero_at = 0, armed_at = 0;
 		for (uint32_t k = 0; k < SEC(0.5); k++) {
@@ -648,16 +649,24 @@ static void t5_hard_inhibits(void)
 			}
 			if (!req_zero) req_zero = (mb->target == 0);
 			if (S.iq > prev) mono = false;
+			if (S.iq - prev > max_rise) max_rise = S.iq - prev;
 			prev = S.iq;
 			if (S.iq == 0 && !exact_zero) { exact_zero = true; zero_at = k - armed_at; }
 		}
 		printf("  %s: Iq %d -> 0 after %u control ticks\n", NAME[kind], at, zero_at);
-		CHECK(at > 0 && req_zero && mono && exact_zero && zero_at <= 3200U / 4U + 4U,
-			"T5: a hard inhibit requests exactly zero at once and the reference only falls to exact zero within 200 ms");
-		/* TASK-EVD-TQ-06-G2: a reverse step on a moving bike decays along the G53 output (here
-		 * 666 control ticks = 166 ms) instead of stepping to zero; the 200 ms bound is the check
-		 * above. The same-update zero stays for standstill (reverse_ramp_host.c). */
-		if (kind == 0) CHECK(zero_at > 0, "T5: the direction inhibit on a moving bike is a decay, not a same-update step");
+		if (kind == 0) {
+			/* OWNER-DEC-2026-10-06-G5300-ONLY: physical reverse is consumed by D7EC/BDE8.
+			 * Its request decays through G53; the native 200 ms SAFETY timer does not own it. */
+			printf("    G53 reverse: request_zero=%u monotonic=%u exact_zero=%u max_rise=%d/tick\n",
+				req_zero ? 1U : 0U, mono ? 1U : 0U, exact_zero ? 1U : 0U, (int)max_rise);
+			/* The already-running 16 kHz rise can advance by two Iq counts in one 4 kHz
+			 * tick (438 Q8 at P=700); the physical PAS event reaches G53 on the next tick. */
+			CHECK(at > 0 && req_zero && exact_zero && zero_at > 0 && max_rise <= 2,
+				"T5: moving reverse reaches zero through G53 without an upward jump");
+		} else {
+			CHECK(at > 0 && req_zero && mono && exact_zero && zero_at <= 3200U / 4U + 4U,
+				"T5: native brake/torque cut requests zero at once, SAFETY releases within 200 ms");
+		}
 	}
 }
 

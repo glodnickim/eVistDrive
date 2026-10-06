@@ -18,12 +18,8 @@
 typedef struct {
     int32_t ceiling;
     bool ceiling_valid;
-    /* The request published on the previous tick: the reference a non-forward tick may not
-     * rise above. 0 after every reset and after every veto, so nothing waits behind one. */
+    /* Previous published request for bumpless release from the native safety veto. */
     int32_t last_final_iq;
-    /* 4 kHz ticks the direction inhibit has been continuously active (saturating). It bounds
-     * the moving-bike decay below; 0 whenever the inhibit is not active. */
-    uint32_t inhibit_ticks;
     /* Bumpless veto release: true while the published request was held below the G53 request by
      * an M820 veto/gate on the previous tick, and the remainder of the rise-rate budget. */
     bool pulled_down;
@@ -121,7 +117,7 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
     const assist_level_config_t *level=assist_modes_get_default_level(in->assist_level_index);
     const bool assist_off=in->assist_level_index==0 || assist_modes_level_disables_assist(level);
     const bool native_cut=in->safety_cut || !in->torque_sensor_valid || !in->pas_sensor_valid;
-    const bool veto=in->direction_inhibit || native_cut || in->real_stop;
+    const bool observed_veto=in->direction_inhibit || native_cut || in->real_stop;
     const g53_port_input_t port_in={
         .raw_pa6_adc=in->raw_pa6_adc, .load_ctrl=in->torque_load_ctrl,
         .pas_ab=in->pas_ab, .assist_level=assist_off ? 0 : in->assist_level_index,
@@ -165,56 +161,17 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
     cmd->iq_ceiling=ctx.ceiling;
     cmd->final_iq_request=lim.final_iq;
     const int32_t g53_request=lim.final_iq;
-    /*
-     * RIDER GATES on the G53 request. normal_permission (m298==2) is a BDE8 drive mode, not a
-     * pedal permission, so it gates nothing here.
-     *   assist off     -> exactly zero in the same tick.
-     *   not forward    -> never a new or a rising request: an already valid pedal demand may
-     *                     only hold or decay (G53's own release), and 0 stays 0.
-     */
-    /* Never above where the live reference really is, when it is known: the published target
-     * is compared with the PREVIOUS REQUEST, but the 16 kHz owner may still be below it (a
-     * binding fast rise), and a hold/decay must not lift it (review ISSUE 1). */
-    int32_t hold_cap=ctx.last_final_iq;
-    if(in->live_iq_valid && hold_cap>(in->live_iq_ref>0 ? in->live_iq_ref : 0))
-        hold_cap=in->live_iq_ref>0 ? in->live_iq_ref : 0;
     if(assist_off) cmd->final_iq_request=0;
-    else if(!in->forward_valid && cmd->final_iq_request>hold_cap)
-        cmd->final_iq_request=hold_cap;
     bool quiet=false;
-    if(in->direction_inhibit) {
-        if(ctx.inhibit_ticks<UINT32_MAX-used_ticks) ctx.inhibit_ticks+=used_ticks;
-        else ctx.inhibit_ticks=UINT32_MAX;
-    } else ctx.inhibit_ticks=0;
     /*
-     * P2, before P3/P4. TASK-EVD-TQ-06-G2 / OWNER-DEC-2026-10-05-TQ06G2-A: a reverse or invalid
-     * crank step on a MOVING bike (the speed G53 itself sees, speed_x100/10 > 0) must not be a
-     * step to zero: stock G5300 ramps the demand down while the wheel turns and cuts at once only
-     * at standstill. The direction authority therefore becomes "never rise, bounded decay":
-     *   - the published request is the G53 chain's own output (it already decays like G5300),
-     *     clamped so it never exceeds the previous tick's published value;
-     *   - it is exactly zero no later than AP2_SAFETY_RELEASE_MS after the inhibit began, whatever
-     *     the chain does (hard bound, FORCE_ZERO from then on).
-     * Everything else keeps the same-tick exact zero: standstill, assist off, and any native cut
-     * (brake / fault / calibration / invalid sensor) or real stop that coincides with the inhibit.
+     * OWNER-DEC-2026-10-06-G5300-ONLY: the PEDAL request is the G53 chain output after
+     * ap2_limits. A reverse step clears D7EC's drive permission, and BDE8 ramps its current
+     * request down at 50 native units/ms while moving. The G53 PAS true-stop timer handles
+     * a stationary crank; BDE8 stock_hard_zero handles standstill. Native brake/fault/invalid
+     * sensor safety remains the M820 SAFETY release. No PAS direction, liveness or forward
+     * observation adds a second veto to the published request.
      */
-    const bool moving=in->speed_x100>=10u;
-    if(in->direction_inhibit) {
-        const bool bounded_decay=moving && !assist_off && !native_cut && !in->real_stop &&
-            !in->service_cut && ctx.inhibit_ticks<AP2_SAFETY_RELEASE_MS*AP2_TICKS_PER_MS;
-        if(bounded_decay) {
-            if(cmd->final_iq_request>hold_cap) cmd->final_iq_request=hold_cap;
-            /* FALL (G5300 step), never BYPASS: BYPASS copies the target into the live
-             * accumulator and would lift a still-rising reference to the previous request. */
-            if(in->phase_current_max>0) {
-                cmd->step_mag_8=fast_slew_step(in->phase_current_max);
-                cmd->slew_mode=FIS_MODE_FALL;
-            } else cmd->slew_mode=FIS_MODE_BYPASS;
-            quiet=cmd->final_iq_request==0;
-        } else {
-            cmd->final_iq_request=0; cmd->slew_mode=FIS_MODE_FORCE_ZERO; quiet=true;
-        }
-    } else if(native_cut || in->real_stop) {
+    if(native_cut) {
         cmd->final_iq_request=0; cmd->slew_mode=FIS_MODE_SAFETY;
         cmd->release_ticks_16k=AP2_SAFETY_RELEASE_MS*AP2_FOC_TICKS_PER_MS;
         quiet=true;
@@ -252,6 +209,7 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
             cmd->step_mag_8=fast_slew_step(in->phase_current_max);
             cmd->slew_mode=cmd->final_iq_request>ctx.last_final_iq ? FIS_MODE_RISE : FIS_MODE_FALL;
         }
+        /* Zero policy still observes forward_valid; QZERO is compiled out in variant B. */
         quiet=cmd->final_iq_request==0 && (assist_off || !in->forward_valid);
     }
     ctx.pulled_down=cmd->final_iq_request<g53_request;
@@ -274,8 +232,10 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
     ctx.tlm.voltage_limited=lim.voltage_limited;
     ctx.tlm.thermal_limited=lim.thermal_limited;
     ctx.tlm.speed_limited=lim.speed_limited;
-    ctx.tlm.assist_permitted=ctx.g53.normal_permission && !veto && !assist_off;
-    ctx.tlm.block_positive=veto || assist_off;
+    /* Diagnostic permission preserves the native direction/liveness observation; it is not
+     * consulted by the G53 PEDAL request decision above. */
+    ctx.tlm.assist_permitted=ctx.g53.normal_permission && !observed_veto && !assist_off;
+    ctx.tlm.block_positive=observed_veto || assist_off;
     ctx.tlm.direction_block=in->direction_inhibit;
     ctx.tlm.release_active=cmd->slew_mode==FIS_MODE_RELEASE || cmd->slew_mode==FIS_MODE_SAFETY;
     ctx.tlm.limiter_zeroed=ctx.g53.iq_request_pre_limits>0 && cmd->final_iq_request==0;

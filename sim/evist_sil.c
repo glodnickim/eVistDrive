@@ -1091,7 +1091,6 @@ static int run_stop_restart_scenario(void)
  * backends, so one threshold reads the same in each.
  */
 #define AXIS_CURRENT_ZERO_COUNTS 2   /* ~0.19 A in the modelled machine: electrically down */
-#define AXIS_REAL_STOP_SAFETY_MS 200U /* Frozen M820 safety release, independent of assist profile. */
 
 typedef struct {
     const char *name;
@@ -1104,7 +1103,6 @@ typedef struct {
     uint32_t ref_tick;        /* the single final-Iq owner's reference reached zero */
     uint32_t current_tick;    /* the motor's own current reached zero */
     int32_t iq_at_event;
-    uint16_t release_ms;
     /* The motor still PULLING is the thing §19 forbids. Quiet Zero deliberately drives negative
      * current to bring the rotor down, so the two are counted separately - a magnitude would
      * score that braking as overrun. */
@@ -1173,11 +1171,8 @@ static int run_stop_reverse_axis(bool reverse, axis_result_t *out)
         return 1;
     }
     out->iq_at_event = s.MS.i_q_setpoint;
-    /* The normal ride is BYPASS, so profile release_ms is zero here. A true native real-stop
-     * selects SAFETY and owns the fixed 200 ms trajectory. A reverse crank step on this MOVING
-     * bike follows the G53 decay and is bounded by the same 200 ms (TASK-EVD-TQ-06-G2,
-     * OWNER-DEC-2026-10-05-TQ06G2-A), so both carry the 200 ms figure. */
-    out->release_ms = AXIS_REAL_STOP_SAFETY_MS;
+    /* OWNER-DEC-2026-10-06-G5300-ONLY: stop and moving reverse are G53 events.
+     * Native SAFETY's fixed 200 ms release is reserved for brake/fault/invalid sensors. */
     out->last_edge_tick = pas_sampler_last_transition_tick();
     out->event_tick = s.tick;
 
@@ -1226,17 +1221,13 @@ static int report_axis(const axis_result_t *a)
     double to_current = axis_ms_signed(a->ref_tick, a->current_tick);
     double total = axis_ms(a->event_tick, a->current_tick);
 
-    if (!a->detect_tick || !a->permission_tick || !a->ref_tick || !a->current_tick) bad = 1;
+    if (!a->detect_tick || !a->permission_tick || !a->target_tick ||
+        !a->ref_tick || !a->current_tick) bad = 1;
 
     if (a->reverse) {
         /*
-         * §19, as amended by TASK-EVD-TQ-06-G2 (owner decision OWNER-DEC-2026-10-05-TQ06G2-A):
-         * no filter, no sustained term and no ramp may keep PULLING the motor once the crank is
-         * going backwards - the permission leaves FORWARD in the first control tick that consumes
-         * the inhibit and the request may never rise. On a MOVING bike (this scenario) the request
-         * then decays along the G53 chain's own output (the G5300 ramp) instead of stepping to
-         * zero, and is exactly zero within the 200 ms bound. At standstill it is still a
-         * same-tick zero (reverse_ramp_host.c).
+         * OWNER-DEC-2026-10-06-G5300-ONLY: physical reverse reaches D7EC/BDE8 through
+         * PAS AB. The native direction observation does not step the PEDAL request.
          *
          * Detection itself is bounded by the quadrature, not by a timer: pas_direction needs
          * physical reverse steps before it will call it a reverse, which at this cadence is a
@@ -1245,7 +1236,7 @@ static int report_axis(const axis_result_t *a)
          */
         if (to_detect > 120.0) bad = 1;
         if (to_perm > 0.25 + 1e-9) bad = 1;            /* one control tick */
-        if (to_ref > (double)a->release_ms + 1.0) bad = 1;   /* gone within the 200 ms bound */
+        if (to_target < 0.0 || to_ref < to_target) bad = 1;
         /* Not one count more drive than the rider was already getting: no kick, no lurch. */
         if (a->peak_drive_after_detect > (double)a->iq_at_event) bad = 1;
     } else {
@@ -1256,9 +1247,8 @@ static int report_axis(const axis_result_t *a)
          */
         if (to_detect > 1000.0 * (double)PAS_STOP_TICKS_MAX / CTRL_HZ + 0.25) bad = 1;
         if (to_perm > 0.25 + 1e-9) bad = 1;
-        /* Time to zero is the profile's release_ms - the contract the trajectory states about
-         * itself - not a number chosen to fit the result. */
-        if (to_ref > (double)a->release_ms + 1.0) bad = 1;
+        /* G53's true-stop and BDE8/envelope finish inside the four-second capture. */
+        if (to_target < 0.0 || to_ref < to_target) bad = 1;
     }
     /* The motor's drive current must follow the reference down, in both cases. This is the
      * electrical decay of the modelled machine, not a control setting. The bound is one-sided:
@@ -1268,9 +1258,9 @@ static int report_axis(const axis_result_t *a)
 
     printf("AXIS %-8s iqAtEvent=%d | edge->detect=%.2fms detect->permission=%.2fms "
            "permission->target=%.2fms permission->ref0=%.2fms ref0->drive0=%.2fms "
-           "TOTAL=%.2fms | releaseMs=%u peakDrive=%.1f peakBrake=%.1f %s\n",
+           "TOTAL=%.2fms | peakDrive=%.1f peakBrake=%.1f %s\n",
            a->name, a->iq_at_event, to_detect, to_perm, to_target, to_ref, to_current,
-           total, a->release_ms, a->peak_drive_after_detect, a->peak_brake_after_detect,
+           total, a->peak_drive_after_detect, a->peak_brake_after_detect,
            bad ? "FAIL" : "PASS");
     return bad;
 }

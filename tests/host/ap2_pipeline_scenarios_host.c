@@ -3,7 +3,7 @@
  *
  * The historical filename is retained for the canonical runner, but all scenarios now execute
  * the shipped G53 facade through assist_pipeline_update(), the real limiter chain and the real
- * 16 kHz final-Iq owner. This suite pins the frozen zero-policy and native-veto contract; G53
+ * 16 kHz final-Iq owner. This suite pins zero-policy and native-cut ownership; G53
  * arithmetic itself is independently checked by the exact boundary/PAS/chain differential suites.
  */
 #include <stdbool.h>
@@ -166,12 +166,13 @@ static void scenarios(void)
 	CHECK(is_fast_slew(cmd.slew_mode) && cmd.zero_policy == FIS_ZERO_POLICY_NONE,
 		"P8: normal positive G53 demand publishes the fast slew (RISE|FALL) with policy NONE");
 
-	/* P1 overrides each class of zero decision without changing its selected mode/request. */
+	/* OWNER-DEC-2026-10-06-G5300-ONLY: direction and real_stop are observations.
+	 * service_cut still suppresses QUIET; only native_cut enters SAFETY. */
 	in.service_cut = true; in.direction_inhibit = true;
 	pipeline_tick(&in, &cmd);
-	CHECK(cmd.final_iq_request == 0 && cmd.slew_mode == FIS_MODE_FORCE_ZERO &&
-		cmd.zero_policy == FIS_ZERO_POLICY_NONE,
-		"P1/P2: service cut preserves direction FORCE_ZERO and suppresses QUIET");
+	CHECK(cmd.final_iq_request == assist_pipeline_g53()->iq_request_pre_limits &&
+		is_fast_slew(cmd.slew_mode) && cmd.zero_policy == FIS_ZERO_POLICY_NONE,
+		"P1/P2: direction observation leaves G53 request and service zero-policy intact");
 	in.direction_inhibit = false; in.safety_cut = true;
 	pipeline_tick(&in, &cmd);
 	CHECK(cmd.final_iq_request == 0 && cmd.slew_mode == FIS_MODE_SAFETY &&
@@ -179,27 +180,26 @@ static void scenarios(void)
 		"P1/P3: service cut preserves native SAFETY/200 ms and suppresses QUIET");
 	in.safety_cut = false; in.real_stop = true;
 	pipeline_tick(&in, &cmd);
-	CHECK(cmd.final_iq_request == 0 && cmd.slew_mode == FIS_MODE_SAFETY &&
-		cmd.release_ticks_16k == 3200U && cmd.zero_policy == FIS_ZERO_POLICY_NONE,
-		"P1/P4: service cut preserves real-stop SAFETY/200 ms and suppresses QUIET");
+	CHECK(cmd.final_iq_request == assist_pipeline_g53()->iq_request_pre_limits &&
+		cmd.slew_mode != FIS_MODE_SAFETY && cmd.zero_policy == FIS_ZERO_POLICY_NONE,
+		"P1/P4: real_stop observation does not select native SAFETY");
 
-	/* P2: direction inhibit at standstill is same-update exact zero. On a MOVING bike it is a
-	 * bounded, never-rising decay of the G53 output instead (TASK-EVD-TQ-06-G2,
-	 * OWNER-DEC-2026-10-05-TQ06G2-A; the full ramp is pinned in reverse_ramp_host.c). */
+	/* P2: injected direction flags do not bypass the G53 PAS input. Physical reverse and
+	 * standstill are exercised with actual AB transitions in reverse_ramp_host.c. */
 	reset_all(); in = base_input(); establish_positive(&in, &cmd);
 	in.speed_x100 = 9U;
 	in.direction_inhibit = true;
 	pipeline_tick(&in, &cmd);
-	CHECK(cmd.final_iq_request == 0 && cmd.slew_mode == FIS_MODE_FORCE_ZERO &&
-		cmd.zero_policy == FIS_ZERO_POLICY_QUIET && iq_ref == 0,
-		"P2: direction inhibit at standstill commands same-update exact zero and QUIET");
+	CHECK(cmd.final_iq_request == assist_pipeline_g53()->iq_request_pre_limits &&
+		cmd.slew_mode != FIS_MODE_SAFETY,
+		"P2: standstill direction flag does not impose a second request veto");
 	reset_all(); in = base_input(); establish_positive(&in, &cmd);
 	const int32_t moving_before = cmd.final_iq_request;
 	in.direction_inhibit = true;
 	pipeline_tick(&in, &cmd);
-	CHECK(cmd.final_iq_request <= moving_before && cmd.slew_mode != FIS_MODE_SAFETY &&
-		(cmd.final_iq_request > 0 ? cmd.slew_mode == FIS_MODE_FALL : true),
-		"P2: direction inhibit while moving never rises and does not step through the safety release");
+	CHECK(cmd.final_iq_request == assist_pipeline_g53()->iq_request_pre_limits &&
+		cmd.slew_mode != FIS_MODE_SAFETY && moving_before > 0,
+		"P2: moving direction flag leaves G53 as the request owner");
 
 	/* P3/P4: hard vetoes own the 200 ms safety release; held references cannot rise. */
 	reset_all(); in = base_input(); establish_positive(&in, &cmd);
@@ -224,9 +224,9 @@ static void scenarios(void)
 	reset_all(); in = base_input(); establish_positive(&in, &cmd);
 	in.real_stop = true;
 	pipeline_tick(&in, &cmd);
-	CHECK(cmd.final_iq_request == 0 && cmd.slew_mode == FIS_MODE_SAFETY &&
-		cmd.release_ticks_16k == 3200U && cmd.zero_policy == FIS_ZERO_POLICY_QUIET,
-		"P4: true stop uses the native 200 ms SAFETY release and QUIET");
+	CHECK(cmd.final_iq_request == assist_pipeline_g53()->iq_request_pre_limits &&
+		cmd.slew_mode != FIS_MODE_SAFETY,
+		"P4: real_stop observation leaves the G53 true-stop timer in charge");
 
 	/* P5: level off is still BYPASS; its resulting zero may use QUIET. */
 	reset_all(); in = base_input(); in.assist_level_index = 0U;

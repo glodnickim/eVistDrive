@@ -212,6 +212,16 @@ sprint on the flat and a slow climb ask for opposite dynamics from similar torqu
 
 ## 7. The PAS / direction lifecycle
 
+**Current PEDAL override (TASK-EVD-STOP-RAMP-001, OWNER-DEC-2026-10-06-G5300-ONLY):**
+`assist_pipeline_update()` publishes the G53 D7EC/E1E8/BDE8/g1 result after `ap2_limits`.
+Physical reverse clears the G53 D7EC drive permission; BDE8 ramps the moving request down.
+The G53 PAS true-stop timer handles a stopped crank, and `stock_hard_zero` handles standstill.
+The native `direction_inhibit`, `real_stop`, and `forward_valid` fields remain available for
+diagnostics and other consumers, but do not veto or cap the PEDAL current request. Native
+brake/fault/invalid-sensor cuts still select the 200 ms SAFETY path; assist level 0 is exactly
+zero in the same tick. The older V2 state-machine description below is historical for this
+production path and its 200 ms reverse bound no longer applies.
+
 `ap2_pas_state.c`, 4 kHz. **One** owner of "is pedal assist allowed to flow right now".
 
 ```text

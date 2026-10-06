@@ -252,8 +252,9 @@ static void check_engage_unchanged(void)
 /* Stock hard-zero event: the BDE8 drive permission falls with m2aa 0 (standstill release). The
  * request drops to 0 in one step on that tick; the owner must follow in the SAME tick (stock
  * mode 0/3: K reset, no ramp) - not slew down a tail behind it. */
-/* Review ISSUE 1: a hold / bounded decay must never lift a still-rising live reference. */
-static void check_binding_rise_then(event_t ev, const char *name, bool expect_zero)
+/* OWNER-DEC-2026-10-06-G5300-ONLY: injected native direction/forward observations do not
+ * replace G53's AB-driven permission. A binding fast rise continues through its one owner. */
+static void check_binding_rise_then(event_t ev, const char *name)
 {
 	static result_t r;
 	char m[200];
@@ -266,13 +267,11 @@ static void check_binding_rise_then(event_t ev, const char *name, bool expect_ze
 	for (int k = 41; k < RUN_AFTER_MS; ++k) if (r.iq_ref[k] == 0) { zero_at = k; break; }
 	printf("  live at k=40: %d, request %d, max single 16 kHz tick rise after k=40: %d, live zero at %d ms\n",
 		(int)r.live_at_40, (int)r.req_at_40, (int)r.max_tick_rise, zero_at);
-	snprintf(m, sizeof m, "%s: the live reference never rises after the event (max tick rise %d)", name,
+	snprintf(m, sizeof m, "%s: the live reference has no upward jump (max tick rise %d)", name,
 		(int)r.max_tick_rise);
-	CHECK(r.max_tick_rise <= 0, m);
-	if (expect_zero) {
-		snprintf(m, sizeof m, "%s: live reference reaches 0 within 200 ms of the inhibit (at %d ms)", name, zero_at - 40);
-		CHECK(zero_at > 0 && zero_at - 40 <= 200, m);
-	}
+	CHECK(r.max_tick_rise <= 1, m);
+	CHECK(zero_at < 0 && r.final_iq[40] == r.g53_pre[40],
+		"observation flags neither force zero nor cap the G53 request");
 }
 
 /* Issue 2 (accepted by Master): a legal speed cut is progressive, not a 1 ms step. */
@@ -349,8 +348,8 @@ int main(int argc, char **argv)
 	check_no_double_slowing(EV_RELEASE, "ordinary pedal release, rolling (BDE8 ramp, unchanged)");
 	check_engage_unchanged();
 	check_speed_cut_tail();
-	check_binding_rise_then(EV_CUT_REVERSE, "binding fast rise, then moving reverse (review ISSUE 1)", true);
-	check_binding_rise_then(EV_CUT_FWD_LOST, "binding fast rise, then forward_valid lost (hold, no jump)", false);
+	check_binding_rise_then(EV_CUT_REVERSE, "binding fast rise, direction observation only");
+	check_binding_rise_then(EV_CUT_FWD_LOST, "binding fast rise, forward observation only");
 	check_standstill_hard_zero();
 	check_safety_unchanged();
 	if (failures) { printf("fast slew I2: %u FAILED CHECKS\n", failures); return 1; }

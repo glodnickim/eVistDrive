@@ -1021,19 +1021,16 @@ static void production_wiring_checks(void)
 		CHECK(update && update_end && count_in_span(update, update_end,
 			"cmd->zero_policy=quiet && !in->service_cut ? FIS_ZERO_POLICY_QUIET : FIS_ZERO_POLICY_NONE;") == 1,
 			"T14: one default-deny assignment excludes service_cut and assigns NONE on every other path");
-		const char *direction_branch = update ? strstr(update, "if(in->direction_inhibit) {") : NULL;
-		const char *direction_force = direction_branch ? strstr(direction_branch,
-			"cmd->slew_mode=FIS_MODE_FORCE_ZERO") : NULL;
-		CHECK(update && update_end && direction_branch && direction_force &&
-			count_in_span(update, update_end, "cmd->slew_mode=FIS_MODE_FORCE_ZERO") == 3,
-			"T14: direction inhibit retains the native FORCE_ZERO owner alongside null-input fail-safe and the G5300 stock hard-zero (TQ-06-G2 I2)");
+		CHECK(update && update_end && strstr(update, "if(in->direction_inhibit) {") == NULL &&
+			count_in_span(update, update_end, "cmd->slew_mode=FIS_MODE_FORCE_ZERO") == 2,
+			"T14: G5300-only PEDAL has null-input and stock hard-zero FORCE_ZERO, no direction veto");
 		CHECK(update && update_end && count_in_span(update, update_end,
 			"cmd->slew_mode=FIS_MODE_SAFETY") == 1 &&
 			count_in_span(update, update_end, "AP2_SAFETY_RELEASE_MS*AP2_FOC_TICKS_PER_MS") == 1,
-			"T14: native safety and true stop retain the 200 ms SAFETY owner");
+			"T14: native brake/fault/invalid-sensor cut retains the 200 ms SAFETY owner");
 		CHECK(update && update_end && count_in_span(update, update_end,
-			"cmd->slew_mode=FIS_MODE_BYPASS") == 2,
-			"T14: BYPASS remains only for assist-off / no phase reference and the moving-bike direction decay; the normal path is the G5300 fast slew (TQ-06-G2 I2)");
+			"cmd->slew_mode=FIS_MODE_BYPASS") == 1,
+			"T14: BYPASS remains only for assist-off / no phase reference; normal PEDAL uses G5300 fast slew");
 		CHECK(update && update_end && count_in_span(update, update_end, "FIS_MODE_RISE : FIS_MODE_FALL") == 1,
 			"T14: the normal G53 path publishes RISE/FALL exactly once (the G5300 fast slew)");
 		CHECK(update && update_end && count_in_span(update, update_end,
