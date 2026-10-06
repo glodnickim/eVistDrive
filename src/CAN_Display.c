@@ -612,6 +612,10 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 					}
 					else{
 						parse_DPparams(MP);
+						if(completed_cmd==0x6010 || completed_cmd==0x6011){
+							parse_MOparams(MP); //canonical READ: ignored P0 slots/flag never echo a WRITE
+							apply_assist_levels(MP);
+						}
 						write_virtual_eeprom();
 					}
 					rx_data_length=0;
@@ -729,6 +733,7 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 			InitEEPROM(MP);
 			read_virtual_eeprom();
 			parse_MOparams(MP);
+			apply_assist_levels(MP);
 
 		}
 
@@ -1361,12 +1366,7 @@ void append_multiframe(uint16_t command, char* data){
 }
 
 void update_checksum(void){
-	checksum=0;
-	for (k=0; k < 63; k++){
-		//Para0[k]=k;
-		checksum+=Para0[k];
-	}
-	Para0[63]=checksum%256;
+	Para0[63]=0;
 	checksum=0;
 	for (k=0; k < 63; k++){
 		//Para1[k]=k+64;

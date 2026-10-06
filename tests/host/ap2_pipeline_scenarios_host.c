@@ -362,6 +362,10 @@ static void scenarios(void)
 
 int main(void)
 {
+	/* Preserve the frozen TQ-06 timing fixture; M560 defaults have slower level rises. */
+	const uint8_t accel[10]={1,8,8,8,8,8,8,8,8,8};
+	const uint16_t ratio[10]={1,45,95,155,215,260,310,370,525,525};
+	g53_chain_set_levels(accel,ratio);
 	puts("TQ-06: production G53 assist pipeline + limits + zero-policy scenarios");
 	phase5_pas_loaded = load_phase5_pas_fixture();
 	CHECK(phase5_pas_loaded,

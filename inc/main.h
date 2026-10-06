@@ -327,12 +327,11 @@ typedef struct
  * FW-094 — ORPHANED BUT FROZEN FIELDS.
  *
  * These are still parsed from and echoed back to the Bafang Para blocks, but after the removal
- * of the pre-ride-core assist path NOTHING in the firmware reads them to make a riding
- * decision. They are kept, in place and at their exact sizes, for two independent reasons:
+ * of the pre-ride-core assist path most fields no longer make a riding decision. M560 now
+ * reads TQO_threshold as assist ratio. The retained fields stay at their original offsets:
  *
- *   1. sizeof(MotorParams_t) is part of the FW-023 stored-record length check. Change it by one
- *      byte and every record already written fails validation, so every setting on the bike
- *      silently reverts to defaults on the next boot.
+ *   1. sizeof(MotorParams_t) is part of the FW-023 stored-record length check. A size change
+ *      requires old-footer validation and migration before rewriting the stored record.
  *   2. The shipped app reads and writes the Para bytes they map to. Dropping the round-trip
  *      would make those fields read back as garbage.
  *
@@ -344,10 +343,10 @@ typedef struct
  *   ramp_end          Para1[39]  - unread; no consumer has existed for several releases
  *   assist_profile    Para2[0..29]  - was the per-level speed/assist interpolation table
  *   ext_boost_*       Para2[31..41] - was the per-level overrun duration/strength
- *   TQO_threshold     Para0      - now only a parser sanity/repair value, not an assist input
+ *   TQO_threshold     Para0      - M560 assist ratio per HMI level
  *
- * Removing them is a protocol change, not a cleanup: it needs a Para-block version bump and a
- * matching app release. See section C of the FW-094 audit.
+ * Removing the other retained fields is a protocol change, not a cleanup. See section C of
+ * the FW-094 audit. M560 reuses Para0 storage with a migration marker below.
  */
 typedef struct
 {
@@ -371,7 +370,7 @@ typedef struct
 	uint16_t       	speedLimitx100;
 	uint16_t       	walk_assist_speed; // raw front-chainring RPM; legacy field name kept for EEPROM/CAN
 	uint8_t        	walk_assist_current; // 0-100 %, maps to Para1[36] (speed_limit_enabled in JS)
-	uint16_t       	TQO_threshold[6];   //orphan (parser sanity value only)
+	uint16_t       	TQO_threshold[6];   //M560 assist ratio for five HMI levels
 	uint8_t       	com_mode;
 	int8_t       	system_voltage;
 	int8_t       	max_voltage;
@@ -380,7 +379,7 @@ typedef struct
 
 	uint8_t       	pulses_per_revolution;
 	uint8_t 		assist_profile[5][6];  //orphan: five assist levels with 6 assist factors each
-	uint8_t 		assist_settings[6][3]; //LIVE: 0 current limit, 1 speed limit, 2 ride mode (per level)
+	uint8_t 		assist_settings[6][3]; //LIVE: 0 power, 1 speed limit, 2 M560 acceleration
 	uint8_t 		ext_boost_duration[6]; //orphan
 	uint8_t 		ext_boost_strength[6]; //orphan
 	q31_t 			angle_correction;
@@ -421,6 +420,7 @@ typedef struct
 	//--- FW-018: configurable full-charge PACK voltage (100% anchor at boot) ---
 	uint16_t       	soc_full_magic;                 // 0x5F01 = soc_full_pack_10mv holds a valid threshold
 	uint16_t       	soc_full_pack_10mv;             // full-charge pack voltage in units of 10 mV (4587 = 45.87 V); 0 = not set
+	uint16_t       	assist_levels_magic;            // 0xA560 = M560 acceleration/ratio migrated
 
 }MotorParams_t;
 

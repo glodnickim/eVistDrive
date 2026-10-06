@@ -38,6 +38,7 @@ typedef struct {
 
 void g53_port_init(void);
 void g53_port_reset(void);
+void g53_port_set_levels(const uint8_t accel[10], const uint16_t ratio[10], const uint8_t power[10]);
 void g53_port_update(const g53_port_input_t *in, g53_port_output_t *out);
 const g53_port_trace_t *g53_port_trace(void);
 /* The G53 PI #1 limiter state (g1, its limit and setpoint), for diagnostics only. */

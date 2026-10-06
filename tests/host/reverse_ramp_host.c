@@ -367,6 +367,10 @@ static void check_engage_unchanged(void)
 
 int main(int argc, char **argv)
 {
+	/* Hold the old rise table for this G2 timing regression. */
+	const uint8_t accel[10]={1,8,8,8,8,8,8,8,8,8};
+	const uint16_t ratio[10]={1,45,95,155,215,260,310,370,525,525};
+	g53_chain_set_levels(accel,ratio);
 	trace_on = argc > 1 && strcmp(argv[1], "trace") == 0;
 	puts("TASK-EVD-TQ-06-G2 I1: reverse/invalid PAS step while moving -> ramp, standstill -> zero");
 	const scn_t moving[] = {

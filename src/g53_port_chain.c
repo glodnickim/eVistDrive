@@ -2022,6 +2022,43 @@ static void chain_bde8_model(void)
     write_8(read_32((M + 760LL)), read_8((Q + 123LL)));
 }
 
+static uint8_t level_accel[10] = {1,4,4,5,5,6,6,7,8,8};
+static uint16_t level_ratio[10] = {1,45,95,155,215,260,310,370,525,525};
+
+static void g53_chain_apply_levels(void)
+{
+    uint8_t slot;
+    write_16(0x20001210u,163);
+    write_16(0x20001228u,1);
+    for(slot=1;slot<10;slot++) {
+        uint8_t n=level_accel[slot];
+        if(n<1) n=1;
+        if(n>8) n=8;
+        write_16(0x20001210u+2u*slot,40960u/(250u-(uint16_t)(n-1u)*32u));
+        write_16(0x20001228u+2u*slot,level_ratio[slot]>1000 ? 1000 : level_ratio[slot]);
+    }
+}
+
+void g53_chain_set_levels(const uint8_t accel[10], const uint16_t ratio[10])
+{
+    uint8_t slot;
+    for(slot=1;slot<10;slot++) {
+        level_accel[slot]=accel[slot];
+        level_ratio[slot]=ratio[slot];
+    }
+    g53_chain_apply_levels();
+}
+
+uint16_t g53_chain_rise_step(uint8_t slot)
+{
+    return slot<10 ? (uint16_t)read_16(0x20001210u+2u*slot) : 0;
+}
+
+uint16_t g53_chain_ratio(uint8_t slot)
+{
+    return slot<10 ? (uint16_t)read_16(0x20001228u+2u*slot) : 0;
+}
+
 void g53_chain_reset(void)
 {
     memset(state_0,0,sizeof(state_0));
@@ -2097,6 +2134,7 @@ void g53_chain_reset(void)
     write_8(0x2000123bu, 2);
     write_8(0x2000123eu, 5);
     write_8(0x2000123fu, 5);
+    g53_chain_apply_levels();
     write_8(0x20001256u, 2);
     write_8(0x20001262u, 10);
     write_8(0x20001270u, 232);

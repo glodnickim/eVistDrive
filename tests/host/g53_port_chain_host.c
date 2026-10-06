@@ -4,6 +4,10 @@
 
 int main(void)
 {
+    /* The pinned G5300 transcription vector predates configurable M560 levels. */
+    const uint8_t accel[10]={1,8,8,8,8,8,8,8,8,8};
+    const uint16_t ratio[10]={1,45,95,155,215,260,310,370,525,525};
+    g53_chain_set_levels(accel,ratio);
     const char *path="integration/evidence/evd-tq/TQ-06/host/chain/chain-reference.csv";
     FILE *f=fopen(path,"r");
     if(!f) { perror(path); return 1; }

@@ -119,6 +119,7 @@ typedef struct {
 //--- FW-023: commit-last record footer. Written after the payload, so a write cut short
 //    by a power loss never produces a record that passes validation.
 #define FMC_OFFSET_FOOTER	(FMC_OFFSET_MP + (((uint32_t)sizeof(MotorParams_t)+3U)/4U)*4U)
+#define FMC_OFFSET_LEGACY_FOOTER (FMC_OFFSET_MP + 724U)
 #define PARAM_REC_MAGIC		((uint32_t)0xEB1C5001U)
 #define PARAM_REC_VERSION	((uint16_t)1U)
 
@@ -330,7 +331,7 @@ _Static_assert(sizeof(param_footer_t) == 16, "param_footer_t must stay 4 words w
  * If you are changing the persistent format ON PURPOSE, this line is the checklist: bump the
  * record version, write the migration, and only then update the number here.
  */
-_Static_assert(sizeof(MotorParams_t) == 724,
+_Static_assert(sizeof(MotorParams_t) == 728,
 	"persistent record size changed: every stored setting on every bike would reset");
 /*
  * FW-076: the wheel-diameter code took over the four bytes the ride-engine choice used
@@ -1223,6 +1224,7 @@ int main(void)
     //read parameters from virtual EEPROM and overwrite the default values
     read_virtual_eeprom();
     parse_MOparams(&MP);
+	apply_assist_levels(&MP);
 	//FW-030/dev: force the fixed phase ceiling (700) regardless of any stored Para1[9], so the
 	//software value always wins. Battery still protected at BATTERYCURRENT_MAX by the PI limiter.
 	MP.phase_current_max = PH_CURRENT_MAX;
@@ -1456,15 +1458,13 @@ int main(void)
     		phase_current_max_scaled=MP.phase_current_max*MP.assist_settings[lvl_idx][0]/100;
     		ride_core_iq_limit_scaled=(int16_t)((float)MP.phase_current_max*limp_factor);
     	}
-    	// per-level settings + trip/offroad bookkeeping: only on an actual level change
-    	if(MS.assist_level!=assist_level_old){
+		MS.TQfilter=TQFILTER;
+		//SAFETY: TQfilter is used as a bit-shift (torque_cumulated>>TQfilter).
+		if(MS.TQfilter<1 || MS.TQfilter>7) MS.TQfilter=4;
+		// per-level settings + trip/offroad bookkeeping: only on an actual level change
+		if(MS.assist_level!=assist_level_old){
     		//range learns per level -> reset the learning window so a window stays within one level
     		trip_distance_m_last=MS.distance_since_startup; MS.used_wh=0;
-        	MS.TQfilter=level_to_array_element[MS.assist_level];
-        	MS.TQfilter=MP.assist_settings[MS.TQfilter][2];
-        	//SAFETY: TQfilter is used as a bit-shift (torque_cumulated>>TQfilter). Ride-mode values >7 (or, via
-        	//int8_t, negative) make the shift undefined -> torque_filtered=0 -> that level's assist dies (hit S+/Boost).
-        	if(MS.TQfilter<1 || MS.TQfilter>7) MS.TQfilter=4;
         	//FW-050: the offroad gesture moved to the shared level_gesture engine. The old code
         	//built a decimal number with pow(10, offroadtics) into a uint16_t, and offroadtics
         	//doubled as the display splash value — so after a toggle it was set to 8/9 and the
@@ -5996,11 +5996,13 @@ fmc_state_enum fmc_multi_word_program(uint32_t offset, uint8_t* data, uint8_t wo
 uint8_t param_record_valid(void)
 	{
 	const param_footer_t* f = (const param_footer_t*)(FMC_WRITE_START_ADDR+FMC_OFFSET_FOOTER);
-	if(f->magic != PARAM_REC_MAGIC) return 0;
-	if(f->version != PARAM_REC_VERSION) return 0;
-	if(f->length != (uint16_t)FMC_OFFSET_FOOTER) return 0; //different MotorParams_t layout
-	if(soc_crc32((const uint8_t*)FMC_WRITE_START_ADDR, f->length) != f->crc) return 0;
-	return 1;
+	if(f->magic == PARAM_REC_MAGIC && f->version == PARAM_REC_VERSION &&
+	   f->length == (uint16_t)FMC_OFFSET_FOOTER &&
+	   soc_crc32((const uint8_t*)FMC_WRITE_START_ADDR, f->length) == f->crc) return 1;
+	f = (const param_footer_t*)(FMC_WRITE_START_ADDR+FMC_OFFSET_LEGACY_FOOTER);
+	return f->magic == PARAM_REC_MAGIC && f->version == PARAM_REC_VERSION &&
+	       f->length == (uint16_t)FMC_OFFSET_LEGACY_FOOTER &&
+	       soc_crc32((const uint8_t*)FMC_WRITE_START_ADDR, f->length) == f->crc;
 	}
 
 //FW-023: a half-written record leaves most angles at 0xFFFFFFFF, which collapses the
@@ -6042,6 +6044,7 @@ void write_virtual_eeprom(void)
 		//nothing, so skip the cycle when flash already holds exactly this content.
 		int32_t halls[7] = {i32_hall_order, Hall_13, Hall_32, Hall_26, Hall_64, Hall_45, Hall_51};
 		if(param_record_valid() &&
+		   ((const param_footer_t*)(FMC_WRITE_START_ADDR+FMC_OFFSET_FOOTER))->length == FMC_OFFSET_FOOTER &&
 		   memcmp((const void*)FMC_WRITE_START_ADDR, halls, sizeof(halls))==0 &&
 		   memcmp((const void*)(FMC_WRITE_START_ADDR+FMC_OFFSET_MP), &MP, sizeof(MP))==0){
 			return;
@@ -6087,7 +6090,12 @@ void read_virtual_eeprom(void)
 	Hall_51 = (int32_t)(*ptrd);
 	ptrd++;
 
-     memcpy(&MP,(uint32_t *)(FMC_WRITE_START_ADDR+FMC_OFFSET_MP),sizeof(MP));
+     {
+		const param_footer_t* f=(const param_footer_t*)(FMC_WRITE_START_ADDR+FMC_OFFSET_FOOTER);
+		uint32_t len=f->magic==PARAM_REC_MAGIC && f->length==FMC_OFFSET_FOOTER ? sizeof(MP) : 724U;
+		memcpy(&MP,(uint32_t *)(FMC_WRITE_START_ADDR+FMC_OFFSET_MP),len);
+		if(len==724U) MP.assist_levels_magic=0;
+	 }
 
     if(hall_angles_plausible()){
     	param_record_state = PARAM_REC_STATE_OK;
