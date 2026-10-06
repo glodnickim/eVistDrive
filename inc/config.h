@@ -416,7 +416,9 @@
  * constant - not the fade - is the first thing to look at.
  */
 #ifndef QUIET_ZERO_ENABLE
-#define QUIET_ZERO_ENABLE 1
+/* TQ-06-G2 variant B: G5300-like live current PI on release (stock has no Quiet Zero);
+ * A/B against variant A on the bike. */
+#define QUIET_ZERO_ENABLE 0
 #endif
 #if (QUIET_ZERO_ENABLE != 0) && (QUIET_ZERO_ENABLE != 1)
 #error "QUIET_ZERO_ENABLE must be 0 (A: baseline) or 1 (B: Quiet Zero)"
