@@ -275,6 +275,20 @@ envelope (g53_port_chain.c:585-727): `c2 = env·cad·35/10000` (or `env·700/100
 - Engage: `env_equiv > 0` requires the active EB74 threshold to be exceeded, so start sensitivity is unchanged, and
   engagement also requires EB74 armed (§2.2).
 
+Fixed APIs for every later milestone (REVIEW-T #14), so no milestone re-plumbs the pipeline:
+
+```c
+typedef struct { uint16_t value[24]; uint8_t source[24]; } assist_v3_effective_t;   /* resolved, one level */
+const assist_v3_effective_t *assist_v3_effective(uint8_t hmi_level);   /* cached, recomputed on generation/level */
+
+typedef struct { int32_t base_x100, slope_q16, range_min_x100, range_max_x100; uint8_t c_floor_rpm;
+                 int8_t hc_bias_pct; } g53_ratio_law_t;
+/* g53_static_input_t gains `const g53_ratio_law_t *law;` - NULL = legacy slot ratio/AUTO law (bit-identical). */
+```
+
+The G7 ratio-limiter step and the rise rate are taken from the **mode** (its attack), not from the HMI slot, once the
+level -> mode map is active (REVIEW-T #15).
+
 Milestone E replaces (not stacks on) the `c2`/LUT cadence term with the torque <-> rider-power blend, and adds Max
 Torque via the existing `level_iq_limit` path in ap2_limits (one ceiling owner, R1-#17). Milestone F adds the dynamic
 assist range. Both change only this stage, not the trajectory owner.
@@ -369,7 +383,8 @@ only this estimator.
 
 - **Max Torque** (E): ceiling on motor torque demand, per level. Expressed as % of the motor's rated torque until a
   physical Nm calibration exists (torque constant is [UNKNOWN] on M820).
-- **Max Power**: stays the existing P1 power % per level via g1 (one owner). No second power owner.
+- **Max Power**: closed-loop battery-current limit through g1, per level, from W (D-034, supersedes the earlier
+  "P1 % only" line). One power owner.
 - **Torque <-> rider-power blend** (E): for > 110 rpm and < 30 rpm, blend the characteristic input between rider
   torque and rider power. Not mixed with the Milestone C release work.
 - **Terrain/Load State** (F): `terrain_state_t { load_class, slope_est, confidence, source }`, source = IMU when the
@@ -405,10 +420,12 @@ One extra DIAG frame group, only the fields needed to answer "why this Iq now": 
 
 ## 12. Resources
 
-- RAM: ring 192 B + template ≤ 64 B + state ≈ 100 B ≈ 0.4 KB of 48 KB.
+- RAM: ring 192 B + template ≤ 64 B + state ≈ 100 B ≈ 0.4 KB of 48 KB. Measured after Milestone B (NORMAL, 5 KB
+  stack): 840 B free. Budget: config v2 ≈ +0.1 KB net (one RAM image, saved view read from flash, active-level cache),
+  carry + motion estimate (D) ≈ 0.2 KB, terrain (F) ≈ 0.1 KB; next lever per D-024.
 - CPU: O(1) per step plus ≤ 48-step window walk on each step (≈ 10 k simple ops/s at 130 rpm), O(1) per control tick.
-  Integer only. The firmware builds at -O0 except G53 sources at -O2; `assist_v3*.c` joins the -O2 list. Target cost
-  is measured with the DWT cycle counter on the DIAG build before the ride (not provable on host).
+  Integer only. The firmware builds at -O0 except G53 sources at -O2; `assist_v3*.c` joins the -O2 list. Per-call
+  budget and the spreading of per-revolution work: D-039, measured with DWT on the DIAG build before any V3 image rides.
 
 ## 13. Milestones
 

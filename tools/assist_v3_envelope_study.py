@@ -41,7 +41,8 @@ V_BATT = 48.0                    # ASSUMPTION (nominal)
 I_BATT_MAX = 15.0                # BATTERYCURRENT_MAX 15000 mA (inc/config.h)
 P_BATT_MAX = V_BATT * I_BATT_MAX
 CADENCES = (20, 25, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130)
-LEVEL_RATIO = {1: 95, 2: 215, 3: 310, 4: 525, 5: 525}   # HMI level -> slot 2/4/6/8/9 (g53_port_chain.c:2029)
+LEVEL_RATIO = {1: 95, 2: 215, 3: 310, 4: 525, 5: 525}
+HW_MAX_W = P_BATT_MAX                                    # "hardware maximum" profile default (D-034)   # HMI level -> slot 2/4/6/8/9 (g53_port_chain.c:2029)
 AUTO = dict(r7=1, den=200, maxr=525)                     # S+ AUTO: D+64=1, scale 2 -> den 200 (chain.c:612-626)
 
 
@@ -163,14 +164,16 @@ def profiles() -> dict[str, Profile]:
         # ECO: Assist acts on base support; calm; lower power; torque still useful; legacy L1 shape.
         "ECO": Profile("ECO", 1, 50, fixed(1, 0.5, 2.0), zero, Curve(1000, 1000), 0, 20, 80, 350),
         # TRAIL: flat torque support below 40 rpm (deliberate deviation from L2), strong range use.
-        "TRAIL": Profile("TRAIL", 2, 50, fixed(2, 1 / 1.8, 1.8), zero, Curve(1000, 1000), 0, 40, 100, 550),
+        "TRAIL": Profile("TRAIL", 2, 50, fixed(2, 1 / 1.8, 1.8), zero, Curve(1000, 1000), 0, 40, 100, HW_MAX_W),
         # SPORT: legacy L3 above 30 rpm; reaches the envelope quickly.
-        "SPORT": Profile("SPORT", 3, 50, fixed(3, 1 / 1.65, 1.65), zero, Curve(1000, 1000), 0, 30, 100, 650),
+        "SPORT": Profile("SPORT", 3, 50, fixed(3, 1 / 1.65, 1.65), zero, Curve(1000, 1000), 0, 30, 100, HW_MAX_W),
         # SPORT+: legacy S+ AUTO law; Assist moves progression (slope) and the ratio ceiling.
         "SPORT+": Profile("SPORT+", 4, 50, Curve(1, 1), Curve(auto_slope / 2.0, auto_slope * 2.0),
-                          Curve(AUTO["maxr"] / 1.333, AUTO["maxr"] * 1.333), 0, 30, 100, 720),
+                          Curve(AUTO["maxr"] / 1.333, AUTO["maxr"] * 1.333), 0, 30, 100, HW_MAX_W),
+        # BOOST: legacy L5 fixed 525 % (owner decision D-032).
+        "BOOST": Profile("BOOST", 5, 50, fixed(5, 1 / 1.8, 1.8), zero, Curve(1000, 1000), 0, 30, 100, HW_MAX_W),
         # AUTO (Milestone F): static default point inside a TRAIL..SPORT+ range chosen by terrain state.
-        "AUTO": Profile("AUTO", 2, 50, fixed(2, 1 / 1.8, 1.8), zero, Curve(1000, 1000), 0, 35, 100, 650),
+        "AUTO": Profile("AUTO", 2, 50, fixed(2, 1 / 1.8, 1.8), zero, Curve(1000, 1000), 0, 35, 100, HW_MAX_W),
     }
 
 

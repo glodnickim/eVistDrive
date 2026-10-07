@@ -51,7 +51,7 @@ Rejected: adding V3 fields to NORMAL frames — bus load, CANable decode churn.
 Rejected: spare P0/P1/P2 bytes (clobbered by CANable write-back), bank v11 (255 B limit, parser lag), growing
 `MotorParams_t` (wipes all settings). Source: audit D §5.4.
 
-### D-011 — 2026-10-07 — Assist ratio, Acceleration, Max Power keep their M560 P0/P1 owner
+### D-011 — 2026-10-07 — Assist ratio, Acceleration, Max Power keep their M560 P0/P1 owner — SUPERSEDED (partially) by D-029/D-035
 The V3 block carries only new parameters. Rejected: mirroring them in the V3 block — second owner.
 
 ### D-012 — 2026-10-07 — Reserved parameters are rejected unless 0xFFFF
@@ -128,14 +128,51 @@ Rejected: storing copies of defaults (blocks later default improvements; owner r
 Rejected: growing the v1 block (5 x 8 slots cannot hold the ADVANCED set; 255 B transport limit for a 5 x 24 block
 with sources).
 
-### D-029 — 2026-10-07 — Stock P0/P1 per-level values become legacy inputs to DEFAULT (refines D-011)
+### D-029 — 2026-10-07 — Stock P0/P1 per-level values become legacy inputs to DEFAULT (refines D-011) — rule text SUPERSEDED by D-035
 The stock HMI app keeps working; a V3 override wins; readback reports the source. Rejected: ignoring P0/P1 in the V3
 engine (silent breakage of the stock app) and V3 mirrors (two owners).
 
-### D-030 — 2026-10-07 — Default level -> mode map L1 ECO, L2 TRAIL, L3 SPORT, L4 SPORT+, L5 AUTO (configurable)
+### D-030 — 2026-10-07 — Default level -> mode map L1 ECO, L2 TRAIL, L3 SPORT, L4 SPORT+, L5 AUTO (configurable) — SUPERSEDED by D-032
 Takes effect with the mode-character milestone; until then levels keep legacy behaviour. Owner may change the map.
 
 ### D-031 — 2026-10-07 — Implementation order follows the owner override
 B-PIPE shadow + G-EQ -> RAM decision -> mode character design -> torque/power envelope simulation -> advanced config
 contract -> targeted architecture review -> active phase-aware release -> carry -> active torque/power/mode
 character -> dynamic range/AUTO -> terrain state/optional IMU.
+
+### D-032 — 2026-10-07 — L5 default = BOOST (owner decision via question, 2026-10-07)
+Default map L1 ECO, L2 TRAIL, L3 SPORT, L4 SPORT+, L5 BOOST; AUTO assignable to any level. Why: legacy L5 is the
+strongest fixed level (ratio 525 %); an AUTO default would lose ~60 % support until Milestone F (REVIEW-T #6).
+
+### D-033 — 2026-10-07 — Max Torque basis and path (REVIEW-T #11)
+% of the V3 demand full scale 0.65·P; in V3 mode the pipeline sets `level_iq_limit` from the V3 resolver only (not
+bank `max_iq_pct`, not `ride_core_iq_limit` with its limp factor). G5300 mode unchanged.
+
+### D-034 — 2026-10-07 — Max Power = closed-loop battery-current limit via g1 (REVIEW-T #10; supersedes ARCHITECTURE §8 "P1 % only")
+Per-level percentage of the 15 A owner limit from W / V_batt; steady state accurate, transient bounded by the PI
+(measure in SIL). Non-ECO profile defaults = hardware maximum (legacy parity). The SOC knee derate must multiply, not be
+replaced, when a mode cap is active. Rejected: ap2_limits static `max_power_w` motor-power cap (second battery/power
+owner beside g1, ADR-013).
+
+### D-035 — 2026-10-07 — One precedence rule; legacy inputs act on macros, per level (REVIEW-T #1, #2)
+ADVANCED override > macro derivation; a macro's DEFAULT = profile default adjusted by that level's legacy P0/P1 value
+(inverse curve; factory = compiled bank default). A V3 override shadows the stock field (`legacy_shadowed` flag); a
+P0 write never clears overrides. Written once in MODE_CHARACTER §6.
+
+### D-036 — 2026-10-07 — Per-mode applicability; no ADVANCED start field; units = internal units (REVIEW-T #3, #4, #5)
+range_max applies only with effective progression > 0; range_min only in AUTO; progression maps linearly to the mode's
+slope_max. Inapplicable fields report source 5 and reject non-DEFAULT writes.
+
+### D-037 — 2026-10-07 — Config v2 rev 2 wire rules (REVIEW-T #7, #8, #20, #21, #23, #24)
+28 B CAPS format 2 written in the contract; KEEP sentinel 0xFFFE and short param_count = keep; schema_version within
+[min, max]; generation in the ACK and optional expected generation on persist; v1 records treated as absent; truthful
+engine_active; source codes 5/6.
+
+### D-038 — 2026-10-07 — Static study checks are design-consistency checks, not G2 evidence (REVIEW-T #12)
+Replica-vs-production and default parity are evidence; monotonicity and envelope-region checks hold by construction
+and are labelled [SIM-STATIC, BY CONSTRUCTION]. G2-MACRO / G2-ORTHO stay open until run in SIL/L4 on firmware code.
+
+### D-039 — 2026-10-07 — Foreground cycle budget for V3 before any V3-compiled image rides (REVIEW-T #13)
+Per call of the V3 stage <= 25 µs typical and <= 60 µs worst case at 120 MHz (candidate), measured with DWT in the
+DIAG build together with dropped G53 logical ticks A/B vs ASSIST_V3 off. The per-revolution work (alignment search,
+learning, kL) is spread over several calls (e.g. coarse-to-fine alignment, bin sums once per revolution).

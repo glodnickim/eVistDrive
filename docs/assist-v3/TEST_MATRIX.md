@@ -52,8 +52,9 @@ The full gate is re-run once at the end, not after every attempt.
 | G2-AUTONOMOUS | every mode with NO user override passes the whole V3 behaviour matrix (cadence x profile) and the acceptance thresholds of SIMULATION_REPORT §2 | G2 |
 | G2-OVERRIDE | one parameter changed at a time (Assist, Max Torque, Max Power, Response, Start, Carry low/high, per mode): the effect matches the parameter's documented meaning | G2 |
 | G2-ORTHO | changing one parameter leaves unrelated metrics within tolerance: Max Power -> no change in classification, TRUE_RELEASE latency, start threshold; Carry -> no change in normal RUN; Response -> no change in power/torque ceilings; Assist -> no change in safety/battery/thermal/legal limits. Couplings found are documented or the API changes | G2 |
-| G2-MACRO | Assist 20/40/60/80/100 x 25/60/90/120 rpm x every mode: intent, desired support, torque equivalent, motor power, response time, release; demand monotone in Assist (equality only where an envelope binds); mode keeps its character across the range | G2 |
-| G1-CFG2 | config v2: mode profile + global objects, configured vs effective vs source, restore one mode / all, legacy P0/P1 input precedence, reserved params, persist/restart, erase window | G1 |
+| G2-MACRO | Assist 20/40/60/80/100 x 25/60/90/120 rpm x every mode, on firmware code in SIL: intent, desired support, torque equivalent, motor power, response time, release; demand monotone in Assist (equality only where an envelope binds); the per-mode invariants of MODE_CHARACTER §2 hold at every Assist (gate can fail) | G2 |
+| G1-CFG2 | config v2 rev 2: CONFIG_PROTOCOL_V3 §6 list (CAPS format 1/2 vectors, KEEP, short param_count, generation in ACK, expected-generation persist, per-level effective/source incl. legacy/shadowed/not applicable, ranges at Assist 0/50/100, P0 write keeps overrides, v1 record ignored, multi-object persist) | G1 |
+| G1-CPU | DWT max cycles of the V3 stage per call and dropped G53 logical ticks, ASSIST_V3 on vs off, DIAG target build (D-039) | G3 / before any V3 ride |
 
 ## G-EQ rules (REVIEW 1 #20)
 

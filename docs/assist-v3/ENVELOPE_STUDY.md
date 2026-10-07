@@ -1,7 +1,7 @@
 # Assist Behavior V3 — Torque/Power Envelope and Mode Character Study
 
 ```text
-STATUS:   READY_FOR_REVIEW (design-time, static model) — 2026-10-07
+STATUS:   rev 2 after REVIEW-T — design-time static model; checks relabelled per D-038
 TOOL:     tools/assist_v3_envelope_study.py (VERDICT PASS), self-tests tests/test_assist_v3_envelope_study.py (6/6)
 ANCHOR:   .build/envelope_study/legacy_surface.csv, dumped by tests/host/tools/assist_v3_legacy_surface.c from the
           PRODUCTION g53_static_target() + intent kL/env_equiv (910 points: 5 levels x 13 cadences x 14 efforts)
@@ -47,19 +47,25 @@ around the legacy ratio at Assist 50; SPORT+ scales the progression `slope` (×0
 | Mode | Reference | base (A0 → A100) | slope | range_max | c_floor | Max Torque | Max Power |
 |---|---|---|---|---|---|---|---|
 | ECO | L1 | 47 → 190 | 0 | 1000 | 20 rpm (legacy) | 80 % | 350 W |
-| TRAIL | L2 | 119 → 387 | 0 | 1000 | 40 rpm | 100 % | 550 W |
-| SPORT | L3 | 188 → 512 | 0 | 1000 | 30 rpm | 100 % | 650 W |
-| SPORT+ | L4 (AUTO law) | 1 | 1.31 → 5.24 | 394 → 700 | 30 rpm | 100 % | 720 W |
-| AUTO | L2 point, TRAIL..SPORT+ range in F | 119 → 387 | 0 | 1000 | 35 rpm | 100 % | 650 W |
+| TRAIL | L2 | 119 → 387 | 0 | 1000 | 40 rpm | 100 % | HW max (720 W at 48 V) |
+| SPORT | L3 | 188 → 512 | 0 | 1000 | 30 rpm | 100 % | HW max |
+| SPORT+ | L4 (SPORT+ ratio law) | 1 | 1.31 → 5.24 | 394 → 700 | 30 rpm | 100 % | HW max |
+| BOOST | L5 | 292 → 945 | 0 | 1000 | 30 rpm | 100 % | HW max |
+| AUTO | L2 point, TRAIL..SPORT+ range in F | 119 → 387 | 0 | 1000 | 35 rpm | 100 % | HW max |
+
+Max Power defaults follow D-034 (hardware maximum except ECO = legacy parity). L5 = BOOST per D-032. The
+assist_progression wire value maps to `slope = p/100 · slope_max(mode)`; slope_max(SPORT+) = 5.24.
 
 Steady-state Iq (P = 700) by Assist, from `.build/envelope_study/mode_character.csv` (env = env_equiv units):
 
-| Mode | Assist | env150@25 | env300@25 | env300@60 | env600@60 | env600@90 | env1000@120 |
+| Mode | Assist | env 150@25 | env 300@25 | env 300@60 | env 600@60 | env 600@90 | env 1000@120 |
 |---|---|---|---|---|---|---|---|
-| ECO | 0 / 50 / 100 | 5 / 10 / 21 | 10 / 21 / 41 | 12 / 24 / 49 | 24 / 49 / 98 | 35 / 70 / 141 | 78 / 135 / 135 |
-| TRAIL | 0 / 50 / 100 | 14 / 25 / 45 | 28 / 50 / 91 | 31 / 55 / 100 | 61 / 111 / 199 | 88 / 159 / 283 | 196 / 212 / 212 |
-| SPORT | 0 / 50 / 100 | 21 / 35 / 58 | 43 / 71 / 117 | 48 / 80 / 132 | 97 / 159 / 263 | 139 / 229 / 335 | 251 / 251 / 251 |
-| SPORT+ | 0 / 50 / 100 | 2 / 3 / 6 | 6 / 12 / 24 | 14 / 27 / 54 | 55 / 109 / 217 | 117 / 234 / 371 | 278 / 278 / 278 |
+| ECO | 0 / 50 / 100 | 4 / 9 / 19 | 9 / 19 / 39 | 11 / 24 / 49 | 24 / 49 / 97 | 34 / 70 / 140 | 76 / 135 / 135 |
+| TRAIL | 0 / 50 / 100 | 13 / 23 / 44 | 26 / 48 / 87 | 30 / 55 / 98 | 60 / 110 / 198 | 87 / 158 / 285 | 195 / 278 / 278 |
+| SPORT | 0 / 50 / 100 | 18 / 30 / 51 | 40 / 66 / 110 | 47 / 79 / 131 | 95 / 159 / 261 | 137 / 228 / 371 | 278 / 278 / 278 |
+| SPORT+ | 0 / 50 / 100 | 1 / 2 / 4 | 4 / 10 / 21 | 13 / 27 / 54 | 54 / 107 / 215 | 116 / 232 / 371 | 278 / 278 / 278 |
+| BOOST | 0 / 50 / 100 | 30 / 53 / 96 | 62 / 112 / 203 | 74 / 134 / 242 | 148 / 269 / 455 | 214 / 371 / 371 | 278 / 278 / 278 |
+| AUTO | 0 / 50 / 100 | 13 / 23 / 41 | 25 / 46 / 84 | 30 / 55 / 98 | 60 / 110 / 198 | 87 / 158 / 285 | 195 / 278 / 278 |
 
 Reading: Assist changes the feel inside the envelope; at high effort and cadence the Max Power ceiling binds and
 Assist no longer adds (intended: Assist never moves the physical maximum).
@@ -70,10 +76,13 @@ Assist no longer adds (intended: Assist never moves the physical maximum).
 |---|---|
 | Replica vs production surface | PASS — 910/910, max error 0.000 Iq |
 | Default parity (Assist 50, cad ≥ c_floor, before envelopes) | PASS — ECO 176, TRAIL 118, SPORT 111, SPORT+ 80 points, error 0.000 Iq |
-| G2-MACRO monotonicity (Assist 0..100 step 5 × 25/60/90/120 rpm × all efforts × 5 modes) | PASS — 71 820 points, 0 violations, before and after envelopes |
-| G2-ORTHO static: Max Power / Max Torque change only points where their cap binds | PASS — 0 leaks in every mode |
+| Monotonicity in Assist [SIM-STATIC, BY CONSTRUCTION] (Assist 0..100 step 5 × 25/60/90/120 rpm × all efforts × 6 modes) | consistent — 0 violations (follows from monotone curves and a monotone integer map; not G2-MACRO evidence) |
+| Envelope regions [SIM-STATIC, BY CONSTRUCTION] | consistent — 0 leaks (a `min()` of caps that ignore Assist; not G2-ORTHO evidence; g1 PI dynamics untested) |
 | BASIC independence (overlap of affected regions, Jaccard) | PASS — Max Power vs Max Torque 0.00 / 0.27 / 0.50 / 0.64 / 0.42 (ECO/TRAIL/SPORT/S+/AUTO); Assist vs either ≤ 0.15 |
-| Self-tests (each check fails on an injected defect) | 6/6 |
+| Self-tests (each check fails on an injected defect) | 6/6 (they prove the checker, not the design) |
+
+Evidence status (D-038): replica-vs-production and default parity are evidence about the model. G2-MACRO and
+G2-ORTHO remain OPEN until run in SIL/L4 on firmware code with the resolver and g1.
 
 Where the envelopes bind at default settings (grid 20..130 rpm, all efforts): Max Torque at 20..90–120 rpm (high
 effort), Max Power at 40..60–130 rpm. Torque/power crossover (default caps equal): ECO 45, TRAIL 56, SPORT 66,
@@ -89,8 +98,9 @@ Low cadence, support at 20 / 25 / 30 rpm relative to 60 rpm for the same effort:
 
 ## 5. Deliberate deviations from legacy at default (to confirm in the SIL matrix and on the bike)
 
-1. TRAIL, SPORT, SPORT+, AUTO below their crossover: more support at low cadence (TRAIL +20 % at 20 rpm, SPORT+ about
-   3×). This is the < 30 rpm requirement.
+1. TRAIL, SPORT, SPORT+, BOOST, AUTO below their crossover: more support at low cadence (TRAIL +20 % at 20 rpm,
+   SPORT+ about 3×). This is the < 30 rpm requirement. It also applies during a start from rest (measured cadence
+   0..20 rpm), so Start vs c_floor is part of G2-ORTHO.
 2. ECO Max Power 350 W: at high effort above ~45 rpm ECO is capped where legacy L1 was not (e.g. 135 vs 274 Iq at
    120 rpm, full effort). This is the ECO character requested by the owner; the value is a candidate.
 3. SPORT+ gives less support than SPORT at light effort (progressive law, kept from legacy S+ on purpose: strong

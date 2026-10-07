@@ -1,9 +1,9 @@
 # Assist Behavior V3 — Mode Character and User Parameter Model
 
 ```text
-STATUS:   DESIGN DRAFT (owner override 2026-10-07: autonomous modes + BASIC/ADVANCED configuration)
-SCOPE:    semantics only; consumers land per milestone (§9). Numbers are candidates for the envelope simulation.
-RELATES:  ARCHITECTURE_V3.md (layers), CONFIG_PROTOCOL_V3.md (wire), DECISIONS D-025..D-031
+STATUS:   DESIGN rev 2 — REVIEW-T (2026-10-07T22:49:29+02:00, CHANGES_REQUIRED) issues resolved; re-check pending
+SCOPE:    semantics; consumers land per milestone (§10). Numbers are candidates (ENVELOPE_STUDY, SIL matrix).
+RELATES:  ARCHITECTURE_V3.md (layers, §5 resolver/ratio-law API), CONFIG_PROTOCOL_V3.md (wire), DECISIONS D-025..D-039
 ```
 
 ## 1. Five separated layers
@@ -16,132 +16,157 @@ TRANSIENT BEHAVIOUR how fast demand moves            attack, release, start, car
 SAFETY              what always wins                 native_cut, owners, limits, backstop, standstill zero
 ```
 
-A user setting can only reach the layer it belongs to. Changing a mode's character never touches the intent detector
-or safety; changing an envelope never changes classification or release timing.
+A user setting reaches only its own layer: character never touches the intent detector or safety; an envelope
+never changes classification, release timing or the engage threshold.
 
 ## 2. Autonomous modes
 
 Each mode is a complete strategy with firmware defaults for every parameter. With **no user override** the firmware
-must pass the whole behaviour matrix in every mode (TEST_MATRIX G2-AUTONOMOUS). Configuration personalises; it never
-repairs defaults.
+must pass the whole behaviour matrix in every mode (G2-AUTONOMOUS). Configuration personalises; it never repairs.
 
-| Mode | Character (hidden profile intent) |
-|---|---|
-| ECO | Assist acts mainly on base support; calm response; lower power ceiling; torque still useful for slow climbs; small carry |
-| TRAIL | Assist uses the dynamic range strongly; natural response; strong low-speed torque; medium/strong carry |
-| SPORT | Assist reaches the torque/power envelope quickly; fast attack; fast clean release (no rubbery hold); high power |
-| SPORT+ | Large use of the envelope; very fast attack; aggressive transients; most active carry when intent qualifies |
-| AUTO | User sets range, envelopes, response tendency, carry, adaptation; the algorithm picks the operating point (terrain state; IMU optional, never required) |
+| Mode | Character (hidden profile intent) | Invariants (G2-MACRO must keep them at every Assist) |
+|---|---|---|
+| ECO | Assist acts on base support; calm response; lower power ceiling; usable torque for slow climbs; small carry | flat ratio law; power ceiling below the other modes; slowest attack/release rates of all modes |
+| TRAIL | natural response; flat torque support below 40 rpm; medium/strong carry | flat ratio law; c_floor 40 rpm (highest low-cadence ratio); carry strength ≥ SPORT |
+| SPORT | reaches the envelope quickly; fast attack; fast clean release | flat ratio law; release faster than TRAIL and ECO |
+| SPORT+ | progressive "SPORT+ ratio law" (legacy S+ AUTO law); very fast attack; most active carry | progressive law (slope > 0); attack and release the fastest; carry strength the highest |
+| BOOST | strongest fixed support (legacy L5, ratio 525 %) | flat law; highest base ratio at default |
+| AUTO | user sets range, envelopes, response tendency, carry, adaptation; the algorithm picks the operating point (terrain state; IMU optional, never required) | operating point stays inside [range_min, range_max] |
 
-Default level -> mode map (configurable, global object): L1 ECO, L2 TRAIL, L3 SPORT, L4 SPORT+, L5 AUTO. Until the
-mode-character milestone is active the levels keep their legacy G5300 behaviour (Milestone C keeps legacy ratio).
+Default level -> mode map (global object, configurable): **L1 ECO, L2 TRAIL, L3 SPORT, L4 SPORT+, L5 BOOST**
+(owner decision 2026-10-07, D-032). AUTO is assignable to any level. Until the mode-character milestone the levels keep
+their legacy G5300 behaviour (Milestone C keeps the legacy characteristic).
+
+Naming: "SPORT+ ratio law" = the legacy G5300 S+ AUTO interpolation (progressive support). "AUTO mode" = the V3
+terrain-chosen operating point (Milestone F). They are different concepts (glossary item).
+
+AUTO between the mode-character milestone and F: a static point inside its range (TRAIL default), labelled in
+readback as source "profile default". From its first version the F terrain state must have a non-IMU source.
 
 ## 3. Character profile (hidden, firmware-owned)
 
-Each mode carries a table of tendencies: support, torque, power, attack, release, start, carry, adaptation. A tendency
-is not a user field. It defines **how the user macros are interpreted** for that mode: for every internal parameter
-the profile stores `(value at macro 0, value at macro 100, default macro)`. So "Assist 70" means a different curve in
-ECO and in SPORT (intended), but inside a mode every macro is monotone and deterministic.
+Each mode carries tendencies (support, torque, power, attack, release, start, carry, adaptation). They define how the
+BASIC macros map onto internal parameters: for each internal parameter the profile stores `(value at macro 0, value at
+macro 100)` and the macro's default. "Assist 70" means a different curve in ECO and in SPORT (intended); inside a mode
+every mapping is monotone and deterministic.
 
 ## 4. BASIC parameters (macros)
 
-| Param | Rider meaning | Drives (internal, unless overridden in ADVANCED) | Never drives |
+| Param | Rider meaning | Drives (unless overridden in ADVANCED) | Never drives |
 |---|---|---|---|
-| Assist 0..100 | overall support feel: how easily and how strongly the mode uses the motor's capability in response to intent | assist base, assist range min/max, progression | Max Torque, Max Power, Response, Carry, any safety/battery/thermal/legal limit |
-| Max Torque 10..100 % | hard torque ceiling of the mode | torque envelope | support curve, release |
-| Max Power W | hard power ceiling of the mode | power envelope (via the existing power owner) | support curve, release |
-| Response 0..100 | how quickly assist follows you up and down | attack, release (per character tendency) | envelopes, start threshold, classification |
-| Start 0..100 | how strongly assist starts from rest | start response | normal riding |
-| Carry 0..100 (0 = off) | how much push continues when you briefly stop pedalling under load | carry strength, time cap, distance cap (within hard bounds) | normal riding, release while pedalling |
+| Assist 0..100 | overall support feel | assist base (flat modes), progression + range max (SPORT+ law) | envelopes, Response, Carry, engage threshold, any safety/battery/thermal/legal limit |
+| Max Torque 10..100 % | torque ceiling of the mode, % of the V3 demand full scale 0.65·P | Iq ceiling (pipeline `level_iq_limit` from the V3 resolver only) | support curve, release |
+| Max Power W | sustained battery power ceiling of the mode | g1 battery-current limit (closed loop; §4.2) | support curve, release, classification |
+| Response 0..100 | how quickly assist follows you up and down | attack, release | envelopes, start, classification |
+| Start 0..100 | how strongly assist starts from rest | start boost and start rise (one internal start profile) | engage threshold (EB74 820/995 stays), normal riding |
+| Carry 0..100 (0 = off) | push continuing when you briefly stop pedalling under load | carry strength, time cap, distance cap (within hard bounds) | normal riding, release while pedalling |
 
-Six macros are the candidate BASIC set. Each must show an independent, predictable effect in the override matrix
-(TEST_MATRIX G2-OVERRIDE / G2-ORTHO) before the UI shows it.
+Assist, Max Torque and Max Power have a static effect (ENVELOPE_STUDY); Response, Start and Carry are transient and
+are exposed only after the SIL override/orthogonality matrix shows an independent, predictable effect.
 
-### 4.1 Assist as a macro — the support function (mode-character milestone)
+### 4.1 Support function (mode-character milestone)
 
-```text
-desired_support = S(I, cadence, terrain; base, range_min, range_max, progression)
-  S rises from `base` at low intent towards `range_max` as intent grows; `progression` sets how much intent is
-  needed to reach the upper part of the range; `range_min` is the floor once engaged.
-Assist a -> base(a), range_max(a), progression(a): each non-decreasing in a, from the mode profile.
-motor demand = desired_support × rider mechanical input (torque/power blend, Milestone E)
-               -> clipped by Max Torque / Max Power envelopes -> transient layer -> safety.
-```
+The V3 support stage is the G5300 static map with two injected inputs (ARCHITECTURE §5): a ratio law
+`ratio = clamp(base + slope·c4, range_min, range_max)` and a torque/power crossover `cad_eff = max(cad, c_floor)`
+(plus the high-cadence bias above 100 rpm). Flat modes: `slope = 0` by default; SPORT+: legacy law `base 1,
+slope 524/200, max 525`. At the default Assist every profile reproduces its legacy level exactly above `c_floor`.
+Below `c_floor` support is torque-proportional (also during a start from rest at measured cadence 0..20 rpm — a
+deliberate deviation, ENVELOPE_STUDY §5).
 
-Concrete model (ENVELOPE_STUDY.md §2, verified on the production surface): the V3 support stage is the G5300 static
-map with an injected ratio law `ratio = clamp(base + slope·c4, range_min, range_max)` and a torque/power crossover
-`cad_eff = max(cad, c_floor)` (plus a high-cadence bias above 100 rpm). Fixed levels are `slope = 0`; S+ AUTO is
-`base 1, slope 524/200, max 525`. At the default Assist every profile reproduces its legacy level exactly above
-`c_floor`. Max Torque uses the existing `level_iq_limit` path; Max Power is the battery power limit enforced by the
-existing g1 owner (limit = W / V_batt, at most 15 A).
+### 4.2 Physical envelopes
 
-Monotonicity rule: for every mode, intent, cadence and terrain, `a2 > a1 ⇒ demand(a2) >= demand(a1)` before
-envelopes; after envelopes equality is allowed only where an envelope binds (documented). Tested on Assist 20/40/60/80/100
-× 25/60/90/120 rpm × every mode (G2-MACRO).
+- **Max Torque**: `level_iq_limit = MaxTorque_eff % × 0.65·P / 100`, computed by the pipeline from the V3 resolver
+  only, never from the bank field `max_iq_pct` and never from `ride_core_iq_limit` (which carries the legacy limp
+  factor). G5300 mode unchanged.
+- **Max Power**: a closed-loop battery-current limit through the existing g1 PI owner: per-level percentage
+  `pct = round(100 · W / (V_batt · 15 A))`, updated with the g1 limit every 10 ms. Steady state accurate; transient
+  overshoot bounded by the PI (to be measured in SIL). The profile default of TRAIL, SPORT, SPORT+, BOOST and AUTO is
+  **hardware maximum** (pct 100 = legacy parity at any pack voltage); ECO defaults to a lower W. The SOC knee derate
+  must stay active below a mode cap: the implementation multiplies the mode percentage with the SOC derate instead of
+  replacing the base (requirement for the mode-character milestone; today a cap below the knee would make the derate
+  inert, REVIEW-T #10).
 
-## 5. ADVANCED parameters (candidates)
+## 5. ADVANCED parameters and applicability
 
-| Param | Candidate test (predictable? independent? not a duplicate?) |
-|---|---|
-| Assist base | yes: support at light effort |
-| Assist range min / max | yes: floor / ceiling of support ratio |
-| Assist progression | yes: effort needed to reach upper range |
-| Attack | yes: rise speed (Response splits into attack + release) |
-| Release | yes: fall speed while pedalling |
-| Start response | yes |
-| Max acceleration | candidate: caps demand when the bike accelerates hard; must show it is not a duplicate of Attack in the matrix |
-| Phase compensation | candidate: 0 = follow the stroke (pulsing), 100 = full compensation; exposed only if the matrix shows riders can predict it |
-| Carry strength / time limit / distance limit | yes: split of the Carry macro; limits bounded by firmware hard maxima |
-| Terrain adaptation strength | yes (AUTO / F): how much terrain state moves the operating point |
-| High-cadence support bias | candidate (E): biases the torque/power blend above ~100 rpm |
+| Param | Unit / mapping | Applicable in | Notes |
+|---|---|---|---|
+| assist_base | ratio %, 0..1000 (internal unit) | all | in flat modes the Assist macro moves it |
+| assist_progression | 0..100 -> `slope = progression/100 · slope_max(mode)` (inverse used for the effective view) | all | 0 in flat modes by default = linear; > 0 makes support progressive |
+| assist_range_max | ratio %, 0..1000 | modes with effective progression > 0 | ceiling of the progressive law; otherwise "not applicable" |
+| assist_range_min | ratio %, 0..1000 | AUTO only | floor of the dynamic range |
+| attack | 0..100 | all | Response macro splits into attack + release |
+| release | 0..100 | all | the Milestone C consumer |
+| max_acceleration | 0..100 | candidate | exposed only if SIL/L4 shows it is not a duplicate of attack |
+| phase_compensation | 0..100 | candidate | exposed only if SIL shows riders can predict it |
+| carry_strength / carry_time_limit (ms) / carry_distance_limit (dm) | as named, ≤ firmware hard maxima | all | Carry macro splits into these |
+| terrain_adaptation | 0..100 | AUTO (F) | |
+| high_cadence_bias | −50..+50 | all (E) | acts only above 100 rpm |
 
-Not user parameters, ever: template α, classifier thresholds/hysteresis, bin counts, confidence decay, filter
-coefficients, epsilons. They are implementation (ARCHITECTURE §4); diagnostics may read them via DIAG telemetry only.
+There is no ADVANCED start field: Start drives one internal start profile. Ranges contain every profile value at
+Assist 0..100 (G1-CFG2 vector). Internal algorithm constants (template α, classifier thresholds/hysteresis, bins,
+confidence decay, filters, epsilons) are never user parameters; diagnostics see them only in DIAG telemetry.
 
-## 6. DEFAULT + OVERRIDE
+## 6. DEFAULT, override and legacy inputs — the one precedence rule
 
-- Each public parameter of each mode is either **DEFAULT** (`0xFFFF` on the wire and in storage) or a **user override**.
-- Storage holds overrides only: profile defaults live in firmware, so a firmware update can improve defaults without
-  touching conscious user choices.
-- Precedence for an internal parameter: explicit ADVANCED override > value derived from the BASIC macro (macro itself
-  DEFAULT or override) > profile default. A BASIC macro influences only components that are not overridden in
-  ADVANCED.
-- Legacy owners (D-011 refined): the stock M560 P0/P1 per-level values (assist ratio, acceleration, power %) are kept
-  as **legacy inputs**: when the V3 parameter of the same meaning is DEFAULT, the profile default is adjusted by the
-  legacy value relative to the factory value (so the stock HMI app still works); a V3 override wins over the legacy
-  input. One effective value, one documented precedence, source reported in readback.
-- Restore: one mode -> all its overrides DEFAULT; all -> every V3 override DEFAULT. No manual entry of factory values.
+Resolution is done **per HMI level** at the moment it is needed: `effective(level) = resolve(mode(level), legacy(level))`.
+
+1. An internal parameter with an **ADVANCED override** takes that value (source "user override").
+2. Otherwise it is derived from its **BASIC macro** through the mode curve (source "macro-derived").
+3. A BASIC macro takes its **override** if set; otherwise its DEFAULT, which is the profile default **adjusted by the
+   legacy input of that level** (source "legacy input" when the legacy value differs from the compiled factory value,
+   else "profile default"):
+   - Assist: `a = clamp(a_default + inverse_curve_mode(P0_ratio(level) / P0_factory(level)), 0, 100)`, where the
+     inverse curve is that of `base(a)` (flat modes) or `range_max(a)` (SPORT+ law) and `P0_factory` is the bank
+     default compiled into the firmware;
+   - Max Power: `profile_W(level) × P1_power_pct(level) / 100`;
+   - Response (attack part): from the P0 per-level acceleration (1..8 -> attack curve), release unaffected.
+4. Storage keeps overrides only; restore one mode / restore all sets overrides to DEFAULT. Defaults live in firmware,
+   so firmware updates can improve them without touching user choices.
+
+Consequences, stated for the owner and the clients:
+
+- A V3 override **shadows** the stock field of the same meaning: the stock HMI app's P0/P1 edit then has no effect on
+  that level. CAPS/STATUS carries `legacy_shadowed` (one bit per level) so CANable can warn.
+- A P0/P1 write never clears V3 overrides (CANable writes all P0 values back).
+- Every step is monotone because each curve and its inverse are monotone.
 
 ## 7. Configured vs effective readback
 
-For every parameter of a mode the protocol returns: configured (DEFAULT or value), effective value, and source
-(profile default / macro-derived / legacy P0-P1 input / user override / limited by firmware). AUTO and the future
-terrain state report the effective operating point the same way.
+For every parameter of a level: configured (DEFAULT or value), effective (the resolved configuration, never the
+momentary limited value — that is telemetry) and source: 0 profile default, 1 macro-derived, 2 legacy input,
+3 user override, 4 limited by firmware, 5 not applicable in this mode, 6 shadowed by an ADVANCED override (the macro
+then does nothing for that internal parameter and the UI must say so).
 
 ## 8. CANable model (later; firmware is canonical)
 
 ```text
 SPORT                              ADVANCED >
-[ Assist        75 ]               [ Assist min     AUTO ]   AUTO = DEFAULT (firmware/profile)
-[ Max Torque    85 ]               [ Assist max     AUTO ]
-[ Max Power   700 W]               [ Progression    AUTO ]
+[ Assist        75 ]               [ Assist base     AUTO ]   AUTO = DEFAULT (firmware/profile)
+[ Max Torque    85 ]               [ Progression     AUTO ]   fields marked "not applicable" are hidden
+[ Max Power   700 W]               [ Range max       n/a  ]
 [ Response      70 ]               [ Attack / Release AUTO ]
-[ Start         65 ]               [ Max accel      AUTO ]
-[ Carry         70 ]               [ Phase comp     AUTO ]
-                                   [ Carry time / distance AUTO ]
-                                   [ Terrain adapt  AUTO ]
+[ Start         65 ]               [ Carry time / distance AUTO ]
+[ Carry         70 ]               [ High-cadence bias AUTO ]
 ```
 
-CANable reads capabilities, defaults, effective values and configured overrides; it never stores defaults. A phone
-app uses the same contract.
+CANable reads capabilities, defaults, effective values, sources and configured overrides; it never stores defaults.
+A phone app uses the same contract.
 
-## 9. When each part becomes active
+## 9. RAM budget
+
+Configured values for 5 modes + global ≈ 256 B (one RAM image; the saved view is read from the memory-mapped CONFIG_A
+log, no second copy); effective cache for the active level only (≈ 48 B, recomputed on generation or level change).
+NORMAL build headroom after Milestone B: 840 B (REVIEW-T measurement), so config v2 leaves ≈ 0.5 KB for carry (D),
+motion estimate (D) and terrain (F). Next lever if needed: D-024 rejected list.
+
+## 10. When each part becomes active
 
 | Milestone | Active consumers |
 |---|---|
-| C active release | Response (-> release; attack stays legacy), engine; legacy G5300 characteristic and P0/P1 |
+| C active release | release (ADVANCED ID 13) and engine; Response stays masked until attack exists; legacy G5300 characteristic and P0/P1 |
 | D carry | Carry macro + carry strength/time/distance |
-| Mode character (after D, with E) | Assist macro + base/range/progression, Max Torque, Max Power (W), Start, Attack, Max accel (if kept) |
-| F terrain/AUTO | AUTO mode, terrain adaptation, high-cadence bias |
+| Mode character (after D, with E) | Assist macro, base/progression/range_max, Max Torque, Max Power (W), Start, attack (Response unmasked) |
+| F terrain/AUTO | AUTO mode, range_min, terrain adaptation, high-cadence bias |
 
-Every parameter is on the wire from the first contract version; its `param_mask` bit turns on with its consumer.
+Every parameter is on the wire from the first v2 contract; its applicability and `param_mask` bit turn on with its
+consumer.
