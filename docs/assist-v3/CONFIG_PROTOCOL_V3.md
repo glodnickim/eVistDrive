@@ -19,7 +19,7 @@ Per mode (ECO, TRAIL, SPORT, SPORT+, BOOST, AUTO) one **mode profile object** st
 |---|---|---|---|---|
 | 0 | assist | BASIC | 0..100 | mode character |
 | 1 | max_torque | BASIC | 10..100 % of the V3 demand full scale 0.65·P | mode character |
-| 2 | max_power | BASIC | W, 50..max_power_hw (reported in CAPS) | mode character |
+| 2 | max_power | BASIC | W, 50..65000; a value >= max_power_hw means "hardware maximum" (stored as written, effective = min(value, max_power_hw)) | mode character |
 | 3 | response | BASIC | 0..100 | mode character (attack + release); masked in C |
 | 4 | start | BASIC | 0..100 | mode character |
 | 5 | carry | BASIC | 0..100, 0 = off | D |
@@ -54,7 +54,7 @@ than DEFAULT/KEEP to it are rejected (reason 4).
 
 | ID | Op | Purpose |
 |---|---|---|
-| `0x6035` | READ | CAPS + STATUS (28 B, format 2) |
+| `0x6035` | READ | CAPS + STATUS (30 B, format 2) |
 | `0x6036` | READ `[object, index, view, level]` | object 2 mode profile (index = mode 1..6), object 3 global; view 0 saved, 1 effective (needs `level` 1..5), 2 defaults, 3 configured |
 | `0x6036` | WRITE multiframe | apply one object to RAM; exactly one result frame |
 | `0x6037` | WRITE short `[op, arg, gen_lo, gen_hi]` | 1 persist (deferred to standstill; optional expected generation, 0xFFFF = none), 2 revert RAM to saved, 3 restore all V3 defaults, 4 restore one mode (arg = mode) |
@@ -69,7 +69,7 @@ than DEFAULT/KEEP to it are rejected (reason 4).
 
 ## 3. Layouts (little-endian)
 
-CAPS/STATUS, format 2 (28 B):
+CAPS/STATUS, format 2 (30 B):
 
 | Bytes | Field |
 |---|---|
@@ -86,11 +86,12 @@ CAPS/STATUS, format 2 (28 B):
 | 12..15 | caps u32 (bit 0 behaviour v2, 1 effective readback, 2 saved readback, 3 defaults view, 4 deferred persist, 5 revert, 6 restore mode, 7 accepts source 3) |
 | 16..19 | param_mask u32 (bit = param ID) |
 | 20..21 | config_generation (skips 0xFFFE/0xFFFF) |
-| 22 | persist_state (0 clean, 1 RAM dirty, 2 pending standstill, 3 failed) |
+| 22 | persist_state (0 clean, 1 RAM dirty, 2 pending standstill, 3 failed (flash), 4 rejected: stale generation) |
 | 23 | flash_record_state (0 valid, 1 absent, 2 newer ignored, 3 CRC bad, 4 v1 record ignored) |
 | 24 | engine_active (0 G5300, 1 V3) — truthful: what publishes Iq now |
 | 25 | engine_requested |
-| 26..27 | CRC16-CCITT (0x1021, init 0xFFFF) over 0..25 |
+| 26..27 | max_power_hw_w: hardware maximum battery power at the present pack voltage (15 A × V), for UI ranges |
+| 28..29 | CRC16-CCITT (0x1021, init 0xFFFF) over 0..27 |
 
 Format 1 (26 B, v1) is described in git history (0ea5f56); shared test vectors cover both formats.
 
@@ -112,11 +113,15 @@ GLOBAL object (schema_id 3, 34 B): header, engine u16, level -> mode map (5 B), 
 - **Engine:** a write sets `engine_requested`; it becomes active only under the latch rule (ARCHITECTURE_V3 §2.2).
   A firmware built without V3 rejects `engine = V3` (reason 4) and clears caps bit 0.
 - **Readback:** view 3 configured, view 1 effective + source for one level, view 0 persisted (read from the CONFIG_A
-  log, no RAM copy), view 2 profile defaults.
+  log, no RAM copy), view 2 profile defaults. The effective Max Power of a hardware-maximum default is the W at the
+  present pack voltage (source 0); it moves with the pack voltage, like the legacy limit.
+- **Applicability** is validated on the object as it will be after the write (e.g. range_max with progression > 0
+  in the same write is accepted).
 - **Restore:** op 3 all overrides -> DEFAULT; op 4 one mode. RAM only until persisted.
 - **Persist:** never implicit. `0x6037 op 1` sets a flag; at the next standstill the RAM state **at that moment** is
-  written (documented; the optional expected generation makes the persist fail with reason 6 if another client wrote
-  in between). STATUS reports the persisted generation via view 0. Storage: append-only log in CONFIG_A
+  written (documented; the optional expected generation makes the persist fail if another client wrote in between).
+  The immediate ACK only confirms queueing; the outcome is reported in `persist_state` (0 done, 3 flash failure,
+  4 rejected: stale generation) and in the view 0 generation, which clients poll. STATUS reports the persisted generation via view 0. Storage: append-only log in CONFIG_A
   `0x0803E800`, slots holding the whole configuration (5+1 mode objects' configured values + global ≈ 300 B payload,
   ≥ 6 slots per page), newest valid CRC wins, erase only when full; erase window -> "absent" -> defaults (tested).
   `MotorParams_t` untouched (sizeof 728).

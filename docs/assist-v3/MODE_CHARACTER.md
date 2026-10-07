@@ -91,8 +91,8 @@ deliberate deviation, ENVELOPE_STUDY §5).
 | Param | Unit / mapping | Applicable in | Notes |
 |---|---|---|---|
 | assist_base | ratio %, 0..1000 (internal unit) | all | in flat modes the Assist macro moves it |
-| assist_progression | 0..100 -> `slope = progression/100 · slope_max(mode)` (inverse used for the effective view) | all | 0 in flat modes by default = linear; > 0 makes support progressive |
-| assist_range_max | ratio %, 0..1000 | modes with effective progression > 0 | ceiling of the progressive law; otherwise "not applicable" |
+| assist_progression | 0..100 -> `slope = slope_min(mode) + p/100 · (slope_max(mode) − slope_min(mode))` (inverse for the effective view); per-mode range in the profile table: flat modes 0..2.0, SPORT+ 1.31..5.24 | all | flat modes default 0 = linear; SPORT+ never below its law's minimum (no near-zero support) |
+| assist_range_max | ratio %, 0..1000 | modes with effective progression > 0 | ceiling of the progressive law; otherwise "not applicable". Applicability is validated on the object **after** the write; an override that later becomes inapplicable (progression set back to 0) stays stored and is reported with source 5 until it applies again |
 | assist_range_min | ratio %, 0..1000 | AUTO only | floor of the dynamic range |
 | attack | 0..100 | all | Response macro splits into attack + release |
 | release | 0..100 | all | the Milestone C consumer |
@@ -119,7 +119,11 @@ Resolution is done **per HMI level** at the moment it is needed: `effective(leve
      inverse curve is that of `base(a)` (flat modes) or `range_max(a)` (SPORT+ law) and `P0_factory` is the bank
      default compiled into the firmware;
    - Max Power: `profile_W(level) × P1_power_pct(level) / 100`;
-   - Response (attack part): from the P0 per-level acceleration (1..8 -> attack curve), release unaffected.
+   - Max Power uses the legacy P1 percentage on the **percentage** (`profile_pct × P1% / 100` of the hardware limit),
+     never on a W value, so the result tracks pack voltage like the legacy limit.
+   - Exception, written explicitly: the legacy P0 per-level acceleration (1..8) has no macro of its own meaning — it maps
+     onto the **attack** internal parameter, and only while both the attack ADVANCED override and the Response macro
+     are DEFAULT (source "legacy input"); release is never affected by it.
 4. Storage keeps overrides only; restore one mode / restore all sets overrides to DEFAULT. Defaults live in firmware,
    so firmware updates can improve them without touching user choices.
 
@@ -154,8 +158,9 @@ A phone app uses the same contract.
 
 ## 9. RAM budget
 
-Configured values for 5 modes + global ≈ 256 B (one RAM image; the saved view is read from the memory-mapped CONFIG_A
-log, no second copy); effective cache for the active level only (≈ 48 B, recomputed on generation or level change).
+Configured values for 6 modes + global ≈ 304 B (one RAM image; the saved view is read from the memory-mapped CONFIG_A
+log, no second copy); effective cache for the active level only (24 values + 24 sources ≈ 72 B, recomputed on generation
+or level change).
 NORMAL build headroom after Milestone B: 840 B (REVIEW-T measurement), so config v2 leaves ≈ 0.5 KB for carry (D),
 motion estimate (D) and terrain (F). Next lever if needed: D-024 rejected list.
 

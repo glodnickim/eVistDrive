@@ -75,10 +75,10 @@ Assist no longer adds (intended: Assist never moves the physical maximum).
 | Check | Result |
 |---|---|
 | Replica vs production surface | PASS — 910/910, max error 0.000 Iq |
-| Default parity (Assist 50, cad ≥ c_floor, before envelopes) | PASS — ECO 176, TRAIL 118, SPORT 111, SPORT+ 80 points, error 0.000 Iq |
+| Default parity (Assist 50, cad ≥ c_floor, before envelopes) | PASS — ECO 176, TRAIL 118, SPORT 111, SPORT+ 80, BOOST 81 points, error 0.000 Iq |
 | Monotonicity in Assist [SIM-STATIC, BY CONSTRUCTION] (Assist 0..100 step 5 × 25/60/90/120 rpm × all efforts × 6 modes) | consistent — 0 violations (follows from monotone curves and a monotone integer map; not G2-MACRO evidence) |
 | Envelope regions [SIM-STATIC, BY CONSTRUCTION] | consistent — 0 leaks (a `min()` of caps that ignore Assist; not G2-ORTHO evidence; g1 PI dynamics untested) |
-| BASIC independence (overlap of affected regions, Jaccard) | PASS — Max Power vs Max Torque 0.00 / 0.27 / 0.50 / 0.64 / 0.42 (ECO/TRAIL/SPORT/S+/AUTO); Assist vs either ≤ 0.15 |
+| BASIC independence (overlap of affected regions, Jaccard) | PASS — Max Power vs Max Torque 0.00 / 0.53 / 0.56 / 0.64 / 0.59 / 0.53 (ECO/TRAIL/SPORT/SPORT+/BOOST/AUTO) |
 | Self-tests (each check fails on an injected defect) | 6/6 (they prove the checker, not the design) |
 
 Evidence status (D-038): replica-vs-production and default parity are evidence about the model. G2-MACRO and

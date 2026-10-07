@@ -381,8 +381,8 @@ only this estimator.
 
 ## 8. Envelopes and dynamic range (Milestone E/F — contracts only now)
 
-- **Max Torque** (E): ceiling on motor torque demand, per level. Expressed as % of the motor's rated torque until a
-  physical Nm calibration exists (torque constant is [UNKNOWN] on M820).
+- **Max Torque** (E): ceiling on motor torque demand, per level, as % of the V3 demand full scale 0.65·P (D-033);
+  a physical Nm calibration does not exist yet (torque constant [UNKNOWN] on M820).
 - **Max Power**: closed-loop battery-current limit through g1, per level, from W (D-034, supersedes the earlier
   "P1 % only" line). One power owner.
 - **Torque <-> rider-power blend** (E): for > 110 rpm and < 30 rpm, blend the characteristic input between rider

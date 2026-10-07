@@ -176,3 +176,10 @@ and are labelled [SIM-STATIC, BY CONSTRUCTION]. G2-MACRO / G2-ORTHO stay open un
 Per call of the V3 stage <= 25 µs typical and <= 60 µs worst case at 120 MHz (candidate), measured with DWT in the
 DIAG build together with dropped G53 logical ticks A/B vs ASSIST_V3 off. The per-revolution work (alignment search,
 learning, kL) is spread over several calls (e.g. coarse-to-fine alignment, bin sums once per revolution).
+
+### D-040 — 2026-10-07 — REVIEW-T re-check minors (a6912ba re-check PASS_WITH_ISSUES)
+Legacy P0 acceleration acts on attack only while attack override and Response macro are DEFAULT (explicit exception);
+Max Power legacy input scales the percentage; CAPS format 2 = 30 B with max_power_hw_w; per-mode slope range
+[slope_min, slope_max]; applicability validated post-write, inapplicable overrides kept and reported (source 5);
+persist outcome via persist_state (4 = stale generation). Carried: DIAG rate_mode width (Milestone D), glossary entries
+"SPORT+ ratio law" vs "AUTO mode" (integration PROJECT_GLOSSARY at session end).

@@ -308,3 +308,70 @@ legacy resolution, per-mode applicability, units/ranges, 28 B CAPS table, keep-s
 DECISIONS entries for Max Power owner (10), Max Torque basis (11) and L5 (6, owner), relabel ENVELOPE_STUDY §4 checks
 (12); in parallel start Milestone C with the section E list and the DWT measurement of issue 13. Re-check of 1-12 by
 an independent reviewer before the config v2 rework is coded.
+
+## Re-check (a6912ba)
+
+```text
+TIMESTAMP:   2026-10-07T23:01:07+02:00 (system clock)
+REVIEWER:    same independent Claude subagent (read-only, no commit)
+SCOPE:       issues 1-12 and the verifiable MINOR items, against a6912ba (MODE_CHARACTER rev 2, CONFIG_PROTOCOL_V3 v2
+             rev 2, DECISIONS D-032..D-039, ARCHITECTURE_V3 §5/§8/§12, TEST_MATRIX, ENVELOPE_STUDY rev 2 + tool).
+             Issue 13 and section E belong to Milestone C and are not re-checked here.
+METHOD:      document reading; envelope study tool re-run into the scratchpad (VERDICT PASS, exit 0, default parity
+             includes BOOST 81 pts / 0.000 Iq); self-tests 6/6.
+VERDICT:     PASS_WITH_ISSUES — every MAJOR is RESOLVED or reduced to MINOR; 2 PARTIAL, 6 new MINOR, 3 MINOR carried.
+             The config v2 rework may be coded; fold the MINOR items in while writing it.
+```
+
+| # | Status | Note |
+|---|---|---|
+| 1 | PARTIAL (MINOR) | One rule, written once (MODE_CHARACTER §6, D-035); Assist and Max Power legacy act on the macro. Remaining: "Response (attack part): from the P0 acceleration" (§6 step 3, third bullet) acts on an internal parameter, not on the macro — the original defect again for attack (macro derivation always yields attack). Say: while Response is DEFAULT, `attack = curve_mode(Response_default) × f(accel_legacy)`; while Response or attack is overridden, the legacy acceleration is shadowed (source 6/3). |
+| 2 | RESOLVED | Per-level resolution, `legacy_shadowed` (CAPS byte 11), P0 write never clears overrides. |
+| 3 | RESOLVED | Applicability table §5, source 5, writes rejected. See new N1. |
+| 4 | RESOLVED | No ADVANCED start field; engage threshold explicitly not driven. |
+| 5 | RESOLVED | Units = internal units, ranges 0..1000 contain BOOST A100 base 945 and SPORT+ range_max 700. See N5. |
+| 6 | RESOLVED | D-032, L5 = BOOST (owner), BOOST profile in the study. |
+| 7 | RESOLVED | Full 28 B format-2 table, CRC over 0..25, format-1 vectors kept. |
+| 8 | RESOLVED | KEEP 0xFFFE, short param_count = keep, schema range, generation in ACK (generation skips 0xFFFE/0xFFFF). See N6. |
+| 9 | RESOLVED | One RAM image, saved view from CONFIG_A, active-level cache; budget in ARCH §12. See N4. |
+| 10 | PARTIAL (MINOR) | D-034 + §4.2: closed loop, HW-max defaults (legacy parity), SOC knee must multiply, ap2 alternative rejected with reason. Remaining: `max_power_hw` is said to be "reported in CAPS" (CONFIG §1 ID 2) but the 28 B table has no such field; HW max is pack-voltage dependent (720 W at 48 V, ~820 W full), so define the effective W reported for a HW-max default, an explicit "HW max" override value (e.g. any value ≥ max_power_hw means pct 100), and that legacy P1 multiplies the percentage (`pct = P1` for a HW-max default) rather than a voltage-dependent W. |
+| 11 | RESOLVED | D-033, §4.2. Leftover wording: N2. |
+| 12 | RESOLVED | Checks relabelled [SIM-STATIC, BY CONSTRUCTION]; G2-MACRO/G2-ORTHO open until SIL. Stale numbers: N3. |
+| 14 | RESOLVED | `assist_v3_effective()` and `g53_ratio_law_t` (NULL = legacy) fixed in ARCH §5. |
+| 15 | RESOLVED | ARCH §5: G7 step and rise from the mode once the map is active. |
+| 16 | NOT RESOLVED (MINOR, carry to D) | DIAG `rate_mode` still 3 bits with all 8 values used; reserve the schema bump before carry. |
+| 17 | PARTIAL (MINOR) | Naming written in MODE_CHARACTER §2; PROJECT_GLOSSARY not updated. |
+| 18 | RESOLVED | Per-mode invariants (§2) referenced by G2-MACRO ("gate can fail"). |
+| 19 | RESOLVED | §2: AUTO before F = static point, non-IMU source required in F. |
+| 20 | RESOLVED in contract | CAPS byte 24 "truthful"; code still reports V3 at boot (src/assist_v3_config.c:443) — fix in the v2 rework / C. |
+| 21 | RESOLVED | v1 record = absent, state 4. |
+| 22 | NOT RESOLVED (MINOR) | `#ifdef ASSIST_V3` and two build entry points unchanged (no src/inc/tool change in a6912ba). |
+| 23 | RESOLVED | Persist writes the RAM state at standstill; optional expected generation. |
+| 24 | RESOLVED | Source codes 5 and 6; effective = resolved configuration, not momentary limits. |
+| 25 | RESOLVED | D-011/D-029/D-030 marked SUPERSEDED. |
+
+New findings (all MINOR):
+
+- **N1 — Applicability depends on another parameter's value.** `assist_range_max` applies only "with effective
+  progression > 0". Define: (a) a write is validated against the object state *after* the write (progression and
+  range_max in one object); (b) what happens to an existing range_max override when a later write makes progression 0
+  (keep it dormant, report source 5, or reject that write). Also note in §5 that progression = 0 in SPORT+ leaves
+  ratio = base = 1 % (almost no assist) — a legitimate ADVANCED choice that the UI should warn about.
+- **N2 — ARCHITECTURE_V3 §8 (line 384) still says Max Torque is "% of the motor's rated torque"**; D-033 says % of
+  0.65·P. Align the line.
+- **N3 — ENVELOPE_STUDY §4 is stale against the rev 2 tool.** The Jaccard row still lists 5 modes with 0.27/0.50/
+  0.64/0.42; the re-run gives ECO 0.00, TRAIL 0.53, SPORT 0.56, SPORT+ 0.64, BOOST 0.59, AUTO 0.53; the parity row
+  omits BOOST (81 pts, 0.000). The edit in tools/assist_v3_envelope_study.py:44-45 moved the slot comment onto the
+  `HW_MAX_W` line (cosmetic).
+- **N4 — RAM text counts 5 modes.** MODE_CHARACTER §9 says "5 modes + global ≈ 256 B"; with BOOST there are 6 mode
+  objects (CONFIG §4: "5+1"), ≈ 6 × 48 + global ≈ 304 B; the effective cache as declared in ARCH §5 is 72 B (values +
+  sources), not 48 B. Still inside the ≈ 0.5 KB headroom; correct the numbers.
+- **N5 — `slope_max(mode)` is defined only for SPORT+ (5.24).** Flat modes allow progression > 0 (§5), so each mode
+  needs its `slope_max` in the profile table (and the effective-view inverse for p).
+- **N6 — Persist failure with an expected generation has no reply path.** Op 1 is ACKed at once; the stale-generation
+  failure happens at the later standstill and can only appear as `persist_state = 3`. Say so in §4 (client polls CAPS),
+  or carry the failure reason in STATUS.
+
+NEXT EXACT ACTION: fold 1, 10, N1-N6 into MODE_CHARACTER/CONFIG_PROTOCOL_V3/ENVELOPE_STUDY/ARCH while coding the
+config v2 rework; carry 16 to Milestone D, 17 to the glossary, 20 and 22 to the v2 rework / Milestone C. No further
+independent re-check needed for these MINOR items; the v2 rework's own review covers them.
