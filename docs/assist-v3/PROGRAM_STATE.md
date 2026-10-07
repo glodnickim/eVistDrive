@@ -1,6 +1,6 @@
 # Assist Behavior V3 — Program State
 
-UPDATED: 2026-10-07 (Milestone B start)
+UPDATED: 2026-10-07 (after milestone B and the mode character study)
 
 | Field | Value |
 |---|---|
@@ -11,7 +11,7 @@ UPDATED: 2026-10-07 (Milestone B start)
 
 ## Frozen decisions
 
-- ARCHITECTURE_V3 rev 3; D-001..D-023 in DECISIONS.md.
+- ARCHITECTURE_V3 rev 3 + MODE_CHARACTER; D-001..D-031 in DECISIONS.md.
 
 ## Work packages (Milestone B)
 
@@ -19,9 +19,6 @@ UPDATED: 2026-10-07 (Milestone B start)
 |---|---|---|
 | B-SEL | host runner selector | DONE (5141300) |
 | B-SIL | SIL --script, rider_script, metrics, matrix runner | DONE (7d35f4d) |
-| B-CFG | config protocol 0x6035-0x6037, CONFIG_A log | in progress |
-| B-MAP | `g53_static_target()` + accessors | in progress |
-| B-INT | rider intent / template / classifier / env_equiv, motion seam | in progress |
 | B-INT | rider intent | DONE (a00b4a7) |
 | B-MAP | static map + accessors | DONE (ac768c4) |
 | B-CFG | config v1 owner module | DONE (0ea5f56); rework to v2 (mode profile objects) pending |
