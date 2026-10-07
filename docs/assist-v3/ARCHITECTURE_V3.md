@@ -1,7 +1,7 @@
 # Assist Behavior V3 — Architecture
 
 ```text
-STATUS:    FROZEN CANDIDATE — awaiting REVIEW 1 (independent, before active implementation)
+STATUS:    FROZEN CANDIDATE rev 2 — REVIEW 1 issues resolved, re-check pending
 BASELINE:  25df554 (tag baseline/rideable-25df554)
 AUTHOR:    Lead/Master (Claude Code, claude-opus-5-5), 2026-10-07
 INPUTS:    audit/A_CONTROL_PATH.md, audit/B_TEST_AUDIT.md, audit/C_SIMULATION.md, audit/D_CONFIG_CAN.md
@@ -67,11 +67,11 @@ G53 static assist characteristic, battery limiter and the simulators stay.
 | Existing shaper (audit A id) | V3 mode |
 |---|---|
 | G4 D7EC envelope, G5 history, G6 readiness/C2 retention | **not consumed** — replaced by V3-2/V3-3 |
-| G7 ratio rise limiter (+10/10 ms) | V3 keeps its own ratio state inside the static map call (same rule) |
-| G9 D7EC accel trajectory (rise D28, fall D3E), G10 start hold-off | **not consumed** — rise rate *value* reused by V3-6 |
-| G12 BDE8 S5 ±50/ms, state 7->1 decay | **not consumed** — its rate is a cap inside V3-6 rise |
-| M2 pipeline R1 bumpless veto release | **bypassed** in V3 mode (V3 re-engages from the published value) |
-| M3 `stock_hard_zero` from shadow BDE8 | **re-derived** by the pipeline: V3 demand == 0 and speed_native <= 0 |
+| G7 ratio rise limiter (+step per 10 ms D7EC call) | V3 keeps its own ratio state inside `g53_static_target()`, advanced per **elapsed 10 ms** (accumulator), never per call. Accepted legacy-characteristic shaper in C/D (it is what makes S+ AUTO attack and level changes legacy); moved into V3-6 in Milestone E so single ownership becomes literal (R1-#8) |
+| G9 D7EC accel trajectory (rise D28, fall D3E), G10 start hold-off | **not consumed** — rise rate *value* and the D3E rate are reused by V3-6 |
+| G12 BDE8 S5 ±50/ms, state 7->1 decay | **not consumed** — its rate is a cap inside V3-6 rise and the legacy stop rate |
+| M2 pipeline R1 bumpless veto release | **kept in V3 mode** — it is a veto-release limiter, not a demand shaper; it binds only after native_cut, assist-off, the standstill zero, the backstop, or an engine switch (`pulled_down` computed against the post-limit V3 request) (R1-#3) |
+| M3 `stock_hard_zero` from shadow BDE8 | **replaced** by one pipeline predicate, independent of V3 internals: `standstill_zero = speed_native <= 0 ∧ (G53 PAS true-stop ∨ native real_stop ∨ direction_inhibit)` -> FORCE_ZERO (R1-#7). A start from rest (speed 0 for the first ~4.4 m, crank turning) is not zeroed |
 | M1 iq_ceiling slew | kept — protection envelope, not a demand shaper |
 | F1 fast_iq_slew 6.84 Iq/ms | kept — V3 rates are below it by construction (test asserts it never binds in normal riding) |
 | g1 multiply | kept — envelope |
@@ -82,12 +82,18 @@ V3 adds read-only accessors and one pure static-map function (§5).
 
 ### 2.2 Engine selection
 
-- `engine ∈ {G5300, V3}`, from the V3 config block (CONFIG_PROTOCOL_V3.md). Firmware default for the V3 candidate
-  build: **V3**. G5300 stays selectable without reflashing.
-- A requested switch is latched only while the published request is 0 (or at standstill). The pipeline reset on an
-  owner change resets V3 too.
-- G5300 mode is bit-identical to baseline: gate `ASSIST_V3` compiled out *and* `engine = G5300` must both reproduce
-  baseline CSVs byte-for-byte (TEST_MATRIX G-EQ).
+- `engine ∈ {G5300, V3}`, from the V3 config block (CONFIG_PROTOCOL_V3.md). Default when no record exists, in the V3
+  candidate build: **V3** (the BIN exists to test V3; CANable has no V3 UI yet, so the fallback is reflashing the
+  baseline BIN 0.638 — DECISIONS D-020). G5300 stays selectable over the protocol without reflashing.
+- `engine_requested` is latched into `engine_active` only when the published request **and both engines' demands**
+  (V3 `y`, shadow G53 `iq_request_pre_limits`) are 0 and no veto (native_cut, assist-off, backstop, standstill) is
+  active. On the switch tick the pipeline sets `pulled_down = true`, so R1 governs any climb. No standstill clause
+  (R1-#10). Both values are reported in CAPS/STATUS.
+- The pipeline reset on an owner change resets V3 (template kept — it describes the rider, not the ride).
+- G5300 mode is bit-identical to baseline: `ASSIST_V3` compiled out *and* `engine = G5300` must both reproduce
+  baseline CSVs byte-for-byte under the G-EQ rules in TEST_MATRIX.
+- V3 engagement is gated on the EB74 "armed" state (startup window done and the pedal seen unloaded once after a
+  reset), read through an accessor, so restart semantics stay baseline (R1-#14).
 
 ## 3. Data contracts
 
@@ -126,9 +132,12 @@ V3 never writes slew mode, ceiling, zero policy or any safety state.
 ### 3.2 Crank step events
 
 The native PAS event drain (main.c:2772) already consumes timestamped `pas_step_event_t` from the 4 kHz sampler ISR.
-It gains a signed accumulator and last-step tick, carried through `rider_input_t` -> `ride_control_input_t` ->
-`assist_pipeline_input_t`. This avoids audit finding A-D7 (the G53 PAS replays a held `pas_ab` through foreground
-catch-up and loses edges): V3 sees every step the ISR saw.
+A new production module `crank_phase.c` owns the signed step accumulator, the last-step tick and the glitch flag
+(INVALID two-bit jumps **and** sampler ring overflow, `pas_sampler_take_overflow`). main.c and every harness (SIL,
+L4) feed it the same events, so the matrix tests production code (R1-#19). Its outputs are carried through
+`rider_input_t` -> `ride_control_input_t` -> `assist_pipeline_input_t`. This avoids audit finding A-D7 (the G53 PAS
+replays a held `pas_ab` through foreground catch-up and loses edges): V3 sees every step the ISR saw. Counters are
+wrap-safe (differences only).
 
 ### 3.3 Optional motion / IMU seam
 
@@ -164,96 +173,127 @@ void assist_motion_sanitize(const motion_input_t *raw, motion_input_t *out);
 
 ### 4.2 Phase template
 
-- `NB` bins per revolution, `bin = phase·NB/96`. *Candidates* NB = 12 / 24 / 32 (all divide 96); chosen by the matrix
-  on quality, noise robustness and memory (SIMULATION_REPORT §template).
-- `s[bin]` (Q12) = learned expected effort at that bin divided by the revolution mean (mean of s = 1.0).
-  It captures dead spots and left/right asymmetry in one 360° profile.
-- Learning (only in NORMAL_PRESSURE, intent above a floor, cadence in the trusted band, no glitch):
-  `s[b] += α·(obs/I − s[b])`, renormalised to mean 1 once per revolution. *Candidate* α = 1/8 per visit.
-- Confidence `c` (0..1): rises per clean revolution (low residual), decays slowly while stopped, drops to 0 on a PAS
-  glitch, reverse, torque invalid or power-on. Below `c_min`, or outside the trusted cadence band, the template is
-  replaced by uniform `s ≡ 1` (fallback).
+- `NB` bins per revolution, `bin = phase·NB/96`. *Candidates* NB = 12 / 24 (32 only if a latency offset is learned:
+  torque-sensor latency is constant in time, so it shifts the template by more steps at 130 rpm; R1-#15). Chosen by
+  the matrix on quality, noise robustness and memory.
+- `s[bin]` (Q12) = learned expected effort at that bin divided by the revolution mean (mean of s = 1.0). It captures
+  dead spots and left/right asymmetry in one 360° profile.
+- **Prior:** a fixed population-typical stroke table (peak/mean ≈ 1.4–1.6, chosen from the matrix and later from V3
+  ride logs), never `s ≡ 1`. The prior is the template after power-on and the reference for alignment (R1-#1.3).
+- **Learning gate = revolution stability, not the per-step class** (R1-#6): when a revolution completes and its mean
+  is within ±15 % of the previous revolution's mean (intent unchanged, only the shape may differ), the revolution is
+  learned retroactively from the 96-entry ring: `s[b] += α·(obs_b/I_rev − s[b])`, then renormalised to mean 1.
+  *Candidate* α = 1/8 per revolution. A rider who changes style (sit → stand) adapts within a few revolutions
+  without any class gate locking learning out.
+- Confidence `c` (0..1): residual-based. It rises per learned revolution with low residual, falls with high residual,
+  decays slowly while stopped. A glitch (INVALID jump or ring overflow) marks the phase **unaligned**: after the next
+  full revolution the phase is re-aligned by circular cross-correlation of that revolution against the template
+  (96 × NB operations once per revolution) and confidence is restored if the correlation peak is clear (R1-#15).
+  Power-on, torque invalid and reverse-then-unknown keep the prior until confidence is rebuilt.
+- Trusted band: template mode only for 15 rpm <= cadence <= 150 rpm *(candidate)*, `c >= c_min`, phase aligned.
 
-### 4.3 Intent estimator — expected-effort-normalised windows
+### 4.3 Two quantities: physical intent `I` and envelope-equivalent `env_equiv`
 
-For any window W of recent steps:
+These are kept separate on purpose (R1-#1):
 
-```text
-E_W = Σ_W obs / Σ_W s[bin]          (phase-compensated effort estimate)
-```
+- **`I`** = physical rider effort, CLU, never rescaled. Drives the classifier, the carry score, the Milestone E
+  torque/power blend and the Milestone F terrain state.
+- **`env_equiv`** = the value the G5300 D7EC envelope would hold for this rider's stroke at this cadence. Used
+  **only** as the input of the G5300 static map (§5) in Milestones C/D, so steady-state assist equals baseline.
 
-- With W = one full revolution, `Σ s = 96` and `E_W` is the plain revolution mean — exact phase cancellation even with
-  a poor template. This is the robust **long estimate** `E_long`.
-- With a short window the template weights each step by how much effort that crank angle normally carries. Dead-spot
-  steps have small `s`, so they barely move the estimate. That is what lets a short window see a real change without
-  being fooled by a dip. The short window is the smallest W >= `A_min` (*candidate* 30°, 8 steps) whose `Σ s` reaches
-  `S_min` (*candidate* the expected effort of 8 average steps), capped at 180° (48 steps). If the last steps lie in a
-  dead spot, the window grows until it contains real expected effort.
-- Normal intent `I = E_long` while the short estimate agrees with it (`ρ = E_short / I` inside a band).
-  With high template confidence the long window may shrink to 180° (less lag); with low confidence it stays at 360°.
+**Estimating `I` — expected-effort-normalised windows.** For a window W of recent steps,
+`E_W = Σ_W obs / Σ_W s[bin]`. With W = one revolution `Σ s = 96` and `E_W` is the plain revolution mean: exact phase
+cancellation even with a poor template (`E_long`). In template mode a short window (smallest W >= `A_min`,
+*candidate* 30° / 8 steps, whose `Σ s` reaches `S_min`, capped at 180°) gives `E_short`: dead-spot steps have small
+`s`, so they barely move it. Normal intent `I = E_long` (360°, or 180° when confidence is high).
 
-Every threshold is in crank angle or in expected effort, not milliseconds. The same rule decides in 30–45° at 25 rpm
-and at 130 rpm. Time enters only for PEDAL_STOP and for fallback at very low cadence.
+**Computing `env_equiv`.** Once per revolution, and when cadence changes by more than 10 %, run the exact D7EC
+recurrence (`k = 8·cad`, 10 ms step, integer `k|1` form, attack `env = x`) over the template-reconstructed stroke
+`x(θ) = EB74_active(I_rev · s(θ))`, where `EB74_active(L) = max(0, 750 + L·2450/6000 − thr)` with the **active**
+threshold `thr` (820 while engaged, 995 to engage) read through an accessor (R1-#2). Its steady-state mean gives
+`κ = env_equiv_ss / EB74_active(I_rev)`. Between recomputations `env_equiv = κ · EB74_active(I)`, so when the
+classifier moves `I` (release, attack), `env_equiv` follows at once — no envelope state carries over; all dynamics
+stay in V3-6. Cost: ≤ 300 recurrence steps per revolution at 20 rpm, ≤ 50 at 120 rpm.
+
+Acceptance (TEST_MATRIX G1-LEVEL): V3 steady-state mean Iq within ±5 % of baseline for L1–L5 and S+ AUTO,
+20..130 rpm, dead-spot depth 0.1/0.3/0.6, three load levels, with the prior and with a converged template.
 
 ### 4.4 Release classification
 
+Template mode (aligned, confident, trusted band):
+
 | Class | Detection (per step, angle domain) | Intent | Trajectory consequence |
 |---|---|---|---|
-| NORMAL_PRESSURE | ρ in band | `E_long` | follow at normal rates |
-| PHASE_DIP | raw `obs` < 0.5·I, but ρ in band (dip is expected at this phase) | unchanged | **no dip in demand** |
-| ATTACK | ρ > `R_att` (*candidate* 1.4) over the short window | `E_short` (override) | rise at the level's legacy accel rate |
-| TRUE_RELEASE | ρ < `R_rel` (*candidate* 0.5) over the short window | `E_short` (override, can reach 0) | fall at the Response release rate |
-| PEDAL_STOP | no step for `T_stop` = clamp(k·expected step period, T_min, T_max) (*candidate* k = 4 steps = 15°, 60–400 ms), or native real_stop | held (last E) | handed to the stop/carry logic (§6) |
+| NORMAL_PRESSURE | `ρ = E_short / I` in band | `E_long` | follow at normal rates |
+| PHASE_DIP | raw `obs` < 0.5·I but ρ in band | unchanged | **no dip in demand** |
+| ATTACK | enter ρ > 1.4, exit \|ρ − 1\| < 0.2 *(candidates)* | `E_short` (override) | rise at the level's legacy accel rate |
+| TRUE_RELEASE | enter ρ < 0.5, exit \|ρ − 1\| < 0.2 *(candidates)* | `E_short` (override, can reach 0) | fall at R(Response) |
+| PEDAL_STOP | no step for `T_stop` = clamp(4 expected step periods, 60, 400 ms) *(candidate)*, or G53 true-stop, or native real_stop | held (last E) | stop logic (§6.1 C, §7 D) |
 
-- An override lasts until `E_long` (refilled with post-change steps) agrees with `E_short` again, so a real change is
-  followed immediately and a full revolution later the robust estimate takes over.
-- Restart after a stop uses only post-restart steps (no stale pre-stop revolution).
+Fallback mode (prior or low confidence, unaligned, or outside the trusted band) uses rules that need no template
+(R1-#5); every 180° of crank contains a power stroke:
+
+| Class | Fallback detection |
+|---|---|
+| TRUE_RELEASE | **maximum** per-step `obs` over the last 180° < `R_rel · I` |
+| ATTACK | mean over the last 180° > `R_att · I` |
+| PHASE_DIP / NORMAL | otherwise (a dip inside 180° can never trigger a release) |
+
+- Detection budget ≤ 180° at any cadence in fallback, ≈ 30–45° in template mode.
+- Hysteresis: separate enter/exit thresholds above, and a minimum dwell of 90° in ATTACK / TRUE_RELEASE before exit
+  (R1-#16). Steady riding must show zero class transitions (oscillation metric).
+- An override ends when `E_long` (refilled with post-change steps) agrees with `E_short` within the exit band.
+- Restart after a stop uses only post-restart steps.
 - Gradual release stays inside the band and is followed by `E_long` (lag ≈ half the window).
 
 ## 5. Base assist — the G5300 characteristic as a pure function
 
 Milestone C keeps the legacy assist ratio, AUTO and cadence normalisation. They are the part of D7EC after the
 envelope (g53_port_chain.c:585-727): `c2 = env·cad·35/10000` (or `env·700/10000` at cad <= 20) -> `c4` -> ratio
-(fixed per level, or AUTO interpolation on S+) with the +10/10 ms ratio limiter -> `d4` -> `rider_lut(cad)` -> `conv`
+(fixed per level, or AUTO interpolation on S+) with the ratio rise limiter -> `d4` -> `rider_lut(cad)` -> `conv`
 -> floor/clamp -> target (E2 domain, 0..40960).
 
-- New exported pure function in the port, e.g. `g53_static_target(env_equiv, cad, level, &ratio_state)`, reading the
-  same configuration fields the transcription reads (level ratios, AUTO enable/scale/step, LUT, floor). It writes
-  nothing in the chain image. Parity test: for steady inputs it returns exactly the target the transcription computes
-  from the same `env` (G1-STATIC).
-- V3's intent is in CLU. It is converted to the EB74 `cur` domain with the EB74 affine transfer and live zero
-  (`env_equiv = max(0, 750 + I·2450/6000 − zero)`), so the characteristic sees the same units as in G5300 mode.
-- Target in Iq: `target_iq = target_E2 · 0.65·P / 40960` (E2 -> EE Q12 -> BDE8 Q5A cap 6500 -> m2aa -> Iq). Max is
-  0.65·P, as at baseline.
-- Engage threshold: V3 uses the EB74 engage/release thresholds (995 / 820 counts with the zero at 750, audit A-D8) as
-  its intent deadband, so start sensitivity does not change in Milestone C.
+- New exported pure function in the port, `g53_static_target(env_equiv, cad, level, &ratio_state, elapsed_10ms)`,
+  reading the same configuration fields the transcription reads (level ratios, AUTO enable/scale/step, LUT, floor).
+  It writes nothing in the chain image. The ratio limiter advances per elapsed 10 ms (§2.1).
+- Parity tests: G1-STATIC — equal target for the same `env` in steady state; G1-STATIC-T — level change and S+ AUTO
+  attack in time against the transcription.
+- Input is `env_equiv` (§4.3), never `I`.
+- Target in Iq: `target_iq = target_E2 · 0.65·P / 40960` (E2 -> EE Q12 -> BDE8 Q5A cap 6500 -> m2aa -> Iq). Max 0.65·P.
+- Engage: `env_equiv > 0` requires the active EB74 threshold to be exceeded, so start sensitivity is unchanged, and
+  engagement also requires EB74 armed (§2.2).
 
-Milestone E adds the torque <-> rider-power blend and Max Torque / Max Power envelopes here (§8). Milestone F adds the
-dynamic assist range. Both change only this function's inputs/outputs, not the trajectory owner.
+Milestone E replaces (not stacks on) the `c2`/LUT cadence term with the torque <-> rider-power blend, and adds Max
+Torque via the existing `level_iq_limit` path in ap2_limits (one ceiling owner, R1-#17). Milestone F adds the dynamic
+assist range. Both change only this stage, not the trajectory owner.
 
 ## 6. Transient manager and the trajectory
 
 ### 6.1 The trajectory
 
-One state `y` (Iq, Q8). Each call: `y` moves toward `target` limited by:
+One state `y` (Iq, Q8, pre-g1, pre-limits). Each call: `y` moves toward `target` limited by:
 
 | Direction / case | Rate | Source |
 |---|---|---|
 | rise (normal, ATTACK, start) | min(level legacy accel rate from D7EC `rise` (D+232), BDE8 50 m2aa/ms) | legacy attack kept |
-| fall, NORMAL / gradual | release rate R(Response) | user Response |
-| fall, TRUE_RELEASE | release rate R(Response) — target itself has dropped | user Response |
-| PEDAL_STOP, Milestone C | load released: R(Response); load held: legacy 0.455 Iq/ms | baseline-equivalent stop |
-| PEDAL_STOP, Milestone D | carry state machine (§7) | user Carry |
+| fall while pedalling (NORMAL / gradual / TRUE_RELEASE) | R(Response) | user Response |
+| PEDAL_STOP, Milestone C, load released | legacy **3.5 Iq/ms** (BDE8 −50/ms after the D7EC zero-reset) | legacy stop (R1-#9) |
+| PEDAL_STOP, Milestone C, load held | legacy **0.455 Iq/ms** (D3E) after the stop is confirmed | legacy stop (R1-#9) |
+| PEDAL_STOP, Milestone D | carry target profile (§7); V3-6 stays the only rate limiter | user Carry |
 
-*Candidate* R(Response): full scale (0.65·P) in 600 ms at Response 0 % down to 150 ms at 100 %; all rates stay below
-the 6.84 Iq/ms electrical guard.
+- *Candidate* R(Response): full scale (0.65·P) in 600 ms at Response 0 % down to 150 ms at 100 %. All rates stay
+  below the 6.84 Iq/ms electrical guard.
+- Response never slows a stop: in Milestone C every stop/reverse timing must be <= baseline (matrix metric).
+- `y` is never clamped to the published value by limiters (speed taper, thermal, UV, g1 do not re-seed it), so legal
+  speed behaviour stays as at baseline. Veto release is R1's job in the pipeline (§2.1).
 
 ### 6.2 Start
 
-From rest: rise at the level's legacy accel rate once intent exceeds the engage threshold and forward PAS evidence
-meets the existing readiness (`evid >= d26` or `env >= d24`, read from the chain configuration). The G10 hold-off
-(EE forced 0 for up to 320 ms, semantics of its trigger G04 [UNKNOWN]) is not reproduced. Start Response
-(CONFIG reserved slot) gets its consumer only after the matrix shows a need.
+From rest: rise at the level's legacy accel rate once `env_equiv` exceeds the active EB74 engage threshold, EB74 is
+armed (§2.2), and forward PAS evidence meets the existing readiness (`evid >= d26` or `env >= d24`, read from the
+chain configuration). The G10 hold-off (EE forced 0 for up to 320 ms, trigger G04 [UNKNOWN]) is not reproduced; the
+matrix compares start timing with baseline, including "pedalling unloaded at speed, then loading" (R1-#12
+discovery). Start Response (reserved) gets a consumer only after the matrix shows a need.
 
 ## 7. Obstacle carry / intelligent overrun (Milestone D)
 
@@ -262,37 +302,56 @@ loaded, and the rider briefly stopped or unloaded the pedals".
 
 ### 7.1 Carry score (bounded 0..1, computed continuously, frozen at the PEDAL_STOP transition)
 
-Inputs: recent intent (last 1–2 revolutions), recent peak effort, attack (dI/dangle), cadence before the stop, wheel
-speed, relative acceleration, motor load (Iq measured vs P), recent assist. Relative acceleration uses
-`Δerps/erps` (gear-independent while the motor turns, fine-grained) with the wheel pulse speed as the absolute
-reference. High score: low/medium speed, high intent, high motor load, acceleration <= ~0, sudden stop after a strong
-stroke.
+Inputs: recent `I` (last 1–2 revolutions), recent peak effort, attack (dI/dangle), cadence before the stop, motion
+estimate (§7.4) speed and relative acceleration, motor load (Iq measured vs P), recent assist. High score:
+low/medium speed, high intent, high motor load, acceleration <= ~0, sudden stop after a strong stroke.
 
 ### 7.2 State machine
 
 ```text
 IDLE --(PEDAL_STOP, score >= on-threshold, level carry_strength > 0, no cancel)--> CARRY
-CARRY: demand = carry_level · decay(t), carry_level = f(score, strength) · min(previous assist, intent-based cap)
+CARRY: target = carry_level · profile(t); carry_level = f(score, strength) · min(previous assist, intent-based cap)
+       profile(t) falls slower than R(Response) so V3-6 does not distort it
 CARRY --(steps resume forward)--> NORMAL (trajectory continues from y — restart continuity)
 CARRY --(time cap OR distance cap reached, first wins)--> RELEASE (fall at R(Response)) --> IDLE
 CARRY --(cancel)--> RELEASE
 cancel = brake | reverse step | fault/native_cut | assist off | bike clearly accelerating (relative accel > threshold)
 ```
 
-- Time cap and distance cap come from the user "extent" parameter, each bounded by a firmware hard maximum.
+- Time cap and distance cap come from the user "extent" parameter, each bounded by a firmware hard maximum, with
+  `static_assert(CARRY_HARD_MAX_* <= BACKSTOP_*)`.
 - Slow release is never used as a substitute for carry.
+- In Milestone D the standstill predicate (§2.1) uses the motion estimate instead of `speed_native`, so carry is not
+  killed at walking pace where the wheel sensor reads 0; this change is proven against baseline stop timing.
 
 ### 7.3 Pipeline backstop (V3 mode only; outside V3)
 
 At baseline, stop and reverse are G53 behaviour (OWNER-DEC-2026-10-06-G5300-ONLY). In V3 mode the G53 stop logic is
 not consumed, so the pipeline gets its own bound, independent of V3 code (DECISIONS D-008):
 
-- reverse step / direction inhibit: allowed demand decays from the published value at >= the BDE8 rate
+- reverse step / direction inhibit: the allowed ceiling decays from the published value at >= the BDE8 rate
   (3.5 Iq/ms, full scale in 130 ms) — same as G5300 reverse.
-- crank stopped (native real_stop or G53 cadence 0): allowed demand holds for at most `T_STOP_HARD` (*candidate*
-  1500 ms) or `D_STOP_HARD` (*candidate* 2.0 m), first wins, then decays to 0 within 300 ms.
-- standstill: FORCE_ZERO as at baseline.
+- crank stopped (G53 true-stop or native real_stop): the ceiling holds for at most `T_STOP_HARD` (*candidate*
+  1500 ms), then decays to 0 within 300 ms. The distance bound joins in Milestone D once §7.4 exists, expressed in
+  estimator distance with a stated resolution — never as a bare 2.0 m from wheel pulses (one pulse = 2.218 m).
+- **Re-open** (R1-#4): only after forward steps resume, at no more than the BDE8 rise rate (3.5 Iq/ms) from the
+  published value.
+- standstill: the §2.1 predicate -> FORCE_ZERO.
 - The backstop is a ceiling (`min`), never a demand. Brake/fault keep the native SAFETY 200 ms path upstream.
+- Verified with V3 forced to output its maximum (G1-BACKSTOP).
+
+### 7.4 Motion estimate (contract now, implementation in Milestone D)
+
+The wheel sensor gives one pulse per 2.218 m, reads 0 below ~3 km/h and needs two pulses after a stop
+(R1-#13). A pipeline-owned estimator provides `speed_est`, `distance_est` and `rel_accel` with a quality flag:
+
+- wheel pulses with interpolation between pulses;
+- while the motor drives: `erps × ratio`, where `ratio = wheel speed / erps` is learned over the last pedalled
+  seconds (the gear cannot change while the crank is stopped); `rel_accel = Δerps/erps` is gear-independent;
+- later, an IMU longitudinal acceleration when the sanitised motion input is valid.
+
+Carry caps, the carry acceleration cancel, the Milestone D standstill predicate and the backstop distance bound read
+only this estimator.
 
 ## 8. Envelopes and dynamic range (Milestone E/F — contracts only now)
 
@@ -334,10 +393,11 @@ Values are chosen from the simulation matrix, not by feel.
 
 ## 11. Telemetry (DIAG build only)
 
-One extra DIAG frame group, only the fields needed to answer "why this Iq now": `intent`, `E_short`, `phase`,
+One extra DIAG frame group, only the fields needed to answer "why this Iq now": `intent` (I), `env_equiv`, `kappa`,
+`E_short`, `phase`, `phase_aligned`, `template_mode`,
 `template_conf`, `expected_effort`, `release_class`, `carry_score`, `carry_state`, `carry_remaining_ms`,
 `carry_remaining_cm`, `base_target_iq`, `v3_demand_iq`, `backstop_iq`, `final_iq` (existing), `cadence`, `rel_accel`,
-`terrain_est` (F), `imu_valid`, `engine`. NORMAL build: unchanged frames.
+`terrain_est` (F), `imu_valid`, `engine_active`, `engine_requested`. No V3 frame is emitted in G5300 mode. NORMAL build: unchanged frames.
 
 ## 12. Resources
 
@@ -357,10 +417,13 @@ One extra DIAG frame group, only the fields needed to answer "why this Iq now": 
 | E Envelopes | torque/power blend, Max Torque, wide cadence | characteristic changed |
 | F Terrain/Auto | terrain state shadow -> dynamic range | AUTO changed |
 
-## 14. Open items carried into REVIEW 1
+## 14. Open items
 
-- D-008 backstop bounds (`T_STOP_HARD`, `D_STOP_HARD`) and the EN 15194 run-on reference are [EXTERNAL_REFERENCE,
-  not verified in this repo]; owner confirmation before the ride.
-- BDE8 G04 / D25 semantics [UNKNOWN] — only matters if the matrix shows a start-behaviour regression.
-- On-bike size of the release hold [UNKNOWN] until a V3 DIAG ride; the probe used a load step.
-- CONFIG_A page vs bootloader update erase [UNKNOWN]; a wiped record falls back to defaults safely.
+- REVIEW 1 (2026-10-07T12:52:54+02:00, CHANGES_REQUIRED) issues #1-#20 are resolved in this revision; see
+  reviews/REVIEW_1_ARCHITECTURE.md and DECISIONS D-015..D-022. Re-check requested before Milestone B code.
+- D-008 backstop time bound and the EN 15194 run-on reference are [EXTERNAL_REFERENCE, not verified in this repo];
+  owner confirmation before the ride.
+- BDE8 G04 / D25 semantics [UNKNOWN] — matters only if the matrix shows a start-behaviour difference.
+- On-bike size of the release hold [UNKNOWN] until a V3 DIAG ride; probes used model strokes.
+- CONFIG_A survival across a BL820 update [UNKNOWN]: hardware check before relying on persist (RIDE_TEST_PLAN
+  pre-step); a wiped record falls back to defaults safely.

@@ -27,6 +27,10 @@ Rules:
   **not** mirror them — a mirror would be a second owner. Clients present one model and write each parameter to its
   owner.
 - Internal algorithm constants (template bins, α, windows, thresholds, hard bounds) are not on the wire.
+- Inert legacy bank fields with the same meaning (`release_ms`, `max_iq_pct`, `support_ratio_pct`,
+  `max_motor_power_w`, `iq_rise_fast_ms`, `smooth_start` in 0x6020/0x6021) are DEPRECATED / inert in both engines;
+  clients hide them. Milestone E Max Torque reuses the existing `level_iq_limit` path in ap2_limits (one ceiling
+  owner), not a new ceiling.
 - A parameter exists on the wire before its consumer only as "reserved": its `param_mask` bit is 0, reads return
   `0xFFFF`, and a write of any value other than `0xFFFF` is rejected (reason 4). The bit flips to 1 in the firmware that
   adds the consumer. No parameter is ever accepted and silently ignored.
@@ -35,7 +39,7 @@ Rules:
 
 | ID | Op | Purpose |
 |---|---|---|
-| `0x6035` | READ | CAPS + STATUS (24 B multiframe) |
+| `0x6035` | READ | CAPS + STATUS (26 B multiframe) |
 | `0x6036` | READ `[view, set]` | BEHAVIOR block: view 0 saved, 1 effective, 2 firmware defaults |
 | `0x6036` | WRITE multiframe | apply BEHAVIOR block to RAM; exactly one result frame |
 | `0x6037` | WRITE short `[op]` | 1 persist (deferred to standstill), 2 revert RAM to saved, 3 load defaults to RAM |
@@ -50,8 +54,10 @@ Rules:
 ## 3. Layouts (little-endian)
 
 CAPS/STATUS (24 B) — as audit D §5.2: magic `BV`, format, protocol_version, schema_min/max, level_count 5, set_count 1,
-max_block_len, record_stride 16, param_count, caps u32, param_mask u16, config_generation u16, persist_state,
-flash_record_state, CRC16-CCITT (0x1021, init 0xFFFF).
+max_block_len, record_stride 16, param_count, caps u32, param_mask u16, config_generation u16 (skips 0xFFFF on
+increment), persist_state, flash_record_state, engine_active u8, engine_requested u8, CRC16-CCITT (0x1021,
+init 0xFFFF). Exact offsets: [0..21] as audit D §5.2, [22] engine_active, [23] engine_requested, [24..25] CRC16 over [0..23];
+total 26 B (format 1). Readers use the declared length.
 
 `param_mask` bits: 0 response, 1 start_response, 2 carry_strength, 3 carry_extent, 4 max_torque, 5 assist_range,
 15 engine. Milestone C firmware: bits 0 and 15.
@@ -72,13 +78,22 @@ BEHAVIOR block (114 B):
 
 ## 4. Semantics
 
+- **Engine:** a write of `engine` sets `engine_requested`; it becomes active only under the latch rule of
+  ARCHITECTURE_V3 §2.2 (never immediately while riding).
 - **Write:** validate magic, schema_id, exact schema_version, total_len, stride, level_count, reserved values,
   required caps, generation, CRC, every range — then one commit in main-loop context between chain steps. Any failure
   = ERROR_ACK and zero mutation (staging discarded). Reject, never clamp.
 - **Readback:** view 1 = values in force after firmware limits; view 0 = last persisted; view 2 = compiled defaults.
-- **Persist:** never implicit. `0x6037 op 1` sets a flag consumed at standstill. Own record: magic, schema_id,
-  schema_version, stride, payload, generation, crc32 footer written last. Home: flash page CONFIG_A `0x0803E800`
-  (reserved in the linker script, unused by code). `MotorParams_t` is not touched (sizeof stays 728).
+- **Persist:** never implicit. `0x6037 op 1` sets a flag consumed at standstill. Storage is an **append-only log**
+  in flash page CONFIG_A `0x0803E800` (reserved in the linker script, unused by code): fixed-size slots (record =
+  magic, schema_id, schema_version, stride, payload, generation, crc32 written last), the newest slot with a valid CRC
+  wins, the page is erased only when full and only after the new record is ready to be written first in the fresh
+  page. A power loss can lose at most the record being written, never the last good one (REVIEW 1 #11).
+  `MotorParams_t` is not touched (sizeof stays 728).
+- **CONFIG_A vs bootloader:** the linked image cannot overlap CONFIG_A (linker ASSERT + build_firmware check), but
+  the BL820 container header carries only size mod 64 KiB, so whether an update erases CONFIG_A is [UNKNOWN].
+  Hardware check before relying on persist: write a marker record, perform a BL820 update, read back. If it is wiped,
+  either move the log after the CONFIG_B footer (audit D §5.3) or accept "defaults after update" as an owner decision.
 - **Restart:** valid record -> RAM; absent/corrupt -> defaults (`flash_record_state` 1/3); newer schema than firmware ->
   defaults, flash left untouched until the next explicit persist (state 2). If a bootloader update erases CONFIG_A
   ([UNKNOWN]), the result is "absent" -> defaults.

@@ -64,3 +64,35 @@ Baseline vs candidate = same harness on `git archive 25df554` sources vs V3 tree
 ### D-014 — 2026-10-07 — Test runner selector before V3 code
 `run_host_tests.py` gets `--list/--only/--exclude/--group/-j/--opt` (defaults unchanged). Needed for Gate 0/1.
 Stale suites (audit B REMOVE/RETIRE) are not deleted in this program; they are listed as LEGACY in TEST_AUDIT.md.
+
+### D-015 — 2026-10-07 — Physical intent `I` and envelope-equivalent `env_equiv` are separate (REVIEW 1 #1, #2)
+`env_equiv` = steady-state mean of the exact D7EC recurrence over the template-reconstructed stroke, with the active
+EB74 threshold; feeds only the G5300 static map. `I` is never rescaled. Acceptance G1-LEVEL ±5 % of baseline.
+Rejected: (a) revolution mean straight into the map — 21-59 % less assist (REVIEW 1 probe P2); (b) one fixed scale
+factor — shortfall depends on cadence and stroke shape; (c) learning a gain from the shadow envelope — couples V3 to
+the shadow's state and contaminates during transients.
+
+### D-016 — 2026-10-07 — Prior template instead of uniform fallback; fallback classifier without a short window (#5)
+Rejected: `s ≡ 1` fallback — TRUE_RELEASE twice per revolution after every start/glitch/reverse and below 30 rpm.
+
+### D-017 — 2026-10-07 — Template learning gated on revolution stability (#6), re-alignment by cross-correlation (#15)
+Rejected: learning only in NORMAL_PRESSURE — locks out adaptation to a changed pedalling style.
+
+### D-018 — 2026-10-07 — R1 veto-release limiter kept in V3 mode (#3); backstop re-opens at the BDE8 rise rate (#4)
+Rejected: re-seeding `y` from the published value — limiters would change legal-speed behaviour.
+
+### D-019 — 2026-10-07 — Milestone C stop rates are legacy (#9); standstill predicate written explicitly (#7)
+`standstill_zero = speed_native <= 0 ∧ (G53 true-stop ∨ real_stop ∨ direction_inhibit)`. Milestone D swaps
+`speed_native` for the motion estimate.
+
+### D-020 — 2026-10-07 — Engine switch latch and absent-record default (#10, #18)
+Latch only when published request and both engine demands are 0 and no veto; `pulled_down = true` on the switch tick.
+Absent-record default in the candidate build = V3. REVIEW 1 recommended G5300; rejected because CANable has no V3 UI
+yet, so a G5300 default would make the candidate BIN ride baseline behaviour; the fallback is reflashing 0.638.
+Owner may override.
+
+### D-021 — 2026-10-07 — Production `crank_phase.c` shared by main.c and all harnesses (#19)
+Rejected: harness copies of the PAS drain — the matrix would not test production code.
+
+### D-022 — 2026-10-07 — Motion estimator (wheel pulses + erps × learned ratio) owns distance/accel for carry (#13)
+Rejected: distance caps from wheel pulses (1 pulse = 2.218 m, 0 below 3 km/h). Implementation in Milestone D.

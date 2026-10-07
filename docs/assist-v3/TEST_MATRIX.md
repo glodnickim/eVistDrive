@@ -20,6 +20,19 @@ The full gate is re-run once at the end, not after every attempt.
 | ID | What it proves | Gate |
 |---|---|---|
 | G-EQ | candidate with `ASSIST_V3` off, and with engine = G5300, reproduces baseline CSVs byte-for-byte (SIL, regression, replay) | G1 |
+| G1-LEVEL | V3 steady-state mean Iq within ±5 % of baseline: L1-L5 + S+ AUTO, 20..130 rpm, dead-spot depth 0.1/0.3/0.6, three load levels, prior and converged template | G1 |
+| G1-TRACK | pedal-pressure tracking: mean-effort ramps up/down at 20/60/120 rpm; demand monotonic, tracking error vs baseline characteristic, no dip at dead spots | G1 |
+| G1-FALLBACK | first 3 revolutions after start, after reverse, after a glitch, at 20 rpm with deep dead spots: zero TRUE_RELEASE classifications | G1 |
+| G1-STYLE | sit -> stand at equal mean; asymmetric legs at 20 and 130 rpm: no assist dip, template adapts | G1 |
+| G1-VETO | brake release while pedalling, assist off -> on, both engines: climb back at the R1 rate | G1 |
+| G1-STAND | start from rest with speed 0 for the first 4.4 m gets assist; stop/reverse at speed 0, load held/released: zero time <= baseline | G1 |
+| G1-STOP | legacy stop timing: V3 stop/reverse zero time <= baseline for load held/released at 25/60/120 rpm | G1 |
+| G1-STATIC-T | level change while riding and S+ AUTO attack, in time, against the transcription | G1 |
+| G1-PAS | sampler ring overflow (>32 events in a stall) and INVALID jumps: phase unaligned, no false class, re-alignment | G1 |
+| G1-CLIMB | gear-shift unload (0.2-0.5 s partial release) and ratcheting (quarter strokes back/forward) on a technical climb | G1 |
+| G1-LONG | >= 1 h simulated: template renormalisation drift, counter/tick wrap | G2 |
+| G1-OSC | class transitions in steady riding = 0 | G1 |
+| G1-START | pedalling unloaded at speed, then loading: both engines, difference explained (REVIEW 1 discovery) | G1 |
 | G1-IMU | garbage in every motion field with valid=false (and valid but stale) -> bit-identical V3 output + telemetry over the matrix | G1 |
 | G1-STATIC | `g53_static_target()` equals the transcription's target for the same env/cadence/level/AUTO (sweep) | G1 |
 | G1-PHASE | phase tracker: mod-96 continuity through stop, back-pedal, restart; glitch drops confidence | G0/G1 |
@@ -27,10 +40,16 @@ The full gate is re-run once at the end, not after every attempt.
 | G1-CLS | classifier: PHASE_DIP never lowers intent; TRUE_RELEASE detected within the angle budget at every cadence; ATTACK; PEDAL_STOP | G1 |
 | G1-TRAJ | one trajectory: rates per table; never exceeds the 6.84 Iq/ms guard in normal riding; restart continuity | G1 |
 | G1-SAFE | V3 cannot bypass native_cut, owner arbitration, limits, g1, ceiling, standstill zero, backstop; no rider load -> zero Iq (ported property) | G1 |
-| G1-BACKSTOP | reverse decay rate, stop hold bound (time and distance), decay to 0, standstill FORCE_ZERO — independent of V3 internals (V3 forced to output max) | G1 |
+| G1-BACKSTOP | V3 forced to output max: reverse decay rate, stop hold bound, decay to 0, re-open only after forward steps at <= 3.5 Iq/ms (reverse -> forward, stop past T_STOP_HARD -> restart), standstill FORCE_ZERO | G1 |
 | G1-CARRY | activation on climb stop, no activation on coast/crest/low score, caps (first wins), cancels (brake, reverse, fault, acceleration), restart handover | G1 (Milestone D) |
-| G1-CFG | CONFIG_PROTOCOL_V3 vectors, every reject reason with no-mutation assertion, reserved-param rejection, generation, persist/restart/corrupt/newer record, legacy streams byte-identical | G1 |
-| G1-SEL | engine switch only at zero request; warm fallback; pipeline reset resets V3 | G1 |
+| G1-CFG | CONFIG_PROTOCOL_V3 vectors, every reject reason with no-mutation assertion, reserved-param rejection, generation (skips 0xFFFF, wrap), foreign transfer live, transfer timeout, engine write while riding latched not immediate, append-only persist with power loss between erase and program, restart/corrupt/newer record, legacy streams byte-identical | G1 |
+| G1-SEL | switch latches only with published and both engine demands 0 and no veto; during release, during brake, at standstill with demand: no step; R1 governs the climb; pipeline reset resets V3 | G1 |
+
+## G-EQ rules (REVIEW 1 #20)
+
+1. Harnesses set `engine = G5300` explicitly (the candidate default is V3; the flash stub has no record).
+2. V3 telemetry goes to a separate CSV (or separate columns excluded from the comparison).
+3. No V3 DIAG frame is emitted in G5300 mode in any simulated CAN trace.
 
 ## V3 scenario matrix (tools/run_assist_v3_matrix.py)
 
