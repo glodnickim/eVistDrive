@@ -1,0 +1,20 @@
+# Hand-written example rider script (format: tests/host/common/rider_script.h).
+# Run:  .build/assist_v3/bin/evist_sil_candidate.exe --script sim/v3_scenarios/example_release_restart_60.txt out.csv
+# The generated matrix (tools/run_assist_v3_matrix.py) is expanded from matrix_spec.json instead.
+name example_release_restart_60
+seed 42
+noise 20                       # torque sensor noise, sigma in centi-kg
+cadence_ripple 0.10            # crank slows through the dead spots
+shape ripple=70 asym=20 dsdepth=60 dswidth=30 phase=0
+start_angle 60
+level 3
+legal 1
+decimate 4                     # 1 kHz rows
+seg steady  dur=5 rpm=60 mean=1000 speed=15   # settle, NORMAL / PHASE_DIP
+seg release dur=3 mean=0                      # TRUE_RELEASE: crank keeps turning, no load
+seg steady  dur=3 mean=1000                   # pressure returns
+seg stop    dur=2                             # PEDAL_STOP (rpm=0 mean=0 by default)
+seg steady  dur=4 rpm=60 mean=1000            # restart
+seg brake   dur=1.5                           # BRAKE while still pedalling
+seg steady  dur=2
+seg reverse dur=2 rpm=-30 mean=300            # REVERSE, rider still pressing

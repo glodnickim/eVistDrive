@@ -1,0 +1,104 @@
+{
+  "_comment": [
+    "Assist Behavior V3 scenario matrix (TEST_MATRIX.md). tools/run_assist_v3_matrix.py expands",
+    "cadences x profiles into rider_script files (format: tests/host/common/rider_script.h).",
+    "Segment fields: kind, dur (s, or {s, revs} = at least revs revolutions), rpm ('c' = matrix cadence, 'rev' = reverse rule, or a number),",
+    "mean (multiplier of base.mean_ckg, or [a,b] ramp), speed (km/h, or [a,b] ramp).",
+    "Omitted rpm/mean/speed continue from the previous segment (stop/coast default rpm=0 mean=0).",
+    "Open loop: wheel speed is scripted. Script time 0 follows the Criterion-C prelude in the SIL.",
+    "base.mean_ckg = 1000 keeps steady demand below the 0.65*P (455 Iq) cap at level 3 for",
+    "20..130 rpm (probe 2026-10-07), so release/ripple metrics are not hidden by saturation.",
+    "dead_spot uses 0.6x: the G53 envelope rides the stroke peaks, 1.0x is capped at 120 rpm."
+  ],
+  "base": {
+    "mean_ckg": 1000,
+    "speed_kmh": 15,
+    "level": 3,
+    "legal": 1,
+    "seed": 20261007,
+    "decimate": 4,
+    "cadence_ripple": 0.08,
+    "start_angle": 60,
+    "shape": {"ripple": 50, "asym": 0, "dsdepth": 0, "dswidth": 0, "phase": 0},
+    "reverse_rpm": {"fraction": 0.5, "min": 15, "max": 40}
+  },
+  "cadences": [20, 25, 30, 40, 60, 80, 100, 110, 120, 130],
+  "quick": {
+    "cadences": [25, 60, 120],
+    "profiles": ["steady", "dead_spot", "asymmetry", "gradual_release", "true_release", "attack",
+                 "attack_stop_restart", "reverse", "brake", "pas_glitch"]
+  },
+  "profiles": {
+    "steady": {
+      "segments": [{"kind": "steady", "dur": {"s": 8, "revs": 12}, "rpm": "c", "mean": 1.0}]
+    },
+    "dead_spot": {
+      "shape": {"ripple": 95, "dsdepth": 95, "dswidth": 45},
+      "cadence_ripple": 0.15,
+      "segments": [{"kind": "steady", "dur": {"s": 8, "revs": 12}, "rpm": "c", "mean": 0.6}]
+    },
+    "asymmetry": {
+      "shape": {"ripple": 60, "asym": 40},
+      "segments": [{"kind": "steady", "dur": {"s": 8, "revs": 12}, "rpm": "c", "mean": 1.0}]
+    },
+    "gradual_release": {
+      "segments": [{"kind": "steady", "dur": {"s": 4, "revs": 5}, "rpm": "c", "mean": 1.0},
+                   {"kind": "ramp", "dur": 2, "mean": [1.0, 0.4]},
+                   {"kind": "steady", "dur": {"s": 8, "revs": 3}}]
+    },
+    "true_release": {
+      "segments": [{"kind": "steady", "dur": {"s": 4, "revs": 5}, "rpm": "c", "mean": 1.0},
+                   {"kind": "release", "dur": 8, "mean": 0.0}]
+    },
+    "attack": {
+      "segments": [{"kind": "steady", "dur": {"s": 4, "revs": 5}, "rpm": "c", "mean": 0.5},
+                   {"kind": "attack", "dur": 4, "mean": 1.5}]
+    },
+    "attack_stop": {
+      "segments": [{"kind": "steady", "dur": {"s": 3, "revs": 4}, "rpm": "c", "mean": 0.5},
+                   {"kind": "attack", "dur": 2, "mean": 1.5},
+                   {"kind": "stop", "dur": 4}]
+    },
+    "attack_stop_restart": {
+      "segments": [{"kind": "steady", "dur": {"s": 3, "revs": 4}, "rpm": "c", "mean": 0.5},
+                   {"kind": "attack", "dur": 2, "mean": 1.5},
+                   {"kind": "stop", "dur": 3},
+                   {"kind": "steady", "dur": {"s": 4, "revs": 5}, "rpm": "c", "mean": 1.0}]
+    },
+    "climb": {
+      "shape": {"ripple": 70},
+      "segments": [{"kind": "steady", "dur": {"s": 8, "revs": 12}, "rpm": "c", "mean": 1.5, "speed": 6}]
+    },
+    "crest": {
+      "segments": [{"kind": "steady", "dur": {"s": 3, "revs": 4}, "rpm": "c", "mean": 1.5, "speed": 8},
+                   {"kind": "ramp", "dur": 3, "mean": [1.5, 0.5], "speed": [8, 20]},
+                   {"kind": "steady", "dur": 8, "speed": 20}]
+    },
+    "coast": {
+      "segments": [{"kind": "steady", "dur": {"s": 4, "revs": 5}, "rpm": "c", "mean": 1.0},
+                   {"kind": "coast", "dur": 4, "speed": [15, 12]}]
+    },
+    "reverse": {
+      "segments": [{"kind": "steady", "dur": {"s": 4, "revs": 5}, "rpm": "c", "mean": 1.0},
+                   {"kind": "reverse", "dur": 3, "rpm": "rev", "mean": 0.3}]
+    },
+    "brake": {
+      "segments": [{"kind": "steady", "dur": {"s": 4, "revs": 5}, "rpm": "c", "mean": 1.0},
+                   {"kind": "brake", "dur": 2},
+                   {"kind": "steady", "dur": 3}]
+    },
+    "pas_glitch": {
+      "segments": [{"kind": "steady", "dur": {"s": 9, "revs": 12}, "rpm": "c", "mean": 1.0}],
+      "events": [{"type": "bounce", "t": 2.0, "count": 24},
+                 {"type": "drop", "t": 3.0, "count": 4, "period": 0.25},
+                 {"type": "jitter", "t": 4.0, "dur": 1.5, "ticks": 3},
+                 {"type": "illegal", "t": 6.0, "count": 3, "period": 0.3, "ticks": 6}]
+    },
+    "stall_noise": {
+      "noise_fraction": 0.08,
+      "segments": [{"kind": "steady", "dur": {"s": 9, "revs": 12}, "rpm": "c", "mean": 1.0}],
+      "events": [{"type": "stall", "t": 2.0, "count": 40, "period": 0.15, "ticks": 8},
+                 {"type": "stall", "t": 8.0, "count": 2, "period": 0.4, "ticks": 40}]
+    }
+  }
+}

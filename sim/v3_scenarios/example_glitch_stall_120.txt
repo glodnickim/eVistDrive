@@ -1,0 +1,12 @@
+# Hand-written example: PAS line glitches and foreground stalls at 120 rpm.
+# Glitches reach production through pas_sampler_isr_tick(); stalls skip the foreground and the
+# next ride_control_update() gets elapsed_ticks = ticks (format: tests/host/common/rider_script.h).
+name example_glitch_stall_120
+seed 7
+shape ripple=50
+seg steady dur=8 rpm=120 mean=1000 speed=18
+event bounce  t=1.0 count=10                      # next 10 forward edges bounce for one tick
+event drop    t=2.0 count=3 period=0.2            # withheld edge -> observed two-bit jump
+event jitter  t=3.0 dur=1.0 ticks=3               # edges delayed 0..3 control ticks
+event illegal t=4.5 count=2 period=0.25 ticks=6   # diagonal state for 6 ticks and back
+event stall   t=5.5 count=10 period=0.1 ticks=12  # 3 ms foreground stalls

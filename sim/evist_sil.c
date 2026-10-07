@@ -620,19 +620,13 @@ static void process_pas(sim_t *s, uint8_t ab)
         pas_direction_fwd_run() >= START_PHASE_STEPS) s->start_phase = 1U;
 }
 
-static void sim_ctrl_tick(sim_t *s, FILE *csv)
+/* The foreground half of one control tick: PAS event drain, liveness, torque, rider_input and
+ * ride_control_update(). Shared by the fixed scenarios and the V3 --script mode so both run the
+ * production pipeline through exactly the same code. */
+static void sim_foreground(sim_t *s, uint8_t ab, double load_ckg, uint32_t elapsed_ticks,
+                           bool safety_cut, rider_input_t *r_out,
+                           const torque_snapshot_t **ts_out)
 {
-    s->tick++;
-    s->plant.hall_edge_this_ctrl = false;
-
-    uint8_t ab;
-    if(s->pas_fixture && s->tick>=s->pas_fixture_start_tick) {
-        uint32_t fixture_tick=(s->tick-s->pas_fixture_start_tick)/4U;
-        ab=fixture_tick<s->pas_fixture_count
-            ? sil_native_pas_from_chain_fixture(s->pas_fixture[fixture_tick]) : s->rider.ab;
-    } else {
-        ab=rider_pas_tick(&s->rider);
-    }
     process_pas(s, ab);
 
     uint32_t idle = s->tick - pas_sampler_last_transition_tick();
@@ -651,7 +645,6 @@ static void sim_ctrl_tick(sim_t *s, FILE *csv)
     uint8_t control_cadence = s->MS.cadence;
     if (s->use_filtered_control_cadence) control_cadence = cadence_filter_get();
 
-    double load_ckg = rider_torque_ckg(&s->rider, s->tick);
     uint16_t raw = sensor_native_from_ckg(load_ckg);
     torque_input_update(raw, torque_input_correct(raw), true);
     const torque_snapshot_t *ts = torque_input_get_snapshot();
@@ -739,12 +732,20 @@ static void sim_ctrl_tick(sim_t *s, FILE *csv)
     in.cadence_filtered_x8 = cadence_filter_get_x8();
     in.speed_limit_x100 = s->speed_limit_x100;
     in.legal_enabled = s->legal_enabled;
-    in.elapsed_ticks = 1U;
+    in.safety_cut_non_direction = safety_cut;
+    in.elapsed_ticks = elapsed_ticks;
     ride_control_update(&in);
 
     if (assist_pipeline_pas_state() == AP2_PAS_FORWARD && s->first_permission_tick == 0U)
         s->first_permission_tick = s->tick;
+    *r_out = r;
+    *ts_out = ts;
+}
 
+/* The ISR-rate half of one control tick: the 16 kHz final-Iq slew and the plant, which keep
+ * running even when the foreground is stalled. */
+static void sim_plant_step(sim_t *s, bool direction_inhibit_active)
+{
     for (unsigned k = 0; k < INNER_PER_CTRL; k++) {
 #ifndef EVD_SIL_REAL_FOC
         fast_iq_slew_tick(ride_control_final_iq_slew_mailbox(), &s->MS.i_q_setpoint);
@@ -760,7 +761,7 @@ static void sim_ctrl_tick(sim_t *s, FILE *csv)
     if (s->MS.i_q_setpoint > 0 && s->first_iq_tick == 0U) s->first_iq_tick = s->tick;
     if (s->MS.i_q_setpoint < s->iq_min_all) s->iq_min_all = s->MS.i_q_setpoint;
     if (s->MS.i_q_setpoint > s->iq_max_all) s->iq_max_all = s->MS.i_q_setpoint;
-    if (r.direction_inhibit_active) s->direction_inhibit_ticks++;
+    if (direction_inhibit_active) s->direction_inhibit_ticks++;
 
     if (s->tick > s->stats_start_tick + 2U * CTRL_HZ) {
         int32_t iq = s->MS.i_q_setpoint;
@@ -770,6 +771,27 @@ static void sim_ctrl_tick(sim_t *s, FILE *csv)
         s->iq_sq_sum_run += (double)iq * iq;
         s->iq_samples_run++;
     }
+}
+
+static void sim_ctrl_tick(sim_t *s, FILE *csv)
+{
+    s->tick++;
+    s->plant.hall_edge_this_ctrl = false;
+
+    uint8_t ab;
+    if(s->pas_fixture && s->tick>=s->pas_fixture_start_tick) {
+        uint32_t fixture_tick=(s->tick-s->pas_fixture_start_tick)/4U;
+        ab=fixture_tick<s->pas_fixture_count
+            ? sil_native_pas_from_chain_fixture(s->pas_fixture[fixture_tick]) : s->rider.ab;
+    } else {
+        ab=rider_pas_tick(&s->rider);
+    }
+    /* rider_torque_ckg() reads only the rider plant, which process_pas() does not touch, so
+     * evaluating it before the foreground is the same value the inline code used to read. */
+    rider_input_t r;
+    const torque_snapshot_t *ts;
+    sim_foreground(s, ab, rider_torque_ckg(&s->rider, s->tick), 1U, false, &r, &ts);
+    sim_plant_step(s, r.direction_inhibit_active);
 
     if (csv && (s->tick % 4U) == 0U) {
         const assist_pipeline_telemetry_t *mo = assist_pipeline_telemetry();
@@ -1588,8 +1610,182 @@ static int run_hall_start_angle_sweep(void)
 }
 #endif
 
+/* ===========================================================================================
+ * Assist Behavior V3 scenario mode:  evist_sil --script <script.txt> <out.csv> [<s> <o> ...]
+ *
+ * Open loop rider/bike stimulus from tests/host/common/rider_script.[ch] (wheel speed is
+ * scripted), the production pipeline exactly as the fixed scenarios run it (sim_foreground /
+ * sim_plant_step), plus per-tick ground truth for tools/assist_v3_metrics.py.
+ *
+ * Start: every script begins with the same genuine Criterion-C lifecycle as the fixed
+ * scenarios (sim_criterion_c_start): cold reset, 131 real unloaded EB74 calls with no PAS, then
+ * a 1 s torque rise to the first segment's instantaneous torque at the start angle, still with
+ * no PAS. Script time t = 0 is the first tick after that prelude; only t >= 0 is written.
+ * Hence the first segment must be forward pedalling with a positive mean torque.
+ *
+ * Foreground stalls: on a stalled tick only pas_sampler_isr_tick() runs (as the 4 kHz timer ISR
+ * does on target) and the 16 kHz final-Iq slew/plant keep running; the next foreground call
+ * drains every queued PAS event and passes elapsed_ticks = N to ride_control_update().
+ * Torque is sampled by the foreground only.
+ * ========================================================================================= */
+#include "rider_script.c" /* single translation unit: no build-script change for the SIL */
+
+#if PAS_TRANSITIONS_PER_REV != RIDER_SCRIPT_TRANSITIONS_PER_REV
+#error "rider_script quadrature resolution differs from production PAS_TRANSITIONS_PER_REV"
+#endif
+
+#ifdef ASSIST_V3
+/* Extension hook for V3 telemetry (ARCHITECTURE_V3 §11). assist_v3.h does not exist at the time
+ * this harness was written; when it lands, align the field names below with
+ * assist_v3_telemetry_t. Without -DASSIST_V3 the CSV schema is the baseline schema, byte for
+ * byte, which is what the G-EQ gate compares. */
+#include "assist_v3.h"
+#define SIL_V3_CSV_HEADER ",v3_intent,v3_e_short,v3_phase,v3_template_conf,v3_release_class," \
+                          "v3_carry_score,v3_carry_state,v3_carry_remaining_ms," \
+                          "v3_carry_remaining_cm,v3_base_target_iq,v3_demand_iq"
+static void sil_v3_csv_columns(FILE *f)
+{
+    const assist_v3_telemetry_t *t = assist_v3_telemetry();
+    fprintf(f, ",%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld",
+            (long)t->intent, (long)t->e_short, (long)t->phase, (long)t->template_conf,
+            (long)t->release_class, (long)t->carry_score, (long)t->carry_state,
+            (long)t->carry_remaining_ms, (long)t->carry_remaining_cm,
+            (long)t->base_target_iq, (long)t->v3_demand_iq);
+}
+#endif
+
+static const char SIL_SCRIPT_CSV_HEADER[] =
+    "t_s,tick,crank_deg,crank_cum_deg,cadence_true,pas_ab,edge,glitch,elapsed,"
+    "gt_seg,gt_kind,gt_label,gt_intent_ckg,gt_mean_ckg,gt_torque_ckg,brake,speed_x100,"
+    "load_ctrl,load_ckg,native_cadence,cadence_filtered,real_stop,direction_inhibit,pas_state,"
+    "g53_cadence,g53_direction,d7ec_envelope,m2aa,iq_pre_limits,final_request,iq_ceiling,"
+    "assist_permitted,limiter_zeroed,block_positive,reason_bits,iq_ref,iq_actual,session";
+
+typedef struct {
+    rider_script_state_t st;
+    rider_script_sample_t ss;
+    rider_input_t r;
+    const torque_snapshot_t *ts;
+    uint32_t rows;
+    uint32_t stalled_ticks;
+} sil_script_run_t;
+
+static void sim_script_tick(sim_t *s, sil_script_run_t *run, FILE *csv, uint32_t decimate)
+{
+    rider_script_sample_t *ss = &run->ss;
+    s->tick++;
+    s->plant.hall_edge_this_ctrl = false;
+    (void)rider_script_step(&run->st, ss);
+    const uint8_t ab = FWD_AB[ss->pas_index];
+    s->wheel_speed_x100 = ss->speed_x100;
+    if (ss->elapsed == 0U) {
+        pas_sampler_isr_tick(ab, s->tick);   /* timer ISR only; the foreground is stalled */
+        run->stalled_ticks++;
+    } else {
+        sim_foreground(s, ab, ss->torque_ckg, ss->elapsed, ss->brake, &run->r, &run->ts);
+    }
+    sim_plant_step(s, run->r.direction_inhibit_active);
+
+    if (csv && (ss->tick % decimate) == 0U) {
+        const assist_pipeline_telemetry_t *mo = assist_pipeline_telemetry();
+        const g53_port_output_t *g = assist_pipeline_g53();
+        fprintf(csv, "%.4f,%u,%.3f,%.3f,%.3f,%u,%u,%u,%u,%u,%s,%s,%.1f,%.1f,%.1f,%u,%u,"
+                     "%u,%u,%u,%u,%u,%u,%u,%d,%d,%d,%d,%d,%d,%d,%u,%u,%u,%d,%d,%.3f,%d",
+            ss->t_s, ss->tick, ss->crank_deg, ss->crank_cum_deg, ss->cadence_rpm, ab,
+            ss->edge ? 1U : 0U, ss->glitch, ss->elapsed, ss->seg,
+            rider_script_kind_name(ss->seg_kind), rider_script_label_name(ss->label),
+            ss->intent_ckg, ss->mean_ckg, ss->torque_ckg, ss->brake ? 1U : 0U, ss->speed_x100,
+            run->ts->load_ctrl, run->ts->load_centikg, s->MS.cadence, cadence_filter_get(),
+            run->r.real_stop ? 1U : 0U, run->r.direction_inhibit_active ? 1U : 0U,
+            (unsigned)assist_pipeline_pas_state(),
+            g->trace.cadence, g->trace.pas_direction, g->trace.d7ec_envelope, g->trace.m2aa,
+            g->iq_request_pre_limits, mo->final_iq_request, mo->iq_ceiling,
+            mo->assist_permitted ? 1U : 0U, mo->limiter_zeroed ? 1U : 0U,
+            mo->block_positive ? 1U : 0U, assist_pipeline_reason_bits(),
+            s->MS.i_q_setpoint, s->plant.iq_actual, ride_control_get_session_state());
+#ifdef ASSIST_V3
+        sil_v3_csv_columns(csv);
+#endif
+        fputc('\n', csv);
+        run->rows++;
+    }
+}
+
+static int run_script(const char *script_path, const char *out_path)
+{
+    static rider_script_t sc;
+    char err[256];
+    if (rider_script_parse_file(script_path, &sc, err, sizeof(err)) != 0) {
+        fprintf(stderr, "SCRIPT %s PARSE FAIL: %s\n", script_path, err);
+        return 2;
+    }
+    const rs_segment_t *s0 = &sc.seg[0];
+    if (s0->mean0 <= 0.0 || s0->rpm0 <= 0.0 ||
+        !(s0->kind == RS_SEG_STEADY || s0->kind == RS_SEG_RAMP || s0->kind == RS_SEG_ATTACK)) {
+        fprintf(stderr, "SCRIPT %s FAIL: the first segment must be forward pedalling with a "
+                        "positive mean torque (Criterion-C start)\n", sc.name);
+        return 2;
+    }
+
+    static sim_t s;
+    static sil_script_run_t run;
+    memset(&run, 0, sizeof(run));
+    l4_eb74_observer_reset();
+    sim_init(&s, 0.0, 0.0, 0.0, 0.0, false, 6.0, true);
+    s.assist_level_index = sc.level;
+    if (sc.phase_current_max) s.phase_current_max = sc.phase_current_max;
+    s.legal_enabled = sc.legal;
+    s.wheel_speed_x100 = (uint16_t)llround(s0->speed0 * 100.0);
+
+    const double t0_ckg = s0->mean0 * rider_script_shape(&sc, sc.start_angle_deg);
+    if (!sim_criterion_c_start(&s, t0_ckg, 0.0)) {
+        fprintf(stderr, "SCRIPT %s FAIL: real cold Criterion-C startup did not complete\n", sc.name);
+        return 1;
+    }
+    if (pas_sampler_state() != FWD_AB[0]) {
+        fprintf(stderr, "SCRIPT %s FAIL: PAS lines moved during the prelude\n", sc.name);
+        return 1;
+    }
+
+    FILE *f = fopen(out_path, "wb");
+    if (!f) { perror(out_path); return 2; }
+    fputs(SIL_SCRIPT_CSV_HEADER, f);
+#ifdef ASSIST_V3
+    fputs(SIL_V3_CSV_HEADER, f);
+#endif
+    fputc('\n', f);
+
+    rider_script_start(&run.st, &sc);
+    run.ts = torque_input_get_snapshot();
+    const uint32_t prelude_ticks = s.tick;
+    s.stats_start_tick = s.tick;
+    while (run.st.tick < run.st.total_ticks) sim_script_tick(&s, &run, f, sc.decimate);
+    fclose(f);
+    const pas_sampler_stats_t *ps = pas_sampler_get_stats();
+    printf("SCRIPT %-24s prelude=%u ticks=%u stalled=%u rows=%u falseR=%u "
+           "pas[fwd=%u rev=%u invalid=%u glitch=%u overflow=%u] iqRange=[%d,%d] OK\n",
+           sc.name, prelude_ticks, run.st.tick, run.stalled_ticks, run.rows,
+           s.false_reverse_events, ps->forward_count, ps->reverse_count, ps->invalid_count,
+           ps->glitch_count, ps->overflow_count, s.iq_min_all, s.iq_max_all);
+    return 0;
+}
+
+static int run_script_args(int argc, char **argv)
+{
+    if (argc < 4 || ((argc - 2) % 2) != 0) {
+        fprintf(stderr, "usage: evist_sil --script <script.txt> <out.csv> [<script> <out> ...]\n");
+        return 2;
+    }
+    for (int i = 2; i + 1 < argc; i += 2) {
+        int rc = run_script(argv[i], argv[i + 1]);
+        if (rc != 0) return rc;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc >= 2 && strcmp(argv[1], "--script") == 0) return run_script_args(argc, argv);
     if (argc >= 2 && strcmp(argv[1], "--fuzz") == 0) {
         unsigned count = (argc >= 3) ? (unsigned)strtoul(argv[2], NULL, 10) : 1000U;
         if (argc >= 4) fuzz_state = (uint32_t)strtoul(argv[3], NULL, 0);
