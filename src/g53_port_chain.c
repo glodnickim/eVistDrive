@@ -2460,3 +2460,171 @@ uint8_t g53_chain_level(uint8_t assist_level)
     static const uint8_t slots[6]={0,2,4,6,8,9};
     return assist_level<6 ? slots[assist_level] : 0;
 }
+
+/*
+ * ASSIST-V3 (ARCHITECTURE_V3.md section 5): read-only views of the D7EC configuration and the
+ * G5300 static characteristic as a pure function. Everything below only READS the chain image;
+ * nothing here writes D, M or any other state array, and no line of the transcription above is
+ * changed. The arithmetic of g53_static_target() is the transcription of chain_d7ec_model() from
+ * `ready`/c2 to D+224, expression for expression, with the same widths and truncations.
+ */
+
+/* Sport+ slot exactly as D7EC computes it (D+200): r2 = N + (N+1)/2, clamped to 8. N = M+0x2E5
+ * is written by g53_chain_step() as the constant G53_HMI_LEVEL_COUNT before every D7EC call, so
+ * the constant is used here (it is also valid before the first chain step). */
+static int64_t static_sport_slot(void)
+{
+    const int64_t m2e5=G53_HMI_LEVEL_COUNT;
+    int64_t r2=(m2e5 + asr64((m2e5 + 1LL), 1LL));
+    if(sxtb(r2) >= 8LL) r2=8LL;
+    return r2;
+}
+
+uint8_t g53_chain_sport_slot(void)
+{
+    return (uint8_t)static_sport_slot();
+}
+
+uint16_t g53_chain_d7ec_rise(uint8_t slot)
+{
+    /* What D7EC loads into D+232 for this slot (M2ED override inert: g53_chain_step() writes
+     * M+0x2ED = 0 before every D7EC call). */
+    const int64_t lvl=sxtb(slot);
+    const int64_t r3=(lvl & 255LL);
+    const int64_t auto_on=((read_8((D + 120LL)) == 1LL) && (r3 == (static_sport_slot() & 255LL)));
+    if(!auto_on && lvl < 1LL) return 0;
+    return (uint16_t)read_16((D + (40LL + multiply64(2LL, r3))));
+}
+
+int16_t g53_chain_d7ec_fall(void)
+{
+    return (int16_t)sxth(read_16((D + 62LL)));
+}
+
+void g53_chain_d7ec_readiness(uint16_t *env_min, uint8_t *evidence_min)
+{
+    if(env_min) *env_min=(uint16_t)read_16((D + 36LL));
+    if(evidence_min) *evidence_min=(uint8_t)read_8((D + 38LL));
+}
+
+uint16_t g53_chain_d7ec_floor_limit(uint8_t slot)
+{
+    return slot<10 ? (uint16_t)read_16((D + (88LL + multiply64(2LL, slot)))) : 0;
+}
+
+void g53_static_ratio_init(g53_static_ratio_state_t *state)
+{
+    if(!state) return;
+    state->applied_ratio=0;   /* D+208 after g53_chain_reset() */
+    state->acc_ms=0;
+}
+
+/* One D7EC evaluation of the G7 ratio rise limiter (D+122 step, falls immediate). */
+static int64_t static_ratio_limit(int64_t ratio, int64_t prev_r, int64_t step)
+{
+    const int64_t diff=(ratio - prev_r);
+    return (sxth(diff) > step) ? (step + prev_r) : ratio;
+}
+
+uint16_t g53_static_target(const g53_static_input_t *in, g53_static_ratio_state_t *state,
+                           uint32_t elapsed_ms, g53_static_diag_t *diag)
+{
+    g53_static_diag_t d;
+    int64_t c2=0, c4=0, conv=0, convh=0, d4=0, d6=0, den=0, lr_in=0, maxr=0, q=0, q5=0;
+    int64_t r2v=0, r7=0, ratio=0, taper=0, target=0, x=0;
+    memset(&d,0,sizeof(d));
+    if(!in || !state) { if(diag) *diag=d; return 0; }
+    const uint64_t total=(uint64_t)state->acc_ms + elapsed_ms;
+    uint64_t steps=total / 10u;
+    state->acc_ms=(uint16_t)(total % 10u);
+    const int64_t fp=in->cadence;
+    const int64_t raw=(uint16_t)in->cadence;
+    const int64_t env16=in->env;
+    const int64_t sl=in->speed_native;
+    const int64_t lvl=sxtb(in->level);
+    const int64_t prev_r=state->applied_ratio;
+    d.applied_ratio=state->applied_ratio;
+    if(fp <= (-1LL)) {
+        /* D7EC returns before the limiter (and before D+224): no ratio step, no assist. */
+        if(diag) *diag=d;
+        return 0;
+    }
+    /* c2: the `ready` branch (G6 readiness / C2 retention is not consumed in V3). */
+    if(fp <= 20LL) {
+        x=(multiply64(env16, 700LL) & 4294967295LL);
+    } else {
+        x=(multiply64((multiply64(env16, raw) & 4294967295LL), 35LL) & 4294967295LL);
+    }
+    c2=(floor_div(x, 10000LL) & 4294967295LL);
+    c4=floor_div((multiply64((c2 & 65535LL), 637LL) & 4294967295LL), 1000LL);
+    /* ratio: fixed per level, or AUTO interpolation on the Sport+ slot. */
+    const int64_t r2=static_sport_slot();
+    const int64_t r3=(lvl & 255LL);
+    const int64_t d78=read_8((D + 120LL));
+    if((d78 == 1LL) && (r3 == (r2 & 255LL))) {
+        r7=read_16((D + 64LL));
+        den=udiv(multiply64(read_16((D + 110LL)), 100LL), r7);
+        maxr=read_16((D + (64LL + multiply64(2LL, r3))));
+        if(maxr <= r7) {
+            ratio=maxr;
+        } else {
+            ratio=(r7 + udiv((multiply64((maxr - r7), c4) & 4294967295LL), (den & 65535LL)));
+        }
+        if((ratio & 65535LL) > maxr) ratio=maxr;
+        d.auto_active=1;
+    } else if(lvl < 1LL) {
+        ratio=0LL;
+    } else {
+        ratio=read_16((D + (64LL + multiply64(2LL, r3))));
+    }
+    /* D+34 speed taper (D+210). */
+    if(sl <= 1000LL) {
+        taper=200LL;
+    } else if(asr64(sl, 5LL) > 74LL) {
+        taper=0LL;
+    } else {
+        taper=(200LL - sdiv((sl - 1000LL), 7LL));
+    }
+    if(read_8((D + 34LL)) == 1LL) {
+        if((ratio & 65535LL) > (taper & 65535LL)) ratio=taper;
+    }
+    /* G7 ratio rise limiter, advanced once per elapsed 10 ms (never per call). With no full
+     * 10 ms elapsed the held value is applied, but never above the current desired ratio. */
+    if(steps == 0u) {
+        r2v=static_ratio_limit(ratio, prev_r, 0LL);
+    } else {
+        const int64_t step=sxth(read_16((D + 122LL)));
+        int64_t p=prev_r;
+        r2v=p;
+        while(steps--) {
+            r2v=static_ratio_limit(ratio, p, step);
+            if((r2v & 65535LL) == p) break;   /* fixed point: further steps change nothing */
+            p=(r2v & 65535LL);
+        }
+        state->applied_ratio=(uint16_t)r2v;
+    }
+    d4=floor_div(multiply64(c4, (r2v & 65535LL)), 100LL);
+    /* LUT cadence: D+33 selects fp (signed raw) over sb (D+8). */
+    lr_in=in->lut_cadence;
+    if(read_8((D + 33LL)) == 1LL) lr_in=fp;
+    d6=rider_lut((lr_in & 65535LL));
+    conv=(udiv(multiply64((d4 & 65535LL), 1000LL), (d6 & 65535LL)) & 4294967295LL);
+    convh=(conv & 65535LL);
+    /* D+222 floor: inert. D+220 is loaded only from the D+88 table (or D+108 under the inert
+     * M2ED override); no code or setter writes D+88..D+109, so D+220 == 0, and D+222 is only
+     * ever written with D+220 or 0. max(convh, 0) == convh. */
+    if(asr64(convh, 3LL) > 124LL) convh=1000LL;
+    q=(int64_t)((uint64_t)multiply64((shift_left(convh, 12LL) & 4294967295LL), 274877907LL) >> 38LL);
+    q5=multiply64(q, 5LL);
+    target=(((q & 61440LL) != 0LL) ? 4294942720LL : (shift_left(q5, 1LL) & 4294967295LL));
+    d.c2=(uint16_t)c2;
+    d.c4=(uint16_t)c4;
+    d.ratio=(uint16_t)ratio;
+    d.applied_ratio=(uint16_t)r2v;
+    d.d4=(uint16_t)d4;
+    d.d6=(uint16_t)d6;
+    d.conv=(uint16_t)convh;
+    d.target=(uint16_t)target;
+    if(diag) *diag=d;
+    return (uint16_t)target;
+}

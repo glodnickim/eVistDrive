@@ -33,6 +33,8 @@ static uint8_t control_remainder;
 static bool normal_permission;
 static uint32_t dropped_ticks;
 static uint16_t pa6_ax_observed;
+/* ASSIST-V3: last EB74 (Boundary A-D7EC) output, kept for read-only accessors only. */
+static g53_ad7ec_output_t eb74_last;
 
 /*
  * TASK-EVD-TQ-06-G1 / ADR-013: the G53 PI #1 battery-current limiter, the producer of g1.
@@ -90,6 +92,7 @@ void g53_port_reset(void)
     normal_permission=false;
     dropped_ticks=0;
     pa6_ax_observed=0;
+    memset(&eb74_last,0,sizeof(eb74_last));
 }
 static uint8_t level_power[10] = {0,100,100,100,100,100,100,100,100,100};
 
@@ -139,7 +142,8 @@ void g53_port_update(const g53_port_input_t *in,g53_port_output_t *out)
             .d7ec_rider=(uint16_t)port_trace.d7ec_accel,
             .m298=(uint8_t)port_trace.m298
         };
-        ci.rider_input_native=g53_ad7ec_step(in->load_ctrl,&feedback).rider_input_native;
+        eb74_last=g53_ad7ec_step(in->load_ctrl,&feedback);
+        ci.rider_input_native=eb74_last.rider_input_native;
         ci.level=level;
         ci.speed_native=(int16_t)feedback.speed_native;
         ci.diag_word=diag_word;
@@ -175,3 +179,22 @@ void g53_port_update(const g53_port_input_t *in,g53_port_output_t *out)
 const g53_port_trace_t *g53_port_trace(void) { return &port_trace; }
 const g53_g1_state_t *g53_port_g1_state(void) { return &g1_limiter; }
 uint16_t g53_port_pa6_ax_observed(void) { return pa6_ax_observed; }
+
+/* ASSIST-V3 read-only accessors (ARCHITECTURE_V3.md 2.2, 4.3). They observe the state left by
+ * the last g53_port_update() and change nothing. */
+/* EB74 startup window (src/g53_port_boundaries.c EB74_START_LIMIT) and plausibility check
+ * length (EB74_CHECK_LENGTH). Pinned by tests/host/assist_v3_static_map_host.c. */
+enum { G53_PORT_EB74_START_LIMIT=300, G53_PORT_EB74_CHECK_LENGTH=100 };
+uint16_t g53_port_eb74_zero(void) { return eb74_last.zero; }
+uint16_t g53_port_eb74_threshold(void) { return eb74_last.threshold; }
+bool g53_port_eb74_armed(void)
+{
+    return eb74_last.startup_count>=G53_PORT_EB74_START_LIMIT &&
+           eb74_last.check_count>=G53_PORT_EB74_CHECK_LENGTH;
+}
+bool g53_port_pas_true_stop(void)
+{
+    /* movement is cleared only by reset and by the PAS true-stop timeout, set by any transition */
+    return port_trace.movement==0;
+}
+int16_t g53_port_pas_cadence(void) { return (int16_t)port_trace.cadence; }

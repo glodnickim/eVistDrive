@@ -46,5 +46,16 @@ const g53_g1_state_t *g53_port_g1_state(void);
 /* Filtered PA6 (Boundary A-x arithmetic) for diagnostics. On M820 it never reaches the G53
  * throttle input: throttle is disabled by product policy (src/g53_port.c). */
 uint16_t g53_port_pa6_ax_observed(void);
+/* ASSIST-V3 read-only accessors (state after the last g53_port_update()). */
+/* EB74 zero (750 at start, 750..995 once auto-zeroed; 0 before the first update - gate on armed). */
+uint16_t g53_port_eb74_zero(void);
+/* EB74 active threshold: 960 during the check, then zero+245 (engage) or 820 (while D7EC drives). */
+uint16_t g53_port_eb74_threshold(void);
+/* EB74 armed: startup window done and the pedal seen unloaded for the check after reset. */
+bool g53_port_eb74_armed(void);
+/* G53 PAS crank stopped: movement cleared (true-stop timeout fired, or no transition since reset). */
+bool g53_port_pas_true_stop(void);
+/* G53 PAS signed cadence (M+0x92 / D7EC fp). */
+int16_t g53_port_pas_cadence(void);
 
 #endif
