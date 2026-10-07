@@ -21,6 +21,7 @@
 #ifndef INC_CAN_DISPLAY_H_
 #define INC_CAN_DISPLAY_H_
 #include "main.h"
+#include "assist_v3_config.h"
 
 void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS);
 void sendCAN_Tx(MotorParams_t* MP, MotorState_t* MS);
@@ -33,6 +34,8 @@ void sendCAN_3100(MotorState_t* MS);
 uint32_t sendCAN_3100_dropped_count(void);
 #endif
 bool sendCAN_3202(void);
+//Assist V3 config: the one result frame of a V3 event (ACK, or ERROR_ACK [reason, index]); to reply->target.
+void sendAssistV3Result(uint16_t command, const assist_v3_reply_t *reply);
 void update_checksum(void);
 
 extern uint8_t Para0[64];

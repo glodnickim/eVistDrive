@@ -598,7 +598,24 @@ $suites = @(
                    (Join-Path $root 'src\pas_liveness.c'),
                    (Join-Path $PSScriptRoot 'common\map_adapter.c'))
        IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common'))
-       Defines = @('-Wno-type-limits', "-DASSIST_PIPELINE_C_PATH=$assistPipelineCPathForward") }
+       Defines = @('-Wno-type-limits', "-DASSIST_PIPELINE_C_PATH=$assistPipelineCPathForward") },
+    @{ Name = 'assist_v3 config owner (CONFIG_PROTOCOL_V3: vectors, rejects, transfer, flash log, power loss)'
+       # Real src/assist_v3_config.c against a host flash stub with fault injection. CAN_Display.c is
+       # only read as text (G11): it cannot be linked here, so the wiring guard proves the legacy
+       # P0/P1/P2, bank and tuning code is textually untouched and the V3 branch never reaches it.
+       Harness = Join-Path $PSScriptRoot 'assist_v3_config_host.c'
+       Modules = @(Join-Path $root 'src\assist_v3_config.c')
+       IncludeDirs = @(Join-Path $PSScriptRoot 'common')
+       Defines = @("-DCAN_DISPLAY_C_PATH=$canDisplayCPathForward") },
+    @{ Name = 'assist_v3 g53_static_target parity: G1-STATIC, G1-STATIC-T, no-mutation, V3 accessors'
+       # The harness #includes g53_port_chain.c to snapshot its private arrays, so the chain module
+       # is not listed here.
+       Harness = Join-Path $PSScriptRoot 'assist_v3_static_map_host.c'
+       Modules = @((Join-Path $root 'src\g53_port.c'),
+                   (Join-Path $root 'src\g53_port_boundaries.c'),
+                   (Join-Path $root 'src\g53_port_pas.c'),
+                   (Join-Path $root 'src\g53_g1_limiter.c'))
+       IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common')) }
 )
 
 function Find-HostCompiler {

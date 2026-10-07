@@ -39,6 +39,7 @@
 #include "can_multiframe.h"
 #include "can_reply_effects.h"
 #include "stop_trace.h"
+#include "assist_v3_config.h"
 #if CAN_DIAGNOSTICS_ENABLE
 #include "qs_transition_diag.h"
 #include "qs_transition_dump.h"
@@ -65,6 +66,7 @@ void sendAcknoledge(void);
 //FW-068/076: the result of a config write has to reach the tool. Used by the multiframe
 //blobs and by the short 0x3203 write; a rejected frame must never read as a success.
 void sendWriteResult(uint16_t command, uint8_t applied);
+static void v3_cfg_frame(bool is_end, uint16_t frame_no);
 #if CAN_DIAGNOSTICS_ENABLE
 static void send_qs_transition_status(void);
 #endif
@@ -372,9 +374,40 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 					}
 					sendWriteResult(Ext_ID_Rx.command,accepted);
 				}
+				else if(assist_v3_config_owns_command(Ext_ID_Rx.command)){
+					/* Assist V3 config (0x6035..0x6037): answered entirely by the owner module, one
+					 * result frame per event; the generic ACK below must not fire for these. */
+					assist_v3_reply_t v3r = {ASSIST_V3_REPLY_NONE, 0U, 0U, 0U};
+					if(Ext_ID_Rx.command==ASSIST_V3_CMD_BLOCK && receive_message.rx_dlen==1 && receive_message.rx_data[0]>8){
+						assist_v3_reply_t v3abort;
+						(void)assist_v3_config_other_declaration(Ext_ID_Rx.source,&v3abort);
+						if(v3abort.kind!=ASSIST_V3_REPLY_NONE) sendAssistV3Result(ASSIST_V3_CMD_BLOCK,&v3abort);
+						v3r = assist_v3_config_can_declare(Ext_ID_Rx.source,receive_message.rx_data[0],control_time_ticks>>2);
+						if(v3r.kind==ASSIST_V3_REPLY_DECL_ACK){
+							Rx_MF_active=ASSIST_V3_CMD_BLOCK;
+							rx_data_length=receive_message.rx_data[0];
+						}
+						else if(Ext_ID_Rx.source==ASSIST_V3_SOURCE_TOOL && !(v3r.kind==ASSIST_V3_REPLY_ERROR && v3r.reason==ASSIST_V3_REASON_BUSY)){
+							Rx_MF_active=0; //rejected declaration: its frames are dropped by the dispatcher
+							rx_data_length=0;
+						}
+					}
+					else if(Ext_ID_Rx.command==ASSIST_V3_CMD_CONTROL){
+						v3r = assist_v3_config_can_control(Ext_ID_Rx.source,receive_message.rx_dlen,receive_message.rx_data);
+					}
+					else if(Ext_ID_Rx.command==ASSIST_V3_CMD_BLOCK && Ext_ID_Rx.source==ASSIST_V3_SOURCE_TOOL){
+						v3r.kind=ASSIST_V3_REPLY_ERROR; v3r.reason=ASSIST_V3_REASON_LENGTH; v3r.index=0U; v3r.target=Ext_ID_Rx.source; //not a declaration
+					}
+					if(v3r.kind!=ASSIST_V3_REPLY_NONE) sendAssistV3Result(Ext_ID_Rx.command,&v3r);
+				}
 				else if (receive_message.rx_dlen==1 && receive_message.rx_data[0]>8 && Ext_ID_Rx.source==5){
-					Rx_MF_active=Ext_ID_Rx.command;
-					rx_data_length=receive_message.rx_data[0];
+					/* A live V3 transfer is dropped (one ERROR result) when its owner declares something else. */
+					assist_v3_reply_t v3abort;
+					if(assist_v3_config_other_declaration(Ext_ID_Rx.source,&v3abort)){
+						if(v3abort.kind!=ASSIST_V3_REPLY_NONE) sendAssistV3Result(ASSIST_V3_CMD_BLOCK,&v3abort);
+						Rx_MF_active=Ext_ID_Rx.command;
+						rx_data_length=receive_message.rx_data[0];
+					}
 				}
 				else if(Ext_ID_Rx.command==0x6022 && Ext_ID_Rx.source==5){ //FW-006: persist banks (deferred to standstill)
 					bank_save_request=1;
@@ -489,6 +522,7 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 				if(!(Ext_ID_Rx.command>=0x6300 && Ext_ID_Rx.command<=0x6304)
 				   && Ext_ID_Rx.command!=0x3203 && Ext_ID_Rx.command!=0x6200
 				   && Ext_ID_Rx.command!=0x6033 && Ext_ID_Rx.command!=0x6034
+				   && !assist_v3_config_owns_command(Ext_ID_Rx.command)
 #if CAN_DIAGNOSTICS_ENABLE
 				   && Ext_ID_Rx.command!=0x602C
 				   && Ext_ID_Rx.command!=0x6030
@@ -508,6 +542,13 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 				}
 				else if(Ext_ID_Rx.command==0x6032 && Ext_ID_Rx.source==5U && receive_message.rx_dlen==0U){
 					send_click_zone_status();
+				}
+				else if(assist_v3_config_owns_command(Ext_ID_Rx.command)){
+					/* Assist V3 config: tool only; replies are multiframe payloads built by the owner. */
+					uint8_t v3buf[ASSIST_V3_BLOCK_LEN]; uint8_t v3len=0U;
+					assist_v3_reply_t v3r = assist_v3_config_can_read(Ext_ID_Rx.source,Ext_ID_Rx.command,receive_message.rx_dlen,receive_message.rx_data,v3buf,&v3len);
+					if(v3r.kind!=ASSIST_V3_REPLY_NONE) sendAssistV3Result(Ext_ID_Rx.command,&v3r);
+					if(v3len>0U) send_multiframe(Ext_ID_Rx.command,(char*)v3buf,v3len);
 				}
 #if CAN_DIAGNOSTICS_ENABLE
 				else if(Ext_ID_Rx.command==0x6031 && Ext_ID_Rx.source==5U && receive_message.rx_dlen==0U){
@@ -546,6 +587,9 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 					case 0x6024: //FW-010: tuning write
 						append_multiframe(0, (char*)&TuningBlob[0]);
 						break;
+					case ASSIST_V3_CMD_BLOCK: //Assist V3: own staging buffer inside the owner module
+						v3_cfg_frame(false, 0U);
+						break;
 				}
 
 				break;
@@ -569,10 +613,20 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 					case 0x6024: //tuning write: 32 B -> last frame index 3, TuningBlob[32]
 						if(Ext_ID_Rx.command < 3) append_multiframe(Ext_ID_Rx.command+1, (char*)&TuningBlob[0]);
 						break;
+					case ASSIST_V3_CMD_BLOCK: //Assist V3: bounds are enforced by the owner module
+						v3_cfg_frame(false, (uint16_t)(Ext_ID_Rx.command+1U));
+						break;
 				}
 				break;
 
 			case LONG_END_CMD:
+				if(Rx_MF_active==ASSIST_V3_CMD_BLOCK){
+					//Assist V3: the owner module answers with exactly one result frame
+					v3_cfg_frame(true, (uint16_t)(Ext_ID_Rx.command+1U));
+					Rx_MF_active=0;
+					rx_data_length=0;
+					break;
+				}
 				switch (Rx_MF_active){
 					case 0x6010: //Para0
 						append_multiframe(Ext_ID_Rx.command+1, &Para0[0]);
@@ -821,6 +875,29 @@ void sendAcknoledge(void){
 	uint32_t efid = Ext_ID_Tx.command+(Ext_ID_Tx.operation<<16)+(Ext_ID_Tx.target<<19)+(Ext_ID_Tx.source<<24);
 	uint8_t d[8] = {0};
 	can_tx_queue_enqueue(efid, 0U, d); //FW-110: was a blocking can_message_transmit/can_transmit_states wait
+}
+
+/* Assist V3 config result frame: NORMAL_ACK (DLC 0) or ERROR_ACK with DLC 2 = [reason, index].
+ * Sent to the node named by the owner module (the declaring source), not to Ext_ID_Rx. */
+void sendAssistV3Result(uint16_t command, const assist_v3_reply_t *reply){
+	uint8_t d[8] = {0};
+	uint8_t dlen = 0U;
+	uint8_t op = 2U; //NORMAL_ACK
+	if(reply->kind==ASSIST_V3_REPLY_ERROR){
+		op = 3U; //ERROR_ACK
+		d[0] = reply->reason;
+		d[1] = reply->index;
+		dlen = 2U;
+	}
+	uint32_t efid = (uint32_t)command+((uint32_t)op<<16)+((uint32_t)reply->target<<19)+((uint32_t)0x02U<<24);
+	can_tx_queue_enqueue(efid, dlen, d);
+}
+
+static void v3_cfg_frame(bool is_end, uint16_t frame_no){
+	assist_v3_reply_t r = assist_v3_config_can_frame(Ext_ID_Rx.source,
+		(uint8_t)(frame_no>254U ? 255U : frame_no), is_end,
+		receive_message.rx_data, receive_message.rx_dlen, control_time_ticks>>2);
+	if(r.kind!=ASSIST_V3_REPLY_NONE) sendAssistV3Result(ASSIST_V3_CMD_BLOCK,&r);
 }
 
 #if CAN_TORQUE_STREAM_ENABLE

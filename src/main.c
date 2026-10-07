@@ -82,6 +82,7 @@ OF SUCH DAMAGE.
 #include "torque_input.h"
 #include "assist_modes.h"
 #include "tuning_config.h"
+#include "assist_v3_config.h"
 #include "walk_assist_motor.h"
 #include "level_gesture.h"
 #include "CAN_Display.h"
@@ -192,6 +193,7 @@ int16_t external_tics_to_speedx100 (uint32_t tics);
 fmc_state_enum fmc_multi_word_program(uint32_t offset, uint8_t* data, uint8_t words);
 void write_virtual_eeprom(void);
 void read_virtual_eeprom(void);
+static const assist_v3_flash_t* v3_cfg_flash_ops(void); //Assist V3 CONFIG_A log HAL (defined next to the FMC helpers)
 uint8_t param_record_valid(void);   //FW-023: magic + version + length + crc of the stored record
 uint8_t hall_angles_plausible(void);//FW-023: six transitions ~60 deg apart, order is +/-1
 void hall_load_defaults(void);      //FW-023: restore the calibrated values compiled into this build
@@ -1225,6 +1227,7 @@ int main(void)
     read_virtual_eeprom();
     parse_MOparams(&MP);
 	apply_assist_levels(&MP);
+	assist_v3_config_init(v3_cfg_flash_ops()); //Assist V3: own CONFIG_A log, independent of MotorParams_t
 	//FW-030/dev: force the fixed phase ceiling (700) regardless of any stored Para1[9], so the
 	//software value always wins. Battery still protected at BATTERYCURRENT_MAX by the PI limiter.
 	MP.phase_current_max = PH_CURRENT_MAX;
@@ -3359,6 +3362,13 @@ void reg_ADC_processing(void)
             bank_save_request=0;
             soc_full_persist=0; //FW-018: threshold now in flash
         }
+    }
+    {
+        //Assist V3 config: transfer timeout, and the explicitly requested persist at the same
+        //standstill predicate as the bank persist above (flash write stalls the CPU).
+        uint8_t standstill = (MS.i_q_setpoint==0 && MS.cadence==0 && MS.Speedx100==0);
+        assist_v3_reply_t v3_reply = assist_v3_config_service(control_time_ticks>>2, standstill!=0U);
+        if(v3_reply.kind!=ASSIST_V3_REPLY_NONE) sendAssistV3Result(ASSIST_V3_CMD_BLOCK, &v3_reply);
     }
     {
         /*
@@ -5991,6 +6001,47 @@ fmc_state_enum fmc_multi_word_program(uint32_t offset, uint8_t* data, uint8_t wo
      fmc_lock();
     return returnvalue;
 }
+
+//Assist V3 configuration log: CONFIG_A page (linker symbol, 2 KB, 0x0803E800). Same FMC pattern as
+//the SOC page; the module verifies every write by read-back, so a failed program is reported.
+extern uint32_t __config_a_start;
+static bool v3_cfg_flash_erase(void)
+{
+	fmc_state_enum st;
+	fwdgt_counter_reload();
+	fmc_unlock();
+	fmc_flag_clear(FMC_FLAG_BANK0_END); fmc_flag_clear(FMC_FLAG_BANK0_WPERR); fmc_flag_clear(FMC_FLAG_BANK0_PGERR);
+	st = fmc_page_erase((uint32_t)&__config_a_start);
+	fmc_flag_clear(FMC_FLAG_BANK0_END); fmc_flag_clear(FMC_FLAG_BANK0_WPERR); fmc_flag_clear(FMC_FLAG_BANK0_PGERR);
+	fmc_lock();
+	fwdgt_counter_reload();
+	return st == FMC_READY;
+}
+
+static bool v3_cfg_flash_program(uint32_t offset, const uint8_t *data, uint32_t len)
+{
+	uint32_t addr = (uint32_t)&__config_a_start + offset;
+	bool ok = true;
+	uint32_t i;
+	fwdgt_counter_reload();
+	fmc_unlock();
+	for(i=0U; i<len; i+=4U){
+		uint32_t w;
+		memcpy(&w, data+i, 4U);
+		if(fmc_word_program(addr, w) != FMC_READY) ok = false;
+		addr += 4U;
+		fmc_flag_clear(FMC_FLAG_BANK0_END); fmc_flag_clear(FMC_FLAG_BANK0_WPERR); fmc_flag_clear(FMC_FLAG_BANK0_PGERR);
+	}
+	fmc_lock();
+	return ok;
+}
+
+static const assist_v3_flash_t v3_cfg_flash = {
+	(const uint8_t*)0x0803E800U, //== __config_a_start (the linker ASSERTs the page is outside the image)
+	v3_cfg_flash_erase,
+	v3_cfg_flash_program
+};
+static const assist_v3_flash_t* v3_cfg_flash_ops(void){ return &v3_cfg_flash; }
 
 //FW-023: a record counts as valid only once its trailing crc word has been programmed.
 uint8_t param_record_valid(void)
