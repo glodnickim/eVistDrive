@@ -29,7 +29,11 @@ SUPERVISORY_MODULES = [
     'src/ride_control.c','src/fast_iq_slew.c','src/battery_iq_cap.c',
     'src/iq_chain.c',
     'src/motor_core.c','src/pas_quadrature.c','src/pas_direction.c','src/pas_liveness.c',
-    'src/pas_sampler.c','src/pas_cadence.c','tests/host/common/map_adapter.c',
+    'src/pas_sampler.c','src/pas_cadence.c',
+    # ASSIST-V3: production crank step accumulator (fed by the SIL drain) and the V3 stage.
+    'src/crank_phase.c','src/assist_v3.c','src/assist_v3_intent.c','src/assist_motion.c',
+    'src/assist_v3_config.c',
+    'tests/host/common/map_adapter.c',
     'tests/host/common/motor_service_stub.c'
 ]
 FOC_MODULES = ['src/FOC.c','src/foc_current_loop.c','src/pwm_geometry.c']
@@ -41,7 +45,8 @@ def build(exe: Path, sources: list[str], *, full=False, sanitize=False) -> None:
     flags += ['-O1','-g','-fsanitize=address,undefined','-fno-omit-frame-pointer'] if sanitize else ['-O2']
     inc = ['-Isim/full_host_stubs','-Iinc']
     if full:
-        flags += ['-DEVD_SIL_REAL_FOC=1']
+        # The candidate configuration: the Assist V3 shadow stage compiled in (as the firmware).
+        flags += ['-DEVD_SIL_REAL_FOC=1','-DASSIST_V3=1']
         inc += ['-Itests/host/common','-Isim/l4']
         sources = [*sources,'sim/l4/eb74_invocation_observer.c']
     cmd = [CC,*flags,*inc,'-o',str(exe),*sources]

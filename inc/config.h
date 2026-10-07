@@ -79,6 +79,27 @@
 #if (CAN_RIDE_TELEMETRY_ENABLE != 0) && (CAN_DIAGNOSTICS_ENABLE == 0)
 #error "CAN_RIDE_TELEMETRY_ENABLE requires CAN_DIAGNOSTICS_ENABLE=1"
 #endif
+// --- Assist V3 diagnostic frame group (0x1040A..0x1040C), ARCHITECTURE_V3 section 11 ---
+// Three extra frames appended to the live-ride snapshot cycle above, so they share its pacing
+// (one frame per 3 ms whatever the group size: the bus load does not grow, the snapshot period
+// goes from 27 to 36 ms while they are sent). NEVER in a NORMAL build (they need the live-ride
+// stream, which needs CAN_DIAGNOSTICS_ENABLE), and never without ASSIST_V3.
+// Milestone B is SHADOW ONLY - V3 publishes nothing in either engine - so the rule "no V3 frame in
+// G5300 mode" (TEST_MATRIX G-EQ rule 3) is kept by default: ASSIST_V3_SHADOW_TELEMETRY=0 sends no
+// V3 frame at all. Setting it to 1 (tools/build_firmware.py --assist-v3-shadow-telemetry) is the
+// explicit opt-in for a shadow ride log: V3 frames are then sent although the engine is G5300.
+// Activation (Milestone C) adds "engine_active == V3" as the normal emission condition.
+#ifndef ASSIST_V3_SHADOW_TELEMETRY
+#define ASSIST_V3_SHADOW_TELEMETRY 0
+#endif
+#if (ASSIST_V3_SHADOW_TELEMETRY != 0) && (ASSIST_V3_SHADOW_TELEMETRY != 1)
+#error "ASSIST_V3_SHADOW_TELEMETRY must be 0 or 1"
+#endif
+#if defined(ASSIST_V3) && (ASSIST_V3_SHADOW_TELEMETRY != 0) && (CAN_RIDE_TELEMETRY_ENABLE != 0)
+#define ASSIST_V3_TELEMETRY_FRAMES 1
+#else
+#define ASSIST_V3_TELEMETRY_FRAMES 0
+#endif
 // --- Optional standalone torque-sensor CAN emulation stream (0x81F83100) ---
 // FW-110: this used to be silently tied to CAN_DIAGNOSTICS_ENABLE even though nothing in this
 // firmware reads the frame back - it exists only for an external bus logger/tool that wants to

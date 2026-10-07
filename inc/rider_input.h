@@ -102,14 +102,34 @@ typedef struct {
 	 * into the RUN estimator's rolling-rearm recovery (inc/torque_input.h), which substitutes
 	 * the current fast signal on the rearm tick and needs no sample_tick, and removed the
 	 * session's consumption of this field. Retained - and still written by main.c and the host
-	 * harnesses - purely as an observability anchor for the tick the snapshot was built on; no
-	 * consumer reads it.
+	 * harnesses - purely as an observability anchor for the tick the snapshot was built on. The
+	 * only reader is the Assist V3 shadow (ARCHITECTURE_V3 3.1), as the "now" against which the
+	 * crank step tick below is aged - an observation, never a G5300-path decision.
 	 */
 	uint32_t sample_tick;
 	bool start_phase;
 	bool torque_sensor_valid;
 	bool pas_sensor_valid;
+	/*
+	 * ASSIST-V3 (ARCHITECTURE_V3.md 3.1/3.2): crank-angle and wheel-pulse facts for the V3
+	 * behaviour layer. OBSERVATION ONLY: no G5300-path consumer reads them. Producers:
+	 * src/crank_phase.c (fed by the PAS event drain) and the accepted-wheel-pulse clock in main.c.
+	 * Counters and ticks wrap; consumers use differences only. sample_tick above is the "now" these
+	 * ticks are measured against (same free-running 4 kHz clock as the sampler ISR).
+	 *   crank_steps      signed running count of PAS quadrature steps (+1 fwd, -1 rev, 96/rev)
+	 *   crank_step_tick  4 kHz ISR timestamp of the last counted step
+	 *   pas_glitch       an INVALID jump or sampler ring overflow since the previous snapshot
+	 *   wheel_pulse_tick 4 kHz timestamp of the last ACCEPTED wheel pulse (speed_last_tick)
+	 */
+	int32_t crank_steps;
+	uint32_t crank_step_tick;
+	bool pas_glitch;
+	uint32_t wheel_pulse_tick;
 } rider_input_t;
+
+/* Feature marker: a harness compiled against both the frozen baseline tree and this tree (the V3
+ * matrix runner) fills the crank fields only when the tree it is built against has them. */
+#define RIDER_INPUT_HAS_CRANK_PHASE 1
 
 void rider_input_update(const rider_input_t *sample);
 const rider_input_t *rider_input_get(void);

@@ -615,7 +615,35 @@ $suites = @(
                    (Join-Path $root 'src\g53_port_boundaries.c'),
                    (Join-Path $root 'src\g53_port_pas.c'),
                    (Join-Path $root 'src\g53_g1_limiter.c'))
-       IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common')) }
+       IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common')) },
+    @{ Name = 'assist_v3 rider intent V1: phase/template/classifier/kL (real module assist_v3_intent)'
+       Harness = Join-Path $PSScriptRoot 'assist_v3_intent_host.c'
+       Modules = @((Join-Path $root 'src\assist_v3_intent.c'), (Join-Path $PSScriptRoot 'common\rider_script.c')) },
+    @{ Name = 'assist_motion seam sanitiser (real module assist_motion)'
+       Harness = Join-Path $PSScriptRoot 'assist_motion_host.c'
+       Modules = @((Join-Path $root 'src\assist_motion.c')) },
+    @{ Name = 'assist_v3 crank_phase: production crank step accumulator + real sampler drain (G1-PAS front end)'
+       # Real crank_phase.c fed by the real 4 kHz sampler ring, drained as main.c drains it.
+       Harness = Join-Path $PSScriptRoot 'assist_v3_crank_phase_host.c'
+       Modules = @((Join-Path $root 'src\crank_phase.c'),
+                   (Join-Path $root 'src\pas_sampler.c'),
+                   (Join-Path $root 'src\pas_quadrature.c')) },
+    @{ Name = 'assist_v3 trajectory + transient manager, Milestone C rules (real assist_v3 + intent + g53 chain)'
+       # Module level: conversion, Response, start gate, rise/release/stop/reverse rates, bounds,
+       # elapsed-time invariance, IMU garbage, reset. Pipeline-level G1-* gates come with activation.
+       Harness = Join-Path $PSScriptRoot 'assist_v3_trajectory_host.c'
+       Modules = @((Join-Path $root 'src\assist_v3.c'),
+                   (Join-Path $root 'src\assist_v3_intent.c'),
+                   (Join-Path $root 'src\assist_motion.c'),
+                   (Join-Path $root 'src\g53_port_chain.c'))
+       IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common')) },
+    @{ Name = 'assist_v3 DIAG frame group on the FW-145 stream (real ride_telemetry, shadow telemetry build)'
+       # Built as the diagnostic --assist-v3-shadow-telemetry firmware: no V3 frame without V3 data,
+       # three frames after RIDER with it, ids/payload/pacing, id range reserved.
+       Harness = Join-Path $PSScriptRoot 'assist_v3_telemetry_frames_host.c'
+       Modules = @((Join-Path $root 'src\ride_telemetry.c'))
+       Defines = @('-DCAN_DIAGNOSTICS_ENABLE=1', '-DCAN_RIDE_TELEMETRY_ENABLE=1', '-DASSIST_V3=1',
+                   '-DASSIST_V3_SHADOW_TELEMETRY=1') }
 )
 
 function Find-HostCompiler {

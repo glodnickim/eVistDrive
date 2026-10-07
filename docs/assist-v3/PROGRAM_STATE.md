@@ -22,7 +22,16 @@ UPDATED: 2026-10-07 (Milestone B start)
 | B-CFG | config protocol 0x6035-0x6037, CONFIG_A log | in progress |
 | B-MAP | `g53_static_target()` + accessors | in progress |
 | B-INT | rider intent / template / classifier / env_equiv, motion seam | in progress |
-| B-PIPE | crank_phase.c, assist_v3.c trajectory + backstop, pipeline shadow, DIAG telemetry, SIL hook | after B-MAP/B-INT/B-CFG |
+| B-INT | rider intent | DONE (a00b4a7) |
+| B-MAP | static map + accessors | DONE (ac768c4) |
+| B-CFG | config v1 owner module | DONE (0ea5f56); rework to v2 (mode profile objects) pending |
+| B-PIPE | crank_phase.c, assist_v3.c, pipeline shadow, DIAG telemetry, SIL hook | phase 1 by CODEX (brief handoffs/CODEX_B-PIPE-P1.md) |
+| MC-DESIGN | mode character + config v2 design (owner override) | DONE (60a9bdf) |
+| MC-SIM | torque/power envelope + mode character study | CODEX (handoffs/CODEX_ENVELOPE_STUDY.md) |
+
+Order (owner override, D-031): B-PIPE shadow + G-EQ -> RAM -> mode character design -> envelope simulation ->
+advanced config contract -> targeted architecture review -> active release -> carry -> active torque/power/mode
+character -> dynamic range/AUTO -> terrain/IMU.
 
 ## Open items
 

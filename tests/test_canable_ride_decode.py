@@ -163,6 +163,28 @@ def schema2():
             lrows = list(csv.DictReader(f))
         assert lrows[0]['assist_base_permille'] == 'nan', lrows[0]
         assert lrows[0]['load_centikg'] == '987', lrows[0]
+
+        # ASSIST-V3 DIAG frame group (0x1040A..0x1040C, ARCHITECTURE_V3 11) follows RIDER in a
+        # shadow-telemetry capture. A schema-2 decoder must IGNORE it: same snapshots, same rows.
+        v3log = d / 'v2_v3.log'
+        v3lines = []
+        injected = 0
+        for ln in lines:
+            v3lines.append(ln)
+            if 'ID:80010409' in ln:
+                for k in (0xA, 0xB, 0xC):
+                    v3lines.append(ln.replace('ID:80010409', f'ID:8001040{k:X}'))
+                    injected += 1
+        assert injected == 6, 'the fixture must contain two RIDER frames'
+        v3log.write_text(''.join(v3lines))
+        subprocess.run([sys.executable, str(R / 'tools/decode_canable_ride_log.py'),
+                        str(v3log), '--output-prefix', str(d / 'v2_v3')], cwd=R, check=True)
+        vmeta = json.loads((d / 'v2_v3.metadata.json').read_text())
+        assert vmeta['snapshots'] == meta['snapshots'] and \
+            vmeta['complete_snapshots'] == meta['complete_snapshots'], vmeta
+        assert vmeta['missing_frame_counts'] == meta['missing_frame_counts'], vmeta
+        assert (d / 'v2_v3.decoded.csv').read_bytes() == (d / 'v2.decoded.csv').read_bytes()
+        assert (d / 'v2_v3.canonical.csv').read_bytes() == (d / 'v2.canonical.csv').read_bytes()
         subprocess.run([sys.executable, str(R / 'tools/run_replay.py'),
                         str(d / 'v2.canonical.csv'), '--output', str(d / 'v2.replayed.csv')],
                        cwd=R, check=True)

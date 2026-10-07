@@ -24,10 +24,18 @@ EXPECTED_GCC = "13.2.1"
 FLASH_ORIGIN = 0x08005000
 CONFIG_A_ORIGIN = 0x0803E800
 RAM_ORIGIN = 0x20000000
+# Sources built at -O2 inside the otherwise -O0 debug image. The G53 transcription runs up to 64
+# logical catch-up ticks per foreground call; Assist V3 joins the list because it runs beside it
+# every tick (ARCHITECTURE_V3 section 12). The name is kept: tools and manifests read it.
 G53_OPTIMIZED_SOURCES = {
     "src/g53_port.c", "src/g53_port_chain.c",
     "src/g53_port_boundaries.c", "src/g53_port_pas.c", "src/g53_g1_limiter.c",
+    "src/assist_v3.c", "src/assist_v3_intent.c",
 }
+# Assist Behavior V3 candidate build (feature/assist-behavior-v3): ASSIST_V3 is compiled in by
+# default. Milestone B is shadow only (V3 computed, never published), so the image behaves as the
+# baseline either way; --assist-v3 off compiles it out for an A/B or a bisect.
+ASSIST_V3_DEFAULT = "on"
 VERSION_STATE_ROOT = ROOT.parent / ".ebics-version-state"
 
 sys.path.insert(0, str(ROOT / "tools"))
@@ -165,11 +173,16 @@ def reserve_canonical_version_pair(state_root: Path) -> list[str]:
 
 def _build_one(version: str, variant: str, version_source: str, entries: list[str],
                toolchain: str | None, output_dir: str, g53_optimized: bool = True,
-               extra_link_flags: tuple[str, ...] = ()) -> dict:
+               extra_link_flags: tuple[str, ...] = (), assist_v3: bool = True,
+               v3_shadow_telemetry: bool = False) -> dict:
     """Build a single variant. Returns dict with version, variant, release_bin path.
 
     g53_optimized/extra_link_flags exist only so tools/test_m820_stack_gate.py can rebuild
-    the known-bad O0/2K image and prove the stack gate rejects it; defaults = product build."""
+    the known-bad O0/2K image and prove the stack gate rejects it; defaults = product build.
+    assist_v3 compiles the V3 shadow stage in (ASSIST_V3); v3_shadow_telemetry adds the V3 DIAG
+    frame group to a diagnostic build (inc/config.h ASSIST_V3_SHADOW_TELEMETRY)."""
+    if v3_shadow_telemetry and (not assist_v3 or variant != "diagnostic"):
+        raise SystemExit("--assist-v3-shadow-telemetry needs --assist-v3 on and --variant diagnostic")
     gcc = find_tool("arm-none-eabi-gcc", toolchain)
     toolbin = str(Path(gcc).resolve().parent)
     objcopy = find_tool("arm-none-eabi-objcopy", toolbin)
@@ -196,6 +209,10 @@ def _build_one(version: str, variant: str, version_source: str, entries: list[st
 
     defs = ["-DGD32F30X_HD", "-DGD_ECLIPSE_GCC", "-DUSE_STDPERIPH_DRIVER", "-DBOOTLOADER=820",
             f"-DCAN_DIAGNOSTICS_ENABLE={1 if variant == 'diagnostic' else 0}"]
+    if assist_v3:
+        defs.append("-DASSIST_V3=1")
+    if v3_shadow_telemetry:
+        defs.append("-DASSIST_V3_SHADOW_TELEMETRY=1")
     common = ["-mcpu=cortex-m4", "-mthumb", "-mfloat-abi=hard", "-mfpu=fpv4-sp-d16"]
     inc = [f"-I{gen}", f"-I{ROOT/'inc'}", f"-I{ROOT/'Firmware/CMSIS'}",
            f"-I{ROOT/'Firmware/CMSIS/GD/GD32F30x/Include'}",
@@ -281,6 +298,8 @@ def _build_one(version: str, variant: str, version_source: str, entries: list[st
         "toolchain": "Arm GNU Toolchain arm-none-eabi", "toolchain_version": gcc_version,
         "linker": "ldscripts/gd32f30x_flash.ld", "source_manifest": "scripts/sources-m820.txt",
         "source_count": len(entries),
+        "assist_v3": {"compiled_in": assist_v3, "stage": "shadow (Milestone B)",
+                      "shadow_telemetry": v3_shadow_telemetry},
         "optimization_default": "-O0",
         "optimization_overrides": {s: "-O2" for s in sorted(G53_OPTIMIZED_SOURCES)},
         "stack_usage_files": str(objdir / "*.su"),
@@ -306,6 +325,12 @@ def _build_one(version: str, variant: str, version_source: str, entries: list[st
     print(f"Version:   {version}")
     print(f"Compiler:  {gcc_version}")
     print(f"Sources:   {len(entries)} + startup")
+    print(f"ASSIST_V3: {'on' if assist_v3 else 'off'}"
+          f"{' + shadow telemetry' if v3_shadow_telemetry else ''}")
+    print(f"Flash:     text {text_b} B, image end 0x{image_end:08X} (limit 0x{app_limit:08X})")
+    print(f"RAM:       data+bss end (_ebss) 0x{ebss:08X}, heap+stack reserved {sp-ebss} B")
+    print(f"Stack:     worst {stack['total_worst_bytes']} B of {stack['reserved_stack_bytes']} B, "
+          f"margin {stack['margin_bytes']} B (min {stack['min_margin_bytes']} B)")
     print(f"Raw BIN:   {rawbin.stat().st_size} B")
     print(f"Final BIN: {final}")
     print(f"SHA256:    {sha256(final)}")
@@ -419,6 +444,11 @@ def main() -> int:
     ap.add_argument("--check-only", action="store_true", help="validate complete build inputs without requiring compiler")
     ap.add_argument("--init-state", type=int, metavar="HWM", default=0,
                     help="initialize version state with given HWM (e.g. --init-state 600)")
+    ap.add_argument("--assist-v3", choices=["on", "off"], default=ASSIST_V3_DEFAULT,
+                    help="compile the Assist V3 shadow stage in (ASSIST_V3, default on)")
+    ap.add_argument("--assist-v3-shadow-telemetry", action="store_true",
+                    help="diagnostic variant only: send the V3 DIAG frame group although the "
+                         "engine is G5300 (Milestone B shadow ride log; off by default, G-EQ rule 3)")
     args = ap.parse_args()
 
     # Handle --init-state
@@ -483,7 +513,9 @@ def main() -> int:
     results = []
     for idx, (variant,) in enumerate(variants_to_build):
         version = versions[idx]
-        result = _build_one(version, variant, version_source, entries, args.toolchain, args.output_dir)
+        result = _build_one(version, variant, version_source, entries, args.toolchain, args.output_dir,
+                            assist_v3=args.assist_v3 == "on",
+                            v3_shadow_telemetry=args.assist_v3_shadow_telemetry and variant == "diagnostic")
         results.append(result)
         # In auto mode, print a separator between variants
         if args.mode == "auto" and idx < len(variants_to_build) - 1:

@@ -344,6 +344,17 @@ void ride_control_update(const ride_control_input_t *input)
 		pipe_in.throttle_iq = input->throttle_iq;
 		pipe_in.elapsed_ticks = input->elapsed_ticks;
 
+		/* ASSIST-V3 observations (ARCHITECTURE_V3 3.1). pipe_in is not zero-initialised, so
+		 * every field is written here; only the V3 stage reads them. */
+		pipe_in.control_tick = rider->sample_tick;
+		pipe_in.crank_steps = rider->crank_steps;
+		pipe_in.crank_step_tick = rider->crank_step_tick;
+		pipe_in.pas_glitch = rider->pas_glitch;
+		pipe_in.wheel_pulse_tick = rider->wheel_pulse_tick;
+		pipe_in.iq_measured = input->iq_measured;
+		pipe_in.brake = input->brake;
+		pipe_in.motion = input->motion;
+
 		assist_pipeline_update(&pipe_in, &cmd);
 		requested = assist_pipeline_telemetry()->iq_request_before_limits;
 	}

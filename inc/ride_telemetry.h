@@ -36,6 +36,51 @@
 #define RIDE_TELEMETRY_EFID_LAST   RIDE_TELEMETRY_EFID_RIDER
 
 /*
+ * ASSIST-V3 diagnostic frame group (ARCHITECTURE_V3 section 11, inc/config.h
+ * ASSIST_V3_TELEMETRY_FRAMES). Three frames appended AFTER the nine schema-2 data frames of a
+ * snapshot cycle, only when the snapshot carries V3 data, so every existing frame keeps its
+ * identifier, its content and its place in the cycle, and the stream's pacing (one frame per
+ * 3 ms) is unchanged. A schema-2 decoder ignores identifiers above RIDER. The range is reserved in
+ * diag_efid_map.h whether or not the frames are compiled in. Layout (big-endian, d[0..1] = tick16):
+ *   +10 V3A  intent u16 (CLU) | env_equiv u16 | v3_demand_iq i16
+ *   +11 V3B  base_target_iq i16 | target_iq i16 | e_short u16 (CLU)
+ *   +12 V3C  kappa_q12 u16 | template_conf u8 (Q12 >> 4, sat 255) | phase u8 |
+ *            d6 = release_class (bits 0..2) | rate_mode (bits 3..5) | V3 schema (bits 6..7) |
+ *            d7 = flags RIDE_TELEM_V3_F_*
+ */
+#define RIDE_TELEMETRY_EFID_V3_BASE (RIDE_TELEMETRY_EFID_BASE + 10U)
+#define RIDE_TELEMETRY_V3_FRAMES    3U
+#define RIDE_TELEMETRY_EFID_V3_LAST (RIDE_TELEMETRY_EFID_V3_BASE + RIDE_TELEMETRY_V3_FRAMES - 1U)
+#define RIDE_TELEMETRY_V3_SCHEMA    1U
+#define RIDE_TELEM_V3_F_ALIGNED       (1U << 0)
+#define RIDE_TELEM_V3_F_TEMPLATE_MODE (1U << 1)
+#define RIDE_TELEM_V3_F_ENGAGED       (1U << 2)
+#define RIDE_TELEM_V3_F_CRANK_STOPPED (1U << 3)
+#define RIDE_TELEM_V3_F_STOP_ZERO     (1U << 4)
+#define RIDE_TELEM_V3_F_IMU_VALID     (1U << 5)
+#define RIDE_TELEM_V3_F_ENGINE_ACTIVE (1U << 6)
+#define RIDE_TELEM_V3_F_ENGINE_REQ    (1U << 7)
+
+#if ASSIST_V3_TELEMETRY_FRAMES
+/* Copied by main.c from assist_v3_telemetry(); observation only. */
+typedef struct {
+    bool valid;                 /* false: the cycle ends after the nine schema-2 frames */
+    uint16_t intent;
+    uint16_t env_equiv;
+    int16_t demand_iq;
+    int16_t base_target_iq;
+    int16_t target_iq;
+    uint16_t e_short;
+    uint16_t kappa_q12;
+    uint8_t template_conf;      /* Q12 >> 4, saturated at 255 */
+    uint8_t phase;
+    uint8_t release_class;
+    uint8_t rate_mode;
+    uint8_t flags;              /* RIDE_TELEM_V3_F_* */
+} ride_telemetry_v3_t;
+#endif
+
+/*
  * SCHEMA 2. The legacy assist pipeline is gone, so three fields changed MEANING and two frames
  * were added. The version byte in the META frame is what makes that safe: a decoder written for
  * schema 1 sees 2 and stops, instead of reading a permille demand as a native ADC delta.
@@ -135,6 +180,9 @@ typedef struct {
     uint8_t start_phase;
 
     uint8_t active_profile_bank;
+#if ASSIST_V3_TELEMETRY_FRAMES
+    ride_telemetry_v3_t v3;     /* ASSIST-V3 frame group, sent only when v3.valid */
+#endif
 } ride_telemetry_snapshot_t;
 
 void ride_telemetry_init(const diag_can_ops_t *can_ops);

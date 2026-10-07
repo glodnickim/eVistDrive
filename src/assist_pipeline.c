@@ -4,6 +4,19 @@
 #include "config.h"
 #include "tuning_config.h"
 #include <string.h>
+#ifdef ASSIST_V3
+#include "assist_v3.h"
+#include "assist_v3_config.h"
+#endif
+
+/*
+ * ASSIST_V3 (compile-time). Defined: the V3 behaviour stage (src/assist_v3.c) is computed every
+ * tick beside the G53 chain. Undefined: no V3 code is referenced and this file is the baseline
+ * pipeline. Milestone B (this revision) is SHADOW ONLY: V3 is computed, never published, in both
+ * engines - the published request is the G53 one, so the outputs are byte-identical to baseline
+ * with ASSIST_V3 compiled out AND compiled in (TEST_MATRIX G-EQ). The engine latch, the backstop,
+ * the standstill predicate and R1 against the V3 request arrive with activation (Milestone C).
+ */
 
 /* One normal demand owner: G53 boundaries/PAS/FSM/D7EC/E1E8/BDE8.
  * M820 keeps hardware limits, unconditional vetoes and the sole final-Iq owner. */
@@ -26,6 +39,10 @@ typedef struct {
     uint32_t rise_acc;
     assist_pipeline_telemetry_t tlm;
     g53_port_output_t g53;
+#ifdef ASSIST_V3
+    /* The V3 demand (Iq, pre-g1, pre-limits) of this tick. SHADOW: nothing publishes it yet. */
+    int32_t v3_iq_demand;
+#endif
 } ap2_pipeline_ctx_t;
 static ap2_pipeline_ctx_t ctx;
 
@@ -35,9 +52,21 @@ void assist_pipeline_reset(void)
     memset(&ctx,0,sizeof(ctx));
     ctx.tlm.engage_seq=seq;
     g53_port_reset();
+#ifdef ASSIST_V3
+    /* An owner change resets V3 with the chain (ARCHITECTURE_V3 2.2); the learned template is
+     * kept, it describes the rider, not the ride. */
+    assist_v3_reset();
+#endif
     /* Shared battery protections survive rider/Walk/service owner changes. */
 }
-void assist_pipeline_init(void) { assist_pipeline_reset(); ap2_limits_reset(); }
+void assist_pipeline_init(void)
+{
+    assist_pipeline_reset();
+    ap2_limits_reset();
+#ifdef ASSIST_V3
+    assist_v3_power_on();   /* prior template, trajectory at 0 */
+#endif
+}
 const assist_pipeline_telemetry_t *assist_pipeline_telemetry(void) { return &ctx.tlm; }
 const g53_port_output_t *assist_pipeline_g53(void) { return &ctx.g53; }
 ap2_pas_state_t assist_pipeline_pas_state(void) { return (ap2_pas_state_t)ctx.tlm.pas_state; }
@@ -99,6 +128,53 @@ static uint16_t rider_power_w(uint16_t load_centikg, uint8_t cadence_rpm)
 }
 
 
+#ifdef ASSIST_V3
+/*
+ * ASSIST-V3 SHADOW STAGE (ARCHITECTURE_V3 2, 3.1). Runs after g53_port_update() so every
+ * accessor reads this tick's chain state. It reads the chain only through the read-only V3
+ * accessors and the configuration getters, writes nothing but V3's own state, and its result is
+ * kept in ctx.v3_iq_demand - no line below reads it, so the published command is the G53 one.
+ */
+static void v3_shadow_step(const assist_pipeline_input_t *in, uint32_t used_ticks, bool assist_off)
+{
+    assist_v3_input_t v3;
+    memset(&v3,0,sizeof(v3));
+    v3.elapsed_ticks=used_ticks;
+    v3.now_tick=in->control_tick;
+    v3.load_ctrl=in->torque_load_ctrl;
+    v3.torque_valid=in->torque_sensor_valid;
+    v3.crank_steps=in->crank_steps;
+    v3.crank_step_tick=in->crank_step_tick;
+    v3.pas_glitch=in->pas_glitch;
+    v3.cadence_rpm=g53_port_pas_cadence();
+    v3.lut_cadence=(uint16_t)ctx.g53.trace.d7ec_m50;
+    v3.speed_native=(uint16_t)ctx.g53.trace.d7ec_speed;
+    v3.g53_true_stop=g53_port_pas_true_stop();
+    v3.direction_inhibit=in->direction_inhibit;
+    v3.inhibit_is_reverse=in->inhibit_is_reverse;
+    v3.real_stop=in->real_stop;
+    v3.speed_x100=in->speed_x100;
+    v3.wheel_valid=in->wheel_valid;
+    v3.wheel_pulse_tick=in->wheel_pulse_tick;
+    v3.motor_erps=in->motor_erps;
+    v3.iq_measured=in->iq_measured;
+    v3.last_published_iq=ctx.last_final_iq;
+    v3.phase_current_max=in->phase_current_max;
+    v3.g1_q12=(uint16_t)(ctx.g53.trace.g1<0 ? 0 : ctx.g53.trace.g1);
+    /* Same level the chain gets: assist off is level 0 (ratio 0). */
+    v3.level=assist_off ? 0u : in->assist_level_index;
+    v3.response_pct=assist_v3_config_response_pct(in->assist_level_index);
+    v3.brake=in->brake;
+    v3.eb74_zero=g53_port_eb74_zero();
+    v3.eb74_armed=g53_port_eb74_armed();
+    v3.engine_active=assist_v3_config_engine_active();
+    v3.engine_requested=assist_v3_config_engine_requested();
+    /* V3 reads only the sanitised motion copy (3.3): an invalid or stale sample is all-zero. */
+    assist_motion_sanitize(&in->motion,&v3.motion);
+    ctx.v3_iq_demand=assist_v3_update(&v3);
+}
+#endif
+
 /* G5300 fast slew step: 0.625*P Q8 per 4 kHz tick, half up, never 0 for P>0 (TQ-06-G2 I2). */
 static uint16_t fast_slew_step(int32_t phase_current_max)
 {
@@ -131,6 +207,9 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
         .safety_cut=in->safety_cut
     };
     g53_port_update(&port_in,&ctx.g53);
+#ifdef ASSIST_V3
+    v3_shadow_step(in,used_ticks,assist_off);   /* shadow: computed, not published (Milestone B) */
+#endif
     ap2_limits_input_t lim_in={0};
     ap2_limits_output_t lim;
     lim_in.iq_request=ctx.g53.iq_request_pre_limits;

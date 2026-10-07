@@ -7,6 +7,10 @@
 | 1 | 7 (`0x10400..0x10406`) | FW145 | the original block |
 | 2 | 9 (`0x10400..0x10406`, `0x10408`, `0x10409`) | Assist Pipeline V2 | CORE bytes 4..7 changed meaning; the STATE spare byte carries limiter flags; two frames added |
 
+Assist V3 phase 1 reserves an optional three-frame extension (`0x1040A..0x1040C`). It does not
+change schema 2 or any existing frame. Each extension frame carries its own V3 schema (currently 1)
+in byte 6 of `0x1040C`. A schema-2 decoder may ignore these IDs; the CANable replay decoder does.
+
 **Schema 2 added its frames ABOVE META, not in place of it.** `0x10407` stays META and every
 schema-1 frame keeps the identifier its decoder already knows, so a decoder that understands only
 schema 1 sees a version byte of 2 and can stop cleanly instead of misreading. `tools/decode_canable_ride_log.py`
@@ -40,7 +44,8 @@ cannot enable it when diagnostics are globally disabled.
   QZERO state-machine object.
 - The foreground builds one coherent snapshot about every 84 control ticks (~21 ms / ~47.6 Hz).
 - The main loop serializes at most one telemetry CAN frame every 12 control ticks (~3 ms).
-- A snapshot is seven data frames under schema 1 and nine under schema 2; every data frame in
+- A snapshot is seven data frames under schema 1, nine under schema 2, or twelve when the optional
+  V3 extension is enabled; every data frame in
   it carries the same `tick16`, which is what identifies the snapshot.
 - META is inserted at most once per second between complete snapshots.
 - Critical CAN queue, HMI multiframe traffic and existing diagnostic dumps have priority.
@@ -66,6 +71,9 @@ The range is compile-time checked against all other EVistDrive diagnostic blocks
 0x00010407 META
 0x00010408 ASSIST     schema 2
 0x00010409 RIDER      schema 2
+0x0001040A V3A        optional Assist V3 extension
+0x0001040B V3B        optional Assist V3 extension
+0x0001040C V3C        optional Assist V3 extension
 ```
 
 `0x10300..0x10307` remains owned by STOP_TRACE and must not be reused.
@@ -240,6 +248,27 @@ dimension.
 6..7 auto_factor       where an adaptive profile currently sits between calm and strong
 ```
 
+### 0x1040A..0x1040C Assist V3 extension (schema 1)
+
+This optional group is appended after RIDER in a diagnostic build with `ASSIST_V3=1` and
+`ASSIST_V3_SHADOW_TELEMETRY=1`. Phase 1 computes V3 in shadow; G53 still drives the motor. A
+normal build emits none of these frames. All three carry the snapshot's `tick16` and use
+big-endian signed or unsigned 16-bit fields as indicated.
+
+```text
+0x1040A V3A: 0..1 tick16 | 2..3 intent u16 (CLU) | 4..5 env_equiv u16 | 6..7 V3 demand Iq i16
+0x1040B V3B: 0..1 tick16 | 2..3 base target Iq i16 | 4..5 trajectory target Iq i16 |
+              6..7 short-window expected effort u16 (CLU)
+0x1040C V3C: 0..1 tick16 | 2..3 load-domain kappa Q12 u16 |
+              4 template confidence Q12 >> 4, saturated to u8 | 5 relative crank phase 0..95 |
+              6 bits 0..2 release class, 3..5 trajectory rate mode, 6..7 V3 schema (=1) |
+              7 flags (bit 0 phase aligned, 1 template mode, 2 engaged, 3 crank stopped,
+                       4 stop target zero, 5 IMU valid, 6 engine active, 7 engine requested)
+```
+
+The legacy schema-2 decoder ignores the extension, retaining the same replay columns and
+completeness criteria. The separate V3 schema allows its payload to evolve independently.
+
 ## 0x10407 META
 
 At most once per second:
@@ -249,7 +278,8 @@ byte 0     telemetry schema version (1 or 2)
 byte 1     active assist-profile bank
 byte 2..5  full 32-bit 4 kHz control tick
 byte 6     failed telemetry-frame counter, saturated to 255
-byte 7     number of data frames per snapshot (7 for schema 1, 9 for schema 2)
+byte 7     number of data frames per snapshot (7 for schema 1, 9 for schema 2,
+           12 when the V3 extension is present)
 ```
 
 ### Captures that begin before the first META

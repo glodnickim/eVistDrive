@@ -57,9 +57,11 @@
 #define DIAG_EFID_RNA_LO          0x00010248U
 #define DIAG_EFID_RNA_HI          0x0001024EU
 
-/* FW-145 continuous live-ride stream: seven coherent data frames + one META frame. */
+/* FW-145 continuous live-ride stream: nine coherent data frames + one META frame, plus the
+ * ASSIST-V3 frame group (BASE+10..12). The V3 range is reserved here even in builds that do not
+ * send it, so no other diagnostic owner can take it. */
 #define DIAG_EFID_RIDE_TELEM_LO   (RIDE_TELEMETRY_EFID_BASE)
-#define DIAG_EFID_RIDE_TELEM_HI   (RIDE_TELEMETRY_EFID_LAST)
+#define DIAG_EFID_RIDE_TELEM_HI   (RIDE_TELEMETRY_EFID_V3_LAST)
 
 /* --- the check ----------------------------------------------------------------------------- */
 

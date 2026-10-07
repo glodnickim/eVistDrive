@@ -38,6 +38,12 @@
 #include "soc_core.h"
 #include "torque_input.h"
 #include "tuning_config.h"
+/* ASSIST-V3: the production crank step accumulator, fed from this harness's drain exactly as
+ * main.c feeds it (REVIEW 1 #19), and the explicit engine selection (G-EQ rule 1). */
+#include "crank_phase.h"
+#ifdef ASSIST_V3
+#include "assist_v3_harness.h"
+#endif
 #include "walk_assist_motor.h"
 
 #include "battery_pack.h"
@@ -317,7 +323,10 @@ static void l4_init(l4_t *s,float true_soc,evd_battery_profile_t profile,float g
     assist_modes_init(); assist_modes_set_active_bank(0U); motor_core_init(&s->ms);
     s->ms.hall_angle_detect_flag=1U; foc_current_feedback_reset(&s->ms);
     ride_control_init(); pas_direction_init(); pas_liveness_init(); pas_cadence_reset();
-    cadence_filter_reset(); pas_sampler_init(0U);
+    cadence_filter_reset(); pas_sampler_init(0U); crank_phase_init();
+#ifdef ASSIST_V3
+    if(!assist_v3_harness_select_engine(false)){ fprintf(stderr,"L4: V3 engine write rejected\n"); abort(); }
+#endif
     evd_bike_init(&s->bike); evd_rider_init(&s->rider);
     s->bike.grade=grade; s->bike.chain_gear_ratio=gear_ratio;
     s->rider.target_cadence_rpm=target_rpm; s->rider.base_torque_nm=base_torque_nm;
@@ -341,6 +350,7 @@ static void process_pas(l4_t *s,uint8_t ab)
     pas_step_event_t ev;
     while(pas_sampler_pop(&ev)){
         int8_t st=ev.step;
+        crank_phase_on_event(&ev);   /* as main.c: every drained event, first */
         if(st>0){
             s->last_forward_gap=ev.gap?ev.gap:s->last_forward_gap;
             uint32_t x=(uint32_t)s->last_forward_gap*2U; if(x<PAS_STOP_TICKS)x=PAS_STOP_TICKS; if(x>PAS_STOP_TICKS_MAX)x=PAS_STOP_TICKS_MAX;
@@ -350,7 +360,7 @@ static void process_pas(l4_t *s,uint8_t ab)
         }else if(st<0){ s->false_reverse_events++; pas_cadence_break_epoch(0U); pas_direction_on_step(st); }
         else { pas_cadence_break_epoch(1U); pas_direction_on_step(st); }
     }
-    if(pas_sampler_take_overflow())pas_cadence_break_epoch(2U);
+    if(pas_sampler_take_overflow()){ pas_cadence_break_epoch(2U); crank_phase_on_overflow(); }
     if(s->ms.cadence==0U&&!s->start_phase&&pas_direction_fwd_run()>=START_PHASE_STEPS)s->start_phase=1U;
 }
 
@@ -415,6 +425,9 @@ static void l4_tick(l4_t *s,FILE *csv)
     r.direction_inhibit_active=pas_direction_direction_inhibit_active();
     r.forward_confirmed_this_tick=pas_direction_forward_confirmed_last_call(); r.sample_tick=s->tick;
     r.start_phase=s->start_phase!=0U; r.torque_sensor_valid=true; r.pas_sensor_valid=true;
+    /* ASSIST-V3 observations, as main.c fills them (no wheel-pulse model here: tick stays 0). */
+    r.crank_steps=crank_phase_steps(); r.crank_step_tick=crank_phase_last_step_tick();
+    r.pas_glitch=crank_phase_take_glitch();
     rider_input_update(&r);
     s->last_rider_input=r;
 
@@ -437,6 +450,7 @@ static void l4_tick(l4_t *s,FILE *csv)
     in.legal_enabled=true; in.offroad=false; in.walk_active=false;
     in.pas_ab=s->pas_ab;
     in.safety_cut_non_direction=s->brake; in.service_cut_active=false; in.elapsed_ticks=1U;
+    in.brake=s->brake; in.iq_measured=s->ms.i_q;   /* ASSIST-V3 observations; IMU invalid (memset) */
     if(s->pas_ab!=0U&&in.pas_ab!=s->pas_ab){
         fprintf(stderr,"L4 native PAS plumbing mismatch at tick %u: native=%u input=%u\n",
                 s->tick,(unsigned)s->pas_ab,(unsigned)in.pas_ab);

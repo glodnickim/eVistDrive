@@ -4,8 +4,12 @@
 BASELINE  = production src/ + inc/ exported from the frozen baseline commit (default 25df554,
             docs/assist-v3/BASELINE_FREEZE.md) compiled with the CURRENT harness
             (sim/evist_sil.c + tests/host/common/rider_script.c + host stubs).
-CANDIDATE = the current tree, same harness, same flags (plus --candidate-cflags, e.g.
-            -DASSIST_V3 once the V3 module exists).
+CANDIDATE = the current tree, same harness, same flags plus --candidate-cflags (default
+            -DASSIST_V3=1: the V3 stage compiled in, as the candidate firmware build does).
+            --engine selects the V3 config engine the harness writes at every sim_init
+            (TEST_MATRIX G-EQ rule 1): g5300 (default) = the equivalence configuration;
+            v3 = the candidate run (meaningful once V3 publishes, Milestone C). The candidate
+            also writes <scenario>.v3.csv (V3 telemetry, G-EQ rule 2: never compared).
 
 Both are built from the module list in tools/run_sil.py (production files missing from the
 baseline export are dropped for the baseline only). Scenarios are expanded from
@@ -20,7 +24,8 @@ Outputs (all under .build/assist_v3/, gitignored):
 
 --equivalence (G-EQ): additionally asserts byte-identical traces for every scenario, and
 byte-identical fixed-mode SIL CSVs + stdout and fuzz stdout between the two builds. Exit 1 on
-any difference.
+any difference. It is the DEFAULT with --engine g5300 (--no-equivalence skips it) and is refused
+with --engine v3, where a difference is the point of the run.
 """
 from __future__ import annotations
 
@@ -179,8 +184,8 @@ def build(exe: Path, src_root: Path, extra_flags=()) -> float:
 
 # ------------------------------------------------------------------------------- runs
 
-def run_batch(exe: Path, items: list[dict], outdir: Path) -> str:
-    args = [str(exe), '--script']
+def run_batch(exe: Path, items: list[dict], outdir: Path, pre=()) -> str:
+    args = [str(exe), *pre, '--script']
     for it in items:
         args += [str(it['script']), str(outdir / f'{it["name"]}.csv')]
     p = subprocess.run(args, cwd=R, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -189,15 +194,16 @@ def run_batch(exe: Path, items: list[dict], outdir: Path) -> str:
     return p.stdout
 
 
-def run_variant(exe: Path, scenarios: list[dict], outdir: Path, jobs: int) -> str:
+def run_variant(exe: Path, scenarios: list[dict], outdir: Path, jobs: int, pre=()) -> str:
     """One process per scenario. Several scripts in one process are NOT independent: some
     production chain state survives sim_init()/ride_control_init() (found 2026-10-07: coast_80
     alone vs after reverse_60 diverges at t=4.02 s, m2aa 0 vs 3162), so each scenario starts
-    from a cold process = power-on state, independent of matrix order and subset."""
+    from a cold process = power-on state, independent of matrix order and subset.
+    `pre` = leading harness arguments (the candidate's `--engine`)."""
     outdir.mkdir(parents=True, exist_ok=True)
     batches = [[s] for s in scenarios]
     with cf.ThreadPoolExecutor(jobs) as ex:
-        return ''.join(ex.map(lambda b: run_batch(exe, b, outdir), batches))
+        return ''.join(ex.map(lambda b: run_batch(exe, b, outdir, pre), batches))
 
 
 def _score(args):
@@ -207,7 +213,7 @@ def _score(args):
 
 # ------------------------------------------------------------------------------- equivalence
 
-def fixed_mode_equivalence(exes: dict[str, Path]) -> list[str]:
+def fixed_mode_equivalence(exes: dict[str, Path], pre: dict[str, list[str]]) -> list[str]:
     """Existing SIL modes (fixed scenarios + stop/restart/axis + fuzz) on both builds."""
     problems = []
     outs = {}
@@ -216,10 +222,10 @@ def fixed_mode_equivalence(exes: dict[str, Path]) -> list[str]:
         if wd.exists():
             shutil.rmtree(wd)
         (wd / '.build' / 'sil').mkdir(parents=True)
-        p = subprocess.run([str(exe)], cwd=wd, text=True, stdout=subprocess.PIPE,
+        p = subprocess.run([str(exe), *pre[tag]], cwd=wd, text=True, stdout=subprocess.PIPE,
                            stderr=subprocess.STDOUT)
-        f = subprocess.run([str(exe), '--fuzz', '100', '0xE7157A39'], cwd=wd, text=True,
-                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        f = subprocess.run([str(exe), *pre[tag], '--fuzz', '100', '0xE7157A39'], cwd=wd,
+                           text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         if p.returncode or f.returncode:
             problems.append(f'{tag}: fixed/fuzz run failed rc={p.returncode}/{f.returncode}')
         outs[tag] = (p.stdout, f.stdout, wd / '.build' / 'sil')
@@ -328,15 +334,32 @@ def write_reports(scenarios, scores, outdir: Path, meta: dict) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--quick', action='store_true', help='Gate-1 subset from the spec')
-    ap.add_argument('--equivalence', action='store_true',
-                    help='G-EQ: require byte-identical baseline/candidate outputs')
+    ap.add_argument('--equivalence', dest='equivalence', action='store_true', default=None,
+                    help='G-EQ: require byte-identical baseline/candidate outputs '
+                         '(default with --engine g5300)')
+    ap.add_argument('--no-equivalence', dest='equivalence', action='store_false',
+                    help='metrics only, no G-EQ assertion')
+    ap.add_argument('--engine', choices=['g5300', 'v3'], default='g5300',
+                    help='V3 config engine the candidate harness writes (G-EQ rule 1); '
+                         'g5300 = equivalence configuration, v3 = candidate run')
     ap.add_argument('--baseline-ref', default='25df554')
-    ap.add_argument('--candidate-cflags', default='', help='extra CFLAGS for the candidate only')
+    ap.add_argument('--candidate-cflags', default='-DASSIST_V3=1',
+                    help='extra CFLAGS for the candidate only (default: V3 stage compiled in)')
     ap.add_argument('--profiles', default='', help='comma list (default: all / quick set)')
     ap.add_argument('--cadences', default='', help='comma list (default: all / quick set)')
     ap.add_argument('--jobs', type=int, default=max(1, min(8, os.cpu_count() or 1)))
     ap.add_argument('--out', default=str(BUILD / 'out'))
     a = ap.parse_args()
+    if a.equivalence is None:
+        a.equivalence = a.engine == 'g5300'
+    if a.equivalence and a.engine != 'g5300':
+        ap.error('--equivalence needs --engine g5300 (G-EQ rule 1): with v3 a difference is the '
+                 'purpose of the run')
+    if a.engine == 'v3' and 'ASSIST_V3' not in a.candidate_cflags:
+        ap.error('--engine v3 needs a candidate built with -DASSIST_V3')
+    # Leading harness arguments per build: the baseline tree has no V3 engine at all; the
+    # candidate is told the engine explicitly whatever its absent-record default is.
+    pre = {'baseline': [], 'candidate': ['--engine', a.engine]}
 
     t_start = time.perf_counter()
     spec = json.loads(SPEC.read_text())
@@ -366,7 +389,7 @@ def main() -> int:
         d = BUILD / tag
         if d.exists():
             shutil.rmtree(d)
-        logs[tag] = run_variant(exes[tag], scen, d, a.jobs)
+        logs[tag] = run_variant(exes[tag], scen, d, a.jobs, pre[tag])
         (BUILD / f'{tag}_run.log').write_text(logs[tag])
     t_ran = time.perf_counter()
 
@@ -383,16 +406,19 @@ def main() -> int:
         diffs = [s['name'] for s in scen
                  if (BUILD / 'baseline' / f'{s["name"]}.csv').read_bytes() !=
                  (BUILD / 'candidate' / f'{s["name"]}.csv').read_bytes()]
-        fixed_problems, nfixed = fixed_mode_equivalence(exes)
+        fixed_problems, nfixed = fixed_mode_equivalence(exes, pre)
         # Same binary, same scripts, second run: the run_regression.py determinism technique.
+        # The V3 telemetry CSVs (never compared with the baseline) must be deterministic too.
         rerun_dir = BUILD / 'candidate_rerun'
         if rerun_dir.exists():
             shutil.rmtree(rerun_dir)
         sample = scen[::max(1, len(scen) // 10)]
-        run_variant(exes['candidate'], sample, rerun_dir, a.jobs)
-        fixed_problems += [f'non-deterministic rerun: {s["name"]}' for s in sample
-                           if (rerun_dir / f'{s["name"]}.csv').read_bytes() !=
-                           (BUILD / 'candidate' / f'{s["name"]}.csv').read_bytes()]
+        run_variant(exes['candidate'], sample, rerun_dir, a.jobs, pre['candidate'])
+        rerun_files = [f'{s["name"]}.csv' for s in sample]
+        rerun_files += [f'{s["name"]}.v3.csv' for s in sample
+                        if (BUILD / 'candidate' / f'{s["name"]}.v3.csv').exists()]
+        fixed_problems += [f'non-deterministic rerun: {n}' for n in rerun_files
+                           if (rerun_dir / n).read_bytes() != (BUILD / 'candidate' / n).read_bytes()]
         if diffs or fixed_problems:
             rc = 1
             eq_note = (f'FAIL: {len(diffs)} scenario trace(s) differ {diffs[:5]}; '
@@ -400,13 +426,14 @@ def main() -> int:
         else:
             eq_note = (f'PASS: {len(scen)} scenario traces byte-identical; fixed-mode stdout + '
                        f'{nfixed} CSVs + fuzz(100) stdout byte-identical; '
-                       f'{len(sample)} candidate reruns byte-identical')
+                       f'{len(rerun_files)} candidate rerun files byte-identical')
         print('G-EQ', eq_note)
 
     meta = {
         'baseline': f'{a.baseline_ref} src/+inc/ (`{(base_src / "REF.txt").read_text().strip()}`)'
                     ' + current harness',
-        'candidate': 'current tree' + (f' + {a.candidate_cflags}' if a.candidate_cflags else ''),
+        'candidate': 'current tree' + (f' + {a.candidate_cflags}' if a.candidate_cflags else '')
+                     + f', engine {a.engine}',
         'scenarios': f'{len(scen)} ({"quick" if a.quick else "full"}: cadences {cad})',
         'demand signal': 'iq_ref (published Iq after fast_iq_slew)',
         'G-EQ': eq_note,

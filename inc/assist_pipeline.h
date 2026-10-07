@@ -11,6 +11,7 @@
 #include "ap2_rider_demand.h"
 #include "fast_iq_slew.h"
 #include "g53_port.h"
+#include "assist_motion.h"
 
 /*
  * ASSIST PIPELINE V2 - the whole pedal-assist path, in one place.
@@ -110,6 +111,28 @@ typedef struct {
 	int32_t throttle_iq;   /* already mapped from the ADC; 0 when absent or released */
 
 	uint32_t elapsed_ticks;
+
+	/*
+	 * --- ASSIST-V3 observations (ARCHITECTURE_V3.md 3.1) ---
+	 * Read only by the V3 stage below (compiled with ASSIST_V3); no G5300-path block reads them.
+	 * Ticks are the free-running 4 kHz clock of the PAS sampler ISR; differences only.
+	 *   control_tick      "now" on that clock (rider_input_t.sample_tick)
+	 *   crank_steps       signed PAS step count from crank_phase.c
+	 *   crank_step_tick   tick of the last counted crank step
+	 *   pas_glitch        INVALID jump or sampler ring overflow since the previous snapshot
+	 *   wheel_pulse_tick  tick of the last accepted wheel pulse
+	 *   iq_measured       MS.i_q (Park domain; measured, not the reference)
+	 *   brake             observation only - the cut is safety_cut -> native_cut
+	 *   motion            RAW IMU seam sample; the pipeline sanitises it before V3 sees it
+	 */
+	uint32_t control_tick;
+	int32_t crank_steps;
+	uint32_t crank_step_tick;
+	bool pas_glitch;
+	uint32_t wheel_pulse_tick;
+	int32_t iq_measured;
+	bool brake;
+	motion_input_t motion;
 } assist_pipeline_input_t;
 
 /*

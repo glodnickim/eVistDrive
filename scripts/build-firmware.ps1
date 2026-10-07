@@ -185,7 +185,9 @@ $definitions = @(
     "-DGD_ECLIPSE_GCC",
     "-DUSE_STDPERIPH_DRIVER",
     "-DBOOTLOADER=$TargetBootloader",
-    "-DCAN_DIAGNOSTICS_ENABLE=$diagnosticsValue"
+    "-DCAN_DIAGNOSTICS_ENABLE=$diagnosticsValue",
+    # Assist V3 candidate build: shadow stage compiled in, as tools/build_firmware.py does by default.
+    "-DASSIST_V3=1"
 )
 $includeFlags = @(
     "-I$generatedDir",
@@ -242,7 +244,7 @@ try {
         $sourceFlags = @()
         if ($entry -in @('src/g53_port.c', 'src/g53_port_chain.c',
                          'src/g53_port_boundaries.c', 'src/g53_port_pas.c',
-                         'src/g53_g1_limiter.c')) {
+                         'src/g53_g1_limiter.c', 'src/assist_v3.c', 'src/assist_v3_intent.c')) {
             $sourceFlags = @('-O2')
         }
         & $gcc @compilerFlags @sourceFlags -c $sourcePath -o $objectPath

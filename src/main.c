@@ -62,6 +62,7 @@ OF SUCH DAMAGE.
 #include "rotor_motion.h"
 #include "rotor_angle.h"         /* FW-131: one canonical rotor angle, bumpless handover */
 #include "pas_sampler.h"         /* PRE-FW128: PAS sampled in the 4 kHz ISR, not main  */
+#include "crank_phase.h"         /* ASSIST-V3: signed crank step count from the PAS drain */
 #include "pas_cadence.h"         /* PRE-FW128: cadence period, epoch and validity      */
 #include "cadence_filter.h"      /* FW-140: stable control cadence, raw kept for diag */
 #include "battery_current.h"     /* FW-128B1: battery-current filter on the sample clock */
@@ -83,6 +84,9 @@ OF SUCH DAMAGE.
 #include "assist_modes.h"
 #include "tuning_config.h"
 #include "assist_v3_config.h"
+#ifdef ASSIST_V3
+#include "assist_v3.h"           /* ASSIST-V3: shadow telemetry for the DIAG frame group */
+#endif
 #include "walk_assist_motor.h"
 #include "level_gesture.h"
 #include "CAN_Display.h"
@@ -1107,6 +1111,7 @@ int main(void)
      * the anchor the first idle reading must be measured from.
      */
     pas_sampler_init(0U);
+    crank_phase_init();   /* ASSIST-V3: same moment as the sampler it counts (observation only) */
     /*
      * FW-128B1: UNARMED until the startup zero is known. Same reason as the sampler above - the
      * next line starts the interrupt that will begin offering samples - but the opposite policy:
@@ -2779,6 +2784,10 @@ void reg_ADC_processing(void)
 			//sampler - ONE decoder, one call site. Same table, same PAS_DIR_SIGN, same result.
 			const int8_t st = ev.step;   //+1 = forward, -1 = reverse, 0 = illegal two-bit jump
 			pas_transition_this_pass = 1;
+			//ASSIST-V3 (ARCHITECTURE_V3 3.2): the production crank step accumulator sees EVERY
+			//drained event, in order, before anything below - observation only, it feeds nothing
+			//back into the decoder, the cadence or the direction automaton.
+			crank_phase_on_event(&ev);
 			//FW-112.1 liveness is refreshed by the sampler's transition clock instead of a call
 			//here: EVERY physical edge (fwd/rev/INVALID) is crank liveness evidence, and the
 			//anchor it is measured from is updated by all three. See pas_liveness.h.
@@ -3017,7 +3026,10 @@ void reg_ADC_processing(void)
 		 * still counted for liveness (they physically happened), but nothing may be measured
 		 * across the gap.
 		 */
-		if(pas_sampler_take_overflow()) pas_cadence_break_epoch(2);
+		if(pas_sampler_take_overflow()){
+			pas_cadence_break_epoch(2);
+			crank_phase_on_overflow();   //ASSIST-V3: steps were lost -> crank phase glitch
+		}
 		/*
 		 * PRE-FW128: the two PAS clocks, DERIVED from the sampler's transition timestamp rather
 		 * than counted here. Both keep their old name, type and meaning; what changed is that
@@ -3153,7 +3165,12 @@ void reg_ADC_processing(void)
 			.start_phase = start_phase != 0,
 			.torque_sensor_valid = torque_fault == 0 &&
 				!torque_input_calibration_active(),
-			.pas_sensor_valid = pas_sampler_seeded() != 0U
+			.pas_sensor_valid = pas_sampler_seeded() != 0U,
+			/* ASSIST-V3 observations (ARCHITECTURE_V3 3.1/3.2); no G5300-path consumer. */
+			.crank_steps = crank_phase_steps(),
+			.crank_step_tick = crank_phase_last_step_tick(),
+			.pas_glitch = crank_phase_take_glitch(),   //"since the previous snapshot"
+			.wheel_pulse_tick = speed_last_tick
 		};
 		rider_input_update(&input);
 		//FW-109: consumed for this tick - must not survive to look like a fresh event next tick.
@@ -3432,7 +3449,13 @@ void reg_ADC_processing(void)
             /* PA6 feeds G53 Boundary A-x once; no parallel mapped throttle request. */
             .throttle_iq = 0,
 			.start_phase = start_phase != 0,
-			.elapsed_ticks = control_delta
+			.elapsed_ticks = control_delta,
+            /* ASSIST-V3 observations (ARCHITECTURE_V3 3.1/3.3). The brake CUT is
+             * safety_cut_non_direction above; this copy is never a cut. No IMU driver exists, so
+             * the motion seam is invalid and the pipeline sanitises it to all-zero. */
+            .iq_measured = MS.i_q,
+            .brake = MS.brake_active_flag != 0,
+            .motion = { .valid = false }
         };
         ride_control_update(&ride_input);
         /* QS-3C: the battery-current limiter now lives upstream in ride_control.c (single
@@ -3549,6 +3572,36 @@ void reg_ADC_processing(void)
                 .start_phase = start_phase != 0U,
                 .active_profile_bank = assist_modes_get_active_bank()
             };
+#if ASSIST_V3_TELEMETRY_FRAMES
+            /* ASSIST-V3 (ARCHITECTURE_V3 11): the shadow V3 stage's own answer to "why this Iq
+             * now", copied from its telemetry; observation only. See inc/config.h for why this
+             * group exists only with ASSIST_V3_SHADOW_TELEMETRY in Milestone B. */
+            {
+                const assist_v3_telemetry_t *v3t = assist_v3_telemetry();
+                const uint32_t conf8 = (uint32_t)v3t->template_conf_q12 >> 4;
+                rt.v3.valid = true;
+                rt.v3.intent = v3t->intent;
+                rt.v3.env_equiv = v3t->env_equiv;
+                rt.v3.demand_iq = diag_clamp16(v3t->v3_demand_iq);
+                rt.v3.base_target_iq = diag_clamp16(v3t->base_target_iq);
+                rt.v3.target_iq = diag_clamp16(v3t->target_iq);
+                rt.v3.e_short = v3t->e_short;
+                rt.v3.kappa_q12 = v3t->kappa_q12;
+                rt.v3.template_conf = (uint8_t)(conf8 > 255U ? 255U : conf8);
+                rt.v3.phase = v3t->phase;
+                rt.v3.release_class = v3t->release_class;
+                rt.v3.rate_mode = v3t->rate_mode;
+                rt.v3.flags = (uint8_t)(
+                    (v3t->phase_aligned ? RIDE_TELEM_V3_F_ALIGNED : 0U) |
+                    (v3t->template_mode ? RIDE_TELEM_V3_F_TEMPLATE_MODE : 0U) |
+                    (v3t->engaged ? RIDE_TELEM_V3_F_ENGAGED : 0U) |
+                    (v3t->crank_stopped ? RIDE_TELEM_V3_F_CRANK_STOPPED : 0U) |
+                    (v3t->stop_target_zero ? RIDE_TELEM_V3_F_STOP_ZERO : 0U) |
+                    (v3t->imu_valid ? RIDE_TELEM_V3_F_IMU_VALID : 0U) |
+                    (v3t->engine_active ? RIDE_TELEM_V3_F_ENGINE_ACTIVE : 0U) |
+                    (v3t->engine_requested ? RIDE_TELEM_V3_F_ENGINE_REQ : 0U));
+            }
+#endif
             ride_telemetry_capture(&rt);
         }
 #endif

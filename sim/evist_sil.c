@@ -27,6 +27,17 @@
 #include "ride_control.h"
 #include "torque_input.h"
 #include "tuning_config.h"
+/* ASSIST-V3 plumbing. The V3 matrix runner also builds this harness against the frozen baseline
+ * tree, which has neither the crank fields nor crank_phase.c, so the plumbing is keyed on the
+ * feature marker of the tree's own rider_input.h. REVIEW 1 #19: the harness feeds the SAME
+ * production crank_phase.c that main.c feeds, from the same drain - no copy of the accumulator. */
+#ifdef RIDER_INPUT_HAS_CRANK_PHASE
+#include "crank_phase.h"
+#endif
+#ifdef ASSIST_V3
+#include "assist_v3.h"
+#include "assist_v3_harness.h"
+#endif
 
 #ifdef EVD_SIL_REAL_FOC
 #include "FOC.h"
@@ -547,6 +558,20 @@ static double rider_torque_ckg(const rider_plant_t *r, uint32_t tick)
     return v < 0.0 ? 0.0 : v;
 }
 
+#ifdef ASSIST_V3
+/* TEST_MATRIX G-EQ rule 1: the engine is set EXPLICITLY at every sim_init, through the real
+ * config protocol (tests/host/common/assist_v3_harness.h). G5300 unless `--engine v3`. */
+static bool sil_engine_v3 = false;
+
+static void sil_v3_select_engine(void)
+{
+    if (!assist_v3_harness_select_engine(sil_engine_v3)) {
+        fprintf(stderr, "SIL: V3 engine write rejected by the config protocol\n");
+        exit(2);
+    }
+}
+#endif
+
 static void sim_init(sim_t *s, double rpm, double cadence_ripple_fraction,
                      double mean_ckg, double ripple_ckg, bool bounce,
                      double breakaway_iq, bool use_filtered_control_cadence)
@@ -568,6 +593,12 @@ static void sim_init(sim_t *s, double rpm, double cadence_ripple_fraction,
     pas_cadence_reset();
     cadence_filter_reset();
     pas_sampler_init(0U);
+#ifdef RIDER_INPUT_HAS_CRANK_PHASE
+    crank_phase_init();
+#endif
+#ifdef ASSIST_V3
+    sil_v3_select_engine();
+#endif
     rider_init(&s->rider, rpm, cadence_ripple_fraction, mean_ckg, ripple_ckg, bounce);
     plant_init(&s->plant, breakaway_iq);
     s->last_forward_gap = PAS_STOP_TICKS;
@@ -591,6 +622,9 @@ static void process_pas(sim_t *s, uint8_t ab)
     pas_step_event_t ev;
     while (pas_sampler_pop(&ev)) {
         int8_t st = ev.step;
+#ifdef RIDER_INPUT_HAS_CRANK_PHASE
+        crank_phase_on_event(&ev);   /* as main.c: every drained event, first */
+#endif
         if (st > 0) {
             s->last_forward_gap = ev.gap ? ev.gap : s->last_forward_gap;
             uint32_t x = (uint32_t)s->last_forward_gap * 2U;
@@ -615,7 +649,12 @@ static void process_pas(sim_t *s, uint8_t ab)
             pas_direction_on_step(st);
         }
     }
-    if (pas_sampler_take_overflow()) pas_cadence_break_epoch(2U);
+    if (pas_sampler_take_overflow()) {
+        pas_cadence_break_epoch(2U);
+#ifdef RIDER_INPUT_HAS_CRANK_PHASE
+        crank_phase_on_overflow();
+#endif
+    }
     if (s->MS.cadence == 0U && !s->start_phase &&
         pas_direction_fwd_run() >= START_PHASE_STEPS) s->start_phase = 1U;
 }
@@ -692,6 +731,13 @@ static void sim_foreground(sim_t *s, uint8_t ab, double load_ckg, uint32_t elaps
     r.start_phase = s->start_phase != 0U;
     r.torque_sensor_valid = true;
     r.pas_sensor_valid = true;
+#ifdef RIDER_INPUT_HAS_CRANK_PHASE
+    /* As main.c builds the snapshot. The SIL wheel is scripted speed, not pulses, so there is no
+     * accepted-pulse tick: wheel_pulse_tick stays 0 (observation only, no V3 rule reads it yet). */
+    r.crank_steps = crank_phase_steps();
+    r.crank_step_tick = crank_phase_last_step_tick();
+    r.pas_glitch = crank_phase_take_glitch();
+#endif
     rider_input_update(&r);
 
     ride_control_input_t in;
@@ -734,6 +780,12 @@ static void sim_foreground(sim_t *s, uint8_t ab, double load_ckg, uint32_t elaps
     in.legal_enabled = s->legal_enabled;
     in.safety_cut_non_direction = safety_cut;
     in.elapsed_ticks = elapsed_ticks;
+#ifdef RIDER_INPUT_HAS_CRANK_PHASE
+    /* ASSIST-V3 observations: the only SIL cut is the scripted brake, so it is also the brake
+     * observation; the measured current is the plant/FOC current; no IMU (memset: invalid). */
+    in.brake = safety_cut;
+    in.iq_measured = in.current_iq;
+#endif
     ride_control_update(&in);
 
     if (assist_pipeline_pas_state() == AP2_PAS_FORWARD && s->first_permission_tick == 0U)
@@ -1635,23 +1687,30 @@ static int run_hall_start_angle_sweep(void)
 #endif
 
 #ifdef ASSIST_V3
-/* Extension hook for V3 telemetry (ARCHITECTURE_V3 §11). assist_v3.h does not exist at the time
- * this harness was written; when it lands, align the field names below with
- * assist_v3_telemetry_t. Without -DASSIST_V3 the CSV schema is the baseline schema, byte for
- * byte, which is what the G-EQ gate compares. */
-#include "assist_v3.h"
-#define SIL_V3_CSV_HEADER ",v3_intent,v3_e_short,v3_phase,v3_template_conf,v3_release_class," \
-                          "v3_carry_score,v3_carry_state,v3_carry_remaining_ms," \
-                          "v3_carry_remaining_cm,v3_base_target_iq,v3_demand_iq"
-static void sil_v3_csv_columns(FILE *f)
+/* V3 telemetry (ARCHITECTURE_V3 11, assist_v3_telemetry_t). TEST_MATRIX G-EQ rule 2: the V3
+ * columns go to a SEPARATE CSV (<out>.v3.csv, same rows/decimation as <out>.csv, joined on
+ * tick), so <out>.csv keeps the baseline schema byte for byte with ASSIST_V3 compiled in, and the
+ * equivalence comparison never sees a V3 column. Milestone D carry fields do not exist yet. */
+#define SIL_V3_CSV_HEADER "t_s,tick,v3_intent,v3_env_equiv,v3_kappa_q12,v3_e_short,v3_e_long," \
+                          "v3_phase,v3_phase_aligned,v3_template_mode,v3_template_conf_q12," \
+                          "v3_expected_effort,v3_release_class,v3_base_target_e2,v3_applied_ratio," \
+                          "v3_base_target_iq,v3_target_iq,v3_demand_iq,v3_cadence,v3_rate_mode," \
+                          "v3_response_pct,v3_engaged,v3_crank_stopped,v3_stop_target_zero," \
+                          "v3_imu_valid,v3_engine_active,v3_engine_requested\n"
+static void sil_v3_csv_row(FILE *f, double t_s, uint32_t tick)
 {
     const assist_v3_telemetry_t *t = assist_v3_telemetry();
-    fprintf(f, ",%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld",
-            (long)t->intent, (long)t->e_short, (long)t->phase, (long)t->template_conf,
-            (long)t->release_class, (long)t->carry_score, (long)t->carry_state,
-            (long)t->carry_remaining_ms, (long)t->carry_remaining_cm,
-            (long)t->base_target_iq, (long)t->v3_demand_iq);
+    fprintf(f, "%.4f,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%ld,%ld,%ld,%d,%u,%u,%u,%u,%u,%u,"
+               "%u,%u\n",
+            t_s, tick, t->intent, t->env_equiv, t->kappa_q12, t->e_short, t->e_long, t->phase,
+            t->phase_aligned ? 1U : 0U, t->template_mode ? 1U : 0U, t->template_conf_q12,
+            t->expected_effort, t->release_class, t->base_target_e2, t->applied_ratio,
+            (long)t->base_target_iq, (long)t->target_iq, (long)t->v3_demand_iq, t->cadence_rpm,
+            t->rate_mode, t->response_pct, t->engaged ? 1U : 0U, t->crank_stopped ? 1U : 0U,
+            t->stop_target_zero ? 1U : 0U, t->imu_valid ? 1U : 0U, t->engine_active ? 1U : 0U,
+            t->engine_requested ? 1U : 0U);
 }
+static FILE *sil_v3_csv;   /* open only while a --script run writes <out>.csv */
 #endif
 
 static const char SIL_SCRIPT_CSV_HEADER[] =
@@ -1703,10 +1762,10 @@ static void sim_script_tick(sim_t *s, sil_script_run_t *run, FILE *csv, uint32_t
             mo->assist_permitted ? 1U : 0U, mo->limiter_zeroed ? 1U : 0U,
             mo->block_positive ? 1U : 0U, assist_pipeline_reason_bits(),
             s->MS.i_q_setpoint, s->plant.iq_actual, ride_control_get_session_state());
-#ifdef ASSIST_V3
-        sil_v3_csv_columns(csv);
-#endif
         fputc('\n', csv);
+#ifdef ASSIST_V3
+        if (sil_v3_csv) sil_v3_csv_row(sil_v3_csv, ss->t_s, ss->tick);
+#endif
         run->rows++;
     }
 }
@@ -1750,10 +1809,20 @@ static int run_script(const char *script_path, const char *out_path)
     FILE *f = fopen(out_path, "wb");
     if (!f) { perror(out_path); return 2; }
     fputs(SIL_SCRIPT_CSV_HEADER, f);
-#ifdef ASSIST_V3
-    fputs(SIL_V3_CSV_HEADER, f);
-#endif
     fputc('\n', f);
+#ifdef ASSIST_V3
+    {
+        char v3_path[1024];
+        const size_t n = strlen(out_path);
+        const size_t stem = (n >= 4U && strcmp(out_path + n - 4U, ".csv") == 0) ? n - 4U : n;
+        if (stem + 8U > sizeof(v3_path)) { fclose(f); fprintf(stderr, "SIL: path too long\n"); return 2; }
+        memcpy(v3_path, out_path, stem);
+        memcpy(v3_path + stem, ".v3.csv", 8U);
+        sil_v3_csv = fopen(v3_path, "wb");
+        if (!sil_v3_csv) { perror(v3_path); fclose(f); return 2; }
+        fputs(SIL_V3_CSV_HEADER, sil_v3_csv);
+    }
+#endif
 
     rider_script_start(&run.st, &sc);
     run.ts = torque_input_get_snapshot();
@@ -1761,6 +1830,10 @@ static int run_script(const char *script_path, const char *out_path)
     s.stats_start_tick = s.tick;
     while (run.st.tick < run.st.total_ticks) sim_script_tick(&s, &run, f, sc.decimate);
     fclose(f);
+#ifdef ASSIST_V3
+    fclose(sil_v3_csv);
+    sil_v3_csv = NULL;
+#endif
     const pas_sampler_stats_t *ps = pas_sampler_get_stats();
     printf("SCRIPT %-24s prelude=%u ticks=%u stalled=%u rows=%u falseR=%u "
            "pas[fwd=%u rev=%u invalid=%u glitch=%u overflow=%u] iqRange=[%d,%d] OK\n",
@@ -1785,6 +1858,23 @@ static int run_script_args(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
+    /* `--engine g5300|v3` (first argument, any mode): the V3 config engine the harness writes at
+     * every sim_init (G-EQ rule 1). Default g5300. Without ASSIST_V3 only g5300 exists. */
+    if (argc >= 3 && strcmp(argv[1], "--engine") == 0) {
+        const bool v3 = strcmp(argv[2], "v3") == 0;
+        if (!v3 && strcmp(argv[2], "g5300") != 0) {
+            fprintf(stderr, "usage: evist_sil [--engine g5300|v3] ...\n");
+            return 2;
+        }
+#ifdef ASSIST_V3
+        sil_engine_v3 = v3;
+#else
+        if (v3) { fprintf(stderr, "evist_sil: --engine v3 needs a build with -DASSIST_V3\n"); return 2; }
+#endif
+        argv[2] = argv[0];
+        argc -= 2;
+        argv += 2;
+    }
     if (argc >= 2 && strcmp(argv[1], "--script") == 0) return run_script_args(argc, argv);
     if (argc >= 2 && strcmp(argv[1], "--fuzz") == 0) {
         unsigned count = (argc >= 3) ? (unsigned)strtoul(argv[2], NULL, 10) : 1000U;

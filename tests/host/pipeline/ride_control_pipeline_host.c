@@ -46,6 +46,9 @@
 #include "rider_input.h"
 #include "ride_control.h"
 #include "torque_input.h"
+#ifdef ASSIST_V3
+#include "assist_v3_harness.h"
+#endif
 
 static const crank_torque_shape_t SHARED_SHAPE = {
 	.mean_native_delta = 300.0,
@@ -113,6 +116,14 @@ int main(int argc, char **argv)
 	static MotorState_t MS; /* zero-initialised: static storage duration */
 	motor_core_init(&MS);
 	ride_control_init();
+#ifdef ASSIST_V3
+	/* TEST_MATRIX G-EQ rule 1: engine G5300 set explicitly (tools/run_regression.py builds this
+	 * harness with and without the V3 stage and requires byte-identical traces). */
+	if (!assist_v3_harness_select_engine(false)) {
+		fprintf(stderr, "V3 engine write rejected\n");
+		return 2;
+	}
+#endif
 
 	crank_state_t crank;
 	crank_state_init(&crank);

@@ -33,21 +33,21 @@ def run(cmd, *, capture=False):
         raise SystemExit(p.returncode)
     return p.stdout if capture else ''
 
-def compile_obj(src: Path, obj: Path, incdirs, allow_type_limits=False):
-    cmd=[CC,'-std=c11','-Wall','-Wextra','-Werror']
+def compile_obj(src: Path, obj: Path, incdirs, allow_type_limits=False, defines=()):
+    cmd=[CC,'-std=c11','-Wall','-Wextra','-Werror',*defines]
     if allow_type_limits: cmd += ['-Wno-type-limits']
     for d in incdirs: cmd += ['-I', str(d)]
     cmd += ['-c', str(src), '-o', str(obj)]
     run(cmd)
 
-def build(name, harness_rel, common_files, modules, use_stubs=False):
+def build(name, harness_rel, common_files, modules, use_stubs=False, defines=()):
     incdirs = ([STUB] if use_stubs else []) + [C, I]
     objs=[]
-    ho=OBJ/f'{name}.harness.o'; compile_obj(T/harness_rel,ho,incdirs); objs.append(ho)
+    ho=OBJ/f'{name}.harness.o'; compile_obj(T/harness_rel,ho,incdirs,defines=defines); objs.append(ho)
     for cf in common_files:
-        o=OBJ/f'{name}.common.{Path(cf).name}.o'; compile_obj(C/cf,o,incdirs); objs.append(o)
+        o=OBJ/f'{name}.common.{Path(cf).name}.o'; compile_obj(C/cf,o,incdirs,defines=defines); objs.append(o)
     for m in modules:
-        o=OBJ/f'{name}.src.{m}.o'; compile_obj(S/m,o,incdirs,m in TYPE_LIMITS); objs.append(o)
+        o=OBJ/f'{name}.src.{m}.o'; compile_obj(S/m,o,incdirs,m in TYPE_LIMITS,defines); objs.append(o)
     # The linker output must carry the platform's executable extension, and the runner must
     # launch EXACTLY the path it linked. Without this, a Windows gcc writes name.exe while the
     # runner tries to execute a stale extensionless `name` left behind by a Linux build in the
@@ -84,11 +84,20 @@ assist_mod=['torque_input.c','rider_input.c','assist_modes.c','tuning_config.c',
             'g53_port.c','g53_port_boundaries.c','g53_port_pas.c','g53_port_chain.c','g53_g1_limiter.c',
             'ap2_limits.c','battery_iq_cap.c','fast_iq_slew.c','assist_pipeline.c']
 ride_mod=assist_mod+['ride_control.c','iq_chain.c','motor_core.c']
+# ASSIST-V3 (TEST_MATRIX G-EQ): the same two pipeline harnesses are also built with the V3 shadow
+# stage compiled in (-DASSIST_V3, as the candidate firmware) and must reproduce every trace
+# byte for byte. Milestone B is shadow only, so any difference is a defect.
+V3_DEFS=['-DASSIST_V3=1']
+V3_MODS=['assist_v3.c','assist_v3_intent.c','assist_motion.c','assist_v3_config.c']
 
 torque=build('torque_trace',Path('torque/torque_trace_host.c'),['crank_model.c'],['torque_input.c'])
 assist=build('assist_pipeline',Path('pipeline/assist_pipeline_host.c'),['crank_model.c'],assist_mod)
 ride=build('ride_control_pipeline',Path('pipeline/ride_control_pipeline_host.c'),
            ['crank_model.c','map_adapter.c','motor_service_stub.c'],ride_mod,True)
+assist_v3=build('assist_pipeline_v3',Path('pipeline/assist_pipeline_host.c'),['crank_model.c'],
+                assist_mod+V3_MODS,defines=V3_DEFS)
+ride_v3=build('ride_control_pipeline_v3',Path('pipeline/ride_control_pipeline_host.c'),
+              ['crank_model.c','map_adapter.c','motor_service_stub.c'],ride_mod+V3_MODS,True,V3_DEFS)
 burst=build('missed_tick_burst',Path('scenarios/missed_tick_burst_host.c'),['crank_model.c'],
             ['torque_input.c','ride_episode.c'])
 
@@ -114,6 +123,18 @@ if base != rep:
     print('FAIL: whole-pipeline determinism differs on identical RUN_100 rerun', file=sys.stderr)
     raise SystemExit(1)
 
+# G-EQ: every assist/ride trace again with the V3 stage compiled in, byte for byte.
+V3OUT=OUT/'assist_v3'; V3OUT.mkdir(parents=True,exist_ok=True)
+v3_diffs=[]; v3_count=0
+for (sc,tag),path in sorted(files.items()):
+    exe={'assist':assist_v3,'ride':ride_v3}.get(tag)
+    if exe is None: continue
+    v3p=V3OUT/path.name; run([str(exe),sc,str(v3p)]); v3_count+=1
+    if v3p.read_bytes()!=path.read_bytes(): v3_diffs.append(path.name)
+if v3_diffs:
+    print(f'FAIL: G-EQ ASSIST_V3 on/off traces differ: {v3_diffs}', file=sys.stderr)
+    raise SystemExit(1)
+
 # The signals a ride-feel regression actually shows up in: the rider's pulsating input, the
 # two halves of the demand model that absorb that pulsation, and the resulting request.
 assist_cols=['torque_raw','torque_corrected','torque_fast','load_centikg',
@@ -137,6 +158,7 @@ report=(
     f'Scenarios: {len(scenarios)} x 3 layers = {len(scenarios)*3} traces\n'
     'Harnesses: torque_trace, assist_pipeline, ride_control_pipeline, missed_tick_burst\n'
     'Determinism RUN_100 assist rerun: PASS (byte-identical CSV)\n'
+    f'G-EQ ASSIST_V3 on/off: PASS ({v3_count} assist/ride traces byte-identical with -DASSIST_V3)\n'
     'Build flags: -Wall -Wextra -Werror; documented type-limits exceptions only\n'
     'Result: PASS\n')
 (OUT/'REPORT.txt').write_text(report)

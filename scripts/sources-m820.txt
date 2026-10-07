@@ -2,6 +2,10 @@
 # directory enumeration or accidentally include a newly copied experiment.
 src/assist_modes.c
 src/assist_v3_config.c
+src/assist_v3.c
+src/assist_v3_intent.c
+src/assist_motion.c
+src/crank_phase.c
 src/ap2_pas_state.c
 src/ap2_rider_demand.c
 src/ap2_estimators.c

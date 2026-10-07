@@ -121,9 +121,43 @@ static void build_data_frame(uint8_t index, const ride_telemetry_snapshot_t *s,
                          ((s->direction_inhibit ? 1U : 0U) << 5) |
                          ((s->start_phase ? 1U : 0U) << 6));
         break;
+#if ASSIST_V3_TELEMETRY_FRAMES
+    /* ASSIST-V3 frame group (inc/ride_telemetry.h): indices 9..11 land on BASE+10..12 through
+     * the same "step over META" rule above, after every schema-2 frame of the cycle. */
+    case 9U: /* V3A */
+        put_u16(&d[2], s->v3.intent);
+        put_u16(&d[4], s->v3.env_equiv);
+        put_i16(&d[6], s->v3.demand_iq);
+        break;
+    case 10U: /* V3B */
+        put_i16(&d[2], s->v3.base_target_iq);
+        put_i16(&d[4], s->v3.target_iq);
+        put_u16(&d[6], s->v3.e_short);
+        break;
+    case 11U: /* V3C */
+        put_u16(&d[2], s->v3.kappa_q12);
+        d[4] = s->v3.template_conf;
+        d[5] = s->v3.phase;
+        d[6] = (uint8_t)((s->v3.release_class & 0x07U) | ((s->v3.rate_mode & 0x07U) << 3) |
+                         ((RIDE_TELEMETRY_V3_SCHEMA & 0x03U) << 6));
+        d[7] = s->v3.flags;
+        break;
+#endif
     default:
         break;
     }
+}
+
+/* Data frames in the cycle being sent: the nine schema-2 frames, plus the V3 group when this
+ * snapshot carries it. */
+static uint8_t cycle_frames(const ride_telemetry_snapshot_t *s)
+{
+#if ASSIST_V3_TELEMETRY_FRAMES
+    if (s->v3.valid) return (uint8_t)(RIDE_TELEMETRY_DATA_FRAMES + RIDE_TELEMETRY_V3_FRAMES);
+#else
+    (void)s;
+#endif
+    return RIDE_TELEMETRY_DATA_FRAMES;
 }
 
 static void build_meta_frame(const ride_telemetry_snapshot_t *s, uint8_t d[8])
@@ -132,7 +166,7 @@ static void build_meta_frame(const ride_telemetry_snapshot_t *s, uint8_t d[8])
     d[1] = s->active_profile_bank;
     put_u32(&d[2], s->control_tick);
     d[6] = (T.failed_frames > 255U) ? 255U : (uint8_t)T.failed_frames;
-    d[7] = RIDE_TELEMETRY_DATA_FRAMES;
+    d[7] = cycle_frames(s);
 }
 
 void ride_telemetry_init(const diag_can_ops_t *can_ops)
@@ -166,7 +200,7 @@ static void finish_pending(bool ok)
     }
 
     T.frame_index++;
-    if (T.frame_index >= RIDE_TELEMETRY_DATA_FRAMES) {
+    if (T.frame_index >= cycle_frames(&T.cycle)) {
         T.frame_index = 0U;
         T.cycle_valid = false;
         T.completed_snapshots++;

@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "fast_iq_slew.h"   /* the final-Iq-slew mailbox type/producer API */
+#include "assist_motion.h" /* ASSIST-V3 motion/IMU seam type (observation only) */
 
 /*
  * RIDE CONTROL - selection and publication only.
@@ -95,6 +96,17 @@ typedef struct {
 	 * caller or a simple test means one ordinary period.
 	 */
 	uint32_t elapsed_ticks;
+	/*
+	 * ASSIST-V3 (ARCHITECTURE_V3.md 3.1/3.3). OBSERVATIONS for the V3 behaviour layer, never a
+	 * cut or a limit: the brake cut stays safety_cut_non_direction above (native_cut, SAFETY
+	 * 200 ms). iq_measured is the Park-domain measured current (MS.i_q, not the reference);
+	 * motion is the raw IMU seam sample, sanitised by the pipeline before V3 may read it
+	 * (assist_motion_sanitize). Current hardware has no IMU: main.c passes { .valid = false }.
+	 * A zero-initialised caller gets "no brake, no IMU", which is exactly today's input.
+	 */
+	int32_t iq_measured;
+	bool brake;
+	motion_input_t motion;
 } ride_control_input_t;
 
 /*
