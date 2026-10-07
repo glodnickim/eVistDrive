@@ -104,3 +104,11 @@ Rejected: distance caps from wheel pulses (1 pulse = 2.218 m, 0 below 3 km/h). I
 ### D-023 — 2026-10-07 — Envelope factor defined in the load domain and clamped (re-check N1)
 `kL = clamp(L_eq / I_rev, 1.0, 2.5)`, prior value below ~300 CLU, `env_equiv = EB74_active(kL * I)`.
 Rejected: factor after the EB74 deadband (rev 2) — unbounded near the threshold, ~2.8x surge on light spin then attack.
+
+### D-024 — 2026-10-07 — RAM budget for V3: reduce the reserved stack 6 KB -> 5 KB when B-PIPE lands
+Measured on the B-CFG target build: static RAM ends at 0x2000A2D8, heap 1 KB, stack 6 KB; only 296 B free. The
+stack gate (tools/m820_stack_gate.py) proves worst case foreground + ISR = 2920 B and requires margin >= 1024 B.
+At 5 KB the margin is ~2200 B (> 2x the required minimum) and 1 KB is freed for V3 (~0.4-0.6 KB). The gate is re-run
+on every target build, so a V3 stack increase is caught.
+Rejected: shrinking STOP_TRACE (27 KB diagnostic recorder in NORMAL builds, owner tooling depends on it); removing
+the 1 KB heap (newlib malloc is linked; runtime use not proven absent); squeezing V3 buffers below the spec.
