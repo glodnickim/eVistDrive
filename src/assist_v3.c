@@ -208,8 +208,12 @@ int32_t assist_v3_update(const assist_v3_input_t *in)
 	const bool stop_confirmed = in->g53_true_stop || in->real_stop;
 	const bool crank_stopped = io.release_class == ASSIST_V3_CLASS_PEDAL_STOP || stop_confirmed;
 	/* Reverse: the G53 signed cadence (what makes D7EC hard-clear) or the native reverse
-	 * inhibit. Baseline then falls at the BDE8 rate whatever the load (audit A 4). */
-	const bool reverse = in->cadence_rpm < 0 || (in->direction_inhibit && in->inhibit_is_reverse);
+	 * inhibit. Baseline: D7EC hard-clears and BDE8 leaves state 7 with one -50 step, then zeroes Q5C
+	 * (m2aa 2385 -> 2335 -> 0 within 3 logical ms, SIL reverse_60 [SIM]); the published Iq then
+	 * follows the 6.84 Iq/ms fast slew. Milestone C reverse <= baseline: y is zeroed at once and the
+	 * fast slew shapes the published Iq exactly as at baseline (G1-STOP). */
+	const bool reverse = in->cadence_rpm < 0 || in->g53_reverse ||
+	                     (in->direction_inhibit && in->inhibit_is_reverse);
 	/* Start readiness (6.2): the D7EC readiness rule with the chain's own thresholds, applied to
 	 * V3's forward step evidence (crank_phase.c, D-006) and env_equiv. */
 	uint16_t ready_env = 0u;
@@ -226,12 +230,22 @@ int32_t assist_v3_update(const assist_v3_input_t *in)
 		target = 0u;
 		mode = ASSIST_V3_RATE_HOLD;
 	} else if (reverse) {
+		V.y_q8 = 0u; V.frac = 0u; V.dir = 0;
 		target = 0u;
-		rate = rate_bde8(p);
 		mode = ASSIST_V3_RATE_REVERSE;
 	} else if (crank_stopped) {
-		if (load_released) {
-			/* D7EC zero-reset -> BDE8 -50/ms (legacy stop, R1-#9). */
+		if (load_released && stop_confirmed) {
+			/* Legacy stop, load released, stop confirmed (R1-#9, measured): at the G53 PAS true-stop
+			 * the D7EC zero-reset drops drive permission and BDE8 leaves state 7 with one or two -50
+			 * steps, then zeroes Q5C (request 0 within ~12 ms of the true-stop, SIL attack_stop_60
+			 * [SIM]); the fast slew shapes the published Iq. y is zeroed at once so the V3 stop is
+			 * never later than baseline (G1-STOP). */
+			V.y_q8 = 0u; V.frac = 0u; V.dir = 0;
+			target = 0u;
+			mode = ASSIST_V3_RATE_STOP_RELEASED;
+		} else if (load_released) {
+			/* V3's own PEDAL_STOP before the stop is confirmed: already earlier than baseline,
+			 * which still holds here; fall at the BDE8 rate (-50/ms). */
 			target = 0u;
 			rate = rate_bde8(p);
 			mode = ASSIST_V3_RATE_STOP_RELEASED;

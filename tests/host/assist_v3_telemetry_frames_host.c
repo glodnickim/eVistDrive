@@ -1,14 +1,15 @@
 /*
  * Assist Behavior V3 - DIAG frame group on the FW-145 live-ride stream (ARCHITECTURE_V3.md 11,
- * inc/ride_telemetry.h, inc/config.h ASSIST_V3_SHADOW_TELEMETRY). Real module: src/ride_telemetry.c
- * built as the diagnostic shadow-telemetry firmware builds it (CAN_DIAGNOSTICS_ENABLE=1,
- * ASSIST_V3, ASSIST_V3_SHADOW_TELEMETRY=1).
+ * inc/ride_telemetry.h, inc/config.h ASSIST_V3_TELEMETRY_FRAMES). Real module: src/ride_telemetry.c
+ * built as the diagnostic V3 firmware builds it (CAN_DIAGNOSTICS_ENABLE=1, ASSIST_V3=1; main.c
+ * marks the snapshot valid while V3 is the ACTIVE engine, or always with the shadow opt-in).
  *
- *  F1 a snapshot WITHOUT V3 data (v3.valid = false, i.e. the default build / G5300 rule 3) sends
+ *  F1 a snapshot WITHOUT V3 data (v3.valid = false, i.e. G5300 engine / G-EQ rule 3) sends
  *     exactly the nine schema-2 frames per cycle and never an identifier above RIDER;
- *  F2 a snapshot WITH V3 data appends exactly three frames, BASE+10..12, after RIDER; every
- *     pre-existing frame keeps its identifier and position; all twelve carry the same tick;
- *  F3 payload layout of V3A/V3B/V3C (big-endian, packed class/mode/schema byte, flags);
+ *  F2 a snapshot WITH V3 data appends exactly five frames, BASE+10..14, after RIDER; every
+ *     pre-existing frame keeps its identifier and position; all fourteen carry the same tick;
+ *  F3 payload layout of V3A..V3E (big-endian, packed class/mode/schema byte, flags, published
+ *     final_iq, backstop_iq, CPU probe, dropped G53 ticks, backstop state, flags2), V3 schema 2;
  *  F4 pacing is unchanged: frame starts stay >= RIDE_TELEMETRY_FRAME_INTERVAL_TICKS apart, so
  *     the group lengthens the snapshot period instead of adding bus load;
  *  F5 the diagnostic CAN-id map reserves the V3 range (compile-time, diag_efid_map.h).
@@ -21,11 +22,12 @@
 #include "diag_efid_map.h"
 
 #if !ASSIST_V3_TELEMETRY_FRAMES
-#error "build with -DCAN_DIAGNOSTICS_ENABLE=1 -DASSIST_V3=1 -DASSIST_V3_SHADOW_TELEMETRY=1"
+#error "build with -DCAN_DIAGNOSTICS_ENABLE=1 -DASSIST_V3=1"
 #endif
 
-_Static_assert(DIAG_EFID_RIDE_TELEM_HI == RIDE_TELEMETRY_EFID_BASE + 12U,
+_Static_assert(DIAG_EFID_RIDE_TELEM_HI == RIDE_TELEMETRY_EFID_BASE + 14U,
                "F5 the V3 frame range is reserved in the diagnostic id map");
+_Static_assert(RIDE_TELEMETRY_V3_SCHEMA == 2U, "F3 V3 schema 2 (Milestone C: V3D/V3E added)");
 
 #define MAX_FRAMES 64
 
@@ -73,7 +75,7 @@ int main(void)
 {
     ride_telemetry_snapshot_t s;
     uint32_t t = 0U;
-    puts("assist_v3 DIAG frame group on the FW-145 stream (shadow telemetry build)");
+    puts("assist_v3 DIAG frame group on the FW-145 stream (V3 diagnostic build)");
 
     ride_telemetry_init(&ops);
     memset(&s, 0, sizeof(s));
@@ -103,6 +105,9 @@ int main(void)
     s.v3.base_target_iq = 400; s.v3.target_iq = 399; s.v3.e_short = 1111U;
     s.v3.kappa_q12 = 6029U; s.v3.template_conf = 200U; s.v3.phase = 95U;
     s.v3.release_class = 4U; s.v3.rate_mode = 5U; s.v3.flags = 0xA5U;
+    s.v3.final_iq = 321; s.v3.backstop_iq = -1; s.v3.cpu_max_div16 = 0x1234U;
+    s.v3.dropped_logical_ticks = 7U; s.v3.cpu_last_div16 = 0x0456U; s.v3.backstop_state = 3U;
+    s.v3.flags2 = 0x0BU;
     ride_telemetry_capture(&s);
     {
         /* finish whatever cycle is in flight, then one full V3 cycle */
@@ -116,20 +121,20 @@ int main(void)
         }
         check(first != 0U, "F2a a V3-carrying cycle was sent");
         unsigned k = 0U, coherent = 1U;
-        uint32_t ids[16];
+        uint32_t ids[20];
         for (unsigned i = first; i < frame_count && k < want_n; i++) {
             if (frames[i].id == RIDE_TELEMETRY_EFID_META) continue;
             ids[k++] = frames[i].id;
             if (be16(frames[i].d) != 0x1357U) coherent = 0U;
         }
-        check(k == want_n, "F2b the V3 cycle has 9 + 3 data frames");
+        check(k == want_n, "F2b the V3 cycle has 9 + 5 data frames");
         int ids_ok = 1;
         for (unsigned i = 0U; i < k; i++) {
             const uint32_t want = RIDE_TELEMETRY_EFID_BASE + ((i <= 6U) ? i : (i + 1U));
             if (ids[i] != want) ids_ok = 0;
         }
-        check(ids_ok, "F2c identifiers BASE+0..6, 8..9, then V3 BASE+10..12");
-        check(coherent, "F2d one coherent tick across all twelve frames");
+        check(ids_ok, "F2c identifiers BASE+0..6, 8..9, then V3 BASE+10..14");
+        check(coherent, "F2d one coherent tick across all fourteen frames");
         /* the frame after the V3 group starts the next cycle at CORE (or META) */
         unsigned after = first;
         for (unsigned seen = 0U; after < frame_count && seen < want_n; after++)
@@ -137,11 +142,13 @@ int main(void)
         check(after >= frame_count || frames[after].id == RIDE_TELEMETRY_EFID_CORE ||
               frames[after].id == RIDE_TELEMETRY_EFID_META, "F2e the next cycle restarts at CORE");
 
-        const frame_t *a = 0, *b = 0, *c = 0;
+        const frame_t *a = 0, *b = 0, *c = 0, *dd = 0, *e = 0;
         for (unsigned i = first; i < frame_count; i++) {
             if (frames[i].id == RIDE_TELEMETRY_EFID_V3_BASE && !a) a = &frames[i];
             if (frames[i].id == RIDE_TELEMETRY_EFID_V3_BASE + 1U && !b) b = &frames[i];
             if (frames[i].id == RIDE_TELEMETRY_EFID_V3_BASE + 2U && !c) c = &frames[i];
+            if (frames[i].id == RIDE_TELEMETRY_EFID_V3_BASE + 3U && !dd) dd = &frames[i];
+            if (frames[i].id == RIDE_TELEMETRY_EFID_V3_BASE + 4U && !e) e = &frames[i];
         }
         check(a && be16(&a->d[2]) == 1234U && be16(&a->d[4]) == 567U && bei16(&a->d[6]) == -21,
               "F3a V3A intent / env_equiv / demand");
@@ -151,6 +158,10 @@ int main(void)
               (c->d[6] & 7U) == 4U && ((c->d[6] >> 3) & 7U) == 5U &&
               ((c->d[6] >> 6) & 3U) == RIDE_TELEMETRY_V3_SCHEMA && c->d[7] == 0xA5U,
               "F3c V3C kappa / conf / phase / class|mode|schema / flags");
+        check(dd && bei16(&dd->d[2]) == 321 && bei16(&dd->d[4]) == -1 && be16(&dd->d[6]) == 0x1234U,
+              "F3d V3D published final_iq / backstop_iq (-1 open) / cpu max");
+        check(e && be16(&e->d[2]) == 7U && be16(&e->d[4]) == 0x0456U && e->d[6] == 3U && e->d[7] == 0x0BU,
+              "F3e V3E dropped G53 ticks / cpu last / backstop state / flags2");
     }
 
     /* F4: pacing */

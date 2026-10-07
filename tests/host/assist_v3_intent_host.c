@@ -826,6 +826,9 @@ static void test_kl(void)
         sim_init(&s, &SH_DEAD, 60.0, 1000.0, 0.0, 1100u);
         s.engaged_mode = mode;
         sim_revs(&s, 30.0);
+        /* D-039: the revolution's kL is evaluated by the deferred job over the next calls
+         * (<= 7 calls of 64 recurrence iterations, plus the learning unit): settle 10 ms. */
+        sim_seconds(&s, 0.01);
         ref = assist_v3_intent_compute_kl(assist_v3_intent_template(), assist_v3_intent_debug()->last_rev_mean, 60, thr, NULL, NULL);
         CHECK(!s.out.kl_from_prior && s.out.kl_q12 == ref, "kL from the learned template at a stable revolution");
         CHECK(s.out.env_equiv == assist_v3_eb74_active(((uint32_t)s.out.kl_q12 * s.out.intent) >> 12, thr),
@@ -887,6 +890,21 @@ static void test_cpu(void)
            steps, mw, mk, 96u, (unsigned)NBINS, d->kl_recomputes, d->max_steps_per_call);
     CHECK(mw <= 48u, "CPU window walk <= 48 entries per step");
     CHECK(mk <= 400u, "CPU kL recurrence <= 400 iterations");
+    {
+        /* D-039 / REVIEW-T #13 host op-count: inner operations (ring reads / MACs / recurrence
+         * iterations / window entries) of the worst single call, glitch included (unaligned ->
+         * the spread alignment search runs). One-shot (Milestone B) worst case for comparison:
+         * alignment 96 x NB x (SPB + 1) + learning 2 x NB x (SPB + 1) + renormalisation 2 NB
+         * + learned + prior kL (2 x (400 + NB)) + one window walk (48). */
+        const uint32_t oneshot = 96u * NBINS * (SPBIN + 1u) + 2u * NBINS * (SPBIN + 1u) + 2u * NBINS +
+                                 2u * (400u + NBINS) + 48u;
+        s.lost += 3; s.glitch = true;
+        sim_revs(&s, 3.0);
+        printf("  CPU D-039 op-count per call: worst %u (spread) vs %u (one-shot, Milestone B)\n",
+               d->max_work_per_call, oneshot);
+        CHECK(d->max_work_per_call <= 600u, "CPU D-039 worst-case inner ops per call <= 600 (spread work)");
+        CHECK(d->alignments > 0u, "CPU the spread alignment search still re-aligns after a glitch");
+    }
 }
 
 int main(void)

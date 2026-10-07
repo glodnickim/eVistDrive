@@ -79,26 +79,50 @@
 #if (CAN_RIDE_TELEMETRY_ENABLE != 0) && (CAN_DIAGNOSTICS_ENABLE == 0)
 #error "CAN_RIDE_TELEMETRY_ENABLE requires CAN_DIAGNOSTICS_ENABLE=1"
 #endif
-// --- Assist V3 diagnostic frame group (0x1040A..0x1040C), ARCHITECTURE_V3 section 11 ---
-// Three extra frames appended to the live-ride snapshot cycle above, so they share its pacing
+// --- Assist Behavior V3 stage (docs/assist-v3/ARCHITECTURE_V3.md) ---
+// ASSIST_V3=1 compiles the V3 engine in (src/assist_v3*.c, the engine latch, the pipeline-owned
+// backstop and the standstill predicate in src/assist_pipeline.c); 0 = the baseline pipeline.
+// The canonical define source is tools/build_firmware.py (--assist-v3 on|off, RULE 22); every use
+// is `#if ASSIST_V3`, never `#ifdef`, so a mistyped -DASSIST_V3=0 cannot build a V3 image whose
+// state differs from its build_info record (REVIEW-T #22).
+#ifndef ASSIST_V3
+#define ASSIST_V3 0
+#endif
+#if (ASSIST_V3 != 0) && (ASSIST_V3 != 1)
+#error "ASSIST_V3 must be 0 or 1"
+#endif
+
+// --- Assist V3 diagnostic frame group (0x1040A..0x1040E), ARCHITECTURE_V3 section 11 ---
+// Five extra frames appended to the live-ride snapshot cycle above, so they share its pacing
 // (one frame per 3 ms whatever the group size: the bus load does not grow, the snapshot period
-// goes from 27 to 36 ms while they are sent). NEVER in a NORMAL build (they need the live-ride
+// goes from 27 to 42 ms while they are sent). NEVER in a NORMAL build (they need the live-ride
 // stream, which needs CAN_DIAGNOSTICS_ENABLE), and never without ASSIST_V3.
-// Milestone B is SHADOW ONLY - V3 publishes nothing in either engine - so the rule "no V3 frame in
-// G5300 mode" (TEST_MATRIX G-EQ rule 3) is kept by default: ASSIST_V3_SHADOW_TELEMETRY=0 sends no
-// V3 frame at all. Setting it to 1 (tools/build_firmware.py --assist-v3-shadow-telemetry) is the
-// explicit opt-in for a shadow ride log: V3 frames are then sent although the engine is G5300.
-// Activation (Milestone C) adds "engine_active == V3" as the normal emission condition.
+// Emission condition (Milestone C): the V3 engine is ACTIVE (it publishes Iq). In G5300 mode no
+// V3 frame is sent (TEST_MATRIX G-EQ rule 3) unless ASSIST_V3_SHADOW_TELEMETRY=1
+// (tools/build_firmware.py --assist-v3-shadow-telemetry), the explicit opt-in for a shadow ride
+// log in which V3 is computed beside G5300 but does not publish.
 #ifndef ASSIST_V3_SHADOW_TELEMETRY
 #define ASSIST_V3_SHADOW_TELEMETRY 0
 #endif
 #if (ASSIST_V3_SHADOW_TELEMETRY != 0) && (ASSIST_V3_SHADOW_TELEMETRY != 1)
 #error "ASSIST_V3_SHADOW_TELEMETRY must be 0 or 1"
 #endif
-#if defined(ASSIST_V3) && (ASSIST_V3_SHADOW_TELEMETRY != 0) && (CAN_RIDE_TELEMETRY_ENABLE != 0)
+#if (ASSIST_V3 != 0) && (CAN_RIDE_TELEMETRY_ENABLE != 0)
 #define ASSIST_V3_TELEMETRY_FRAMES 1
 #else
 #define ASSIST_V3_TELEMETRY_FRAMES 0
+#endif
+// D-039 / REVIEW-T #13: DWT cycle probe of the V3 stage (max/last cycles per call, exported in the
+// V3 frame group). Target DIAG builds only (tools/build_firmware.py sets it with --variant
+// diagnostic and --assist-v3 on); host builds have no DWT and leave it 0.
+#ifndef ASSIST_V3_CPU_PROBE
+#define ASSIST_V3_CPU_PROBE 0
+#endif
+#if (ASSIST_V3_CPU_PROBE != 0) && (ASSIST_V3_CPU_PROBE != 1)
+#error "ASSIST_V3_CPU_PROBE must be 0 or 1"
+#endif
+#if (ASSIST_V3_CPU_PROBE != 0) && ((ASSIST_V3 == 0) || (CAN_DIAGNOSTICS_ENABLE == 0))
+#error "ASSIST_V3_CPU_PROBE needs ASSIST_V3=1 and CAN_DIAGNOSTICS_ENABLE=1"
 #endif
 // --- Optional standalone torque-sensor CAN emulation stream (0x81F83100) ---
 // FW-110: this used to be silently tied to CAN_DIAGNOSTICS_ENABLE even though nothing in this

@@ -33,8 +33,10 @@ G53_OPTIMIZED_SOURCES = {
     "src/assist_v3.c", "src/assist_v3_intent.c",
 }
 # Assist Behavior V3 candidate build (feature/assist-behavior-v3): ASSIST_V3 is compiled in by
-# default. Milestone B is shadow only (V3 computed, never published), so the image behaves as the
-# baseline either way; --assist-v3 off compiles it out for an A/B or a bisect.
+# default. Milestone C: the V3 engine publishes when it is the ACTIVE engine (config block, latch in
+# src/assist_pipeline.c); --assist-v3 off compiles it out (baseline pipeline) for an A/B or a
+# bisect. This file is the CANONICAL source of the build defines (RULE 22); scripts/
+# build-firmware.ps1 is a non-canonical legacy entry point.
 ASSIST_V3_DEFAULT = "on"
 VERSION_STATE_ROOT = ROOT.parent / ".ebics-version-state"
 
@@ -209,8 +211,11 @@ def _build_one(version: str, variant: str, version_source: str, entries: list[st
 
     defs = ["-DGD32F30X_HD", "-DGD_ECLIPSE_GCC", "-DUSE_STDPERIPH_DRIVER", "-DBOOTLOADER=820",
             f"-DCAN_DIAGNOSTICS_ENABLE={1 if variant == 'diagnostic' else 0}"]
-    if assist_v3:
-        defs.append("-DASSIST_V3=1")
+    # inc/config.h checks every value (#if ASSIST_V3 + #error): 0 is written explicitly when off.
+    defs.append(f"-DASSIST_V3={1 if assist_v3 else 0}")
+    if assist_v3 and variant == "diagnostic":
+        # D-039 / REVIEW-T #13: DWT max-cycles probe of the V3 stage, DIAG images only.
+        defs.append("-DASSIST_V3_CPU_PROBE=1")
     if v3_shadow_telemetry:
         defs.append("-DASSIST_V3_SHADOW_TELEMETRY=1")
     common = ["-mcpu=cortex-m4", "-mthumb", "-mfloat-abi=hard", "-mfpu=fpv4-sp-d16"]

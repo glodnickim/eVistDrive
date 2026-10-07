@@ -46,7 +46,7 @@
 #include "rider_input.h"
 #include "ride_control.h"
 #include "torque_input.h"
-#ifdef ASSIST_V3
+#if ASSIST_V3
 #include "assist_v3_harness.h"
 #endif
 
@@ -98,10 +98,19 @@ static const scenario_def_t *find_scenario(const char *name)
 
 int main(int argc, char **argv)
 {
-	if (argc != 3) {
-		fprintf(stderr, "usage: %s <scenario> <output.csv>\n", argv[0]);
+	/* Optional 3rd argument `v3` (only in a -DASSIST_V3 build): run the scenario with the V3 engine
+	 * requested (tools/run_regression.py, both-engine pipeline runs). Default: G5300 (G-EQ). */
+	const bool engine_v3 = argc == 4 && strcmp(argv[3], "v3") == 0;
+	if (argc != 3 && !engine_v3) {
+		fprintf(stderr, "usage: %s <scenario> <output.csv> [v3]\n", argv[0]);
 		return 2;
 	}
+#if !ASSIST_V3
+	if (engine_v3) {
+		fprintf(stderr, "engine v3 needs a build with -DASSIST_V3=1\n");
+		return 2;
+	}
+#endif
 	const scenario_def_t *sc = find_scenario(argv[1]);
 	if (sc == NULL) {
 		fprintf(stderr, "unknown scenario: %s\n", argv[1]);
@@ -116,10 +125,10 @@ int main(int argc, char **argv)
 	static MotorState_t MS; /* zero-initialised: static storage duration */
 	motor_core_init(&MS);
 	ride_control_init();
-#ifdef ASSIST_V3
+#if ASSIST_V3
 	/* TEST_MATRIX G-EQ rule 1: engine G5300 set explicitly (tools/run_regression.py builds this
 	 * harness with and without the V3 stage and requires byte-identical traces). */
-	if (!assist_v3_harness_select_engine(false)) {
+	if (!assist_v3_harness_select_engine(engine_v3)) {
 		fprintf(stderr, "V3 engine write rejected\n");
 		return 2;
 	}
@@ -127,6 +136,7 @@ int main(int argc, char **argv)
 
 	crank_state_t crank;
 	crank_state_init(&crank);
+	uint32_t last_step_tick = 0U;
 
 	FILE *out = csv_open_or_die(argv[2],
 		"tick,time_s,crank_angle_deg,pas_state,cadence_input,"
@@ -173,6 +183,11 @@ int main(int argc, char **argv)
 		sample.start_phase = false;
 		sample.torque_sensor_valid = true;
 		sample.pas_sensor_valid = true;
+		/* ASSIST-V3 crank observations (read only by the V3 stage; no CSV column) */
+		if (new_steps != 0U) last_step_tick = tick;
+		sample.sample_tick = tick;
+		sample.crank_steps = (int32_t)crank.step_count;
+		sample.crank_step_tick = last_step_tick;
 		rider_input_update(&sample);
 
 		ride_control_input_t ride_input = { 0 };

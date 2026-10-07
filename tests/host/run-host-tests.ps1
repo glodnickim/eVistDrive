@@ -606,6 +606,13 @@ $suites = @(
        Harness = Join-Path $PSScriptRoot 'assist_v3_config_host.c'
        Modules = @(Join-Path $root 'src\assist_v3_config.c')
        IncludeDirs = @(Join-Path $PSScriptRoot 'common')
+       Defines = @("-DCAN_DISPLAY_C_PATH=$canDisplayCPathForward", '-DASSIST_V3=1') },
+    @{ Name = 'assist_v3 config owner in an image built WITHOUT ASSIST_V3 (engine=V3 rejected, caps bit 0 cleared)'
+       # REVIEW-T #20 / CONFIG_PROTOCOL_V3 section 4: the same module compiled as the --assist-v3 off
+       # image: never accept and ignore an engine this image does not have (D-012).
+       Harness = Join-Path $PSScriptRoot 'assist_v3_config_host.c'
+       Modules = @(Join-Path $root 'src\assist_v3_config.c')
+       IncludeDirs = @(Join-Path $PSScriptRoot 'common')
        Defines = @("-DCAN_DISPLAY_C_PATH=$canDisplayCPathForward") },
     @{ Name = 'assist_v3 g53_static_target parity: G1-STATIC, G1-STATIC-T, no-mutation, V3 accessors'
        # The harness #includes g53_port_chain.c to snapshot its private arrays, so the chain module
@@ -637,13 +644,37 @@ $suites = @(
                    (Join-Path $root 'src\assist_motion.c'),
                    (Join-Path $root 'src\g53_port_chain.c'))
        IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common')) },
-    @{ Name = 'assist_v3 DIAG frame group on the FW-145 stream (real ride_telemetry, shadow telemetry build)'
-       # Built as the diagnostic --assist-v3-shadow-telemetry firmware: no V3 frame without V3 data,
-       # three frames after RIDER with it, ids/payload/pacing, id range reserved.
+    @{ Name = 'assist_v3 DIAG frame group on the FW-145 stream (real ride_telemetry, V3 diagnostic build)'
+       # Built as the diagnostic V3 firmware: no V3 frame without V3 data (G5300 engine), five frames
+       # after RIDER with it (V3 schema 2: published final_iq, backstop, CPU probe, dropped G53 ticks),
+       # ids/payload/pacing, id range reserved.
        Harness = Join-Path $PSScriptRoot 'assist_v3_telemetry_frames_host.c'
        Modules = @((Join-Path $root 'src\ride_telemetry.c'))
-       Defines = @('-DCAN_DIAGNOSTICS_ENABLE=1', '-DCAN_RIDE_TELEMETRY_ENABLE=1', '-DASSIST_V3=1',
-                   '-DASSIST_V3_SHADOW_TELEMETRY=1') }
+       Defines = @('-DCAN_DIAGNOSTICS_ENABLE=1', '-DCAN_RIDE_TELEMETRY_ENABLE=1', '-DASSIST_V3=1') },
+    @{ Name = 'assist_v3 pipeline Milestone C active engine: G1-SEL/SAFE/BACKSTOP/STOP/STAND/VETO/TRAJ (both engines)'
+       # Production pipeline + G53 chain + limits + V3 stage + config owner + 16 kHz owner, built with
+       # ASSIST_V3. The link-time wraps force the V3 demand / stop-target term (misbehaving-V3 model):
+       # every bound asserted here comes from code outside src/assist_v3*.c.
+       Harness = Join-Path $PSScriptRoot 'assist_v3_pipeline_host.c'
+       Modules = @((Join-Path $root 'src\g53_port.c'),
+                   (Join-Path $root 'src\g53_port_boundaries.c'),
+                   (Join-Path $root 'src\g53_port_pas.c'),
+                   (Join-Path $root 'src\g53_port_chain.c'),
+                   (Join-Path $root 'src\g53_g1_limiter.c'),
+                   (Join-Path $root 'src\ap2_limits.c'),
+                   (Join-Path $root 'src\assist_pipeline.c'),
+                   (Join-Path $root 'src\assist_modes.c'),
+                   (Join-Path $root 'src\torque_input.c'),
+                   (Join-Path $root 'src\tuning_config.c'),
+                   (Join-Path $root 'src\battery_iq_cap.c'),
+                   (Join-Path $root 'src\fast_iq_slew.c'),
+                   (Join-Path $root 'src\assist_v3.c'),
+                   (Join-Path $root 'src\assist_v3_intent.c'),
+                   (Join-Path $root 'src\assist_motion.c'),
+                   (Join-Path $root 'src\assist_v3_config.c'))
+       IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common'))
+       Defines = @('-Wno-type-limits', '-DASSIST_V3=1', '-Wl,--wrap=assist_v3_update',
+                   '-Wl,--wrap=assist_v3_stop_target_zero') }
 )
 
 function Find-HostCompiler {

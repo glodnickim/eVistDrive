@@ -34,8 +34,9 @@
 #ifdef RIDER_INPUT_HAS_CRANK_PHASE
 #include "crank_phase.h"
 #endif
-#ifdef ASSIST_V3
+#if ASSIST_V3
 #include "assist_v3.h"
+#include "assist_v3_intent.h"
 #include "assist_v3_harness.h"
 #endif
 
@@ -558,7 +559,7 @@ static double rider_torque_ckg(const rider_plant_t *r, uint32_t tick)
     return v < 0.0 ? 0.0 : v;
 }
 
-#ifdef ASSIST_V3
+#if ASSIST_V3
 /* TEST_MATRIX G-EQ rule 1: the engine is set EXPLICITLY at every sim_init, through the real
  * config protocol (tests/host/common/assist_v3_harness.h). G5300 unless `--engine v3`. */
 static bool sil_engine_v3 = false;
@@ -596,7 +597,7 @@ static void sim_init(sim_t *s, double rpm, double cadence_ripple_fraction,
 #ifdef RIDER_INPUT_HAS_CRANK_PHASE
     crank_phase_init();
 #endif
-#ifdef ASSIST_V3
+#if ASSIST_V3
     sil_v3_select_engine();
 #endif
     rider_init(&s->rider, rpm, cadence_ripple_fraction, mean_ckg, ripple_ckg, bounce);
@@ -1686,7 +1687,7 @@ static int run_hall_start_angle_sweep(void)
 #error "rider_script quadrature resolution differs from production PAS_TRANSITIONS_PER_REV"
 #endif
 
-#ifdef ASSIST_V3
+#if ASSIST_V3
 /* V3 telemetry (ARCHITECTURE_V3 11, assist_v3_telemetry_t). TEST_MATRIX G-EQ rule 2: the V3
  * columns go to a SEPARATE CSV (<out>.v3.csv, same rows/decimation as <out>.csv, joined on
  * tick), so <out>.csv keeps the baseline schema byte for byte with ASSIST_V3 compiled in, and the
@@ -1696,19 +1697,26 @@ static int run_hall_start_angle_sweep(void)
                           "v3_expected_effort,v3_release_class,v3_base_target_e2,v3_applied_ratio," \
                           "v3_base_target_iq,v3_target_iq,v3_demand_iq,v3_cadence,v3_rate_mode," \
                           "v3_response_pct,v3_engaged,v3_crank_stopped,v3_stop_target_zero," \
-                          "v3_imu_valid,v3_engine_active,v3_engine_requested\n"
+                          "v3_imu_valid,v3_engine_active,v3_engine_requested,v3_request_iq," \
+                          "v3_backstop_state,v3_backstop_iq,v3_final_iq,v3_standstill_zero," \
+                          "v3_pulled_down,v3_intent_max_work\n"
 static void sil_v3_csv_row(FILE *f, double t_s, uint32_t tick)
 {
     const assist_v3_telemetry_t *t = assist_v3_telemetry();
+    /* engine flags, backstop and the published request come from the pipeline (truthful, after the
+     * tick's latch); the intent op-count is the D-039 host estimate (max per call so far). */
+    const assist_pipeline_v3_status_t *ps = assist_pipeline_v3_status();
     fprintf(f, "%.4f,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%ld,%ld,%ld,%d,%u,%u,%u,%u,%u,%u,"
-               "%u,%u\n",
+               "%u,%u,%ld,%u,%ld,%ld,%u,%u,%lu\n",
             t_s, tick, t->intent, t->env_equiv, t->kappa_q12, t->e_short, t->e_long, t->phase,
             t->phase_aligned ? 1U : 0U, t->template_mode ? 1U : 0U, t->template_conf_q12,
             t->expected_effort, t->release_class, t->base_target_e2, t->applied_ratio,
             (long)t->base_target_iq, (long)t->target_iq, (long)t->v3_demand_iq, t->cadence_rpm,
             t->rate_mode, t->response_pct, t->engaged ? 1U : 0U, t->crank_stopped ? 1U : 0U,
-            t->stop_target_zero ? 1U : 0U, t->imu_valid ? 1U : 0U, t->engine_active ? 1U : 0U,
-            t->engine_requested ? 1U : 0U);
+            t->stop_target_zero ? 1U : 0U, t->imu_valid ? 1U : 0U, ps->engine_v3_active ? 1U : 0U,
+            ps->engine_v3_requested ? 1U : 0U, (long)ps->v3_request_iq, ps->backstop_state,
+            (long)ps->backstop_iq, (long)ps->final_iq, ps->standstill_zero ? 1U : 0U,
+            ps->pulled_down ? 1U : 0U, (unsigned long)assist_v3_intent_debug()->max_work_per_call);
 }
 static FILE *sil_v3_csv;   /* open only while a --script run writes <out>.csv */
 #endif
@@ -1763,7 +1771,7 @@ static void sim_script_tick(sim_t *s, sil_script_run_t *run, FILE *csv, uint32_t
             mo->block_positive ? 1U : 0U, assist_pipeline_reason_bits(),
             s->MS.i_q_setpoint, s->plant.iq_actual, ride_control_get_session_state());
         fputc('\n', csv);
-#ifdef ASSIST_V3
+#if ASSIST_V3
         if (sil_v3_csv) sil_v3_csv_row(sil_v3_csv, ss->t_s, ss->tick);
 #endif
         run->rows++;
@@ -1810,7 +1818,7 @@ static int run_script(const char *script_path, const char *out_path)
     if (!f) { perror(out_path); return 2; }
     fputs(SIL_SCRIPT_CSV_HEADER, f);
     fputc('\n', f);
-#ifdef ASSIST_V3
+#if ASSIST_V3
     {
         char v3_path[1024];
         const size_t n = strlen(out_path);
@@ -1830,7 +1838,7 @@ static int run_script(const char *script_path, const char *out_path)
     s.stats_start_tick = s.tick;
     while (run.st.tick < run.st.total_ticks) sim_script_tick(&s, &run, f, sc.decimate);
     fclose(f);
-#ifdef ASSIST_V3
+#if ASSIST_V3
     fclose(sil_v3_csv);
     sil_v3_csv = NULL;
 #endif
@@ -1866,7 +1874,7 @@ int main(int argc, char **argv)
             fprintf(stderr, "usage: evist_sil [--engine g5300|v3] ...\n");
             return 2;
         }
-#ifdef ASSIST_V3
+#if ASSIST_V3
         sil_engine_v3 = v3;
 #else
         if (v3) { fprintf(stderr, "evist_sil: --engine v3 needs a build with -DASSIST_V3\n"); return 2; }

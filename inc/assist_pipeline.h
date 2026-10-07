@@ -271,4 +271,39 @@ ap2_pas_state_t assist_pipeline_pas_state(void);
 /* True while the battery-current limiter is holding the request down. */
 bool assist_pipeline_battery_limited(void);
 
+/*
+ * ASSIST-V3 (compiled with ASSIST_V3, docs/assist-v3/ARCHITECTURE_V3.md 2.2, 7.3, 11). Pipeline-owned
+ * V3 state for telemetry and tests; never a control input of any other module.
+ */
+typedef enum {
+	ASSIST_PIPELINE_BS_OPEN = 0,     /* backstop not binding                                    */
+	ASSIST_PIPELINE_BS_REVERSE = 1,  /* reverse / direction inhibit: decay at the BDE8 rate      */
+	ASSIST_PIPELINE_BS_HOLD = 2,     /* crank stopped: hold (<= published) for <= T_STOP_HARD     */
+	ASSIST_PIPELINE_BS_DECAY = 3,    /* past T_STOP_HARD: to 0 within 300 ms                      */
+	ASSIST_PIPELINE_BS_REOPEN = 4    /* forward steps resumed: from published at <= BDE8 rate     */
+} assist_pipeline_backstop_t;
+
+/* D-039 per-call budget of the V3 stage: 60 us worst case at 120 MHz (candidate). */
+#define ASSIST_V3_CPU_BUDGET_CYCLES 7200U
+
+typedef struct {
+	bool engine_v3_active;       /* TRUTHFUL: V3 published this tick's request                 */
+	bool engine_v3_requested;
+	bool switched;               /* the latch fired on the last tick                           */
+	bool standstill_zero;        /* the standstill predicate (evaluated in both engines)       */
+	bool pulled_down;            /* R1 state after the last tick                               */
+	uint8_t backstop_state;      /* assist_pipeline_backstop_t                                 */
+	int32_t backstop_iq;         /* backstop ceiling, Iq; -1 = open                            */
+	int32_t v3_demand_iq;        /* V3 y, Iq, pre-g1                                           */
+	int32_t v3_request_iq;       /* (y * g1) >> 12, pre-limits                                 */
+	int32_t final_iq;            /* the published request                                      */
+	uint32_t dropped_logical_ticks; /* G53 port catch-up ticks dropped (since the last reset)  */
+	uint32_t cpu_last_cycles;    /* DWT cycles of the last V3 stage call (ASSIST_V3_CPU_PROBE)  */
+	uint32_t cpu_max_cycles;     /* max since the last pipeline reset                          */
+	uint32_t cpu_over_budget;    /* calls above ASSIST_V3_CPU_BUDGET_CYCLES                    */
+} assist_pipeline_v3_status_t;
+
+/* Defined only in images built with ASSIST_V3. */
+const assist_pipeline_v3_status_t *assist_pipeline_v3_status(void);
+
 #endif /* ASSIST_PIPELINE_H_ */

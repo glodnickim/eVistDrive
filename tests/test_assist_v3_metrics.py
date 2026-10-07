@@ -303,6 +303,21 @@ class SafetyZero(unittest.TestCase):
             M.safety_zero(synth(self.SEGS, smooth(0)), 'BRAKE')
 
 
+class LevelMean(unittest.TestCase):
+    def test_steady_level_and_parity_can_fail(self):
+        segs = [('steady', 8.0, 1000, 1000, None)]
+        a = M.level_mean(synth(segs, smooth(200)))['mean']
+        b = M.level_mean(synth(segs, smooth(180)))['mean']
+        self.assertAlmostEqual(a, 200.0, delta=0.01)
+        self.assertGreater(abs(b / a - 1.0), 0.05)     # a 10 % deficit is visible, not averaged away
+
+    def test_refusals(self):
+        with self.assertRaises(M.MetricRefused):      # shorter than the settle time
+            M.level_mean(synth([('steady', 2.0, 1000, 1000, None)], smooth(200)))
+        with self.assertRaises(M.MetricRefused):      # nothing to compare
+            M.level_mean(synth([('steady', 8.0, 1000, 1000, None)], smooth(5)))
+
+
 class Energy(unittest.TestCase):
     def test_integral(self):
         r = M.energy(synth([('steady', 2.0, 1000, 1000, None)], smooth(100)))

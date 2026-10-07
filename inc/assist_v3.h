@@ -23,8 +23,10 @@
  * published value as a seed (y is never re-seeded from limiters, 6.1).
  *
  * Milestone C rules (no carry yet): rise = min(level D7EC rise, BDE8 50/ms); fall while pedalling
- * = R(Response); PEDAL_STOP load released = BDE8 3.5 Iq/ms; PEDAL_STOP load held = D3E
- * 0.455 Iq/ms once the crank stop is confirmed (G53 true-stop or native real_stop); reverse = BDE8.
+ * = R(Response); PEDAL_STOP load released = y zeroed at once when the stop is confirmed (G53 true-stop
+ * or real_stop; baseline BDE8 zeroes Q5C within ~12 ms of it), BDE8 3.5 Iq/ms before; load held = D3E
+ * 0.455 Iq/ms once the crank stop is confirmed (G53 true-stop or native real_stop); reverse = y zeroed
+ * at once (baseline BDE8 zeroes Q5C within 3 logical ms; the fast slew shapes the published Iq).
  *
  * Integer only, deterministic, no malloc, no float. One static instance. Context: the 4 kHz
  * foreground (assist_pipeline_update), like the rest of the pipeline.
@@ -45,6 +47,7 @@ typedef struct {
 	uint16_t lut_cadence;        /* D7EC `sb` (trace d7ec_m50); inert while D+33 selects fp     */
 	uint16_t speed_native;       /* D7EC `sl` (trace d7ec_speed); inert while the D+34 taper is off */
 	bool     g53_true_stop;      /* G53 PAS crank stopped (accessor)                             */
+	bool     g53_reverse;        /* G53 PAS direction < 0 (trace pas_direction): D7EC hard-clear */
 	bool     direction_inhibit;  /* native observations                                          */
 	bool     inhibit_is_reverse;
 	bool     real_stop;
@@ -71,10 +74,10 @@ typedef enum {
 	ASSIST_V3_RATE_HOLD = 0,          /* y == target                                     */
 	ASSIST_V3_RATE_RISE = 1,          /* min(level D7EC rise, BDE8 50/ms)                */
 	ASSIST_V3_RATE_FALL_RESPONSE = 2, /* R(Response), pedalling                          */
-	ASSIST_V3_RATE_STOP_RELEASED = 3, /* PEDAL_STOP, load released: BDE8 3.5 Iq/ms       */
+	ASSIST_V3_RATE_STOP_RELEASED = 3, /* PEDAL_STOP, load released: 0 once confirmed, else BDE8 */
 	ASSIST_V3_RATE_STOP_HELD = 4,     /* PEDAL_STOP, load held, stop confirmed: D3E      */
 	ASSIST_V3_RATE_STOP_WAIT = 5,     /* PEDAL_STOP, load held, stop not yet confirmed   */
-	ASSIST_V3_RATE_REVERSE = 6,       /* reverse: BDE8 3.5 Iq/ms                         */
+	ASSIST_V3_RATE_REVERSE = 6,       /* reverse: y zeroed at once (legacy BDE8 zero)    */
 	ASSIST_V3_RATE_START_BLOCKED = 7  /* at 0: engage gate (EB74 armed/threshold/readiness) closed */
 } assist_v3_rate_mode_t;
 

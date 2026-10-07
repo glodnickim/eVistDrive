@@ -40,8 +40,12 @@
 #define ASSIST_V3_PARAM_MASK        ((uint16_t)((1U << ASSIST_V3_PARAM_RESPONSE) | (1U << ASSIST_V3_PARAM_ENGINE)))
 #define ASSIST_V3_PARAM_COUNT       7U
 
-/* Caps bits 0..5 of the contract (behavior_v1, effective, saved, defaults, deferred persist, revert). */
+/* Caps bits 0..5 of the contract (behavior_v1, effective, saved, defaults, deferred persist, revert).
+ * An image built without ASSIST_V3 clears bit 0 (no V3 behaviour) and rejects engine = V3 with
+ * reason 4 (CONFIG_PROTOCOL_V3 section 4, REVIEW-T #20); assist_v3_config_caps() is the value this
+ * image reports and accepts. */
 #define ASSIST_V3_CAPS              0x0000003FUL
+#define ASSIST_V3_CAP_BEHAVIOR      0x00000001UL
 
 #define ASSIST_V3_UNSET             0xFFFFU   /* "use the firmware default" / reserved */
 #define ASSIST_V3_RESPONSE_MAX      100U
@@ -139,9 +143,14 @@ void assist_v3_config_init(const assist_v3_flash_t *flash);
 /* ---- consumers (effective values, defaults resolved) ---- */
 uint16_t assist_v3_config_get(uint8_t level_1_to_5, uint8_t param_id); /* 0xFFFF = no such param */
 uint8_t  assist_v3_config_response_pct(uint8_t level_1_to_5);          /* 0 for an invalid level */
-bool     assist_v3_config_engine_requested(void);                      /* true = V3 */
+/* Release (Response) of one HMI level, 0..100, for the V3 trajectory's fall while pedalling.
+ * Milestone C: the v1 per-level response; the v2 resolver replaces the body (one call site). */
+uint8_t  assist_v3_effective_release_pct(uint8_t hmi_level_1_to_5);    /* 0 for an invalid level */
+bool     assist_v3_config_engine_requested(void);                      /* true = V3 (false without ASSIST_V3) */
+/* TRUTHFUL: true while V3 publishes Iq. False (G5300) at boot until the pipeline latch reports. */
 bool     assist_v3_config_engine_active(void);
 void     assist_v3_config_set_engine_active(bool v3_active);           /* pipeline latch reports here */
+uint32_t assist_v3_config_caps(void);                                  /* caps this image reports/accepts */
 
 /* ---- state for tests / tools ---- */
 uint16_t assist_v3_config_generation(void);

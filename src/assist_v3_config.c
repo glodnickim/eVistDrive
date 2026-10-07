@@ -1,5 +1,7 @@
 #include "assist_v3_config.h"
 
+#include "config.h"   /* ASSIST_V3: whether this image can run the V3 engine at all */
+
 #include <string.h>
 
 /*
@@ -35,6 +37,16 @@ static const uint8_t k_defaults[ASSIST_V3_LEVELS][4] = {
 	{ 90U, 80U, 80U, 100U },   /* 4 SPORT+ */
 	{ 80U, 50U, 50U, 100U }    /* 5 BOOST  */
 };
+
+/* Absent-record engine: V3 in the candidate build (D-020); an image built without the V3 stage
+ * has no V3 engine, so its only engine is G5300 (REVIEW-T #20, CONFIG_PROTOCOL_V3 section 4). */
+#if ASSIST_V3
+#define ENGINE_DEFAULT ASSIST_V3_ENGINE_V3
+#define CAPS_SUPPORTED ASSIST_V3_CAPS
+#else
+#define ENGINE_DEFAULT ASSIST_V3_ENGINE_G5300
+#define CAPS_SUPPORTED (ASSIST_V3_CAPS & ~ASSIST_V3_CAP_BEHAVIOR)
+#endif
 
 static assist_v3_values_t ram_values;
 static assist_v3_values_t saved_values;
@@ -196,7 +208,7 @@ bool assist_v3_block_validate(const uint8_t *blk, uint16_t len, uint16_t current
 		}
 	}
 
-	if ((rd32(&blk[10]) & ~(uint32_t)ASSIST_V3_CAPS) != 0UL)
+	if ((rd32(&blk[10]) & ~(uint32_t)CAPS_SUPPORTED) != 0UL)
 		return fail(reason, index, ASSIST_V3_REASON_CAPABILITY, 10U);
 
 	wgen = rd16(&blk[14]);
@@ -213,6 +225,10 @@ bool assist_v3_block_validate(const uint8_t *blk, uint16_t len, uint16_t current
 	if (v.global[0] != ASSIST_V3_UNSET) {
 		if (!param_in_mask(ASSIST_V3_PARAM_ENGINE)) return fail(reason, index, ASSIST_V3_REASON_CAPABILITY, (uint8_t)off);
 		if (!param_range_ok(ASSIST_V3_PARAM_ENGINE, v.global[0])) return fail(reason, index, ASSIST_V3_REASON_RANGE, (uint8_t)off);
+#if !ASSIST_V3
+		/* No V3 engine in this image: never accept and ignore (D-012) - capability reject. */
+		if (v.global[0] == ASSIST_V3_ENGINE_V3) return fail(reason, index, ASSIST_V3_REASON_CAPABILITY, (uint8_t)off);
+#endif
 	}
 	for (i = 0U; i < ASSIST_V3_LEVELS; i++) {
 		for (w = 0U; w < 6U; w++) {
@@ -241,9 +257,9 @@ static void build_view(uint8_t view, assist_v3_values_t *out)
 	if (view == ASSIST_V3_VIEW_SAVED) {
 		out->global[0] = saved_values.global[0];
 	} else if (view == ASSIST_V3_VIEW_EFFECTIVE) {
-		out->global[0] = resolve(ram_values.global[0], ASSIST_V3_ENGINE_V3);
+		out->global[0] = resolve(ram_values.global[0], ENGINE_DEFAULT);
 	} else {
-		out->global[0] = ASSIST_V3_ENGINE_V3;
+		out->global[0] = ENGINE_DEFAULT;
 	}
 	for (i = 0U; i < ASSIST_V3_LEVELS; i++) {
 		for (p = 0U; p < 6U; p++) {
@@ -257,7 +273,7 @@ static void build_view(uint8_t view, assist_v3_values_t *out)
 
 uint16_t assist_v3_config_get(uint8_t level, uint8_t param)
 {
-	if (param == ASSIST_V3_PARAM_ENGINE) return resolve(ram_values.global[0], ASSIST_V3_ENGINE_V3);
+	if (param == ASSIST_V3_PARAM_ENGINE) return resolve(ram_values.global[0], ENGINE_DEFAULT);
 	if (param > ASSIST_V3_PARAM_ASSIST_RANGE || level < 1U || level > ASSIST_V3_LEVELS) return ASSIST_V3_UNSET;
 	return resolve(ram_values.level[level - 1U][param], default_of((uint8_t)(level - 1U), param));
 }
@@ -268,14 +284,28 @@ uint8_t assist_v3_config_response_pct(uint8_t level)
 	return (v <= ASSIST_V3_RESPONSE_MAX) ? (uint8_t)v : 0U;
 }
 
+/* Milestone C release source (CONFIG_PROTOCOL_V3 status note): the v1 per-level "response" field
+ * ("how quickly assist drops when you ease off"). The ONE place the pipeline asks for the release
+ * of a level, so the v2 resolver (assist_v3_effective(level), ARCHITECTURE_V3 section 5) replaces
+ * this body without re-plumbing the pipeline (REVIEW-T #5, #14). */
+uint8_t assist_v3_effective_release_pct(uint8_t hmi_level)
+{
+	return assist_v3_config_response_pct(hmi_level);
+}
+
 bool assist_v3_config_engine_requested(void)
 {
+#if ASSIST_V3
 	return assist_v3_config_get(1U, ASSIST_V3_PARAM_ENGINE) == ASSIST_V3_ENGINE_V3;
+#else
+	return false;   /* a record written by a V3 image cannot request an engine this image lacks */
+#endif
 }
 
 bool assist_v3_config_engine_active(void) { return engine_active_v3; }
 void assist_v3_config_set_engine_active(bool v3_active) { engine_active_v3 = v3_active; }
 
+uint32_t assist_v3_config_caps(void) { return CAPS_SUPPORTED; }
 uint16_t assist_v3_config_generation(void) { return generation; }
 void assist_v3_config_ram_values(assist_v3_values_t *out) { *out = ram_values; }
 void assist_v3_config_saved_values(assist_v3_values_t *out) { *out = saved_values; }
@@ -440,7 +470,10 @@ void assist_v3_config_init(const assist_v3_flash_t *flash)
 			generation = assist_v3_generation_next(gen);
 		}
 	}
-	engine_active_v3 = assist_v3_config_engine_requested();
+	/* TRUTHFUL readback (D-037, REVIEW-T #20): engine_active is what publishes Iq. At boot that is
+	 * G5300 until the pipeline latch (ARCHITECTURE_V3 2.2) first finds every demand at 0 with no
+	 * veto and reports the requested engine through assist_v3_config_set_engine_active(). */
+	engine_active_v3 = false;
 }
 
 /* ---------------- CAN protocol ---------------- */
@@ -476,7 +509,7 @@ static void build_caps(uint8_t out[ASSIST_V3_CAPS_LEN])
 	wr16(&out[8], ASSIST_V3_BLOCK_LEN);
 	out[10] = ASSIST_V3_RECORD_STRIDE;
 	out[11] = ASSIST_V3_PARAM_COUNT;
-	wr32(&out[12], ASSIST_V3_CAPS);
+	wr32(&out[12], CAPS_SUPPORTED);
 	wr16(&out[16], ASSIST_V3_PARAM_MASK);
 	wr16(&out[18], generation);
 	out[20] = assist_v3_config_persist_state();
@@ -502,7 +535,7 @@ assist_v3_reply_t assist_v3_config_can_read(uint8_t source, uint16_t command, ui
 		if (data[0] > ASSIST_V3_VIEW_DEFAULTS) return reply_make(ASSIST_V3_REPLY_ERROR, ASSIST_V3_REASON_RANGE, 0U, source);
 		if (data[1] != 0U) return reply_make(ASSIST_V3_REPLY_ERROR, ASSIST_V3_REASON_RANGE, 1U, source);
 		build_view(data[0], &v);
-		assist_v3_block_encode(&v, ASSIST_V3_CAPS, generation, out);
+		assist_v3_block_encode(&v, CAPS_SUPPORTED, generation, out);
 		*out_len = ASSIST_V3_BLOCK_LEN;
 	}
 	return reply_none();

@@ -84,8 +84,8 @@ OF SUCH DAMAGE.
 #include "assist_modes.h"
 #include "tuning_config.h"
 #include "assist_v3_config.h"
-#ifdef ASSIST_V3
-#include "assist_v3.h"           /* ASSIST-V3: shadow telemetry for the DIAG frame group */
+#if ASSIST_V3
+#include "assist_v3.h"           /* ASSIST-V3: V3 telemetry for the DIAG frame group */
 #endif
 #include "walk_assist_motor.h"
 #include "level_gesture.h"
@@ -2327,7 +2327,8 @@ void nvic_config(void)
 
     //timer2 interrupt for Halls
     nvic_priority_group_set(NVIC_PRIGROUP_PRE1_SUB3);
-#if STOP_TRACE_ENABLE
+#if STOP_TRACE_ENABLE || ASSIST_V3_CPU_PROBE
+    /* STOP_TRACE timing (NORMAL) and the D-039 V3 stage cycle probe (DIAG, inc/config.h). */
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     DWT->CYCCNT = 0U;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
@@ -3573,13 +3574,16 @@ void reg_ADC_processing(void)
                 .active_profile_bank = assist_modes_get_active_bank()
             };
 #if ASSIST_V3_TELEMETRY_FRAMES
-            /* ASSIST-V3 (ARCHITECTURE_V3 11): the shadow V3 stage's own answer to "why this Iq
-             * now", copied from its telemetry; observation only. See inc/config.h for why this
-             * group exists only with ASSIST_V3_SHADOW_TELEMETRY in Milestone B. */
+            /* ASSIST-V3 (ARCHITECTURE_V3 11): the V3 stage's and the pipeline's answer to "why this
+             * Iq now", copied from their telemetry; observation only. Sent while V3 is the ACTIVE
+             * engine (truthful readback), or always with the shadow-telemetry opt-in; never in
+             * G5300 mode otherwise (TEST_MATRIX G-EQ rule 3, inc/config.h). */
             {
                 const assist_v3_telemetry_t *v3t = assist_v3_telemetry();
+                const assist_pipeline_v3_status_t *v3s = assist_pipeline_v3_status();
                 const uint32_t conf8 = (uint32_t)v3t->template_conf_q12 >> 4;
-                rt.v3.valid = true;
+                const uint32_t cmax = v3s->cpu_max_cycles >> 4, clast = v3s->cpu_last_cycles >> 4;
+                rt.v3.valid = v3s->engine_v3_active || (ASSIST_V3_SHADOW_TELEMETRY != 0);
                 rt.v3.intent = v3t->intent;
                 rt.v3.env_equiv = v3t->env_equiv;
                 rt.v3.demand_iq = diag_clamp16(v3t->v3_demand_iq);
@@ -3598,8 +3602,20 @@ void reg_ADC_processing(void)
                     (v3t->crank_stopped ? RIDE_TELEM_V3_F_CRANK_STOPPED : 0U) |
                     (v3t->stop_target_zero ? RIDE_TELEM_V3_F_STOP_ZERO : 0U) |
                     (v3t->imu_valid ? RIDE_TELEM_V3_F_IMU_VALID : 0U) |
-                    (v3t->engine_active ? RIDE_TELEM_V3_F_ENGINE_ACTIVE : 0U) |
-                    (v3t->engine_requested ? RIDE_TELEM_V3_F_ENGINE_REQ : 0U));
+                    (v3s->engine_v3_active ? RIDE_TELEM_V3_F_ENGINE_ACTIVE : 0U) |
+                    (v3s->engine_v3_requested ? RIDE_TELEM_V3_F_ENGINE_REQ : 0U));
+                rt.v3.final_iq = diag_clamp16(v3s->final_iq);
+                rt.v3.backstop_iq = diag_clamp16(v3s->backstop_iq);
+                rt.v3.cpu_max_div16 = (uint16_t)(cmax > 65535U ? 65535U : cmax);
+                rt.v3.cpu_last_div16 = (uint16_t)(clast > 65535U ? 65535U : clast);
+                rt.v3.dropped_logical_ticks = (uint16_t)(v3s->dropped_logical_ticks > 65535U ?
+                    65535U : v3s->dropped_logical_ticks);
+                rt.v3.backstop_state = v3s->backstop_state;
+                rt.v3.flags2 = (uint8_t)(
+                    (v3s->standstill_zero ? RIDE_TELEM_V3_F2_STANDSTILL : 0U) |
+                    (v3s->pulled_down ? RIDE_TELEM_V3_F2_PULLED_DOWN : 0U) |
+                    (v3s->switched ? RIDE_TELEM_V3_F2_SWITCHED : 0U) |
+                    (v3s->cpu_over_budget != 0U ? RIDE_TELEM_V3_F2_CPU_OVER : 0U));
             }
 #endif
             ride_telemetry_capture(&rt);

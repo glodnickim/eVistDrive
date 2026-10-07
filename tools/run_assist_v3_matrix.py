@@ -8,7 +8,7 @@ CANDIDATE = the current tree, same harness, same flags plus --candidate-cflags (
             -DASSIST_V3=1: the V3 stage compiled in, as the candidate firmware build does).
             --engine selects the V3 config engine the harness writes at every sim_init
             (TEST_MATRIX G-EQ rule 1): g5300 (default) = the equivalence configuration;
-            v3 = the candidate run (meaningful once V3 publishes, Milestone C). The candidate
+            v3 = the candidate run (Milestone C: V3 publishes as the active engine). The candidate
             also writes <scenario>.v3.csv (V3 telemetry, G-EQ rule 2: never compared).
 
 Both are built from the module list in tools/run_sil.py (production files missing from the
@@ -56,10 +56,10 @@ FLAGS = ['-std=c11', '-Wall', '-Wextra', '-Werror', '-Wno-type-limits', '-O2']
 
 # Metrics shown in the markdown summary, per profile (all metrics go to matrix.csv).
 SUMMARY_METRICS = {
-    'steady': ['ripple_rev_median', 'phase_dip_fp_rate', 'energy_iq_s'],
-    'dead_spot': ['ripple_rev_median', 'phase_dip_fp_rate', 'phase_dip_worst_drop'],
-    'asymmetry': ['ripple_rev_median', 'phase_dip_fp_rate'],
-    'climb': ['ripple_rev_median', 'phase_dip_fp_rate'],
+    'steady': ['ripple_rev_median', 'phase_dip_fp_rate', 'level_mean_iq', 'energy_iq_s'],
+    'dead_spot': ['ripple_rev_median', 'phase_dip_fp_rate', 'phase_dip_worst_drop', 'level_mean_iq'],
+    'asymmetry': ['ripple_rev_median', 'phase_dip_fp_rate', 'level_mean_iq'],
+    'climb': ['ripple_rev_median', 'phase_dip_fp_rate', 'level_mean_iq'],
     'pas_glitch': ['ripple_rev_max', 'phase_dip_fp_rate'],
     'stall_noise': ['ripple_rev_max', 'phase_dip_fp_rate'],
     'true_release': ['release_latency_50_ms', 'release_latency_50_deg', 'release_latency_10_ms'],

@@ -186,7 +186,9 @@ $definitions = @(
     "-DUSE_STDPERIPH_DRIVER",
     "-DBOOTLOADER=$TargetBootloader",
     "-DCAN_DIAGNOSTICS_ENABLE=$diagnosticsValue",
-    # Assist V3 candidate build: shadow stage compiled in, as tools/build_firmware.py does by default.
+    # NON-CANONICAL (RULE 22, REVIEW-T #22): tools/build_firmware.py is the canonical build entry
+    # point and define source. This list only mirrors its default NORMAL-variant ASSIST_V3 value;
+    # it does not set ASSIST_V3_CPU_PROBE (DIAG) or the shadow-telemetry opt-in. Use the Python tool.
     "-DASSIST_V3=1"
 )
 $includeFlags = @(

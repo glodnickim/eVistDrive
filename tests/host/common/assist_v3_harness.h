@@ -39,9 +39,9 @@ static bool assist_v3_harness_select_engine(bool v3)
 		if (r.kind != ASSIST_V3_REPLY_NONE) return false;   /* an early abort */
 	}
 	if (r.kind != ASSIST_V3_REPLY_ACK || assist_v3_config_engine_requested() != v3) return false;
-	/* Power-on latch: nothing runs yet and every demand is 0, so the D-020 latch condition holds
-	 * trivially. Once a ride runs, the pipeline owns the latch (Milestone C). */
-	assist_v3_config_set_engine_active(v3);
+	/* engine_active is NOT poked: it stays G5300 (boot value) until the pipeline latch
+	 * (ARCHITECTURE_V3 2.2, src/assist_pipeline.c) finds every demand at 0 with no veto - the
+	 * harness exercises the production latch exactly as the firmware does. */
 	return true;
 }
 

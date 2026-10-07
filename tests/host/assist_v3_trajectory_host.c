@@ -15,11 +15,13 @@
  *  T5  rise (6.1): never faster than min(level D7EC rise, BDE8 50/ms) and far below the
  *      6.84 Iq/ms electrical guard (G1-TRAJ).
  *  T6  release while pedalling: falls at R(Response) of the level, both ends of the Response range.
- *  T7  PEDAL_STOP, load released: legacy BDE8 3.5 Iq/ms (R1-#9).
+ *  T7  PEDAL_STOP, load released: BDE8 3.5 Iq/ms while only V3's own PEDAL_STOP sees it; y = 0 at
+ *      once when the stop is confirmed (G53 true-stop / real_stop), as baseline BDE8 zeroes Q5C.
  *  T8  PEDAL_STOP, load held: holds until the stop is confirmed (G53 true-stop / real_stop),
  *      then the legacy D3E 0.455 Iq/ms ramp; the stop-target-zero term stays false until the
  *      ramp reaches 0 (re-check N2) and is true at once for a released load.
- *  T9  reverse: BDE8 3.5 Iq/ms whatever the load.
+ *  T9  reverse: y is 0 on the first reverse call whatever the load (Milestone C: legacy BDE8 zero,
+ *      measured G5300 reverse = request 0 within 3 logical ms; the fast slew shapes the published Iq).
  *  T10 output bounds: 0 <= demand <= 0.65 P at all times, integer Iq = y >> 8.
  *  T11 elapsed time: the same scenario at 1 tick/call and at 4 ticks/call ends within 1 Iq.
  *  T12 motion seam: garbage in an invalid/stale IMU sample (sanitised) -> bit-identical output
@@ -246,6 +248,14 @@ static void t7_stop_released(void)
 	CHECK(end == 0, "T7a reaches 0");
 	CHECK(worst <= bde8_20ms + 1 && worst >= bde8_20ms - 2, "T7b falls at the BDE8 rate (3.5 Iq/ms)");
 	CHECK(assist_v3_stop_target_zero(), "T7c released load: stop target zero");
+	/* T7d stop CONFIRMED (G53 true-stop) with the load released: y zeroed at once (baseline BDE8
+	 * zeroes Q5C within ~12 ms of the true-stop; Milestone C stop <= baseline) */
+	fresh(&r);
+	r.rpm = 60u; r.load = 4000u;
+	(void)settle(&r, 5000u);
+	r.rpm = 0u; r.load = 0u; r.true_stop = true;
+	CHECK(rig_step(&r) == 0 && assist_v3_telemetry()->rate_mode == ASSIST_V3_RATE_STOP_RELEASED,
+	      "T7d confirmed stop, load released: y = 0 on that call");
 }
 
 static void t8_stop_held(void)
@@ -284,12 +294,13 @@ static void t9_reverse(void)
 	r.rpm = 60u; r.load = 4000u;
 	const int32_t y0 = settle(&r, 5000u);
 	r.dir = -1; r.rpm = 30u;   /* back-pedal with the foot still loaded */
+	const int32_t first = rig_step(&r);
 	int32_t end = 0;
-	const int32_t worst = max_change_per_window(&r, 400u, 20u, -1, &end);
-	const int32_t bde8_20ms = P * 50 * 20 / 10000;
-	printf("    T9 reverse: from %d, worst %d Iq/20 ms (BDE8 %d), end %d\n", y0, worst, bde8_20ms, end);
-	CHECK(end == 0, "T9a reverse reaches 0");
-	CHECK(worst <= bde8_20ms + 1 && worst >= bde8_20ms - 2, "T9b at the BDE8 rate whatever the load");
+	(void)max_change_per_window(&r, 400u, 20u, -1, &end);
+	printf("    T9 reverse: from %d, first reverse call %d, end %d\n", y0, first, end);
+	CHECK(y0 > 100 && first == 0, "T9a reverse zeroes y on the first reverse call (legacy BDE8 zero)");
+	CHECK(end == 0 && assist_v3_telemetry()->rate_mode == ASSIST_V3_RATE_REVERSE,
+	      "T9b stays 0 while reversing, whatever the load");
 }
 
 static void t10_bounds(void)

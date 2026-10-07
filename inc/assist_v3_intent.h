@@ -146,6 +146,11 @@ typedef struct {
     uint32_t alignments;
     uint32_t alignment_failures;
     uint32_t mismatch_drops;
+    /* D-039 host op-count of one call: window-walk entries + steps + ring reads/MACs of the
+     * deferred unit (alignment offsets, learning pass, kL recurrence iterations). Never a control
+     * input; the worst case over a run is the host estimate of the per-call cost. */
+    uint32_t work_this_call;
+    uint32_t max_work_per_call;
     uint16_t last_rev_mean;         /* I_rev of the last completed revolution                      */
     uint16_t last_residual_q12;
     uint16_t env_ss;                /* steady-state envelope of the last kL evaluation             */

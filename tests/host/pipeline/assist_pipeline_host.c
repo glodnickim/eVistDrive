@@ -40,7 +40,7 @@
 #include "g53_port.h"
 #include "csv.h"
 #include "torque_input.h"
-#ifdef ASSIST_V3
+#if ASSIST_V3
 #include "assist_v3_harness.h"
 #endif
 
@@ -205,10 +205,19 @@ static uint16_t cruise_public_load_ctrl_max(const scenario_def_t *sc)
 
 int main(int argc, char **argv)
 {
-	if (argc != 3) {
-		fprintf(stderr, "usage: %s <scenario> <output.csv>\n", argv[0]);
+	/* Optional 3rd argument `v3` (only in a -DASSIST_V3 build): run the scenario with the V3 engine
+	 * requested (tools/run_regression.py, both-engine pipeline runs). Default: G5300 (G-EQ). */
+	const bool engine_v3 = argc == 4 && strcmp(argv[3], "v3") == 0;
+	if (argc != 3 && !engine_v3) {
+		fprintf(stderr, "usage: %s <scenario> <output.csv> [v3]\n", argv[0]);
 		return 2;
 	}
+#if !ASSIST_V3
+	if (engine_v3) {
+		fprintf(stderr, "engine v3 needs a build with -DASSIST_V3=1\n");
+		return 2;
+	}
+#endif
 	const scenario_def_t *sc = find_scenario(argv[1]);
 	if (sc == NULL) {
 		fprintf(stderr, "unknown scenario: %s\n", argv[1]);
@@ -219,10 +228,10 @@ int main(int argc, char **argv)
 	assist_modes_init();
 	assist_modes_set_active_bank(0);
 	assist_pipeline_init();
-#ifdef ASSIST_V3
+#if ASSIST_V3
 	/* TEST_MATRIX G-EQ rule 1: engine G5300 set explicitly (tools/run_regression.py builds this
 	 * harness with and without the V3 stage and requires byte-identical traces). */
-	if (!assist_v3_harness_select_engine(false)) {
+	if (!assist_v3_harness_select_engine(engine_v3)) {
 		fprintf(stderr, "V3 engine write rejected\n");
 		return 2;
 	}
@@ -244,6 +253,9 @@ int main(int argc, char **argv)
 		"speed_limited,limiter_zeroed,final_iq_request");
 
 	uint32_t total_ticks = (uint32_t)(sc->duration_s * CRANK_MODEL_TICK_HZ);
+	/* ASSIST-V3 crank observations (read only by the V3 stage; no CSV column): the model's step
+	 * count and the tick of its last step, on the same clock as control_tick. */
+	uint32_t last_step_tick = 0U, last_step_count = 0U;
 
 	for (uint32_t tick = 0; tick < total_ticks; tick++) {
 		double t_s = (double)tick / CRANK_MODEL_TICK_HZ;
@@ -252,6 +264,7 @@ int main(int argc, char **argv)
 			sc->cadence_rpm;
 
 		(void)crank_state_advance_tick(&crank, cadence_rpm);
+		if (crank.step_count != last_step_count) { last_step_count = crank.step_count; last_step_tick = tick; }
 		uint16_t raw_mv = crank_torque_raw_mv(&crank, sc->shape);
 
 		int16_t corrected = torque_input_correct(raw_mv);
@@ -298,6 +311,9 @@ int main(int argc, char **argv)
 		in.controller_temperature_c = 30;
 		in.speed_limit_x100 = 2500U;
 		in.elapsed_ticks = 1U;
+		in.control_tick = tick;
+		in.crank_steps = (int32_t)crank.step_count;
+		in.crank_step_tick = last_step_tick;
 		if (tick == 0U && sc->shape == &CRUISE_SHAPE &&
 		    !cruise_prepare_forward_start(sc, in.torque_load_ctrl)) {
 			fprintf(stderr, "%s: synthetic already-rolling prehistory did not reach G05/PAS readiness\n", sc->name);

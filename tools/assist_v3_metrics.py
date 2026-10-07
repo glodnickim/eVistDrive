@@ -39,6 +39,10 @@ Definitions (all angles are crank degrees taken from the ground-truth crank_cum_
                       iq_actual <= 2 counts (AXIS_CURRENT_ZERO_COUNTS in the SIL); overshoot =
                       max demand after t0 minus the max demand of the revolution before t0
                       (must be <= 0).
+  level mean          mean demand over the complete crank revolutions of the steady segments after
+                      SETTLE_S (labels NORMAL/PHASE_DIP), i.e. the steady-state assist level; the
+                      matrix reports candidate / baseline (G1-LEVEL parity). Refused below 2
+                      revolutions or MIN_DEMAND.
   energy              the SIL models no battery current and a fixed 42 V bus, so energy is the
                       proxy E = integral(iq_actual dt) over t >= 0 in Iq-count*seconds (x 42 V for
                       a W*s-shaped number in arbitrary current units). Comparable baseline vs
@@ -459,6 +463,48 @@ def safety_zero(tr: Trace, label: str, signal: str = 'iq_ref') -> dict:
             'overshoot': max(sig[i0:e]) - pre_max}
 
 
+def level_mean(tr: Trace, signal: str = 'iq_ref', settle_s: float = SETTLE_S) -> dict:
+    lab = tr.col('gt_label')
+    kind = tr.col('gt_kind')
+    sig = tr.col(signal)
+    t = tr.col('t_s')
+    seg = tr.col('gt_seg')
+    if t[-1] < settle_s:
+        raise MetricRefused('trace shorter than the settle time')
+    n = len(sig)
+    total = 0.0
+    rows = 0
+    revs = 0
+
+    def eligible(x: int) -> bool:
+        return t[x] >= settle_s and kind[x] == 'steady' and lab[x] in STEADY_LABELS
+
+    i = 0
+    while i < n:
+        if not eligible(i):
+            i += 1
+            continue
+        run_end = i
+        while run_end < n and eligible(run_end) and seg[run_end] == seg[i]:
+            run_end += 1
+        a = i
+        while True:
+            _, b = rev_after(tr, a, 1.0)
+            if b >= run_end:
+                break
+            total += sum(sig[a:b])
+            rows += b - a
+            revs += 1
+            a = b
+        i = run_end
+    if revs < 2:
+        raise MetricRefused(f'only {revs} complete steady revolution(s)')
+    mean = total / rows
+    if mean < MIN_DEMAND:
+        raise MetricRefused('steady demand below MIN_DEMAND: no level to compare')
+    return {'mean': mean, 'revs': revs}
+
+
 def energy(tr: Trace) -> dict:
     t = tr.col('t_s')
     i = tr.col('iq_actual')
@@ -576,6 +622,8 @@ def scenario_metrics(tr: Trace, profile: str, signal: str = 'iq_ref') -> dict[st
         put('safe', lambda: safety_zero(tr, label, signal),
             {'ref0_ms': 'safety_ref0_ms', 'drive0_ms': 'safety_drive0_ms',
              'overshoot': 'safety_overshoot', 'iq_at_event': 'safety_iq_at_event'})
+    if profile in ('steady', 'dead_spot', 'asymmetry', 'climb'):
+        put('level', lambda: level_mean(tr, signal), {'mean': 'level_mean_iq'})
     put('energy', lambda: energy(tr), {'iq_s': 'energy_iq_s'})
     c = carry(tr)
     if c.get('status') == 'N/A':

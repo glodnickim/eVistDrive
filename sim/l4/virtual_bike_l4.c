@@ -41,7 +41,7 @@
 /* ASSIST-V3: the production crank step accumulator, fed from this harness's drain exactly as
  * main.c feeds it (REVIEW 1 #19), and the explicit engine selection (G-EQ rule 1). */
 #include "crank_phase.h"
-#ifdef ASSIST_V3
+#if ASSIST_V3
 #include "assist_v3_harness.h"
 #endif
 #include "walk_assist_motor.h"
@@ -324,7 +324,7 @@ static void l4_init(l4_t *s,float true_soc,evd_battery_profile_t profile,float g
     s->ms.hall_angle_detect_flag=1U; foc_current_feedback_reset(&s->ms);
     ride_control_init(); pas_direction_init(); pas_liveness_init(); pas_cadence_reset();
     cadence_filter_reset(); pas_sampler_init(0U); crank_phase_init();
-#ifdef ASSIST_V3
+#if ASSIST_V3
     if(!assist_v3_harness_select_engine(false)){ fprintf(stderr,"L4: V3 engine write rejected\n"); abort(); }
 #endif
     evd_bike_init(&s->bike); evd_rider_init(&s->rider);

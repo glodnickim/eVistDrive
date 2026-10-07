@@ -183,3 +183,10 @@ Max Power legacy input scales the percentage; CAPS format 2 = 30 B with max_powe
 [slope_min, slope_max]; applicability validated post-write, inapplicable overrides kept and reported (source 5);
 persist outcome via persist_state (4 = stale generation). Carried: DIAG rate_mode width (Milestone D), glossary entries
 "SPORT+ ratio law" vs "AUTO mode" (integration PROJECT_GLOSSARY at session end).
+
+### D-041 — 2026-10-07 — V3 reverse and unloaded-crank stop zero the trajectory at once (supersedes the 3.5 Iq/ms rows of ARCHITECTURE §6.1 / D-019 for these two cases)
+Measured on the baseline (Milestone C worker, SIL): G53 BDE8 zeroes its request within 3-12 ms of a G53 reverse or
+true-stop with the crank unloaded; the published Iq is then shaped by the fast slew, not by a 3.5 Iq/ms ramp. To meet
+"stop/reverse timing <= baseline", V3 sets y = 0 on a G53 reverse step (new input g53_reverse = G53 pas_direction < 0)
+and on a confirmed stop with the crank unloaded. The loaded-crank stop keeps the legacy D3E ramp; the fast slew stays
+the electrical guard. SIL: stop ref0 81-114 ms vs baseline 87-122 ms, reverse 32-59 ms vs 35-68 ms.

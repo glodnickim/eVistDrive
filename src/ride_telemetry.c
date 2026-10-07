@@ -122,7 +122,7 @@ static void build_data_frame(uint8_t index, const ride_telemetry_snapshot_t *s,
                          ((s->start_phase ? 1U : 0U) << 6));
         break;
 #if ASSIST_V3_TELEMETRY_FRAMES
-    /* ASSIST-V3 frame group (inc/ride_telemetry.h): indices 9..11 land on BASE+10..12 through
+    /* ASSIST-V3 frame group (inc/ride_telemetry.h): indices 9..13 land on BASE+10..14 through
      * the same "step over META" rule above, after every schema-2 frame of the cycle. */
     case 9U: /* V3A */
         put_u16(&d[2], s->v3.intent);
@@ -141,6 +141,17 @@ static void build_data_frame(uint8_t index, const ride_telemetry_snapshot_t *s,
         d[6] = (uint8_t)((s->v3.release_class & 0x07U) | ((s->v3.rate_mode & 0x07U) << 3) |
                          ((RIDE_TELEMETRY_V3_SCHEMA & 0x03U) << 6));
         d[7] = s->v3.flags;
+        break;
+    case 12U: /* V3D */
+        put_i16(&d[2], s->v3.final_iq);
+        put_i16(&d[4], s->v3.backstop_iq);
+        put_u16(&d[6], s->v3.cpu_max_div16);
+        break;
+    case 13U: /* V3E */
+        put_u16(&d[2], s->v3.dropped_logical_ticks);
+        put_u16(&d[4], s->v3.cpu_last_div16);
+        d[6] = s->v3.backstop_state;
+        d[7] = s->v3.flags2;
         break;
 #endif
     default:

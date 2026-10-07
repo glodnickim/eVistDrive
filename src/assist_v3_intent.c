@@ -8,9 +8,20 @@
  *                              mode and template-free fallback mode (R1-#5), hysteresis + dwell
  *
  * Integer only, deterministic, no malloc, no float. Cost: O(1) per control tick; per crank step
- * O(1) plus one <= 48-entry window walk (only for the last step of a call); once per revolution the
- * learning (96 + NB), the re-alignment when unaligned (96 x NB) and one kL evaluation (<= 400
- * recurrence iterations at the 15 rpm clamp, 300 at 20 rpm, 46 at 130 rpm).
+ * O(1) plus one <= 48-entry window walk (only for the last step of a call). The per-revolution work
+ * (D-039, REVIEW-T #13) is SPREAD over the following calls by a small job runner that does at most
+ * ONE bounded unit per call:
+ *   re-alignment (when unaligned)  bin sums of the ring once (96 reads), then the circular
+ *                                  cross-correlation over the 96 step offsets, ALIGN_OFFSETS_PER_CALL
+ *                                  offsets per call with sliding bin sums (NB MACs + 2 NB reads per
+ *                                  offset) - the full-resolution search, same order, same tie rule;
+ *   learning + residual            one fused pass over the NB bins + renormalisation (one call);
+ *   kL                             the D7EC recurrence, KL_ITER_PER_CALL iterations per call (<= 400
+ *                                  iterations at the 15 rpm clamp), the prior fallback likewise;
+ *                                  a cadence/threshold-triggered kL is queued on the same runner.
+ * A revolution's job therefore completes a few ms after the revolution (<= ~25 calls); a step that
+ * lands meanwhile overwrites one ring entry with the same phase of the next revolution. Worst case
+ * per call: one window walk (48) + the steps of the call + one unit (<= 4 x 3 NB = 288 inner ops).
  *
  * PRIOR TEMPLATE. Population-typical two-stroke shape: s(theta) proportional to
  * 0.1 + 1.8*|sin(theta)| (each leg a half-sine power stroke over a 10 % floor), averaged over each
@@ -36,6 +47,18 @@
 #define PERIOD_Q 4u                  /* step period estimate in 1/16 ticks                     */
 #define OBS_MAX 16383u               /* per-step load clip (physical range < 6000 CLU); keeps
                                       * every window product in 32 bits (no 64-bit division)   */
+#define ALIGN_OFFSETS_PER_CALL 4u    /* D-039: 96 offsets in 24 calls                          */
+#define KL_ITER_PER_CALL 64u         /* D-039: <= 400 recurrence iterations in <= 7 calls       */
+
+enum { JOB_IDLE = 0, JOB_ALIGN_INIT, JOB_ALIGN, JOB_LEARN, JOB_KL };
+
+/* One resumable evaluation of the D7EC recurrence over a reconstructed revolution (kL). */
+typedef struct {
+    const uint16_t *s;
+    uint32_t cad, k, k1, env, sum, cnt, acc, end, x;
+    uint16_t i_rev, thr;
+    uint8_t xbin;
+} klc_t;
 
 enum { CLS_NORMAL = 0, CLS_ATTACK = 1, CLS_RELEASE = 2 };
 
@@ -132,12 +155,26 @@ typedef struct {
     uint16_t intent;
     uint16_t e_short;
     uint16_t e_long;
-    /* kL */
+    /* kL: the value in force, and the parameters of the latest REQUEST (the triggers compare
+     * against these, so a queued evaluation is never re-requested) */
     uint16_t kl;
     bool kl_prior;
     uint16_t kl_cad;
     uint16_t kl_thr;
     uint16_t kl_irev;
+    /* deferred per-revolution job (D-039) */
+    uint8_t job;
+    uint8_t job_off;                 /* next alignment offset */
+    uint8_t job_best;
+    bool job_valid, job_stable;
+    uint16_t job_irev, job_cad, job_thr;
+    uint64_t job_cmax, job_cmin;
+    uint16_t bs[NB];                 /* sliding bin sums: bin_sum(b, job_off) */
+    /* deferred kL run + one pending request (latest wins) */
+    bool kl_active, kl_run_prior, kl_pending, kl_req_prior;
+    uint16_t kl_req_irev, kl_req_cad, kl_req_thr;
+    uint32_t kl_iters;
+    klc_t klc;
 } intent_state_t;
 
 static intent_state_t S;
@@ -166,55 +203,82 @@ uint16_t assist_v3_eb74_active(uint32_t load_clu, uint16_t thr)
     return source > thr ? (uint16_t)(source - thr) : 0u;
 }
 
-uint16_t assist_v3_intent_compute_kl(const uint16_t *s_q12, uint16_t i_rev, uint16_t cad_rpm,
-                                     uint16_t thr, uint16_t *env_ss, uint32_t *iterations)
+/* Start one evaluation: reconstructed stroke x(b) = EB74_active(I_rev * s[b]) is evaluated in place
+ * (no table: stack budget). Returns false when kL is undefined (stroke never above threshold). */
+static bool klc_start(klc_t *c, const uint16_t *s_q12, uint16_t i_rev, uint16_t cad_rpm, uint16_t thr)
 {
-    uint32_t cad = cad_rpm;
-    uint32_t k, k1, env = 0u, sum = 0u, cnt = 0u, acc, end, peak = 0u, x = 0u;
-    uint8_t pb = 0u, xbin = 0xFFu;
-
-    if (env_ss) *env_ss = 0u;
-    if (iterations) *iterations = 0u;
+    uint32_t cad = cad_rpm, peak = 0u;
+    uint8_t pb = 0u;
     if (cad < P.kl_cad_min_rpm) cad = P.kl_cad_min_rpm;
     if (cad > P.kl_cad_max_rpm) cad = P.kl_cad_max_rpm;
-    /* reconstructed stroke x(b) = EB74_active(I_rev * s[b]) is evaluated in place (no table:
-     * stack budget), once per bin change in the loop below */
     for (uint8_t b = 0u; b < NB; ++b) {
         uint32_t xv = assist_v3_eb74_active(((uint32_t)i_rev * s_q12[b]) >> 12, thr);
         if (xv > peak) { peak = xv; pb = b; }
     }
-    if (peak == 0u || i_rev == 0u) return 0u;
+    D.work_this_call += NB;
+    if (peak == 0u || i_rev == 0u) return false;
     /* D7EC envelope, chain_d7ec_model: k = 8*cad (40 at cad 0, never here), attack env = cur,
      * else env = udiv(prev*k16, k16|1), one iteration per 10 ms. The reconstructed stroke advances
      * cad/6000 revolution per iteration. Starting at the peak bin with env = 0 makes the first
      * iteration the attack, i.e. this one revolution is the periodic steady state. */
-    k = (cad * 8u) & 0xFFFFu;
-    k1 = k | 1u;
-    acc = (uint32_t)pb * REC_ACC_PER_BIN;
-    end = acc + REC_ACC_PER_REV;
-    while (acc < end) {
-        uint8_t b = (uint8_t)((acc / REC_ACC_PER_BIN) % NB);
-        if (b != xbin) {
-            xbin = b;
-            x = assist_v3_eb74_active(((uint32_t)i_rev * s_q12[b]) >> 12, thr);
+    c->s = s_q12;
+    c->i_rev = i_rev;
+    c->thr = thr;
+    c->cad = cad;
+    c->k = (cad * 8u) & 0xFFFFu;
+    c->k1 = c->k | 1u;
+    c->acc = (uint32_t)pb * REC_ACC_PER_BIN;
+    c->end = c->acc + REC_ACC_PER_REV;
+    c->env = 0u; c->sum = 0u; c->cnt = 0u; c->x = 0u;
+    c->xbin = 0xFFu;
+    return true;
+}
+
+/* Advance by at most max_iter iterations; true when the revolution is complete. */
+static bool klc_run(klc_t *c, uint32_t max_iter)
+{
+    uint32_t n = 0u;
+    while (c->acc < c->end && n < max_iter) {
+        uint8_t b = (uint8_t)((c->acc / REC_ACC_PER_BIN) % NB);
+        if (b != c->xbin) {
+            c->xbin = b;
+            c->x = assist_v3_eb74_active(((uint32_t)c->i_rev * c->s[b]) >> 12, c->thr);
         }
-        if (x > env) env = x;
-        else env = (env * k) / k1;
-        sum += env;
-        ++cnt;
-        acc += cad;
+        if (c->x > c->env) c->env = c->x;
+        else c->env = (c->env * c->k) / c->k1;
+        c->sum += c->env;
+        ++c->cnt;
+        c->acc += c->cad;
+        ++n;
     }
-    {
-        uint32_t ess = sum / cnt;
-        /* back to the load domain (re-check N1): the constant load EB74 maps to env_ss */
-        uint32_t l_eq = ((ess + thr - P.eb74_offset) * P.eb74_gain_den) / P.eb74_gain_num;
-        uint32_t kl = (l_eq * Q12) / i_rev;
-        if (kl < P.kl_min_q12) kl = P.kl_min_q12;
-        if (kl > P.kl_max_q12) kl = P.kl_max_q12;
-        if (env_ss) *env_ss = (uint16_t)ess;
-        if (iterations) *iterations = cnt;
-        return (uint16_t)kl;
-    }
+    D.work_this_call += n;
+    return c->acc >= c->end;
+}
+
+static uint16_t klc_result(const klc_t *c, uint16_t *env_ss)
+{
+    uint32_t ess = c->sum / c->cnt;
+    /* back to the load domain (re-check N1): the constant load EB74 maps to env_ss */
+    uint32_t l_eq = ((ess + c->thr - P.eb74_offset) * P.eb74_gain_den) / P.eb74_gain_num;
+    uint32_t kl = (l_eq * Q12) / c->i_rev;
+    if (kl < P.kl_min_q12) kl = P.kl_min_q12;
+    if (kl > P.kl_max_q12) kl = P.kl_max_q12;
+    if (env_ss) *env_ss = (uint16_t)ess;
+    return (uint16_t)kl;
+}
+
+uint16_t assist_v3_intent_compute_kl(const uint16_t *s_q12, uint16_t i_rev, uint16_t cad_rpm,
+                                     uint16_t thr, uint16_t *env_ss, uint32_t *iterations)
+{
+    klc_t c;
+    uint16_t kl;
+    if (env_ss) *env_ss = 0u;
+    if (iterations) *iterations = 0u;
+    if (!klc_start(&c, s_q12, i_rev, cad_rpm, thr)) return 0u;
+    (void)klc_run(&c, UINT32_MAX);
+    kl = klc_result(&c, env_ss);
+    if (iterations) *iterations = c.cnt;
+    return kl;
 }
 
 static uint16_t active_thr(const assist_v3_intent_in_t *in)
@@ -222,28 +286,62 @@ static uint16_t active_thr(const assist_v3_intent_in_t *in)
     return in->v3_engaged ? P.eb74_thr_engaged : (uint16_t)(in->eb74_zero + P.eb74_deadband);
 }
 
-static void kl_evaluate(bool from_prior, uint16_t i_rev, uint16_t cad, uint16_t thr)
+/* Queue a kL evaluation (latest request wins). The request parameters are recorded at once, so the
+ * cadence / threshold triggers compare against what is queued and never re-request it. */
+static void kl_request(bool from_prior, uint16_t i_rev, uint16_t cad, uint16_t thr)
 {
-    uint16_t kl = 0u, ess = 0u;
-    uint32_t it = 0u, it2 = 0u;
-    if (!from_prior) {
-        kl = assist_v3_intent_compute_kl(S.s, i_rev, cad, thr, &ess, &it);
-        if (kl == 0u) from_prior = true;   /* stroke never above threshold: kL undefined */
-    }
-    if (from_prior) {
-        kl = assist_v3_intent_compute_kl(PRIOR, P.kl_prior_ref_clu, cad, thr, &ess, &it2);
-        it += it2;
-        if (kl == 0u) kl = P.kl_min_q12;
-    }
-    S.kl = kl;
+    S.kl_pending = true;
+    S.kl_req_prior = from_prior;
+    S.kl_req_irev = i_rev;
+    S.kl_req_cad = cad;
+    S.kl_req_thr = thr;
     S.kl_prior = from_prior;
     S.kl_cad = cad;
     S.kl_thr = thr;
     S.kl_irev = i_rev;
+}
+
+/* Start the pending request: the learned template first, the prior when kL is undefined. */
+static void kl_begin(void)
+{
+    S.kl_pending = false;
+    S.kl_active = true;
+    S.kl_iters = 0u;
+    S.kl_run_prior = S.kl_req_prior;
+    if (!S.kl_run_prior && !klc_start(&S.klc, S.s, S.kl_req_irev, S.kl_req_cad, S.kl_req_thr))
+        S.kl_run_prior = true;   /* stroke never above threshold: kL undefined */
+    if (S.kl_run_prior && !klc_start(&S.klc, PRIOR, P.kl_prior_ref_clu, S.kl_req_cad, S.kl_req_thr)) {
+        /* the prior never undefined in practice; keep the floor */
+        S.kl_active = false;
+        S.kl = P.kl_min_q12;
+        S.kl_prior = true;
+        D.last_kl_iterations = 0u;
+        D.kl_recomputes++;
+    }
+}
+
+/* One bounded chunk of the active kL run; applies the result when the run completes. */
+static void kl_step(uint32_t max_iter)
+{
+    bool done = klc_run(&S.klc, max_iter);
+    uint16_t ess = 0u;
+    if (!done) return;
+    S.kl_iters += S.klc.cnt;
+    S.kl = klc_result(&S.klc, &ess);
+    S.kl_active = false;
+    if (!S.kl_pending && S.kl_run_prior) S.kl_prior = true;   /* fallback taken, nothing newer queued */
     D.env_ss = ess;
-    D.last_kl_iterations = it;
-    if (it > D.max_kl_iterations) D.max_kl_iterations = it;
+    D.last_kl_iterations = S.kl_iters;
+    if (S.kl_iters > D.max_kl_iterations) D.max_kl_iterations = S.kl_iters;
     D.kl_recomputes++;
+}
+
+/* Synchronous evaluation (power-on only: not on the control path). */
+static void kl_now(bool from_prior, uint16_t i_rev, uint16_t cad, uint16_t thr)
+{
+    kl_request(from_prior, i_rev, cad, thr);
+    kl_begin();
+    while (S.kl_active) kl_step(UINT32_MAX);
 }
 
 /* ------------------------------------------------------------------ template */
@@ -283,19 +381,51 @@ static uint32_t bin_sum(uint8_t b, uint8_t off)
 }
 
 /* Circular cross-correlation of the last revolution (ring) against the template, at step
- * resolution: 96 offsets x 96 ring reads (= 96 x NB bin products), O(1) memory. */
-static void try_align(void)
+ * resolution, SPREAD over calls (D-039): ALIGN_INIT computes the bin sums of offset 0 once
+ * (96 reads); every ALIGN call evaluates ALIGN_OFFSETS_PER_CALL offsets in increasing order
+ * (NB MACs each) and slides the bin sums to the next offset (bin_sum(b, off + 1) = bin_sum(b, off)
+ * + ring[start - 1] - ring[start + 3], start = 4b - off mod 96). Same 96 offsets, same order and
+ * tie rule (first maximum) as the one-shot search. */
+static void align_init(void)
 {
-    uint64_t cmax = 0u, cmin = UINT64_MAX;
-    uint8_t best = 0u;
-    for (uint8_t off = 0u; off < SPR; ++off) {
+    for (uint8_t b = 0u; b < NB; ++b) S.bs[b] = (uint16_t)bin_sum(b, 0u);
+    S.job_off = 0u;
+    S.job_best = 0u;
+    S.job_cmax = 0u;
+    S.job_cmin = UINT64_MAX;
+    D.work_this_call += SPR;
+}
+
+static bool align_chunk(void)
+{
+    for (uint8_t n = 0u; n < ALIGN_OFFSETS_PER_CALL && S.job_off < SPR; ++n) {
+        const uint8_t off = S.job_off;
         uint64_t c = 0u;
-        for (uint8_t b = 0u; b < NB; ++b) c += (uint64_t)bin_sum(b, off) * S.s[b];
-        if (c > cmax) { cmax = c; best = off; }
-        if (c < cmin) cmin = c;
+        for (uint8_t b = 0u; b < NB; ++b) c += (uint64_t)S.bs[b] * S.s[b];
+        if (c > S.job_cmax) { S.job_cmax = c; S.job_best = off; }
+        if (c < S.job_cmin) S.job_cmin = c;
+        S.job_off = (uint8_t)(off + 1u);
+        D.work_this_call += NB;
+        if (S.job_off >= SPR) break;
+        for (uint8_t b = 0u; b < NB; ++b) {
+            /* window of bin b at `off` starts at raw (b*SPB - off) mod 96 */
+            const uint32_t start = ((uint32_t)b * SPB + SPR - off) % SPR;
+            const uint32_t in_i = start == 0u ? SPR - 1u : start - 1u;
+            const uint32_t out_i = (start + SPB - 1u) % SPR;
+            /* int32 and clamped: a step that landed meanwhile can make the sum inconsistent */
+            int32_t v = (int32_t)S.bs[b] + (int32_t)S.ring[in_i] - (int32_t)S.ring[out_i];
+            S.bs[b] = (uint16_t)(v < 0 ? 0 : (v > 65535 ? 65535 : v));
+        }
+        D.work_this_call += 2u * NB;
     }
+    return S.job_off >= SPR;
+}
+
+static void align_decide(void)
+{
+    const uint64_t cmax = S.job_cmax, cmin = S.job_cmin;
     if (cmax > 0u && (cmax - cmin) * Q12 >= (uint64_t)P.align_contrast_q12 * cmax) {
-        S.tpl_offset = best;
+        S.tpl_offset = S.job_best;
         S.aligned = true;
         D.alignments++;
     } else {
@@ -311,53 +441,95 @@ static uint32_t bin_ratio(uint8_t b, uint16_t i_rev)
     return rb > S_MAX ? S_MAX : rb;
 }
 
+/* Residual + learning in ONE pass over the bins (the residual of bin b uses s[b] before its own
+ * update, exactly as the two-pass form did), then renormalisation. One job unit. */
+static void learn_pass(void)
+{
+    const uint16_t i_rev = S.job_irev;
+    uint32_t res = 0u;
+    uint8_t sh = S.conf < P.c_min_q12 ? P.alpha_shift_low_conf : P.alpha_shift;
+    for (uint8_t b = 0u; b < NB; ++b) {
+        const uint32_t r = bin_ratio(b, i_rev);
+        res += absdiff(r, S.s[b]);
+        if (S.job_stable) {
+            int32_t d = (int32_t)r - (int32_t)S.s[b];
+            int32_t step = d >= 0 ? (d >> sh) : -((-d) >> sh);
+            int32_t v = (int32_t)S.s[b] + step;
+            S.s[b] = (uint16_t)(v < 0 ? 0 : v);
+        }
+    }
+    D.work_this_call += (uint32_t)NB * (SPB + 2u);
+    res /= NB;
+    D.last_residual_q12 = sat16(res);
+    if (S.job_stable) {
+        if (res > P.res_mismatch_q12) {
+            if (S.conf > P.c_mismatch_q12) { S.conf = P.c_mismatch_q12; D.mismatch_drops++; }
+        } else if (res < P.res_good_q12) {
+            uint32_t c = (uint32_t)S.conf + P.c_step_q12;
+            S.conf = (uint16_t)(c > Q12 ? Q12 : c);
+        } else {
+            S.conf = S.conf > P.c_fall_q12 ? (uint16_t)(S.conf - P.c_fall_q12) : 0u;
+        }
+        renormalise();
+        D.work_this_call += 2u * NB;
+        if (S.revs_learned < 65535u) S.revs_learned++;
+    }
+}
+
+/* A revolution completed (inside a step): only bookkeeping here; the work is queued (D-039). A job
+ * still running from the previous revolution is superseded by the newer one. */
 static void revolution_complete(const assist_v3_intent_in_t *in)
 {
     uint16_t i_rev = (uint16_t)(S.sum96 / SPR);
     bool valid = !S.rev_invalid && i_rev >= P.learn_min_clu;
     bool stable = S.prev_rev_valid && S.prev_rev_mean > 0u &&
                   absdiff(i_rev, S.prev_rev_mean) * Q12 <= (uint32_t)P.stable_q12 * S.prev_rev_mean;
-    uint16_t cad = (uint16_t)(in->cadence_rpm > 0 ? in->cadence_rpm : 0);
 
     D.last_rev_mean = i_rev;
-    if (valid && !S.aligned) try_align();
-    if (valid && S.aligned) {
-        uint32_t res = 0u;
-        /* two passes over the bins (residual, then learning) recompute the bin ratio in place
-         * instead of keeping NB-entry scratch arrays (stack budget) */
-        for (uint8_t b = 0u; b < NB; ++b) res += absdiff(bin_ratio(b, i_rev), S.s[b]);
-        res /= NB;
-        D.last_residual_q12 = sat16(res);
-        if (stable) {
-            uint8_t sh = S.conf < P.c_min_q12 ? P.alpha_shift_low_conf : P.alpha_shift;
-            if (res > P.res_mismatch_q12) {
-                if (S.conf > P.c_mismatch_q12) { S.conf = P.c_mismatch_q12; D.mismatch_drops++; }
-            } else if (res < P.res_good_q12) {
-                uint32_t c = (uint32_t)S.conf + P.c_step_q12;
-                S.conf = (uint16_t)(c > Q12 ? Q12 : c);
-            } else {
-                S.conf = S.conf > P.c_fall_q12 ? (uint16_t)(S.conf - P.c_fall_q12) : 0u;
-            }
-            for (uint8_t b = 0u; b < NB; ++b) {
-                int32_t d = (int32_t)bin_ratio(b, i_rev) - (int32_t)S.s[b];
-                int32_t step = d >= 0 ? (d >> sh) : -((-d) >> sh);
-                int32_t v = (int32_t)S.s[b] + step;
-                S.s[b] = (uint16_t)(v < 0 ? 0 : v);
-            }
-            renormalise();
-            if (S.revs_learned < 65535u) S.revs_learned++;
-        }
-    }
-    /* kL (section 4.3): learned template when the revolution is stable and above the floor,
-     * otherwise the prior's kL at this cadence. */
-    if (cad > 0u) {
-        bool use_learned = valid && stable && i_rev >= P.kl_floor_clu;
-        kl_evaluate(!use_learned, i_rev, cad, active_thr(in));
-    }
+    S.job_irev = i_rev;
+    S.job_valid = valid;
+    S.job_stable = stable;
+    S.job_cad = (uint16_t)(in->cadence_rpm > 0 ? in->cadence_rpm : 0);
+    S.job_thr = active_thr(in);
+    S.job = valid ? (S.aligned ? JOB_LEARN : JOB_ALIGN_INIT) : JOB_KL;
     S.prev_rev_mean = i_rev;
     S.prev_rev_valid = !S.rev_invalid;
     S.rev_invalid = false;
     S.rev_count = 0u;
+}
+
+/* At most ONE bounded unit of deferred work per call (D-039). An active kL run is finished before a
+ * learning pass may change the template it reads. */
+static void run_deferred(void)
+{
+    if (S.kl_active) { kl_step(KL_ITER_PER_CALL); return; }
+    switch (S.job) {
+    case JOB_ALIGN_INIT:
+        align_init();
+        S.job = JOB_ALIGN;
+        return;
+    case JOB_ALIGN:
+        if (!align_chunk()) return;
+        align_decide();
+        S.job = S.aligned ? JOB_LEARN : JOB_KL;
+        return;
+    case JOB_LEARN:
+        learn_pass();
+        S.job = JOB_KL;
+        return;
+    case JOB_KL:
+        /* kL (section 4.3): learned template when the revolution is stable and above the floor,
+         * otherwise the prior's kL at this cadence. */
+        S.job = JOB_IDLE;
+        if (S.job_cad > 0u) {
+            bool use_learned = S.job_valid && S.job_stable && S.job_irev >= P.kl_floor_clu;
+            kl_request(!use_learned, S.job_irev, S.job_cad, S.job_thr);
+        }
+        break;
+    default:
+        break;
+    }
+    if (S.kl_pending) { kl_begin(); if (S.kl_active) kl_step(KL_ITER_PER_CALL); }
 }
 
 /* ------------------------------------------------------------------ phase tracker */
@@ -377,6 +549,8 @@ static void mark_unaligned(void)
 {
     S.aligned = false;
     S.rev_count = 0u;   /* the next full revolution is entirely post-glitch */
+    /* a queued alignment/learning of the pre-glitch revolution must not re-align the phase */
+    if (S.job == JOB_ALIGN_INIT || S.job == JOB_ALIGN || S.job == JOB_LEARN) S.job = JOB_KL;
 }
 
 /* Ring + counters for one forward step. */
@@ -389,6 +563,7 @@ static void push_step(uint16_t obs, const assist_v3_intent_in_t *in)
     if (S.steps_since_restart < 65535u) S.steps_since_restart++;
     if (S.dwell < 255u) S.dwell++;
     D.total_steps++;
+    D.work_this_call++;
     S.rev_count++;
     if (S.rev_count >= SPR) revolution_complete(in);
 }
@@ -418,6 +593,7 @@ static void classify(const assist_v3_intent_in_t *in)
         }
     }
     if (wmax > D.max_walk_steps) D.max_walk_steps = wmax;
+    D.work_this_call += wmax;
     if (!short_done) { sho = so; shs = ss; }
     mean48 = so / wmax;
     e48t = ss ? (so * Q12) / ss : mean48;   /* so <= 48*OBS_MAX: fits u32 */
@@ -476,9 +652,10 @@ void assist_v3_intent_power_on(void)
     memcpy(S.s, PRIOR, sizeof(S.s));
     restart();
     S.stopped = true;
-    kl_evaluate(true, 0u, 60u, (uint16_t)(750u + P.eb74_deadband));
+    kl_now(true, 0u, 60u, (uint16_t)(750u + P.eb74_deadband));
     S.kl_cad = 0u;      /* first real cadence triggers a recompute */
     D.kl_recomputes = 0u;
+    D.max_kl_iterations = 0u;
 }
 
 void assist_v3_intent_reset(void)
@@ -499,6 +676,7 @@ void assist_v3_intent_reset(void)
     S.kl_irev = irev;
     S.kl_thr = thr;
     S.kl_cad = 0u;      /* next cadence recomputes kL from the kept source */
+    /* the memset above dropped any queued revolution job and kL run (stale ride data) */
     restart();
     S.stopped = true;
 }
@@ -512,6 +690,9 @@ void assist_v3_intent_update(const assist_v3_intent_in_t *in, assist_v3_intent_o
     uint16_t thr = active_thr(in);
     int32_t delta = 0;
     bool forward = false;
+    bool deferred_done = false;
+
+    D.work_this_call = 0u;
 
     /* load accumulation (mean per step; older load is forgotten beyond ~400 ms) */
     S.load_sum += (uint32_t)load * el_acc;
@@ -565,6 +746,10 @@ void assist_v3_intent_update(const assist_v3_intent_in_t *in, assist_v3_intent_o
         S.last_obs = obs;
         if (n > D.max_steps_per_call) D.max_steps_per_call = n;
         for (uint32_t i = 0u; i < n; ++i) push_step(obs, in);
+        /* the deferred unit runs BEFORE the classification of a stepping call, so a learning pass
+         * queued by the step that completed a revolution is seen by that same classification */
+        run_deferred();
+        deferred_done = true;
         classify(in);
     }
 
@@ -596,10 +781,14 @@ void assist_v3_intent_update(const assist_v3_intent_in_t *in, assist_v3_intent_o
     if (cad > 0u) {
         bool cad_moved = S.kl_cad == 0u ||
             absdiff(cad, S.kl_cad) * Q12 > (uint32_t)P.kl_recompute_q12 * S.kl_cad;
-        if (cad_moved || thr != S.kl_thr) kl_evaluate(S.kl_prior, S.kl_irev, cad, thr);
+        if (cad_moved || thr != S.kl_thr) kl_request(S.kl_prior, S.kl_irev, cad, thr);
     } else if (thr != S.kl_thr) {
-        kl_evaluate(S.kl_prior, S.kl_irev, S.kl_cad ? S.kl_cad : P.kl_cad_min_rpm, thr);
+        kl_request(S.kl_prior, S.kl_irev, S.kl_cad ? S.kl_cad : P.kl_cad_min_rpm, thr);
     }
+
+    /* one bounded unit of the per-revolution / kL work per call (D-039) */
+    if (!deferred_done) run_deferred();
+    if (D.work_this_call > D.max_work_per_call) D.max_work_per_call = D.work_this_call;
 
     if (out) {
         uint8_t tp = tpl_phase_of(S.raw_phase);

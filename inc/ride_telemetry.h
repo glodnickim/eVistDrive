@@ -37,21 +37,27 @@
 
 /*
  * ASSIST-V3 diagnostic frame group (ARCHITECTURE_V3 section 11, inc/config.h
- * ASSIST_V3_TELEMETRY_FRAMES). Three frames appended AFTER the nine schema-2 data frames of a
- * snapshot cycle, only when the snapshot carries V3 data, so every existing frame keeps its
- * identifier, its content and its place in the cycle, and the stream's pacing (one frame per
- * 3 ms) is unchanged. A schema-2 decoder ignores identifiers above RIDER. The range is reserved in
- * diag_efid_map.h whether or not the frames are compiled in. Layout (big-endian, d[0..1] = tick16):
+ * ASSIST_V3_TELEMETRY_FRAMES). Five frames appended AFTER the nine schema-2 data frames of a
+ * snapshot cycle, only when the snapshot carries V3 data (main.c: V3 is the ACTIVE engine, or the
+ * shadow-telemetry opt-in), so every existing frame keeps its identifier, its content and its place
+ * in the cycle, and the stream's pacing (one frame per 3 ms) is unchanged. A schema-2 decoder
+ * ignores identifiers above RIDER. The range is reserved in diag_efid_map.h whether or not the
+ * frames are compiled in. Layout (big-endian, d[0..1] = tick16), V3 schema 2:
  *   +10 V3A  intent u16 (CLU) | env_equiv u16 | v3_demand_iq i16
  *   +11 V3B  base_target_iq i16 | target_iq i16 | e_short u16 (CLU)
  *   +12 V3C  kappa_q12 u16 | template_conf u8 (Q12 >> 4, sat 255) | phase u8 |
  *            d6 = release_class (bits 0..2) | rate_mode (bits 3..5) | V3 schema (bits 6..7) |
  *            d7 = flags RIDE_TELEM_V3_F_*
+ *   +13 V3D  final_iq i16 (the PUBLISHED request) | backstop_iq i16 (-1 = open) |
+ *            cpu_max u16 (DWT cycles of the V3 stage >> 4, saturated; 0 = no probe)
+ *   +14 V3E  dropped_logical_ticks u16 (G53 port, saturated) | cpu_last u16 (cycles >> 4) |
+ *            d6 = backstop_state | d7 = flags RIDE_TELEM_V3_F2_*
+ * Schema 1 (Milestone B) had only V3A..V3C.
  */
 #define RIDE_TELEMETRY_EFID_V3_BASE (RIDE_TELEMETRY_EFID_BASE + 10U)
-#define RIDE_TELEMETRY_V3_FRAMES    3U
+#define RIDE_TELEMETRY_V3_FRAMES    5U
 #define RIDE_TELEMETRY_EFID_V3_LAST (RIDE_TELEMETRY_EFID_V3_BASE + RIDE_TELEMETRY_V3_FRAMES - 1U)
-#define RIDE_TELEMETRY_V3_SCHEMA    1U
+#define RIDE_TELEMETRY_V3_SCHEMA    2U
 #define RIDE_TELEM_V3_F_ALIGNED       (1U << 0)
 #define RIDE_TELEM_V3_F_TEMPLATE_MODE (1U << 1)
 #define RIDE_TELEM_V3_F_ENGAGED       (1U << 2)
@@ -60,6 +66,10 @@
 #define RIDE_TELEM_V3_F_IMU_VALID     (1U << 5)
 #define RIDE_TELEM_V3_F_ENGINE_ACTIVE (1U << 6)
 #define RIDE_TELEM_V3_F_ENGINE_REQ    (1U << 7)
+#define RIDE_TELEM_V3_F2_STANDSTILL   (1U << 0)   /* standstill predicate (FORCE_ZERO in V3 mode) */
+#define RIDE_TELEM_V3_F2_PULLED_DOWN  (1U << 1)   /* R1 bumpless veto release armed            */
+#define RIDE_TELEM_V3_F2_SWITCHED     (1U << 2)   /* engine latch fired on this tick           */
+#define RIDE_TELEM_V3_F2_CPU_OVER     (1U << 3)   /* a V3 call exceeded the D-039 budget       */
 
 #if ASSIST_V3_TELEMETRY_FRAMES
 /* Copied by main.c from assist_v3_telemetry(); observation only. */
@@ -77,6 +87,13 @@ typedef struct {
     uint8_t release_class;
     uint8_t rate_mode;
     uint8_t flags;              /* RIDE_TELEM_V3_F_* */
+    int16_t final_iq;           /* published request (pipeline)                    */
+    int16_t backstop_iq;        /* pipeline backstop ceiling, -1 = open            */
+    uint16_t cpu_max_div16;     /* DWT cycles >> 4, saturated                      */
+    uint16_t cpu_last_div16;
+    uint16_t dropped_logical_ticks;
+    uint8_t backstop_state;     /* assist_pipeline_backstop_t                      */
+    uint8_t flags2;             /* RIDE_TELEM_V3_F2_*                              */
 } ride_telemetry_v3_t;
 #endif
 

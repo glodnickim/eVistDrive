@@ -12,13 +12,18 @@
  *   G7  persist -> restart -> readback; deferred to standstill; identical content costs no slot
  *   G8  corrupt record, newer-schema record left untouched, shorter-stride migration
  *   G9  log full -> erase -> continue; erase-window power loss -> defaults, never a corrupt config
- *   G10 revert / defaults / engine request vs active / consumer getters / READ guards
+ *   G10 revert / defaults / engine request vs active (truthful: G5300 at boot until the pipeline
+ *       latch reports) / consumer getters / READ guards
+ *   G12 (image built WITHOUT ASSIST_V3, second registration): engine = V3 rejected (reason 4, no
+ *       mutation), caps bit 0 cleared and required-caps check, default engine G5300, G5300 and
+ *       response writes still accepted (REVIEW-T #20, CONFIG_PROTOCOL_V3 section 4)
  *   G11 wiring guards on src/CAN_Display.c: P0/P1/P2, bank and tuning code paths are textually untouched
  *
  * The shared vectors were produced by a separate Python encoder, not by this module.
  */
 
 #include "check.h"
+#include "config.h"   /* ASSIST_V3: which image this registration is built as */
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -34,10 +39,12 @@
 
 /* ---------------- shared vectors (independent encoder) ---------------- */
 
+/* Milestone C: byte 22 engine_active = 0 at boot (truthful readback, D-037: G5300 publishes until
+ * the pipeline latch first finds every demand at 0); CRC recomputed by the independent encoder. */
 static const uint8_t golden_caps_boot[26] = {
 	0x42, 0x56, 0x01, 0x01, 0x01, 0x01, 0x05, 0x01, 0x72, 0x00, 0x10, 0x07,
-	0x3F, 0x00, 0x00, 0x00, 0x01, 0x80, 0x01, 0x00, 0x00, 0x01, 0x01, 0x01,
-	0xBB, 0x3E,
+	0x3F, 0x00, 0x00, 0x00, 0x01, 0x80, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01,
+	0x8A, 0x0D,
 };
 static const uint8_t golden_block_effective_boot[114] = {
 	0x42, 0x56, 0x01, 0x01, 0x72, 0x00, 0x00, 0x05, 0x10, 0x00, 0x3F, 0x00,
@@ -115,6 +122,9 @@ static void restart(void) { assist_v3_config_init(&hal); }
 #define NOW0 1000U
 
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8)); }
+#if !ASSIST_V3
+static uint32_t rd32(const uint8_t *p) { return (uint32_t)rd16(p) | ((uint32_t)rd16(&p[2]) << 16); }
+#endif
 static void wr16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v & 0xFFU); p[1] = (uint8_t)(v >> 8); }
 static void wr32(uint8_t *p, uint32_t v) { wr16(p, (uint16_t)(v & 0xFFFFU)); wr16(p + 2, (uint16_t)(v >> 16)); }
 
@@ -898,8 +908,11 @@ static void g10_control_engine_getters(void)
 	CHECK(assist_v3_config_response_pct(0U) == 0U && assist_v3_config_response_pct(6U) == 0U, "G10 invalid level -> 0");
 	CHECK(assist_v3_config_get(3U, ASSIST_V3_PARAM_CARRY_STRENGTH) == 50U && assist_v3_config_get(4U, ASSIST_V3_PARAM_CARRY_EXTENT) == 80U, "G10 table values for carry");
 
-	/* engine: requested vs active */
-	CHECK(assist_v3_config_engine_requested() && assist_v3_config_engine_active(), "G10 boot: engine default V3, active == requested");
+	/* engine: requested vs active (truthful: active = what publishes Iq) */
+	CHECK(assist_v3_config_engine_requested() && !assist_v3_config_engine_active(), "G10 boot: engine default V3 requested, active G5300 until the pipeline latch");
+	(void)assist_v3_config_can_read(5U, ASSIST_V3_CMD_CAPS, 0U, caps, caps, &len);
+	CHECK(caps[22] == 0U && caps[23] == 1U, "G10 boot caps: engine_active=0 (G5300 publishes), engine_requested=1");
+	assist_v3_config_set_engine_active(true);   /* the pipeline latch reports V3 */
 	{
 		uint8_t b[114];
 		make_block(b, 0U, RESP_A, 0xFFFFU);
@@ -914,7 +927,7 @@ static void g10_control_engine_getters(void)
 	(void)control(5U, ASSIST_V3_OP_PERSIST);
 	(void)assist_v3_config_service(NOW0, true);
 	restart();
-	CHECK(!assist_v3_config_engine_requested() && !assist_v3_config_engine_active(), "G10 restart: engine_active = engine_requested");
+	CHECK(!assist_v3_config_engine_requested() && !assist_v3_config_engine_active(), "G10 restart: engine_active = G5300 at boot (truthful)");
 
 	/* revert / defaults */
 	{
@@ -1055,8 +1068,53 @@ static void g11_wiring_guards(void)
 	free(src);
 }
 
+/* ---------------- G12: image built without the V3 stage ---------------- */
+
+#if !ASSIST_V3
+static void g12_no_v3_image(void)
+{
+	uint8_t caps[26], blk[114], len = 0U;
+	assist_v3_values_t v;
+	sent_t r;
+	boot_blank();
+	CHECK(!assist_v3_config_engine_requested() && !assist_v3_config_engine_active(), "G12 no-V3 image: default engine G5300, active G5300");
+	CHECK(assist_v3_config_caps() == (ASSIST_V3_CAPS & ~ASSIST_V3_CAP_BEHAVIOR), "G12 caps bit 0 (behaviour) cleared");
+	(void)assist_v3_config_can_read(5U, ASSIST_V3_CMD_CAPS, 0U, caps, caps, &len);
+	CHECK(len == 26U && rd32(&caps[12]) == 0x3EUL && caps[22] == 0U && caps[23] == 0U &&
+	      rd16(&caps[24]) == assist_v3_crc16(caps, 24U), "G12 CAPS: caps 0x3E, engine_active 0, engine_requested 0, crc valid");
+	/* a block requiring the behaviour capability: reason 4 at the caps field */
+	memset(&v, 0xFF, sizeof(v));
+	v.level[0][0] = 10U;
+	assist_v3_block_encode(&v, ASSIST_V3_CAPS, 0xFFFFU, blk);
+	expect_reject("no-V3 image, block requires caps bit 0", blk, 114U, 114U, ASSIST_V3_REASON_CAPABILITY, 10U);
+	/* engine = V3 with the caps this image supports: reason 4 at the engine word, no mutation */
+	v.global[0] = ASSIST_V3_ENGINE_V3;
+	assist_v3_block_encode(&v, assist_v3_config_caps(), 0xFFFFU, blk);
+	expect_reject("no-V3 image, engine = V3", blk, 114U, 114U, ASSIST_V3_REASON_CAPABILITY, 16U);
+	CHECK(!assist_v3_config_engine_requested(), "G12 rejected engine = V3 is not requested");
+	/* engine = G5300 and a response value are accepted */
+	v.global[0] = ASSIST_V3_ENGINE_G5300;
+	assist_v3_block_encode(&v, assist_v3_config_caps(), 0xFFFFU, blk);
+	r = send_block(blk);
+	CHECK(r.results == 1U && r.result.kind == ASSIST_V3_REPLY_ACK && assist_v3_config_response_pct(1) == 10U &&
+	      !assist_v3_config_engine_requested(), "G12 engine = G5300 + response accepted");
+}
+#endif
+
 int main(void)
 {
+#if !ASSIST_V3
+	/* Second registration: the config owner compiled into an image WITHOUT the V3 stage. The full
+	 * vector set below belongs to the V3 image (caps 0x3F, default engine V3). */
+	g12_no_v3_image();
+	g11_wiring_guards();
+	if (host_test_failures != 0) {
+		printf("assist_v3_config (no ASSIST_V3): %d FAILED\n", host_test_failures);
+		return 1;
+	}
+	printf("assist_v3_config (no ASSIST_V3): PASS\n");
+	return 0;
+#endif
 	g1_vectors();
 	g2_roundtrip();
 	g3_rejects();

@@ -4,18 +4,35 @@
 #include "config.h"
 #include "tuning_config.h"
 #include <string.h>
-#ifdef ASSIST_V3
+#if ASSIST_V3
 #include "assist_v3.h"
 #include "assist_v3_config.h"
 #endif
+#if ASSIST_V3_CPU_PROBE
+#include "gd32f30x.h"   /* DWT cycle counter (target DIAG build only, inc/config.h) */
+#endif
 
 /*
- * ASSIST_V3 (compile-time). Defined: the V3 behaviour stage (src/assist_v3.c) is computed every
- * tick beside the G53 chain. Undefined: no V3 code is referenced and this file is the baseline
- * pipeline. Milestone B (this revision) is SHADOW ONLY: V3 is computed, never published, in both
- * engines - the published request is the G53 one, so the outputs are byte-identical to baseline
- * with ASSIST_V3 compiled out AND compiled in (TEST_MATRIX G-EQ). The engine latch, the backstop,
- * the standstill predicate and R1 against the V3 request arrive with activation (Milestone C).
+ * ASSIST_V3 (compile-time, inc/config.h). 1: the V3 behaviour stage (src/assist_v3.c) is computed
+ * every tick beside the G53 chain; 0: no V3 code is referenced and this file is the baseline
+ * pipeline.
+ *
+ * MILESTONE C - ACTIVE ENGINE (ARCHITECTURE_V3 2.1, 2.2, 7.3). Both demands are computed every
+ * tick in both engines; `engine_active` (assist_v3_config, truthful readback) selects the one that
+ * is published:
+ *   G5300  the published request is the G53 one, exactly as at baseline: the V3 demand, the
+ *          backstop and the standstill predicate are computed but read by nothing that publishes
+ *          (TEST_MATRIX G-EQ: byte-identical with ASSIST_V3 compiled out and in).
+ *   V3     req = (y * g1) >> 12 with this tick's g1 -> ap2_limits -> iq_ceiling (unchanged) ->
+ *          pipeline-owned stop/reverse BACKSTOP ceiling (min, never a demand) -> native_cut /
+ *          assist-off / R1 bumpless veto release (against the post-limit V3 request) -> the
+ *          STANDSTILL predicate (FORCE_ZERO) in place of the stock BDE8 hard zero -> zero/slew
+ *          policy (unchanged). V3 writes no slew mode, ceiling, zero policy or safety state.
+ * ENGINE LATCH: engine_requested becomes engine_active only on a tick where the published request,
+ * V3 y and the G53 pre-limit request are all 0 and no veto (native_cut, assist off, backstop,
+ * standstill) is active; the switch tick sets pulled_down so R1 governs any climb (R1-#10, D-020).
+ * The backstop is applied after ap2_limits (a min commutes with the limiter clamps), so the limiter
+ * state sees the true V3 request and the backstop counts as a veto for R1, like native_cut.
  */
 
 /* One normal demand owner: G53 boundaries/PAS/FSM/D7EC/E1E8/BDE8.
@@ -39,9 +56,24 @@ typedef struct {
     uint32_t rise_acc;
     assist_pipeline_telemetry_t tlm;
     g53_port_output_t g53;
-#ifdef ASSIST_V3
-    /* The V3 demand (Iq, pre-g1, pre-limits) of this tick. SHADOW: nothing publishes it yet. */
+#if ASSIST_V3
+    /* The V3 demand (Iq, pre-g1, pre-limits) of this tick and its g1-scaled request. */
     int32_t v3_iq_demand;
+    int32_t v3_request;
+    /* Pipeline-owned stop/reverse backstop (ARCHITECTURE_V3 7.3, D-008): own state, independent
+     * of assist_v3.c, a ceiling on the published request only. */
+    struct {
+        uint8_t state;            /* assist_pipeline_backstop_t */
+        bool fwd_seen;            /* a forward crank step since the ceiling closed */
+        bool steps_primed;
+        int32_t last_steps;
+        int32_t ceiling;          /* Iq, meaningful while state != OPEN */
+        uint32_t hold_ticks;      /* control ticks in HOLD */
+        uint32_t rate_acc;        /* BDE8-rate remainder, Iq * 40000 */
+        int32_t decay_from;       /* ceiling when the post-hold decay began */
+        uint32_t decay_acc;       /* post-hold decay remainder, Iq * (300 ms * 4 ticks) */
+    } bs;
+    assist_pipeline_v3_status_t v3s;
 #endif
 } ap2_pipeline_ctx_t;
 static ap2_pipeline_ctx_t ctx;
@@ -49,10 +81,19 @@ static ap2_pipeline_ctx_t ctx;
 void assist_pipeline_reset(void)
 {
     const uint16_t seq=ctx.tlm.engage_seq;
+#if ASSIST_V3
+    /* The D-039 CPU statistics describe the image since power-on, not one owner period. */
+    const uint32_t cpu_max=ctx.v3s.cpu_max_cycles, cpu_over=ctx.v3s.cpu_over_budget;
+#endif
     memset(&ctx,0,sizeof(ctx));
     ctx.tlm.engage_seq=seq;
+#if ASSIST_V3
+    ctx.v3s.cpu_max_cycles=cpu_max;
+    ctx.v3s.cpu_over_budget=cpu_over;
+    ctx.v3s.engine_v3_active=assist_v3_config_engine_active();
+#endif
     g53_port_reset();
-#ifdef ASSIST_V3
+#if ASSIST_V3
     /* An owner change resets V3 with the chain (ARCHITECTURE_V3 2.2); the learned template is
      * kept, it describes the rider, not the ride. */
     assist_v3_reset();
@@ -63,7 +104,7 @@ void assist_pipeline_init(void)
 {
     assist_pipeline_reset();
     ap2_limits_reset();
-#ifdef ASSIST_V3
+#if ASSIST_V3
     assist_v3_power_on();   /* prior template, trajectory at 0 */
 #endif
 }
@@ -128,14 +169,14 @@ static uint16_t rider_power_w(uint16_t load_centikg, uint8_t cadence_rpm)
 }
 
 
-#ifdef ASSIST_V3
+#if ASSIST_V3
 /*
- * ASSIST-V3 SHADOW STAGE (ARCHITECTURE_V3 2, 3.1). Runs after g53_port_update() so every
- * accessor reads this tick's chain state. It reads the chain only through the read-only V3
- * accessors and the configuration getters, writes nothing but V3's own state, and its result is
- * kept in ctx.v3_iq_demand - no line below reads it, so the published command is the G53 one.
+ * ASSIST-V3 STAGE (ARCHITECTURE_V3 2, 3.1). Runs after g53_port_update() so every accessor reads
+ * this tick's chain state, in both engines. It reads the chain only through the read-only V3
+ * accessors and the configuration getters and writes nothing but V3's own state; its result is
+ * kept in ctx.v3_iq_demand, which the pipeline publishes only while V3 is the active engine.
  */
-static void v3_shadow_step(const assist_pipeline_input_t *in, uint32_t used_ticks, bool assist_off)
+static void v3_stage(const assist_pipeline_input_t *in, uint32_t used_ticks, bool assist_off)
 {
     assist_v3_input_t v3;
     memset(&v3,0,sizeof(v3));
@@ -150,6 +191,7 @@ static void v3_shadow_step(const assist_pipeline_input_t *in, uint32_t used_tick
     v3.lut_cadence=(uint16_t)ctx.g53.trace.d7ec_m50;
     v3.speed_native=(uint16_t)ctx.g53.trace.d7ec_speed;
     v3.g53_true_stop=g53_port_pas_true_stop();
+    v3.g53_reverse=ctx.g53.trace.pas_direction<0;
     v3.direction_inhibit=in->direction_inhibit;
     v3.inhibit_is_reverse=in->inhibit_is_reverse;
     v3.real_stop=in->real_stop;
@@ -163,7 +205,8 @@ static void v3_shadow_step(const assist_pipeline_input_t *in, uint32_t used_tick
     v3.g1_q12=(uint16_t)(ctx.g53.trace.g1<0 ? 0 : ctx.g53.trace.g1);
     /* Same level the chain gets: assist off is level 0 (ratio 0). */
     v3.level=assist_off ? 0u : in->assist_level_index;
-    v3.response_pct=assist_v3_config_response_pct(in->assist_level_index);
+    /* Milestone C release source through the resolver (REVIEW-T #5, #14). */
+    v3.response_pct=assist_v3_effective_release_pct(in->assist_level_index);
     v3.brake=in->brake;
     v3.eb74_zero=g53_port_eb74_zero();
     v3.eb74_armed=g53_port_eb74_armed();
@@ -171,8 +214,127 @@ static void v3_shadow_step(const assist_pipeline_input_t *in, uint32_t used_tick
     v3.engine_requested=assist_v3_config_engine_requested();
     /* V3 reads only the sanitised motion copy (3.3): an invalid or stale sample is all-zero. */
     assist_motion_sanitize(&in->motion,&v3.motion);
+#if ASSIST_V3_CPU_PROBE
+    /* D-039: cycles of the whole V3 stage (intent + static map + trajectory) per call. */
+    const uint32_t c0=DWT->CYCCNT;
+#endif
     ctx.v3_iq_demand=assist_v3_update(&v3);
+#if ASSIST_V3_CPU_PROBE
+    {
+        const uint32_t dc=DWT->CYCCNT-c0;
+        ctx.v3s.cpu_last_cycles=dc;
+        if(dc>ctx.v3s.cpu_max_cycles) ctx.v3s.cpu_max_cycles=dc;
+        if(dc>ASSIST_V3_CPU_BUDGET_CYCLES && ctx.v3s.cpu_over_budget<UINT32_MAX) ++ctx.v3s.cpu_over_budget;
+    }
+#endif
 }
+
+/* BDE8 rate (+-50 M2AA per 1 ms logical tick on the 6500 full scale = P*50/10000 Iq/ms, 3.5 Iq/ms
+ * at P = 700) over `ticks` control ticks, as whole Iq with the remainder carried (R1's rule). */
+static int32_t v3_bde8_step(uint32_t *acc, int32_t p, uint32_t ticks)
+{
+    *acc+=(uint32_t)p*50u*ticks;
+    const uint32_t step=*acc/(10000u*AP2_TICKS_PER_MS);
+    *acc-=step*(10000u*AP2_TICKS_PER_MS);
+    return (int32_t)step;
+}
+
+/*
+ * PIPELINE BACKSTOP (ARCHITECTURE_V3 7.3, D-008, R1-#4). A CEILING on the published request in V3
+ * mode, independent of every V3 internal (it reads native PAS facts, the G53 PAS true-stop
+ * accessor, the crank step count and the published value only):
+ *   reverse / direction inhibit   the ceiling decays from the published value at the BDE8 rate
+ *                                 (3.5 Iq/ms, full scale in 130 ms), as G5300 reverse does;
+ *   crank stopped (G53 true-stop  the ceiling holds (never above the published value) for at most
+ *   or native real_stop)          T_STOP_HARD = 1500 ms, then decays to 0 within 300 ms;
+ *   re-open                       only after forward crank steps resume with no reverse and no
+ *                                 stop flag, at no more than the BDE8 rate from the published
+ *                                 value, until the ceiling no longer binds;
+ *   standstill                    the separate predicate below (FORCE_ZERO).
+ * It runs in both engines (its state is a latch veto) and binds only in V3 mode.
+ */
+#define V3_BS_T_STOP_HARD_TICKS (1500u*AP2_TICKS_PER_MS)
+#define V3_BS_STOP_DECAY_TICKS  (300u*AP2_TICKS_PER_MS)
+static void v3_backstop_close(uint8_t state)
+{
+    if(ctx.bs.state==ASSIST_PIPELINE_BS_OPEN || ctx.bs.ceiling>ctx.last_final_iq)
+        ctx.bs.ceiling=ctx.last_final_iq;    /* from the published value, never above it */
+    ctx.bs.state=state;
+    ctx.bs.fwd_seen=false;
+    ctx.bs.hold_ticks=0;
+    ctx.bs.rate_acc=0;
+    ctx.bs.decay_acc=0;
+}
+static void v3_backstop_step(const assist_pipeline_input_t *in, uint32_t ticks, int32_t request)
+{
+    const int32_t p=in->phase_current_max>0 ? in->phase_current_max : 0;
+    const bool reverse=in->direction_inhibit;
+    const bool stop=g53_port_pas_true_stop() || in->real_stop;
+    bool fwd_step=false;
+    if(ctx.bs.steps_primed) fwd_step=(int32_t)((uint32_t)in->crank_steps-(uint32_t)ctx.bs.last_steps)>0;
+    ctx.bs.steps_primed=true;
+    ctx.bs.last_steps=in->crank_steps;
+    if(ctx.bs.state==ASSIST_PIPELINE_BS_OPEN || ctx.bs.state==ASSIST_PIPELINE_BS_REOPEN) {
+        if(reverse) v3_backstop_close(ASSIST_PIPELINE_BS_REVERSE);
+        else if(stop) v3_backstop_close(ASSIST_PIPELINE_BS_HOLD);
+    } else if(reverse && ctx.bs.state!=ASSIST_PIPELINE_BS_REVERSE) {
+        v3_backstop_close(ASSIST_PIPELINE_BS_REVERSE);
+    }
+    if(ctx.bs.state!=ASSIST_PIPELINE_BS_OPEN && ctx.bs.state!=ASSIST_PIPELINE_BS_REOPEN) {
+        if(fwd_step && !reverse) ctx.bs.fwd_seen=true;
+        if(ctx.bs.fwd_seen && !reverse && !stop) {
+            ctx.bs.state=ASSIST_PIPELINE_BS_REOPEN;
+            ctx.bs.rate_acc=0;
+        }
+    }
+    switch(ctx.bs.state) {
+    case ASSIST_PIPELINE_BS_REVERSE: {
+        int32_t c=ctx.bs.ceiling<ctx.last_final_iq ? ctx.bs.ceiling : ctx.last_final_iq;
+        c-=v3_bde8_step(&ctx.bs.rate_acc,p,ticks);
+        ctx.bs.ceiling=c>0 ? c : 0;
+        break; }
+    case ASSIST_PIPELINE_BS_HOLD:
+        if(ctx.bs.ceiling>ctx.last_final_iq) ctx.bs.ceiling=ctx.last_final_iq;
+        ctx.bs.hold_ticks+=ticks;
+        if(ctx.bs.hold_ticks<V3_BS_T_STOP_HARD_TICKS) break;
+        ctx.bs.state=ASSIST_PIPELINE_BS_DECAY;
+        ctx.bs.decay_from=ctx.bs.ceiling;
+        ctx.bs.decay_acc=0;
+        ticks=ctx.bs.hold_ticks-V3_BS_T_STOP_HARD_TICKS;   /* the part of this call past the hold */
+        /* fall through */
+    case ASSIST_PIPELINE_BS_DECAY: {
+        /* linear: decay_from in exactly 300 ms (whole Iq per tick, remainder carried) */
+        int32_t c=ctx.bs.ceiling<ctx.last_final_iq ? ctx.bs.ceiling : ctx.last_final_iq;
+        ctx.bs.decay_acc+=(uint32_t)ctx.bs.decay_from*ticks;
+        const uint32_t dec=ctx.bs.decay_acc/V3_BS_STOP_DECAY_TICKS;
+        ctx.bs.decay_acc-=dec*V3_BS_STOP_DECAY_TICKS;
+        c-=(int32_t)(dec>(uint32_t)INT32_MAX ? (uint32_t)INT32_MAX : dec);
+        ctx.bs.ceiling=c>0 ? c : 0;
+        break; }
+    case ASSIST_PIPELINE_BS_REOPEN: {
+        /* from the PUBLISHED value at no more than the BDE8 rise rate (R1-#4) */
+        const int32_t c=ctx.last_final_iq+v3_bde8_step(&ctx.bs.rate_acc,p,ticks);
+        ctx.bs.ceiling=c;
+        if(c>=request) ctx.bs.state=ASSIST_PIPELINE_BS_OPEN;   /* no longer binds */
+        break; }
+    default:
+        break;
+    }
+}
+
+/* STANDSTILL predicate (ARCHITECTURE_V3 2.1, D-019 rev, R1-#7/N2), replacing the stock BDE8 hard
+ * zero in V3 mode: speed_native <= 0 AND (direction inhibit OR (crank stopped AND V3 stop target
+ * == 0)), crank stopped = G53 PAS true-stop OR native real_stop. speed_native is the value the
+ * chain gets (speed_x100 / 10, 0.1 km/h). The V3 term can only make zeroing earlier; if V3
+ * misbehaves the bound at standstill is the independent backstop (<= 1.8 s). */
+static bool v3_standstill_zero(const assist_pipeline_input_t *in)
+{
+    const bool speed_zero=(in->speed_x100/10u)==0u;
+    const bool crank_stopped=g53_port_pas_true_stop() || in->real_stop;
+    return speed_zero && (in->direction_inhibit || (crank_stopped && assist_v3_stop_target_zero()));
+}
+
+const assist_pipeline_v3_status_t *assist_pipeline_v3_status(void) { return &ctx.v3s; }
 #endif
 
 /* G5300 fast slew step: 0.625*P Q8 per 4 kHz tick, half up, never 0 for P>0 (TQ-06-G2 I2). */
@@ -207,12 +369,24 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
         .safety_cut=in->safety_cut
     };
     g53_port_update(&port_in,&ctx.g53);
-#ifdef ASSIST_V3
-    v3_shadow_step(in,used_ticks,assist_off);   /* shadow: computed, not published (Milestone B) */
-#endif
     ap2_limits_input_t lim_in={0};
     ap2_limits_output_t lim;
-    lim_in.iq_request=ctx.g53.iq_request_pre_limits;
+#if ASSIST_V3
+    /* The engine that publishes THIS tick (truthful readback, changed only by the latch below). */
+    const bool v3_mode=assist_v3_config_engine_active();
+    v3_stage(in,used_ticks,assist_off);   /* both engines: shadow in G5300, published in V3 */
+    {
+        /* x g1 (battery envelope, as BDE8 applies it), this tick's g1, Q12, clamped to 0..1.0 */
+        int32_t g1=ctx.g53.trace.g1;
+        if(g1<0) g1=0;
+        if(g1>(int32_t)G53_G1_Q12_ONE) g1=(int32_t)G53_G1_Q12_ONE;
+        ctx.v3_request=(int32_t)(((int64_t)ctx.v3_iq_demand*g1)>>12);
+    }
+    const int32_t pre_limits=v3_mode ? ctx.v3_request : ctx.g53.iq_request_pre_limits;
+#else
+    const int32_t pre_limits=ctx.g53.iq_request_pre_limits;
+#endif
+    lim_in.iq_request=pre_limits;
     lim_in.source=AP2_LIMIT_SOURCE_PEDAL;
     lim_in.max_power_w=0;
     lim_in.level_iq_limit=AP2_LIMITS_NO_LEVEL_CEILING;
@@ -239,8 +413,16 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
         AP2_CEILING_RISE_MS,AP2_CEILING_FALL_MS,used_ticks);
     cmd->iq_ceiling=ctx.ceiling;
     cmd->final_iq_request=lim.final_iq;
+    /* The post-limit request of the ACTIVE engine: the R1 reference (ARCHITECTURE_V3 2.1 M2). */
     const int32_t g53_request=lim.final_iq;
     if(assist_off) cmd->final_iq_request=0;
+#if ASSIST_V3
+    /* Backstop and standstill are computed in both engines (latch vetoes), applied in V3 only. */
+    v3_backstop_step(in,used_ticks,lim.final_iq);
+    const bool standstill_zero=v3_standstill_zero(in);
+    if(v3_mode && ctx.bs.state!=ASSIST_PIPELINE_BS_OPEN && cmd->final_iq_request>ctx.bs.ceiling)
+        cmd->final_iq_request=ctx.bs.ceiling;   /* a ceiling (min), never a demand */
+#endif
     bool quiet=false;
     /*
      * OWNER-DEC-2026-10-06-G5300-ONLY: the PEDAL request is the G53 chain output after
@@ -282,8 +464,14 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
          * keeps its same-update exact zero. The protection ceiling still binds immediately.
          */
         const bool stock_hard_zero=!ctx.g53.normal_permission && ctx.g53.m2aa_native==0;
+#if ASSIST_V3
+        /* V3 mode: the standstill predicate replaces the stock BDE8 hard zero (2.1 M3). */
+        const bool hard_zero=v3_mode ? standstill_zero : stock_hard_zero;
+#else
+        const bool hard_zero=stock_hard_zero;
+#endif
         if(assist_off || in->phase_current_max<=0) cmd->slew_mode=FIS_MODE_BYPASS;
-        else if(stock_hard_zero) { cmd->final_iq_request=0; cmd->slew_mode=FIS_MODE_FORCE_ZERO; }
+        else if(hard_zero) { cmd->final_iq_request=0; cmd->slew_mode=FIS_MODE_FORCE_ZERO; }
         else {
             cmd->step_mag_8=fast_slew_step(in->phase_current_max);
             cmd->slew_mode=cmd->final_iq_request>ctx.last_final_iq ? FIS_MODE_RISE : FIS_MODE_FALL;
@@ -294,6 +482,34 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
     ctx.pulled_down=cmd->final_iq_request<g53_request;
     cmd->zero_policy=quiet && !in->service_cut ? FIS_ZERO_POLICY_QUIET : FIS_ZERO_POLICY_NONE;
     ctx.last_final_iq=cmd->final_iq_request;
+#if ASSIST_V3
+    {
+        /* ENGINE LATCH (ARCHITECTURE_V3 2.2, R1-#10, D-020): published request, V3 y and the G53
+         * pre-limit request all 0, no veto. The new engine publishes from the next tick, with
+         * pulled_down set so R1 governs any climb. No standstill CLAUSE: standstill is a veto. */
+        const bool requested=assist_v3_config_engine_requested();
+        const bool vetoed=native_cut || assist_off || ctx.bs.state!=ASSIST_PIPELINE_BS_OPEN ||
+                          standstill_zero;
+        ctx.v3s.switched=false;
+        if(requested!=v3_mode && cmd->final_iq_request==0 && !assist_v3_engaged() &&
+           ctx.g53.iq_request_pre_limits==0 && !vetoed) {
+            assist_v3_config_set_engine_active(requested);
+            ctx.pulled_down=true;
+            ctx.rise_acc=0;
+            ctx.v3s.switched=true;
+        }
+        ctx.v3s.engine_v3_active=assist_v3_config_engine_active();
+        ctx.v3s.engine_v3_requested=requested;
+        ctx.v3s.backstop_state=ctx.bs.state;
+        ctx.v3s.backstop_iq=ctx.bs.state==ASSIST_PIPELINE_BS_OPEN ? -1 : ctx.bs.ceiling;
+        ctx.v3s.v3_demand_iq=ctx.v3_iq_demand;
+        ctx.v3s.v3_request_iq=ctx.v3_request;
+        ctx.v3s.final_iq=cmd->final_iq_request;
+        ctx.v3s.standstill_zero=standstill_zero;
+        ctx.v3s.pulled_down=ctx.pulled_down;
+        ctx.v3s.dropped_logical_ticks=ctx.g53.trace.dropped_logical_ticks;
+    }
+#endif
     const bool was_permitted=ctx.tlm.assist_permitted;
     const uint16_t seq=ctx.tlm.engage_seq;
     memset(&ctx.tlm,0,sizeof(ctx.tlm)); /* Frozen DEPRECATE_ZERO fields. */
@@ -301,7 +517,7 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
     ctx.tlm.torque_load_ctrl=in->torque_load_ctrl;
     ctx.tlm.torque_load_centikg=in->torque_load_centikg;
     ctx.tlm.cadence_rpm=in->cadence_rpm;
-    ctx.tlm.iq_request_before_limits=ctx.g53.iq_request_pre_limits;
+    ctx.tlm.iq_request_before_limits=pre_limits;   /* the active engine's request */
     ctx.tlm.final_iq_request=cmd->final_iq_request;
     ctx.tlm.iq_ceiling=ctx.ceiling;
     ctx.tlm.power_limited=lim.power_limited;
@@ -317,7 +533,7 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
     ctx.tlm.block_positive=observed_veto || assist_off;
     ctx.tlm.direction_block=in->direction_inhibit;
     ctx.tlm.release_active=cmd->slew_mode==FIS_MODE_RELEASE || cmd->slew_mode==FIS_MODE_SAFETY;
-    ctx.tlm.limiter_zeroed=ctx.g53.iq_request_pre_limits>0 && cmd->final_iq_request==0;
+    ctx.tlm.limiter_zeroed=pre_limits>0 && cmd->final_iq_request==0;
     if(!was_permitted && ctx.tlm.assist_permitted) ++ctx.tlm.engage_seq;
     if(in->direction_inhibit) ctx.tlm.pas_state=in->inhibit_is_reverse ? AP2_PAS_REVERSE : AP2_PAS_INVALID;
     else if(in->real_stop) ctx.tlm.pas_state=AP2_PAS_STOPPED;
