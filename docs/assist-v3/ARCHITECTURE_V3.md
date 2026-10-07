@@ -389,19 +389,11 @@ Each item has a test in TEST_MATRIX (G1-SAFE).
 
 ## 10. Mode character
 
-Levels keep their HMI mapping (1 ECO, 2 TOUR/TRAIL, 3 SPORT, 4 SPORT+ with AUTO ratio, 5 BOOST). A level is a
-strategy, expressed as firmware default sets for the V3 parameters (CONFIG_PROTOCOL_V3 §defaults):
-
-| Character | Response (release) | Carry strength / extent | Notes |
-|---|---|---|---|
-| ECO | gentle | small / short | energy first |
-| TRAIL | medium | large / medium | technical climbing, natural effort |
-| SPORT | fast | medium / medium | quick attack (legacy accel) and fast TRUE_RELEASE |
-| SPORT+ | fastest | large / long | strong attack primes carry via the score |
-| BOOST | fast | medium / medium | as SPORT, higher legacy ratio |
-| AUTO | — | — | Milestone F dynamic range; today S+ keeps the G5300 AUTO ratio |
-
-Values are chosen from the simulation matrix, not by feel.
+Superseded by MODE_CHARACTER.md (owner override 2026-10-07): five separated layers (intent / mode character /
+physical envelope / transient / safety), autonomous modes ECO, TRAIL, SPORT, SPORT+, AUTO with complete firmware
+defaults, BASIC macros (Assist, Max Torque, Max Power, Response, Start, Carry) and ADVANCED parameters, DEFAULT +
+override storage, configured vs effective readback. Milestone C keeps the legacy G5300 characteristic; the Assist
+macro and envelopes become active in the mode-character milestone.
 
 ## 11. Telemetry (DIAG build only)
 

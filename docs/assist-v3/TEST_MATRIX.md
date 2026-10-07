@@ -45,6 +45,16 @@ The full gate is re-run once at the end, not after every attempt.
 | G1-CFG | CONFIG_PROTOCOL_V3 vectors, every reject reason with no-mutation assertion, reserved-param rejection, generation (skips 0xFFFF, wrap), foreign transfer live, transfer timeout, engine write while riding latched not immediate, append-only persist with power loss between erase and program, restart/corrupt/newer record, legacy streams byte-identical | G1 |
 | G1-SEL | switch latches only with published and both engine demands 0 and no veto; during release, during brake, at standstill with demand: no step; R1 governs the climb; pipeline reset resets V3 | G1 |
 
+## Mode character groups (owner override 2026-10-07; G2 = run at each milestone that activates a consumer)
+
+| ID | What it proves | Gate |
+|---|---|---|
+| G2-AUTONOMOUS | every mode with NO user override passes the whole V3 behaviour matrix (cadence x profile) and the acceptance thresholds of SIMULATION_REPORT §2 | G2 |
+| G2-OVERRIDE | one parameter changed at a time (Assist, Max Torque, Max Power, Response, Start, Carry low/high, per mode): the effect matches the parameter's documented meaning | G2 |
+| G2-ORTHO | changing one parameter leaves unrelated metrics within tolerance: Max Power -> no change in classification, TRUE_RELEASE latency, start threshold; Carry -> no change in normal RUN; Response -> no change in power/torque ceilings; Assist -> no change in safety/battery/thermal/legal limits. Couplings found are documented or the API changes | G2 |
+| G2-MACRO | Assist 20/40/60/80/100 x 25/60/90/120 rpm x every mode: intent, desired support, torque equivalent, motor power, response time, release; demand monotone in Assist (equality only where an envelope binds); mode keeps its character across the range | G2 |
+| G1-CFG2 | config v2: mode profile + global objects, configured vs effective vs source, restore one mode / all, legacy P0/P1 input precedence, reserved params, persist/restart, erase window | G1 |
+
 ## G-EQ rules (REVIEW 1 #20)
 
 1. Harnesses set `engine = G5300` explicitly (the candidate default is V3; the flash stub has no record).

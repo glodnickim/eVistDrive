@@ -112,3 +112,30 @@ At 5 KB the margin is ~2200 B (> 2x the required minimum) and 1 KB is freed for 
 on every target build, so a V3 stack increase is caught.
 Rejected: shrinking STOP_TRACE (27 KB diagnostic recorder in NORMAL builds, owner tooling depends on it); removing
 the 1 KB heap (newlib malloc is linked; runtime use not proven absent); squeezing V3 buffers below the spec.
+
+### D-025 — 2026-10-07 — Mode character as a separate layer; modes are autonomous strategies (owner override)
+Layers: rider intent / mode character / physical envelope / transient / safety. Every mode passes the full matrix with
+no user override. Rejected: modes as Assist % / Power % / Acceleration triples (owner requirement).
+
+### D-026 — 2026-10-07 — Assist is a monotone macro of the mode's support function, not a torque multiplier
+Assist drives base / range / progression through per-mode profile curves; never envelopes, response, carry or limits.
+Rejected: keeping `motor = rider_torque * multiplier` for name compatibility (owner requirement).
+
+### D-027 — 2026-10-07 — DEFAULT + override storage; profile defaults only in firmware
+Rejected: storing copies of defaults (blocks later default improvements; owner requirement).
+
+### D-028 — 2026-10-07 — Config v2: per-mode profile objects + global object; v1 block superseded before any client
+Rejected: growing the v1 block (5 x 8 slots cannot hold the ADVANCED set; 255 B transport limit for a 5 x 24 block
+with sources).
+
+### D-029 — 2026-10-07 — Stock P0/P1 per-level values become legacy inputs to DEFAULT (refines D-011)
+The stock HMI app keeps working; a V3 override wins; readback reports the source. Rejected: ignoring P0/P1 in the V3
+engine (silent breakage of the stock app) and V3 mirrors (two owners).
+
+### D-030 — 2026-10-07 — Default level -> mode map L1 ECO, L2 TRAIL, L3 SPORT, L4 SPORT+, L5 AUTO (configurable)
+Takes effect with the mode-character milestone; until then levels keep legacy behaviour. Owner may change the map.
+
+### D-031 — 2026-10-07 — Implementation order follows the owner override
+B-PIPE shadow + G-EQ -> RAM decision -> mode character design -> torque/power envelope simulation -> advanced config
+contract -> targeted architecture review -> active phase-aware release -> carry -> active torque/power/mode
+character -> dynamic range/AUTO -> terrain state/optional IMU.
