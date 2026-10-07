@@ -71,7 +71,7 @@ G53 static assist characteristic, battery limiter and the simulators stay.
 | G9 D7EC accel trajectory (rise D28, fall D3E), G10 start hold-off | **not consumed** — rise rate *value* and the D3E rate are reused by V3-6 |
 | G12 BDE8 S5 ±50/ms, state 7->1 decay | **not consumed** — its rate is a cap inside V3-6 rise and the legacy stop rate |
 | M2 pipeline R1 bumpless veto release | **kept in V3 mode** — it is a veto-release limiter, not a demand shaper; it binds only after native_cut, assist-off, the standstill zero, the backstop, or an engine switch (`pulled_down` computed against the post-limit V3 request) (R1-#3) |
-| M3 `stock_hard_zero` from shadow BDE8 | **replaced** by one pipeline predicate, independent of V3 internals: `standstill_zero = speed_native <= 0 ∧ (G53 PAS true-stop ∨ native real_stop ∨ direction_inhibit)` -> FORCE_ZERO (R1-#7). A start from rest (speed 0 for the first ~4.4 m, crank turning) is not zeroed |
+| M3 `stock_hard_zero` from shadow BDE8 | **replaced** by one pipeline predicate: `standstill_zero = speed_native <= 0 ∧ (direction_inhibit ∨ (crank stopped ∧ V3 stop target == 0))` -> FORCE_ZERO (R1-#7, re-check N2). It reproduces baseline at speed 0: reverse -> ~2 ms, crank stopped with load removed -> ~32 ms, crank stopped with load **held** -> the legacy D3E ramp (~1.0 s from 455 Iq), not a cut. The V3 term can only make zeroing earlier, never hold demand. A start from rest (speed 0 for the first ~4.4 m, crank turning) is not zeroed |
 | M1 iq_ceiling slew | kept — protection envelope, not a demand shaper |
 | F1 fast_iq_slew 6.84 Iq/ms | kept — V3 rates are below it by construction (test asserts it never binds in normal riding) |
 | g1 multiply | kept — envelope |
@@ -186,7 +186,8 @@ void assist_motion_sanitize(const motion_input_t *raw, motion_input_t *out);
   *Candidate* α = 1/8 per revolution. A rider who changes style (sit → stand) adapts within a few revolutions
   without any class gate locking learning out.
 - Confidence `c` (0..1): residual-based. It rises per learned revolution with low residual, falls with high residual,
-  decays slowly while stopped. A glitch (INVALID jump or ring overflow) marks the phase **unaligned**: after the next
+  decays slowly while stopped. A revolution whose residual exceeds the mismatch threshold (style change, e.g.
+  sit -> stand) drops the classifier to fallback mode within that one revolution (re-check N5). A glitch (INVALID jump or ring overflow) marks the phase **unaligned**: after the next
   full revolution the phase is re-aligned by circular cross-correlation of that revolution against the template
   (96 × NB operations once per revolution) and confidence is restored if the correlation peak is clear (R1-#15).
   Power-on, torque invalid and reverse-then-unknown keep the prior until confidence is rebuilt.
@@ -210,13 +211,24 @@ cancellation even with a poor template (`E_long`). In template mode a short wind
 **Computing `env_equiv`.** Once per revolution, and when cadence changes by more than 10 %, run the exact D7EC
 recurrence (`k = 8·cad`, 10 ms step, integer `k|1` form, attack `env = x`) over the template-reconstructed stroke
 `x(θ) = EB74_active(I_rev · s(θ))`, where `EB74_active(L) = max(0, 750 + L·2450/6000 − thr)` with the **active**
-threshold `thr` (820 while engaged, 995 to engage) read through an accessor (R1-#2). Its steady-state mean gives
-`κ = env_equiv_ss / EB74_active(I_rev)`. Between recomputations `env_equiv = κ · EB74_active(I)`, so when the
-classifier moves `I` (release, attack), `env_equiv` follows at once — no envelope state carries over; all dynamics
-stay in V3-6. Cost: ≤ 300 recurrence steps per revolution at 20 rpm, ≤ 50 at 120 rpm.
+threshold `thr` chosen by **V3's own engaged flag** (820 while V3 demand is engaged, 995 to engage); only the EB74
+zero (750 today) is read from the shadow chain through an accessor (R1-#2, re-check N4). The steady-state mean
+`env_ss` is converted back to the **load domain** (re-check N1):
+
+```text
+L_eq = (env_ss + thr - 750) * 6000 / 2450      (the constant load EB74 maps to env_ss)
+kL   = clamp(L_eq / I_rev, 1.0, 2.5);  I_rev < ~300 CLU -> kL of the prior template at this cadence
+env_equiv = EB74_active(kL * I)
+```
+
+Defining the factor before the EB74 deadband keeps it bounded: light spinning followed by a hard push in the same
+revolution cannot multiply the new load by a near-deadband ratio. Between recomputations `env_equiv` follows `I` at
+once when the classifier moves it (release, attack) — no envelope state carries over; all dynamics stay in V3-6.
+Cost: ≤ 300 recurrence steps per revolution at 20 rpm, ≤ 50 at 120 rpm.
 
 Acceptance (TEST_MATRIX G1-LEVEL): V3 steady-state mean Iq within ±5 % of baseline for L1–L5 and S+ AUTO,
-20..130 rpm, dead-spot depth 0.1/0.3/0.6, three load levels, with the prior and with a converged template.
+20..130 rpm, dead-spot depth 0.1/0.3/0.6, three load levels, with a converged template; with the prior template
+within ±15 % and no step above 10 % while the template converges (re-check N3).
 
 ### 4.4 Release classification
 

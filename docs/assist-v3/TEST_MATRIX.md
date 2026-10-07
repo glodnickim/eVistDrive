@@ -20,12 +20,12 @@ The full gate is re-run once at the end, not after every attempt.
 | ID | What it proves | Gate |
 |---|---|---|
 | G-EQ | candidate with `ASSIST_V3` off, and with engine = G5300, reproduces baseline CSVs byte-for-byte (SIL, regression, replay) | G1 |
-| G1-LEVEL | V3 steady-state mean Iq within ±5 % of baseline: L1-L5 + S+ AUTO, 20..130 rpm, dead-spot depth 0.1/0.3/0.6, three load levels, prior and converged template | G1 |
+| G1-LEVEL | V3 steady-state mean Iq vs baseline: ±5 % with converged template, ±15 % and no step > 10 % with the prior; L1-L5 + S+ AUTO, 20..130 rpm, dead-spot depth 0.1/0.3/0.6, three load levels; plus light spin then attack within one revolution with no overshoot above the baseline characteristic | G1 |
 | G1-TRACK | pedal-pressure tracking: mean-effort ramps up/down at 20/60/120 rpm; demand monotonic, tracking error vs baseline characteristic, no dip at dead spots | G1 |
 | G1-FALLBACK | first 3 revolutions after start, after reverse, after a glitch, at 20 rpm with deep dead spots: zero TRUE_RELEASE classifications | G1 |
-| G1-STYLE | sit -> stand at equal mean; asymmetric legs at 20 and 130 rpm: no assist dip, template adapts | G1 |
+| G1-STYLE | sit -> stand at equal mean; asymmetric legs at 20 and 130 rpm: no assist dip, fallback within one revolution of mismatch, template re-converges | G1 |
 | G1-VETO | brake release while pedalling, assist off -> on, both engines: climb back at the R1 rate | G1 |
-| G1-STAND | start from rest with speed 0 for the first 4.4 m gets assist; stop/reverse at speed 0, load held/released: zero time <= baseline | G1 |
+| G1-STAND | start from rest with speed 0 for the first 4.4 m gets assist; at speed 0: reverse and crank-stop-load-released zero time <= baseline; crank-stop-load-held follows the legacy ramp within ±20 % of baseline (~1.0 s from 455 Iq) — two-sided, no early cut | G1 |
 | G1-STOP | legacy stop timing: V3 stop/reverse zero time <= baseline for load held/released at 25/60/120 rpm | G1 |
 | G1-STATIC-T | level change while riding and S+ AUTO attack, in time, against the transcription | G1 |
 | G1-PAS | sampler ring overflow (>32 events in a stall) and INVALID jumps: phase unaligned, no false class, re-alignment | G1 |

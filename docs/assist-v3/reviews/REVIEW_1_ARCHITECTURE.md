@@ -332,3 +332,142 @@ simulated CAN trace. Write these three rules into TEST_MATRIX G-EQ.
 6. #12/#13: matrix additions; distance/speed estimator contract (implementation may wait for D).
 
 MINOR items can be closed during Milestone B.
+
+## Re-check (rev 2)
+
+```text
+TIMESTAMP:   2026-10-07T13:01:13+02:00 (system clock)
+REVIEWER:    independent Claude subagent (same reviewer as REVIEW 1), read-only
+TARGET:      commit 8ebdae5 (ARCHITECTURE_V3 rev 2, DECISIONS D-015..D-022, TEST_MATRIX, CONFIG_PROTOCOL_V3)
+SCOPE:       only the fixes for issues #1-#20, plus new defects introduced by those fixes
+METHOD:      diff 5141300..8ebdae5 + one more host probe P3 (copy of tests/host/reverse_ramp_host.c, two extra
+             cases at speed 0, run on the production pipeline in the scratchpad; RULE 70 observation)
+VERDICT:     CHANGES_REQUIRED (narrow: 2 new MAJOR defects in the fixes for #1 and #7; everything else resolved)
+```
+
+### Status per issue
+
+| # | Status | Note |
+|---|---|---|
+| 1 | PARTIAL | The structure is right: `I` and `env_equiv` are separate, there is a prior template and G1-LEVEL exists. But the scale formula is defective, see N1; the G1-LEVEL tolerance with the prior template is not achievable, see N3 |
+| 2 | RESOLVED | Active threshold used. Small ambiguity about whose "engaged" state selects 820/995, see N4 |
+| 3 | RESOLVED | R1 kept; `pulled_down` computed against the post-limit V3 request; `y` never re-seeded by limiters |
+| 4 | RESOLVED | Backstop re-opens only after forward steps resume, at <= 3.5 Iq/ms; covered by G1-BACKSTOP |
+| 5 | RESOLVED | The fallback classifier (180 deg max / 180 deg mean) needs no template; the trusted band is defined (15..150 rpm) |
+| 6 | RESOLVED | Learning is now gated on revolution stability (learned from the ring after the fact). G1-STYLE must show that confidence drops to fallback within one revolution of a style change (N5) |
+| 7 | PARTIAL | The predicate is now written down, but it is **more aggressive than baseline** for a held load at speed 0, see N2 |
+| 8 | RESOLVED | The ratio limiter advances per elapsed 10 ms; it is accepted as a legacy shaper in C/D and moves into V3-6 in E; G1-STATIC-T added |
+| 9 | RESOLVED | Legacy stop rates in C; Response never slows a stop; G1-STOP added |
+| 10 | RESOLVED | Switch latches only with both demands at 0 and no veto; `pulled_down = true` on the switch tick; standstill clause removed; both engine values in CAPS |
+| 11 | PARTIAL | The hardware check plan is good. The append-only claim "never the last good one" is false with a single erase page, see N6 |
+| 12 | PARTIAL | All requested rows were added. G1-STAND's one-sided "<= baseline" acceptance hides N2, and G1-LEVEL needs a split tolerance (N3) |
+| 13 | RESOLVED | Motion estimator contract section 7.4 / D-022; distance bound removed from the C backstop; static_assert on carry vs backstop |
+| 14 | RESOLVED | Engagement gated on EB74 "armed" |
+| 15 | RESOLVED | Overflow counts as a glitch; re-alignment by cross-correlation; NB <= 24 unless a latency offset is learned |
+| 16 | RESOLVED | Enter/exit thresholds, 90 deg minimum dwell, G1-OSC |
+| 17 | RESOLVED | Bank fields DEPRECATED/inert; Max Torque goes through `level_iq_limit` |
+| 18 | RESOLVED (default: accepted with conditions) | Generation skips 0xFFFF; engine_active/requested bytes added. D-020's reason is acceptable, see below |
+| 19 | RESOLVED | Production `crank_phase.c` shared by main.c and all harnesses |
+| 20 | RESOLVED | Three G-EQ rules written into TEST_MATRIX |
+
+### D-020 judgement (#18, absent-record default V3)
+
+**Accepted, with conditions.** The candidate BIN exists to ride V3. CANable has no V3 UI yet, so a G5300 default
+would make the test build behave like the baseline and the A/B ride would be empty. Reflashing 0.638 is a real
+fallback. The safety layers (native_cut, backstop, R1, limits) do not depend on the engine. Conditions:
+
+- (a) The default applies to the V3 **candidate/test build only**. The default for a released build is decided again
+  at RELEASE_REPORT.
+- (b) RIDE_TEST_PLAN records the on-trail fallback, since there is no UI switch: assist level 0 or power-off, then
+  reflash 0.638 (or a raw CANable write of engine = 0). The owner acknowledges this before the first ride.
+- (c) Once a record has been persisted, the default no longer applies. The plan must say so, so that a later
+  "defaults" test is not confused by an old record.
+
+### New defects introduced by the fixes
+
+#### N1 - MAJOR - kappa is defined in the post-threshold domain: it is unbounded near the deadband and makes assist surge on attack
+
+Evidence: ARCHITECTURE_V3 rev 2 section 4.3: `kappa = env_equiv_ss / EB74_active(I_rev)` and between recomputations
+`env_equiv = kappa * EB74_active(I)`, with `EB74_active(L) = max(0, 750 + L*2450/6000 - 820)`.
+`EB74_active` subtracts ~70 counts, so near the deadband the denominator goes to 0 while the stroke peaks are still
+above threshold, which is exactly the case where baseline assists:
+
+- I_rev = 300 CLU, stroke depth 0.1: EB74_active(300) ~ 52, the steady envelope ~ 114, so kappa ~ 2.2
+  (the true peak/mean in the load domain is ~ 1.48).
+- I_rev = 200 CLU: kappa ~ 4.3.
+- I_rev <= 171 CLU: kappa = x/0, undefined.
+
+If the rider then attacks (spin lightly, then push into a climb), kappa is not recomputed until the revolution
+completes (up to 3 s at 20 rpm). At I = 1500 CLU, env_equiv ~ 4.3 x 542 ~ 2330 instead of ~ 836: the target
+saturates (conv clamp, 0.65*P) and V3-6 climbs toward full assist at the legacy accel rate for up to a revolution.
+That is an assist surge nobody asked for. A light-load start can also divide by zero.
+
+Fix:
+- Define the scale in the **load domain**: choose `kappa_L` so that `EB74_active(kappa_L * I_rev) = env_equiv_ss`,
+  i.e. `kappa_L = (env_equiv_ss + thr - 750) * 6000 / (2450 * I_rev)`.
+- Clamp `kappa_L` to [1.0, kappa_max] (kappa_max ~ 2.5 from the matrix).
+- Use the prior's `kappa_L` when I_rev is below a floor (e.g. 300 CLU) or the revolution is not stable.
+- Then `env_equiv = EB74_active(kappa_L * I)`. This is bounded and well defined at every load, keeps engagement on
+  the envelope-equivalent load (as baseline engages on stroke peaks), and follows I at once.
+- Add a G1-LEVEL/G1-TRACK case: light spin (I ~ 200-400 CLU), then a step to 1500-3000 CLU within one revolution
+  at 20 and 60 rpm. The V3 target must never exceed the baseline target by more than 10 %.
+
+#### N2 - MAJOR - The standstill predicate zeroes a held load at once; baseline ramps it down over ~1 s
+
+Evidence: the rev 2 predicate `standstill_zero = speed_native <= 0 AND (G53 true-stop OR real_stop OR
+direction_inhibit)` (section 2.1, D-019). Probe P3 ran on the production pipeline at speed 0, starting from 455 Iq:
+
+| Case | Baseline time to zero |
+|---|---|
+| crank stops, load held | 1022 ms (t50 522 ms, D3E ramp, no hard zero) |
+| crank stops, load removed | 32 ms |
+| reverse step | 2 ms |
+
+Under the rev 2 predicate, the load-held case becomes FORCE_ZERO at the G53 true-stop (~21 ms here). The wheel
+sensor reads 0 below ~3 km/h, so this hits every crank pause while crawling up a technical climb, and every pause
+during a steep start: a hard cut to zero, then a rise from 0. That is a legacy-STOP change (requirement 9) in the
+TRAIL use case. G1-STAND only demands "<= baseline", so it passes and hides the regression.
+
+Fix:
+- Narrow the predicate to what baseline does:
+  `speed_native <= 0 AND (direction_inhibit OR (crank stopped AND V3 stop target == 0))`.
+  The second branch is the D7EC zero-reset equivalent: load released, or the legacy 0.455 Iq/ms held-load ramp has
+  reached 0. A held load at standstill then follows the legacy ramp, still bounded by the backstop.
+- Make G1-STAND two-sided for the load-held case: |V3 - baseline| zero time <= 50 ms, and <= baseline for the
+  released and reverse cases.
+
+#### N3 - MINOR - G1-LEVEL +-5 % with the prior template cannot pass
+
+One fixed prior has a single peak/mean, but real strokes span ~1.17 (flat stroke, depth 0.6) to ~1.48 (deep dead
+spot, depth 0.1) in the REVIEW 1 model. A +-5 % parity across depths 0.1/0.3/0.6 with the prior is impossible by
+construction. Fix: +-5 % with a converged template; with the prior, +-15 % plus no step larger than 10 % when the
+template converges.
+
+#### N4 - MINOR - Whose "engaged" state selects 820 or 995 is ambiguous
+
+"Read through an accessor" would give the shadow G53's threshold. That depends on the shadow D7EC state, which
+differs from V3's during a V3 fast release and at start. Fix: V3 selects 820/995 from its **own** engaged flag
+using the same constants, and reads only the zero through the accessor.
+
+#### N5 - MINOR - Confidence drop rate on a style change is not specified
+
+With the old template still "confident", false TRUE_RELEASE can occur during the first revolutions after sit -> stand,
+before the revolution-stability learning catches up. Fix: state that one revolution with residual above X drops c
+below c_min (fallback mode). G1-STYLE asserts no assist dip from the first revolution on.
+
+#### N6 - MINOR - A single-page append-only log cannot guarantee "never the last good record"
+
+On the GD32F303 the 2 KB page is the erase unit, and CONFIG_A is one page. When the log is full, erasing it destroys
+the last good record before the new one is written, so a power loss in that window (once per ~15 persists, at
+standstill) loses it. Fix: either use two pages (CONFIG_A + the after-footer area of CONFIG_B, ping-pong), or correct
+the text to "at most once per page-full cycle, a power loss during the erase/write window falls back to defaults"
+and test exactly that.
+
+### Residual items for the author (before Milestone B code)
+
+1. N1: load-domain kappa_L, clamped, with a prior below the floor, plus the light-spin -> attack test.
+2. N2: narrowed standstill predicate plus two-sided G1-STAND.
+3. N3-N6: text and test-spec corrections (can be closed during Milestone B).
+
+Once N1 and N2 are fixed as described, this review can close as PASS_WITH_ISSUES without another full pass;
+N3-N6 can be checked at the Milestone B gate.

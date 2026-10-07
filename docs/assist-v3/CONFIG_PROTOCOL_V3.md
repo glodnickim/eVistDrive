@@ -88,7 +88,11 @@ BEHAVIOR block (114 B):
   in flash page CONFIG_A `0x0803E800` (reserved in the linker script, unused by code): fixed-size slots (record =
   magic, schema_id, schema_version, stride, payload, generation, crc32 written last), the newest slot with a valid CRC
   wins, the page is erased only when full and only after the new record is ready to be written first in the fresh
-  page. A power loss can lose at most the record being written, never the last good one (REVIEW 1 #11).
+  page. Between page erase and the first program of the fresh page there is a short window (one 2 KB erase plus one
+  record write) in which a power loss leaves no valid record; the result is "absent" -> defaults, never a corrupt
+  configuration. Only one free page exists (CONFIG_B holds MotorParams_t, SOC has its own page), so a two-page scheme
+  is not available; erases happen once per ~15 persists and only at standstill. The erase window is tested
+  (REVIEW 1 #11, re-check N6).
   `MotorParams_t` is not touched (sizeof stays 728).
 - **CONFIG_A vs bootloader:** the linked image cannot overlap CONFIG_A (linker ASSERT + build_firmware check), but
   the BL820 container header carries only size mod 64 KiB, so whether an update erases CONFIG_A is [UNKNOWN].

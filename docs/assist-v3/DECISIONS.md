@@ -82,17 +82,25 @@ Rejected: learning only in NORMAL_PRESSURE — locks out adaptation to a changed
 Rejected: re-seeding `y` from the published value — limiters would change legal-speed behaviour.
 
 ### D-019 — 2026-10-07 — Milestone C stop rates are legacy (#9); standstill predicate written explicitly (#7)
-`standstill_zero = speed_native <= 0 ∧ (G53 true-stop ∨ real_stop ∨ direction_inhibit)`. Milestone D swaps
-`speed_native` for the motion estimate.
+SUPERSEDED 2026-10-07 (re-check N2: cut load-held stops at speed 0 in ~21 ms vs baseline 1022 ms):
+`standstill_zero = speed_native <= 0 ∧ (G53 true-stop ∨ real_stop ∨ direction_inhibit)`.
+Now: `standstill_zero = speed_native <= 0 ∧ (direction_inhibit ∨ (crank stopped ∧ V3 stop target == 0))`.
+Milestone D swaps `speed_native` for the motion estimate.
 
 ### D-020 — 2026-10-07 — Engine switch latch and absent-record default (#10, #18)
 Latch only when published request and both engine demands are 0 and no veto; `pulled_down = true` on the switch tick.
 Absent-record default in the candidate build = V3. REVIEW 1 recommended G5300; rejected because CANable has no V3 UI
 yet, so a G5300 default would make the candidate BIN ride baseline behaviour; the fallback is reflashing 0.638.
-Owner may override.
+Owner may override. Re-check conditions: (a) candidate/test build only, the release default is decided in
+RELEASE_REPORT; (b) RIDE_TEST_PLAN states the on-trail fallback (level 0 / power off, then reflash 0.638 or a raw
+`engine = 0` write); (c) once a record is persisted the absent-record default no longer applies.
 
 ### D-021 — 2026-10-07 — Production `crank_phase.c` shared by main.c and all harnesses (#19)
 Rejected: harness copies of the PAS drain — the matrix would not test production code.
 
 ### D-022 — 2026-10-07 — Motion estimator (wheel pulses + erps × learned ratio) owns distance/accel for carry (#13)
 Rejected: distance caps from wheel pulses (1 pulse = 2.218 m, 0 below 3 km/h). Implementation in Milestone D.
+
+### D-023 — 2026-10-07 — Envelope factor defined in the load domain and clamped (re-check N1)
+`kL = clamp(L_eq / I_rev, 1.0, 2.5)`, prior value below ~300 CLU, `env_equiv = EB74_active(kL * I)`.
+Rejected: factor after the EB74 deadband (rev 2) — unbounded near the threshold, ~2.8x surge on light spin then attack.
