@@ -5,8 +5,8 @@ UPDATED: 2026-10-07 (Milestone B start)
 | Field | Value |
 |---|---|
 | Baseline | `25df554` (tag `baseline/rideable-25df554`) — see BASELINE_FREEZE.md |
-| Branch / HEAD | `feature/assist-behavior-v3` @ `0fae7c7` |
-| Phase | MILESTONE B — SHADOW ENGINE in progress |
+| Branch / HEAD | `feature/assist-behavior-v3` @ `f38dc68` |
+| Phase | MILESTONE B DONE (shadow); mode character design + study DONE; targeted review next |
 | Last passed gate | REVIEW 1 closed PASS_WITH_ISSUES (0214a13); G-EQ 150/150 on the SIL matrix harness (7d35f4d) |
 
 ## Frozen decisions
@@ -25,9 +25,10 @@ UPDATED: 2026-10-07 (Milestone B start)
 | B-INT | rider intent | DONE (a00b4a7) |
 | B-MAP | static map + accessors | DONE (ac768c4) |
 | B-CFG | config v1 owner module | DONE (0ea5f56); rework to v2 (mode profile objects) pending |
-| B-PIPE | crank_phase.c, assist_v3.c, pipeline shadow, DIAG telemetry, SIL hook | phase 1 by CODEX (brief handoffs/CODEX_B-PIPE-P1.md) |
+| B-PIPE | crank_phase.c, assist_v3.c, pipeline shadow, DIAG telemetry, SIL hook | phase 1 DONE (4ce1be4; G-EQ 150/150, NORMAL/DIAG builds, stack 5K) |
 | MC-DESIGN | mode character + config v2 design (owner override) | DONE (60a9bdf) |
-| MC-SIM | torque/power envelope + mode character study | CODEX (handoffs/CODEX_ENVELOPE_STUDY.md) |
+| MC-SIM | torque/power envelope + mode character study | DONE (f38dc68; CODEX ran out of credits, Lead completed) |
+| REVIEW-T | targeted architecture review (mode character, config v2, study, shadow integration) | running |
 
 Order (owner override, D-031): B-PIPE shadow + G-EQ -> RAM -> mode character design -> envelope simulation ->
 advanced config contract -> targeted architecture review -> active release -> carry -> active torque/power/mode

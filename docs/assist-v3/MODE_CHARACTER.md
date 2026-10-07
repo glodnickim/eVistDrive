@@ -68,6 +68,13 @@ motor demand = desired_support × rider mechanical input (torque/power blend, Mi
                -> clipped by Max Torque / Max Power envelopes -> transient layer -> safety.
 ```
 
+Concrete model (ENVELOPE_STUDY.md §2, verified on the production surface): the V3 support stage is the G5300 static
+map with an injected ratio law `ratio = clamp(base + slope·c4, range_min, range_max)` and a torque/power crossover
+`cad_eff = max(cad, c_floor)` (plus a high-cadence bias above 100 rpm). Fixed levels are `slope = 0`; S+ AUTO is
+`base 1, slope 524/200, max 525`. At the default Assist every profile reproduces its legacy level exactly above
+`c_floor`. Max Torque uses the existing `level_iq_limit` path; Max Power is the battery power limit enforced by the
+existing g1 owner (limit = W / V_batt, at most 15 A).
+
 Monotonicity rule: for every mode, intent, cadence and terrain, `a2 > a1 ⇒ demand(a2) >= demand(a1)` before
 envelopes; after envelopes equality is allowed only where an envelope binds (documented). Tested on Assist 20/40/60/80/100
 × 25/60/90/120 rpm × every mode (G2-MACRO).
