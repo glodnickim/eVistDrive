@@ -5,8 +5,8 @@ UPDATED: 2026-10-07 (after milestone B and the mode character study)
 | Field | Value |
 |---|---|
 | Baseline | `25df554` (tag `baseline/rideable-25df554`) — see BASELINE_FREEZE.md |
-| Branch / HEAD | `feature/assist-behavior-v3` @ `f38dc68` |
-| Phase | MILESTONE B DONE (shadow); mode character design + study DONE; targeted review next |
+| Branch / HEAD | `feature/assist-behavior-v3` @ `15df8e9` |
+| Phase | MILESTONE C active release implemented (15df8e9); rework of level parity / restart / glitch FP running |
 | Last passed gate | REVIEW 1 closed PASS_WITH_ISSUES (0214a13); G-EQ 150/150 on the SIL matrix harness (7d35f4d) |
 
 ## Frozen decisions
@@ -25,7 +25,10 @@ UPDATED: 2026-10-07 (after milestone B and the mode character study)
 | B-PIPE | crank_phase.c, assist_v3.c, pipeline shadow, DIAG telemetry, SIL hook | phase 1 DONE (4ce1be4; G-EQ 150/150, NORMAL/DIAG builds, stack 5K) |
 | MC-DESIGN | mode character + config v2 design (owner override) | DONE (60a9bdf) |
 | MC-SIM | torque/power envelope + mode character study | DONE (f38dc68; CODEX ran out of credits, Lead completed) |
-| REVIEW-T | targeted architecture review (mode character, config v2, study, shadow integration) | running |
+| REVIEW-T | targeted architecture review | PASS_WITH_ISSUES after re-check (7e5ca43) |
+| C-ACT | milestone C active release | DONE (15df8e9); rework (a)(b)(c)(e) running |
+| CFG-V2 | config v2 rework | queued for CODEX (handoffs/CODEX_B-CFG-V2.md) |
+| D-L4 | L4 freewheel plant + wheel sensor | queued for CODEX (handoffs/CODEX_D-L4-PLANT.md) |
 
 Order (owner override, D-031): B-PIPE shadow + G-EQ -> RAM -> mode character design -> envelope simulation ->
 advanced config contract -> targeted architecture review -> active release -> carry -> active torque/power/mode
