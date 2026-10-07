@@ -1,7 +1,7 @@
 # Assist Behavior V3 — Architecture
 
 ```text
-STATUS:    FROZEN CANDIDATE rev 2 — REVIEW 1 issues resolved, re-check pending
+STATUS:    FROZEN rev 3 — REVIEW 1 closed PASS_WITH_ISSUES (2026-10-07T13:05:09+02:00); residuals R-a..R-d tracked
 BASELINE:  25df554 (tag baseline/rideable-25df554)
 AUTHOR:    Lead/Master (Claude Code, claude-opus-5-5), 2026-10-07
 INPUTS:    audit/A_CONTROL_PATH.md, audit/B_TEST_AUDIT.md, audit/C_SIMULATION.md, audit/D_CONFIG_CAN.md
@@ -71,7 +71,7 @@ G53 static assist characteristic, battery limiter and the simulators stay.
 | G9 D7EC accel trajectory (rise D28, fall D3E), G10 start hold-off | **not consumed** — rise rate *value* and the D3E rate are reused by V3-6 |
 | G12 BDE8 S5 ±50/ms, state 7->1 decay | **not consumed** — its rate is a cap inside V3-6 rise and the legacy stop rate |
 | M2 pipeline R1 bumpless veto release | **kept in V3 mode** — it is a veto-release limiter, not a demand shaper; it binds only after native_cut, assist-off, the standstill zero, the backstop, or an engine switch (`pulled_down` computed against the post-limit V3 request) (R1-#3) |
-| M3 `stock_hard_zero` from shadow BDE8 | **replaced** by one pipeline predicate: `standstill_zero = speed_native <= 0 ∧ (direction_inhibit ∨ (crank stopped ∧ V3 stop target == 0))` -> FORCE_ZERO (R1-#7, re-check N2). It reproduces baseline at speed 0: reverse -> ~2 ms, crank stopped with load removed -> ~32 ms, crank stopped with load **held** -> the legacy D3E ramp (~1.0 s from 455 Iq), not a cut. The V3 term can only make zeroing earlier, never hold demand. A start from rest (speed 0 for the first ~4.4 m, crank turning) is not zeroed |
+| M3 `stock_hard_zero` from shadow BDE8 | **replaced** by one pipeline predicate: `standstill_zero = speed_native <= 0 ∧ (direction_inhibit ∨ (crank stopped ∧ V3 stop target == 0))` -> FORCE_ZERO, where *crank stopped* = G53 PAS true-stop ∨ native real_stop (R1-#7, re-check N2, closure R-b). The V3 term depends on V3 internals; if V3 misbehaves, the bound at standstill is the independent backstop (§7.3, <= 1.8 s), tested with V3 forced to max at speed 0 (closure R-a). It reproduces baseline at speed 0: reverse -> ~2 ms, crank stopped with load removed -> ~32 ms, crank stopped with load **held** -> the legacy D3E ramp (~1.0 s from 455 Iq), not a cut. The V3 term can only make zeroing earlier, never hold demand. A start from rest (speed 0 for the first ~4.4 m, crank turning) is not zeroed |
 | M1 iq_ceiling slew | kept — protection envelope, not a demand shaper |
 | F1 fast_iq_slew 6.84 Iq/ms | kept — V3 rates are below it by construction (test asserts it never binds in normal riding) |
 | g1 multiply | kept — envelope |

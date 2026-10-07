@@ -471,3 +471,37 @@ and test exactly that.
 
 Once N1 and N2 are fixed as described, this review can close as PASS_WITH_ISSUES without another full pass;
 N3-N6 can be checked at the Milestone B gate.
+
+## Closure (rev 3)
+
+```text
+TIMESTAMP:   2026-10-07T13:05:09+02:00 (system clock)
+REVIEWER:    independent Claude subagent (same reviewer), read-only
+TARGET:      commit 0214a13 (diff 8ebdae5..0214a13: ARCHITECTURE_V3 2.1/4.2/4.3, DECISIONS D-019/D-020/D-023,
+             TEST_MATRIX G1-LEVEL/G1-STYLE/G1-STAND, CONFIG_PROTOCOL_V3 section 4)
+VERDICT:     PASS_WITH_ISSUES - REVIEW 1 may close; the minor residuals below go to the Milestone B gate
+```
+
+| Item | Status | Note |
+|---|---|---|
+| N1 | RESOLVED | The factor is now computed in the load domain: `kL = clamp(L_eq / I_rev, 1.0, 2.5)`, with the prior template's `kL` below ~300 CLU and `env_equiv = EB74_active(kL * I)`. It stays bounded near the deadband, so the light spin -> attack surge is gone. The 750 in `L_eq` is the fixed CLU->count offset, not the zero, so it is correct. G1-LEVEL covers light spin then attack, with no overshoot allowed. D-023 records the decision |
+| N2 | RESOLVED | The predicate is now `speed_native <= 0 AND (direction_inhibit OR (crank stopped AND V3 stop target == 0))`. A held load at speed 0 now follows the legacy D3E ramp. G1-STAND is two-sided (within +-20 % of baseline for load held; <= baseline for released and reverse). D-019 is correctly marked SUPERSEDED, with the old text kept |
+| N3 | RESOLVED | Tolerance split: +-5 % with a converged template; +-15 % and no step > 10 % with the prior |
+| N4 | RESOLVED | 820/995 is chosen by V3's own engaged flag; only the zero comes from the shadow chain |
+| N5 | RESOLVED (value open) | A revolution above the mismatch threshold drops to fallback within that revolution; G1-STYLE asserts it. The threshold value is set by the matrix |
+| N6 | RESOLVED | The text is corrected: the erase window leaves an "absent" record -> defaults, never a corrupt configuration. The single free page is justified and the window is tested |
+| D-020 conditions | RESOLVED | Conditions (a)-(c) recorded in D-020 |
+
+Residuals (MINOR, close at the Milestone B gate):
+
+- R-a: The standstill predicate now depends on one V3 internal (`V3 stop target == 0`). If V3 has a bug, the bound
+  at standstill is the independent backstop (`T_STOP_HARD` + 300 ms, i.e. <= 1.8 s), not the hard zero. State this
+  in section 2.1, and include "speed 0, crank stopped, V3 forced to max" in G1-BACKSTOP.
+- R-b: Spell out "crank stopped" in the predicate (G53 true-stop OR native real_stop), as in the backstop text.
+- R-c: The N5 mismatch threshold, `kappa_max` = 2.5 and the 300 CLU floor are candidates; their final values come from
+  SIMULATION_REPORT.
+- R-d (carried over, not a review defect): CONFIG_A survival across a BL820 update and the EN 15194 run-on
+  reference are still [UNKNOWN] / [EXTERNAL_REFERENCE]. Both are owner/hardware items before the ride, as already
+  listed in ARCHITECTURE_V3 section 14.
+
+REVIEW 1 status: **CLOSED - PASS_WITH_ISSUES** at 0214a13. Active implementation (Milestone B) may start.

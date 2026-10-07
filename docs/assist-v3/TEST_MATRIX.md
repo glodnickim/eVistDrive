@@ -40,7 +40,7 @@ The full gate is re-run once at the end, not after every attempt.
 | G1-CLS | classifier: PHASE_DIP never lowers intent; TRUE_RELEASE detected within the angle budget at every cadence; ATTACK; PEDAL_STOP | G1 |
 | G1-TRAJ | one trajectory: rates per table; never exceeds the 6.84 Iq/ms guard in normal riding; restart continuity | G1 |
 | G1-SAFE | V3 cannot bypass native_cut, owner arbitration, limits, g1, ceiling, standstill zero, backstop; no rider load -> zero Iq (ported property) | G1 |
-| G1-BACKSTOP | V3 forced to output max: reverse decay rate, stop hold bound, decay to 0, re-open only after forward steps at <= 3.5 Iq/ms (reverse -> forward, stop past T_STOP_HARD -> restart), standstill FORCE_ZERO | G1 |
+| G1-BACKSTOP | V3 forced to output max (also at speed 0): reverse decay rate, stop hold bound, decay to 0, re-open only after forward steps at <= 3.5 Iq/ms (reverse -> forward, stop past T_STOP_HARD -> restart), standstill FORCE_ZERO | G1 |
 | G1-CARRY | activation on climb stop, no activation on coast/crest/low score, caps (first wins), cancels (brake, reverse, fault, acceleration), restart handover | G1 (Milestone D) |
 | G1-CFG | CONFIG_PROTOCOL_V3 vectors, every reject reason with no-mutation assertion, reserved-param rejection, generation (skips 0xFFFF, wrap), foreign transfer live, transfer timeout, engine write while riding latched not immediate, append-only persist with power loss between erase and program, restart/corrupt/newer record, legacy streams byte-identical | G1 |
 | G1-SEL | switch latches only with published and both engine demands 0 and no veto; during release, during brake, at standstill with demand: no step; R1 governs the climb; pipeline reset resets V3 | G1 |
