@@ -70,18 +70,22 @@ void evd_rider_step(evd_rider_t *r, const evd_bike_t *b)
 }
 
 void evd_bike_step(evd_bike_t *b, float rider_torque_nm, float motor_crank_torque_nm,
-                   bool drivetrain_engaged, float dt_s)
+                   float rider_target_rpm, float dt_s)
 {
     const float g = 9.80665f;
     float v = b->speed_mps;
     float rolling = b->mass_total_kg * g * b->crr;
     float aero = 0.5f * b->air_density * b->cda_m2 * v * v;
     float grade = b->mass_total_kg * g * b->grade;
-    b->road_force_n = rolling + aero + grade;
+    b->road_force_n = rolling + aero + grade + b->obstacle_force_n;
 
-    float crank_torque = rider_torque_nm + motor_crank_torque_nm;
+    /* The motor drives the chainring independently. The crank pawl engages only
+     * while the rider drives forward at chainring speed or faster. */
+    b->crank_freewheel_engaged = rider_target_rpm > 0.0f && rider_torque_nm > 0.0f &&
+                                 b->crank_rpm + 0.01f >= b->chainring_rpm;
+    float crank_torque = (b->crank_freewheel_engaged ? rider_torque_nm : 0.0f) + motor_crank_torque_nm;
     if (crank_torque < 0.0f) crank_torque = 0.0f;
-    float wheel_torque = drivetrain_engaged && b->chain_gear_ratio > 0.01f ?
+    float wheel_torque = b->chain_gear_ratio > 0.01f ?
         crank_torque / b->chain_gear_ratio * b->drivetrain_efficiency : 0.0f;
     b->drive_force_n = wheel_torque / b->wheel_radius_m;
 
@@ -90,13 +94,23 @@ void evd_bike_step(evd_bike_t *b, float rider_torque_nm, float motor_crank_torqu
     if (b->speed_mps < 0.0f) b->speed_mps = 0.0f;
     b->distance_m += b->speed_mps * dt_s;
 
-    if (drivetrain_engaged && b->wheel_radius_m > 0.01f && b->chain_gear_ratio > 0.01f) {
+    if (b->wheel_radius_m > 0.01f && b->chain_gear_ratio > 0.01f) {
         float wheel_rps = b->speed_mps / ((float)(2.0 * M_PI) * b->wheel_radius_m);
-        b->crank_rpm = wheel_rps * 60.0f / b->chain_gear_ratio;
-    } else {
-        /* Rear freewheel: wheel may coast while the crank independently winds down. */
-        float decay = dt_s / (0.30f + dt_s);
-        b->crank_rpm += decay * (0.0f - b->crank_rpm);
+        b->chainring_rpm = wheel_rps * 60.0f / b->chain_gear_ratio;
+    }
+    if (rider_target_rpm > 0.0f && b->crank_freewheel_engaged)
+        b->crank_rpm = b->chainring_rpm;
+    else {
+        /* A released crank stops promptly; a scripted back pedal can rotate
+         * independently of a forward moving chainring. */
+        float target = rider_target_rpm;
+        if (target == 0.0f) b->crank_rpm = 0.0f;
+        else {
+            float decay = dt_s / (0.08f + dt_s);
+            b->crank_rpm += decay * (target - b->crank_rpm);
+            if (target > 0.0f && b->crank_rpm >= b->chainring_rpm &&
+                rider_torque_nm > 0.0f) b->crank_rpm = b->chainring_rpm;
+        }
     }
     b->crank_rev += b->crank_rpm / 60.0f * dt_s;
 }

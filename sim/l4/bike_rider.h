@@ -19,6 +19,9 @@ typedef struct {
     float crank_rev;
     float road_force_n;
     float drive_force_n;
+    float obstacle_force_n;
+    float chainring_rpm;
+    bool crank_freewheel_engaged;
 } evd_bike_t;
 
 typedef struct {
@@ -38,7 +41,7 @@ void evd_bike_init(evd_bike_t *b);
 void evd_rider_init(evd_rider_t *r);
 void evd_rider_step(evd_rider_t *r, const evd_bike_t *b);
 void evd_bike_step(evd_bike_t *b, float rider_torque_nm, float motor_crank_torque_nm,
-                   bool drivetrain_engaged, float dt_s);
+                   float rider_target_rpm, float dt_s);
 uint32_t evd_bike_speed_x100(const evd_bike_t *b);
 
 #endif

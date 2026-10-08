@@ -33,6 +33,7 @@
 #include "quiet_zero.h"
 #include "ride_control.h"
 #include "rider_input.h"
+#include "ride_wheel.h"
 #include "rotor_angle.h"
 #include "rotor_motion.h"
 #include "soc_core.h"
@@ -48,6 +49,7 @@
 
 #include "battery_pack.h"
 #include "bike_rider.h"
+#include "wheel_sensor.h"
 #include "eb74_invocation_observer.h"
 
 #ifndef M_PI
@@ -257,6 +259,7 @@ typedef struct {
     MotorState_t ms;
     l4_motor_t motor;
     evd_bike_t bike;
+    evd_wheel_sensor_t wheel_sensor;
     evd_rider_t rider;
     evd_battery_pack_t batt;
     soc_core_state_t fw_soc;
@@ -264,7 +267,7 @@ typedef struct {
     uint32_t tick;
     uint16_t last_forward_gap, stop_timeout;
     uint8_t start_phase;
-    uint64_t pas_transition_index;
+    int64_t pas_transition_index;
     uint8_t pas_ab;
     uint8_t pas_bounce_phase;
     bool inject_pas_bounce;
@@ -287,6 +290,8 @@ typedef struct {
     uint16_t last_load_ctrl;
     rider_input_t last_rider_input;
     ride_control_input_t last_control_input;
+    bool scripted_trace;
+    float rider_crank_target_rpm;
 } l4_t;
 
 /* FW-150: mirrors default_centikg_to_native_delta() over the three-point curve. */
@@ -330,6 +335,7 @@ static void l4_init(l4_t *s,float true_soc,evd_battery_profile_t profile,float g
     evd_bike_init(&s->bike); evd_rider_init(&s->rider);
     s->bike.grade=grade; s->bike.chain_gear_ratio=gear_ratio;
     s->rider.target_cadence_rpm=target_rpm; s->rider.base_torque_nm=base_torque_nm;
+    s->rider_crank_target_rpm=target_rpm;
     evd_battery_init(&s->batt,profile,11U,14.0f,true_soc,r0_mohm,25.0f,1.5f);
     motor_init(&s->motor,s->batt.terminal_v,start_electrical_rev);
     s->last_forward_gap=PAS_STOP_TICKS; s->stop_timeout=PAS_STOP_TICKS;
@@ -366,10 +372,10 @@ static void process_pas(l4_t *s,uint8_t ab)
 
 static uint8_t pas_from_crank(l4_t *s)
 {
-    uint64_t idx=(uint64_t)floor((double)s->bike.crank_rev*(double)PAS_TRANSITIONS_PER_REV);
+    int64_t idx=(int64_t)floor((double)s->bike.crank_rev*(double)PAS_TRANSITIONS_PER_REV);
     if(s->pas_bounce_phase==1U){ s->pas_bounce_phase=2U; return FWD_AB[(s->pas_transition_index+3U)&3U]; }
     if(s->pas_bounce_phase==2U){ s->pas_bounce_phase=0U; return s->pas_ab; }
-    if(idx>s->pas_transition_index){
+    if(idx!=s->pas_transition_index){
         s->pas_transition_index=idx; s->pas_ab=FWD_AB[idx&3U];
         if(s->inject_pas_bounce && (idx%11U)==0U)s->pas_bounce_phase=1U;
     }
@@ -411,7 +417,7 @@ static void l4_tick(l4_t *s,FILE *csv)
     uint16_t raw=torque_native_from_ckg(s->rider.torque_ckg);
     torque_input_update(raw,torque_input_correct(raw),true);
     const torque_snapshot_t *ts=torque_input_get_snapshot();
-    uint32_t speed_x100=evd_bike_speed_x100(&s->bike);
+    uint32_t speed_x100=s->wheel_sensor.speed_x100;
 
     rider_input_t r; memset(&r,0,sizeof(r));
     r.torque_raw_mv=raw; r.torque_corrected_mv=torque_input_correct(raw);
@@ -421,11 +427,12 @@ static void l4_tick(l4_t *s,FILE *csv)
     r.motor_erps=(uint16_t)((s->motor.erps>65535.0)?65535.0:llround(s->motor.erps));
     r.motor_erps_age_ticks=s->motor.hall_age_ticks; r.motor_voltage_utilization=(uint16_t)((s->ms.u_abs<0)?0:s->ms.u_abs);
     r.pas_forward=pedaling; r.pedaling_active=pedaling; r.crank_forward_steps=pas_direction_fwd_run();
-    r.crank_direction_ok=direction_ok; r.real_stop=real_stop; r.wheel_valid=true;
+    r.crank_direction_ok=direction_ok; r.real_stop=real_stop;
+    r.wheel_valid=ride_wheel_valid(s->tick,s->wheel_sensor.last_tick);
     r.direction_inhibit_active=pas_direction_direction_inhibit_active();
     r.forward_confirmed_this_tick=pas_direction_forward_confirmed_last_call(); r.sample_tick=s->tick;
     r.start_phase=s->start_phase!=0U; r.torque_sensor_valid=true; r.pas_sensor_valid=true;
-    /* ASSIST-V3 observations, as main.c fills them (no wheel-pulse model here: tick stays 0). */
+    /* ASSIST-V3 observations, as main.c fills them. */
     r.crank_steps=crank_phase_steps(); r.crank_step_tick=crank_phase_last_step_tick();
     r.pas_glitch=crank_phase_take_glitch();
     rider_input_update(&r);
@@ -465,7 +472,7 @@ static void l4_tick(l4_t *s,FILE *csv)
 
     /* FOC electrical speed is mechanically tied to chainring speed in Level 4. The relation is
      * the same one already used by the Walk SIL: chainring rpm = electrical ERPS * 3/4. */
-    s->motor.erps=(double)s->bike.crank_rpm*(4.0/3.0); s->motor.vbus_v=s->batt.terminal_v;
+    s->motor.erps=(double)s->bike.chainring_rpm*(4.0/3.0); s->motor.vbus_v=s->batt.terminal_v;
     s->motor.dc_power_acc_w=0.0; s->motor.dc_power_samples=0U;
     for(unsigned k=0;k<INNER_PER_CTRL;k++)motor_foc_tick(&s->motor,&s->ms,s->tick);
     if(s->motor.hall_edge_this_ctrl){ s->motor.hall_age_ticks=0U; if(!s->first_hall_tick)s->first_hall_tick=s->tick; }
@@ -475,8 +482,9 @@ static void l4_tick(l4_t *s,FILE *csv)
 
     float motor_torque=(float)(s->motor.iq_a/CURRENT_A_PER_COUNT)*MOTOR_CRANK_NM_PER_IQ_COUNT;
     if(motor_torque<0.0f)motor_torque=0.0f;
-    bool engaged=s->rider.pedaling||motor_torque>0.1f;
-    evd_bike_step(&s->bike,s->rider.torque_nm,motor_torque,engaged,dt);
+    evd_bike_step(&s->bike,s->rider.torque_nm,motor_torque,
+                  s->rider_crank_target_rpm,dt);
+    evd_wheel_sensor_tick(&s->wheel_sensor,s->tick,s->bike.distance_m);
 
     float motor_power=(s->motor.dc_power_samples? (float)(s->motor.dc_power_acc_w/(double)s->motor.dc_power_samples):0.0f);
     float batt_a=(motor_power+4.0f)/(s->batt.terminal_v>5.0f?s->batt.terminal_v:5.0f);
@@ -485,13 +493,20 @@ static void l4_tick(l4_t *s,FILE *csv)
     evd_battery_step(&s->batt,batt_a,dt); firmware_soc_tick(s,batt_a);
 
     s->ms.Voltage=(int32_t)lroundf(s->batt.terminal_v*1000.0f); s->ms.Battery_Current=(int32_t)lroundf(batt_a*1000.0f);
-    s->ms.Speedx100=evd_bike_speed_x100(&s->bike); s->ms.SOC=(uint8_t)lroundf(s->fw_soc.soc_display);
+    s->ms.Speedx100=s->wheel_sensor.speed_x100; s->ms.SOC=(uint8_t)lroundf(s->fw_soc.soc_display);
     float kph=s->bike.speed_mps*3.6f; if(kph>s->max_speed_kph)s->max_speed_kph=kph;
     if(batt_a>s->max_battery_current_a)s->max_battery_current_a=batt_a;
     if((float)s->ms.i_q_setpoint>s->max_iq_ref)s->max_iq_ref=(float)s->ms.i_q_setpoint;
     if(s->batt.terminal_v<s->min_vbus)s->min_vbus=s->batt.terminal_v;
 
-    if(csv && (s->tick%20U)==0U){
+    if(csv && s->scripted_trace && (s->tick%20U)==0U){
+        fprintf(csv,"%.6f,%.4f,%.3f,%.2f,%.2f,%.3f,%u,%lld,%d,%.3f,%.6f\n",
+            (double)s->tick/CTRL_HZ,s->bike.crank_rev*360.0f,s->bike.crank_rpm,
+            s->bike.speed_mps*3.6f,s->wheel_sensor.speed_x100/100.0f,
+            s->bike.distance_m,(unsigned)s->pas_ab,(long long)s->pas_transition_index,
+            s->ms.i_q_setpoint,s->batt.current_a,s->batt.discharged_wh);
+    }
+    if(csv && !s->scripted_trace && (s->tick%20U)==0U){
         const assist_pipeline_telemetry_t *mo=assist_pipeline_telemetry();
         fprintf(csv,"%.6f,%.2f,%.2f,%.2f,%.2f,%.3f,%.3f,%.3f,%u,%u,%d,%d,%.3f,%.3f,%.3f,%.3f,%u,%u,%u,%u\n",
             (double)s->tick/CTRL_HZ,s->bike.distance_m,s->bike.speed_mps*3.6f,s->bike.crank_rpm,
@@ -819,6 +834,78 @@ static int run_fixed(const char *outdir)
     return fail?1:0;
 }
 
+typedef struct {
+    const char *name;
+    float grade, target_rpm, torque_nm, gear;
+    float stop_s;
+    unsigned seconds;
+} l4_script_t;
+
+static const l4_script_t L4_SCRIPTS[] = {
+    {"climb_pedal_stop_obstacle",0.08f,65.0f,45.0f,1.80f,4.0f,9U},
+    {"crest_pedal_stop",0.05f,70.0f,34.0f,1.90f,4.0f,9U},
+    {"coast_stop",0.0f,65.0f,14.0f,2.10f,4.0f,9U},
+    {"reverse_while_motor",0.01f,65.0f,25.0f,2.00f,4.0f,9U}
+};
+
+static int run_script(const l4_script_t *sc,const char *outdir)
+{
+    l4_t s;
+    l4_init(&s,80.0f,EVD_BATT_PROFILE_FEB21700G,sc->grade,sc->target_rpm,
+            sc->torque_nm,sc->gear,80.0f,0.03);
+    l4_eb74_observer_reset();
+    if(!l4_eb74_prehistory(&s,NULL,"L4-PRE"))return 1;
+    s.scripted_trace=true;
+    char path[512]; snprintf(path,sizeof(path),"%s/%s.csv",outdir,sc->name);
+    FILE *f=fopen(path,"wb"); if(!f){perror(path);return 1;}
+    fputs("time_s,crank_angle_deg,crank_rpm,wheel_physics_kph,wheel_sensor_kph,distance_m,pas_ab,pas_index,iq_ref,battery_a,battery_wh\n",f);
+    float stop_distance=0.0f,reverse_start_rev=0.0f;
+    uint32_t zero_tick=0U,stop_tick=(uint32_t)(sc->stop_s*CTRL_HZ);
+    uint32_t stopped_pas_edges=0U;
+    uint32_t motor_only_ticks=0U;
+    int64_t stop_pas_index=0;
+    for(uint32_t t=0;t<sc->seconds*CTRL_HZ;t++){
+        float time=(float)t/CTRL_HZ;
+        if(t==stop_tick){
+            stop_distance=s.bike.distance_m;
+            stop_pas_index=s.pas_transition_index;
+            reverse_start_rev=s.bike.crank_rev;
+        }
+        if(time>=sc->stop_s){
+            if(strcmp(sc->name,"reverse_while_motor")==0 &&
+               s.bike.crank_rev>reverse_start_rev-0.25f){
+                s.rider.pedaling=false;
+                s.rider_crank_target_rpm=-30.0f;
+            }else{
+                s.rider.pedaling=false;
+                s.rider_crank_target_rpm=0.0f;
+            }
+        }
+        if(strcmp(sc->name,"climb_pedal_stop_obstacle")==0)
+            s.bike.obstacle_force_n=(time>=4.05f && time<4.30f)?180.0f:0.0f;
+        if(strcmp(sc->name,"crest_pedal_stop")==0){
+            float transition=(time-3.5f)/0.8f;
+            if(transition<0.0f)transition=0.0f;
+            if(transition>1.0f)transition=1.0f;
+            s.bike.grade=0.05f-0.10f*transition;
+        }
+        l4_tick(&s,f);
+        if(t==stop_tick)stop_pas_index=s.pas_transition_index;
+        if(t>stop_tick && strcmp(sc->name,"reverse_while_motor")!=0 &&
+           s.pas_transition_index!=stop_pas_index)stopped_pas_edges++;
+        if(t>stop_tick && s.ms.i_q_setpoint>0 && !s.rider.pedaling)
+            motor_only_ticks++;
+        if(t>=stop_tick && !zero_tick && s.ms.i_q_setpoint==0)zero_tick=s.tick;
+    }
+    fclose(f);
+    float latency_ms=zero_tick?(float)(zero_tick-stop_tick)*0.25f:-1.0f;
+    bool ok=stopped_pas_edges==0U && motor_only_ticks>=100U;
+    printf("L4 script %s stop_to_iq0_ms=%.1f distance_after_stop_m=%.3f stopped_pas_edges=%u motor_only_ticks=%u reverse_rev=%.3f %s\n",
+           sc->name,latency_ms,s.bike.distance_m-stop_distance,stopped_pas_edges,
+           motor_only_ticks,s.bike.crank_rev-reverse_start_rev,ok?"PASS":"FAIL");
+    return ok?0:1;
+}
+
 /* Long-duration battery/SOC test at 1 Hz. No motor math is duplicated here: this test targets
  * battery truth versus the SAME production soc_core used by main.c and Level 4. */
 static int run_soc_endurance(void)
@@ -1011,6 +1098,12 @@ static int run_fuzz(unsigned count,const char *outdir)
 int main(int argc,char **argv)
 {
     const char *outdir=".build/level4";
+    if(argc>=2&&strcmp(argv[1],"--script")==0){
+        if(argc<3){fprintf(stderr,"--script requires a scenario name\n");return 2;}
+        for(size_t i=0;i<sizeof(L4_SCRIPTS)/sizeof(L4_SCRIPTS[0]);i++)
+            if(strcmp(argv[2],L4_SCRIPTS[i].name)==0)return run_script(&L4_SCRIPTS[i],outdir);
+        fprintf(stderr,"unknown L4 script: %s\n",argv[2]);return 2;
+    }
     if(argc>=2&&strcmp(argv[1],"--soc")==0)return run_soc_endurance();
     if(argc>=2&&strcmp(argv[1],"--fuzz")==0){unsigned n=argc>=3?(unsigned)strtoul(argv[2],NULL,10):100U;return run_fuzz(n,outdir);}
     return run_fixed(outdir)|run_soc_endurance();

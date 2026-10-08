@@ -15,7 +15,7 @@ CC=os.environ.get('CC','gcc')
 # Audit finding 9: link to, and launch, the platform's real executable name.
 EXE_SUFFIX='.exe' if os.name=='nt' else ''
 PROD=[
- 'src/torque_input.c','src/rider_input.c','src/assist_modes.c','src/cadence_filter.c',
+ 'src/torque_input.c','src/rider_input.c','src/ride_wheel.c','src/assist_modes.c','src/cadence_filter.c',
  'src/tuning_config.c',
     'src/ap2_pas_state.c','src/ap2_rider_demand.c','src/ap2_estimators.c',
     'src/ap2_profiles.c','src/g53_port.c','src/g53_port_boundaries.c',
@@ -32,8 +32,9 @@ PROD=[
  'tests/host/common/map_adapter.c','tests/host/common/motor_service_stub.c']
 # The Assist V3 candidate compiles the V3 shadow stage in (tools/build_firmware.py default).
 ASSIST_V3_FLAGS=['-DASSIST_V3=1']
-PLANT=['sim/l4/battery_pack.c','sim/l4/bike_rider.c']
+PLANT=['sim/l4/battery_pack.c','sim/l4/bike_rider.c','sim/l4/wheel_sensor.c']
 L4_TEST_OBSERVER=['sim/l4/eb74_invocation_observer.c']
+SCRIPTS=['climb_pedal_stop_obstacle','crest_pedal_stop','coast_stop','reverse_while_motor']
 
 def verify_fuzz_contract():
     source=(R/'sim/l4/virtual_bike_l4.c').read_text(encoding='utf-8')
@@ -75,7 +76,7 @@ def run(exe:Path,args:list[str],env=None,cwd=R,echo=True)->str:
     if p.returncode: raise SystemExit(p.returncode)
     return p.stdout
 
-def assist_v3_equivalence(fixed_on:str,fuzz_on:str,n:int)->str:
+def assist_v3_equivalence(fixed_on:str,fuzz_on:str,n:int,script_on:dict[str,str])->str:
     """TEST_MATRIX G-EQ: the same Level-4 binary built WITHOUT -DASSIST_V3 must produce
     byte-identical stdout and CSVs. Milestone B is shadow only: any difference is a defect."""
     wd=OUT/'v3off'/'wd'
@@ -84,6 +85,11 @@ def assist_v3_equivalence(fixed_on:str,fuzz_on:str,n:int)->str:
     exe_off=OUT/'v3off'/('virtual_bike_l4_v3off'+EXE_SUFFIX); build(exe_off)
     fixed_off=run(exe_off,[],cwd=wd,echo=False)
     fuzz_off=run(exe_off,['--fuzz',str(n)],cwd=wd,echo=False)
+    for name in SCRIPTS:
+        off=run(exe_off,['--script',name],cwd=wd,echo=False)
+        if off!=script_on[name]:
+            print(f'G-EQ L4 script stdout differs: {name}')
+            raise SystemExit(1)
     problems=[]
     if fixed_off!=fixed_on: problems.append('fixed stdout differs')
     if fuzz_off!=fuzz_on: problems.append('fuzz stdout differs')
@@ -109,14 +115,32 @@ def main():
                          'run "on" and require byte-identical outputs from "off" (G-EQ)')
     a=ap.parse_args()
     verify_fuzz_contract()
+    sensor_exe=OUT/('l4_wheel_sensor_host'+EXE_SUFFIX)
+    sensor_cmd=[CC,'-std=c11','-Wall','-Wextra','-Werror','-Isim/l4','-Iinc',
+                '-o',str(sensor_exe),'tests/l4_wheel_sensor_host.c','sim/l4/wheel_sensor.c','src/ride_wheel.c']
+    subprocess.run(sensor_cmd,cwd=R,check=True)
+    run(sensor_exe,[])
+    freewheel_exe=OUT/('l4_freewheel_host'+EXE_SUFFIX)
+    freewheel_cmd=[CC,'-std=c11','-Wall','-Wextra','-Werror','-Isim/l4',
+                   '-o',str(freewheel_exe),'tests/l4_freewheel_host.c','sim/l4/bike_rider.c','-lm']
+    subprocess.run(freewheel_cmd,cwd=R,check=True)
+    run(freewheel_exe,[])
     extra=ASSIST_V3_FLAGS if a.assist_v3 in ('on','both') else []
     exe=OUT/('virtual_bike_l4'+EXE_SUFFIX); build(exe,extra=extra)
     fixed=run(exe,[])
+    script_out={}
+    for name in SCRIPTS:
+        script_out[name]=run(exe,['--script',name])
+        original=(OUT/f'{name}.csv').read_bytes()
+        second=run(exe,['--script',name],echo=False)
+        if original!=(OUT/f'{name}.csv').read_bytes() or second!=script_out[name]:
+            raise SystemExit(f'L4 script nondeterministic: {name}')
+    print(f'L4 scripts deterministic: {len(SCRIPTS)}/{len(SCRIPTS)} PASS')
     n=a.fuzz if a.fuzz is not None else (25 if a.quick else 100)
     fuzz=run(exe,['--fuzz',str(n)])
     report=fixed+'\n'+fuzz
     if a.assist_v3=='both':
-        report+='\n'+assist_v3_equivalence(fixed,fuzz,n)
+        report+='\n'+assist_v3_equivalence(fixed,fuzz,n,script_out)
     if a.sanitize:
         san=OUT/('virtual_bike_l4_asan'+EXE_SUFFIX); build(san,True,extra)
         env=os.environ.copy(); env['ASAN_OPTIONS']='detect_leaks=1:halt_on_error=1'; env['UBSAN_OPTIONS']='halt_on_error=1'
