@@ -252,7 +252,11 @@
 
 //---------------------------------------------------------------------
 //Battery SOC & Range settings (coulomb counting + voltage correction)
-#define BATTERY_CAPACITY_MAH 14000   // default expected capacity (mAh), overwritten by Canable "Expected Battery Capacity" (Para1[7..8])
+/* Default pack: LG INR21700 M58T (5800 mAh rated), 11 cells in series x 3 in parallel. */
+#define BATTERY_CELLS_SERIES 11U
+#define BATTERY_CELLS_PARALLEL 3U
+#define BATTERY_CELL_CAPACITY_MAH 5800U
+#define BATTERY_CAPACITY_MAH 17400   // 3 x 5800 mAh; Canable may override stored expected capacity
 #define R_BATT_MOHM 80               // pack internal resistance for IR compensation [mOhm]
 #define I_REST_MA 500                // |battery current| below this counts as "at rest" for OCV correction [mA]
 #define REST_TIME_S 30               // seconds at rest before slow OCV correction is applied
@@ -269,6 +273,7 @@
 #define SOC_FULL_MAGIC       0x5F01  // MP.soc_full_magic value marking soc_full_pack_10mv valid
 #define SOC_FULL_BOOT_SETTLE_S  10   // seconds of stable pack voltage after boot before the 100% anchor
 #define SOC_FULL_BOOT_STABLE_MV 200  // max pack-voltage wobble allowed inside the settle window [mV]
+#define SOC_FULL_EARLY_MARGIN_MV 50  // extra voltage margin for immediate full detection; 10 s verification remains as fallback
 #define SOC_FULL_PACK_MIN_MV 20000   // hard safety range for the configured threshold [mV]
 #define SOC_FULL_PACK_MAX_MV 90000
 #define SOC_FULL_RELEASE_FRAC 0.010f // release the 100% anchor after using 1.0% of estimated capacity

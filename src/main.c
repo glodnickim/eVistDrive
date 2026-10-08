@@ -2754,8 +2754,13 @@ void reg_ADC_processing(void)
 	 * ISR when this is the only place the millivolt-domain value is needed.
 	 */
 	MS.Battery_Current=(int32_t)((float)battery_current_filtered_adc()*CAL_BAT_I); //Battery current in mA
-	voltage_raw_cumulated-=voltage_raw_cumulated>>6;
-	voltage_raw_cumulated+=adc_value[3];
+	/* Start the 1/64 voltage IIR at its first real ADC sample, not at 0 V.
+	 * Otherwise even after 256 startup passes it underreads a full 11S pack. */
+	if(voltage_raw_cumulated == 0U) voltage_raw_cumulated = ((uint32_t)adc_value[3]) << 6;
+	else {
+		voltage_raw_cumulated-=voltage_raw_cumulated>>6;
+		voltage_raw_cumulated+=adc_value[3];
+	}
 	voltage_raw_filtered=voltage_raw_cumulated>>6;
 
 	temp1=MS.Battery_Current;
@@ -5879,6 +5884,19 @@ void soc_init(void){
 	MS.soc_voltage=soc_ocv;
 	MS.soc_display=MS.soc_real;
 	MS.SOC=(uint8_t)(MS.soc_real+0.5f);
+	/* A clearly full and resting pack need not show an old 98%% for 10 seconds.
+	 * Boot ADC filtering is seeded from the first sample above. Marginal values
+	 * still take the conservative existing 10 s stable-voltage verification. */
+	if(soc_core_can_mark_full_at_boot(MS.Voltage, MS.Battery_Current,
+	        MP.soc_full_magic, MP.soc_full_pack_10mv)) {
+		MS.remaining_mah = (float)MP.battery_capacity_estimated_mah;
+		MS.soc_real = 100.0f;
+		MS.soc_display = 100.0f;
+		MS.SOC = 100U;
+		soc_full_anchor = 1U;
+		soc_boot_full_done = 1U;
+		soc_anchor_start_mah = MS.remaining_mah;
+	}
 	soc_last_saved=MS.soc_real;
 	soc_save_seconds=0;
 	cycle_start_soc=-1.0f;
