@@ -152,3 +152,34 @@ Gaps:
 5. Test procedure items: #7 (CAPS readback after every flash and power cycle), #10 (expected boot readback), #12 (nudge test), start at L3 (#9), treat carry as observational (#5).
 
 Items #5, #6, #8, #9, #11 may follow the controlled test, provided they are tracked as TECH/BUG candidates.
+
+## Follow-up (c7f489b)
+
+TIMESTAMP: 2026-10-08T09:03:17+02:00 (system clock). Same independent reviewer. Scope: only the must-fix items, 43a1d44..c7f489b. I
+read the code and docs and ran the new `l4_carry()` read-only against the existing `.build/carry_l4_full.log`. I
+did not re-run the gate (verify_all was running and was left alone).
+
+| Item | Verdict | Notes |
+|---|---|---|
+| #1 V3 stage CPU | **PASS** (code), gate **PASS_WITH_ISSUES** | `assist_pipeline.c` (D-044): `v3_stage` runs only when V3 is active, V3 is requested, or the build has shadow telemetry. On restart it calls `assist_v3_reset()` first, so y=0 and the latch rule still holds. The G5300-selected path is back to baseline plus `motion_est`/backstop/standstill, which are cheap integer code. RIDE_TEST_PLAN §0 step 5 is a no-ride gate. Problem: its "no more dropped ticks than 0.639" comparison cannot be done, because 0.639 (25df554) does not export dropped G53 logical ticks (they exist only in the V3 frame group). Make that criterion absolute: dropped_logical_ticks does not increase during the 2-minute stand test. Keep the 7200-cycle limit |
+| #2 manifest | **PASS** | `tools/build_firmware.py:306` now says "active: engine V3 publishes when latched (default without a CONFIG_A record: V3); G5300 selectable", or "absent" when V3 is not compiled in. Images built before c7f489b still carry the old text. Flash only a rebuild |
+| #4 distance-ended hold | **PASS** | The wrap is fixed (`hold_ticks > T ? hold_ticks - T : 0`). BS9b asserts a maximum drop of published/200 + 2 Iq per ms. A 300 ms linear decay drops at published/300 per ms, so the bound is meaningful, and the mutation check (700 -> 0 on the old line) is credible. D-045 is recorded |
+| #3 acceptance / report | **PASS_WITH_ISSUES** | See the list below the table |
+| Test-procedure items | **PASS_WITH_ISSUES** | See the list below the table |
+
+#3 details:
+- Done: required-row presence and positive and negative L4 carry evidence (`--l4-log` is mandatory). The new self-tests reject missing rows, dead carry and eager carry. SIMULATION_REPORT §5 is current (487/488) and records both rejected hypotheses and the criteria refinements. D-042..D-046 are present.
+- Open (a): `RELEASE_REPORT.md` does not exist yet, but §5 and the ride test plan point to it for the waiver request. Until the owner signs the dead-spot 20 rpm waiver, with a timestamp (RULE 58), the acceptance result is REJECT and must not be reported as PASS.
+- Open (b): `REQUIRED` omits `attack_stop: safety_ref0_ms`, the unloaded stop-timing row, and `climb: ripple_rev_median`. Add them.
+- Open (c): `l4_carry()` reads the log with the default codec. A PowerShell-tee'd UTF-16 log (as `.build/carry_l4_full.log` is) gives "got None" for every row. This fails safe (REJECT), but decode BOM/UTF-16 so the evidence is not falsely refused.
+
+Test-procedure details:
+- Present: §0 step 5 (CPU gate), step 6 (CAPS readback after every flash and power cycle), step 7 (loaded-crank nudge), R14/R15 (carry observational, crest/flat), and "start at level 3" in §2.
+- Wording error in step 6: "normally before the first pedal stroke at standstill" is wrong. At standstill with the crank stopped, the standstill predicate is a latch veto (speed 0, G53 true-stop, stop target 0). `engine_active` therefore becomes 1 at the **first pedal onset**, before any demand builds. An operator who checks at standstill will see 0 and may stop the test. Reword it as: "0 after boot and at standstill; 1 from the first pedal stroke; if still 0 after riding off, stop".
+
+**Overall: PASS_WITH_ISSUES.** All code must-fix items are closed. Before flashing:
+1. Record the owner waiver in RELEASE_REPORT.md.
+2. Rebuild the NORMAL and DIAG images and record their SHA-256s.
+3. Correct the RIDE_TEST_PLAN step 6 wording and make the step 5 dropped-tick criterion absolute.
+
+The bench CPU gate (step 5) remains a no-ride gate. Items #3(b) and #3(c) can follow as TECH items.

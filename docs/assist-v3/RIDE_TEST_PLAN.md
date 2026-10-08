@@ -21,11 +21,13 @@ SCOPE:     Milestone C (phase-aware intent, TRUE_RELEASE, legacy start/attack/ra
 
 5. CPU budget (REVIEW 2 #1, D-039) — **no riding if over budget**: on the DIAG build, ride the stand test of step 4
    for 2 minutes and read the V3 frame CPU fields (max cycles of the V3 stage per call) and the dropped G53 logical
-   tick counter. Budget: worst case <= 60 µs per call at 120 MHz (7200 cycles) and no more dropped ticks than the
-   same stand test on 0.639. Over budget -> stop, report to the program.
-6. Readback after every flash and every power cycle: read 0x6035. Expected `engine_requested = 1`; `engine_active`
-   reads 0 (G5300) right after boot and becomes 1 at the first moment the latch allows it (all demands 0, no veto —
-   normally before the first pedal stroke at standstill). If it never becomes 1, V3 is not riding: stop.
+   tick counter. Budget: worst case <= 60 µs per call at 120 MHz (7200 cycles) and the dropped G53 tick counter does
+   not increase during the 2-minute stand test (0.639 does not report it, so the check is absolute). Over budget ->
+   stop, report to the program.
+6. Readback after every flash and every power cycle: read 0x6035. Expected `engine_requested = 1`. `engine_active`
+   reads 0 (G5300) after boot **and stays 0 at standstill until the first pedal stroke**; it becomes 1 once the latch
+   condition is met while pedalling starts (all demands 0, no veto). Check it again after the first few strokes on the
+   stand: if it is still 0 then, V3 is not riding: stop.
 7. Standstill, loaded crank: with the bike held, put weight on a pedal without turning it, then nudge the crank a few
    degrees forward: assist must stay low and controlled and end when the pedal is unloaded or the crank stops.
 

@@ -30,7 +30,8 @@ REQUIRED = {
     "steady": ("phase_dip_fp_rate", "ripple_rev_median", "level_mean_iq", "carry_activations"),
     "dead_spot": ("phase_dip_fp_rate", "ripple_rev_median", "level_mean_iq", "carry_activations"),
     "asymmetry": ("phase_dip_fp_rate", "ripple_rev_median", "level_mean_iq", "carry_activations"),
-    "climb": ("phase_dip_fp_rate", "level_mean_iq"),
+    "climb": ("phase_dip_fp_rate", "level_mean_iq", "ripple_rev_median"),
+    "attack_stop": ("safety_ref0_ms",),
     "attack": ("attack_t63_ms",),
     "attack_stop_restart": ("restart_dip_frac", "restart_first_iq_ms"),
     "coast": ("safety_ref0_ms", "carry_activations"),
@@ -148,7 +149,10 @@ def main() -> int:
     if a.l4_log is None or not a.l4_log.exists():
         res.append({"criterion": "L4 carry evidence supplied", "case": "--l4-log", "pass": False, "detail": "missing"})
     else:
-        res += l4_carry(a.l4_log.read_text(errors="replace"))
+        raw = a.l4_log.read_bytes()
+        # PowerShell redirection writes UTF-16 with a BOM; Python/bash output is UTF-8.
+        text = raw.decode("utf-16") if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else raw.decode("utf-8", "replace")
+        res += l4_carry(text)
     fails = [r for r in res if not r["pass"]]
     by = defaultdict(lambda: [0, 0])
     for r in res:
