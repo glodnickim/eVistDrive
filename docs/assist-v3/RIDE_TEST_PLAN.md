@@ -1,8 +1,8 @@
 # Assist Behavior V3 — Controlled Ride Test Plan (DRAFT)
 
 ```text
-STATUS:    RC version — BIN names, SHA256 and HEAD are in RELEASE_REPORT.md
-BUILD:     <candidate NORMAL BIN> + <candidate DIAG BIN>  (DIAG for the logged rides)
+STATUS:    RC1 — ride 0.645 (DIAG, SHA-256 ff7f3d12…2183); details and HEAD in RELEASE_REPORT.md
+BUILD:     0.645_M820_BL820_DIAG.bin (logged rides), 0.644_M820_BL820.bin (NORMAL, after log review)
 BASELINE:  0.638 (NORMAL) / 0.639 (DIAG) from 25df554 — the fallback image
 SCOPE:     Milestone C (phase-aware intent, TRUE_RELEASE, legacy start/attack/ratio/power/stop) and
            Milestone D (obstacle carry, OBSERVATIONAL in this ride: thresholds are candidates, D-043)
