@@ -1231,8 +1231,8 @@ int main(void)
     //read parameters from virtual EEPROM and overwrite the default values
     read_virtual_eeprom();
     parse_MOparams(&MP);
-	apply_assist_levels(&MP);
 	assist_v3_config_init(v3_cfg_flash_ops()); //Assist V3: own CONFIG_A log, independent of MotorParams_t
+	apply_assist_levels(&MP);
 	//FW-030/dev: force the fixed phase ceiling (700) regardless of any stored Para1[9], so the
 	//software value always wins. Battery still protected at BATTERYCURRENT_MAX by the PI limiter.
 	MP.phase_current_max = PH_CURRENT_MAX;
@@ -2764,6 +2764,7 @@ void reg_ADC_processing(void)
 	temp4=MS.i_q_setpoint;
 
 	MS.Voltage=voltage_raw_filtered*CAL_BAT_V;//Battery voltage in mV
+	assist_v3_config_set_pack_voltage_mv((uint32_t)MS.Voltage);
 	MS.calories=(uint16_t)(MS.int_Temperature); //temp sterownika na pole calories w HMI (offset +3 juz w int_Temperature)
 	uint16_t torque_raw_mv=((adc_value[2])*3300)>>12; //map ADC value to mV
 	MS.torque_on_crank=torque_input_correct(torque_raw_mv);

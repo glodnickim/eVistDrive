@@ -377,7 +377,7 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 				else if(assist_v3_config_owns_command(Ext_ID_Rx.command)){
 					/* Assist V3 config (0x6035..0x6037): answered entirely by the owner module, one
 					 * result frame per event; the generic ACK below must not fire for these. */
-					assist_v3_reply_t v3r = {ASSIST_V3_REPLY_NONE, 0U, 0U, 0U};
+					assist_v3_reply_t v3r = {ASSIST_V3_REPLY_NONE, 0U, 0U, 0U, 0U};
 					if(Ext_ID_Rx.command==ASSIST_V3_CMD_BLOCK && receive_message.rx_dlen==1 && receive_message.rx_data[0]>8){
 						assist_v3_reply_t v3abort;
 						(void)assist_v3_config_other_declaration(Ext_ID_Rx.source,&v3abort);
@@ -545,7 +545,7 @@ void processCAN_Rx(MotorParams_t* MP, MotorState_t* MS){
 				}
 				else if(assist_v3_config_owns_command(Ext_ID_Rx.command)){
 					/* Assist V3 config: tool only; replies are multiframe payloads built by the owner. */
-					uint8_t v3buf[ASSIST_V3_BLOCK_LEN]; uint8_t v3len=0U;
+					uint8_t v3buf[ASSIST_V3_EFFECTIVE_LEN]; uint8_t v3len=0U;
 					assist_v3_reply_t v3r = assist_v3_config_can_read(Ext_ID_Rx.source,Ext_ID_Rx.command,receive_message.rx_dlen,receive_message.rx_data,v3buf,&v3len);
 					if(v3r.kind!=ASSIST_V3_REPLY_NONE) sendAssistV3Result(Ext_ID_Rx.command,&v3r);
 					if(v3len>0U) send_multiframe(Ext_ID_Rx.command,(char*)v3buf,v3len);
@@ -877,17 +877,21 @@ void sendAcknoledge(void){
 	can_tx_queue_enqueue(efid, 0U, d); //FW-110: was a blocking can_message_transmit/can_transmit_states wait
 }
 
-/* Assist V3 config result frame: NORMAL_ACK (DLC 0) or ERROR_ACK with DLC 2 = [reason, index].
+/* Assist V3 config result frame: NORMAL_ACK carries the new generation (LE u16);
+ * ERROR_ACK has DLC 2 = [reason, index].
  * Sent to the node named by the owner module (the declaring source), not to Ext_ID_Rx. */
 void sendAssistV3Result(uint16_t command, const assist_v3_reply_t *reply){
 	uint8_t d[8] = {0};
-	uint8_t dlen = 0U;
+	uint8_t dlen = 2U;
 	uint8_t op = 2U; //NORMAL_ACK
 	if(reply->kind==ASSIST_V3_REPLY_ERROR){
 		op = 3U; //ERROR_ACK
 		d[0] = reply->reason;
 		d[1] = reply->index;
 		dlen = 2U;
+	}else{
+		d[0] = (uint8_t)reply->generation;
+		d[1] = (uint8_t)(reply->generation>>8);
 	}
 	uint32_t efid = (uint32_t)command+((uint32_t)op<<16)+((uint32_t)reply->target<<19)+((uint32_t)0x02U<<24);
 	can_tx_queue_enqueue(efid, dlen, d);
