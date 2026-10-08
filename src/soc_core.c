@@ -39,6 +39,20 @@ int8_t soc_core_calculate_ocv(uint16_t voltage_mv, uint8_t cells_in_series)
 	return (int8_t)soc_values[length - 1U];
 }
 
+uint8_t soc_core_can_mark_full_at_boot(uint32_t voltage_mv, int32_t battery_current_ma,
+    uint16_t full_magic, uint16_t full_pack_10mv)
+{
+	const uint32_t full_mv = (uint32_t)full_pack_10mv * 10U;
+	if (full_magic != SOC_FULL_MAGIC || full_mv < SOC_FULL_PACK_MIN_MV ||
+	    full_mv > SOC_FULL_PACK_MAX_MV) {
+		return 0U;
+	}
+	if (battery_current_ma <= -I_REST_MA || battery_current_ma >= I_REST_MA) {
+		return 0U;
+	}
+	return voltage_mv >= (full_mv + SOC_FULL_EARLY_MARGIN_MV) ? 1U : 0U;
+}
+
 float soc_core_limp_factor(float soc, uint8_t limit_pct, uint8_t stage2_pct)
 {
 	if (limit_pct == LIMP_DISABLED || limit_pct == 0U) {
@@ -145,8 +159,13 @@ void soc_core_step_1hz(soc_core_state_t *state, const soc_core_input_t *input)
 		state->rest_seconds = 0U;
 	}
 
-	/* Display low-pass and anti-jump rule. */
-	float diff = state->soc_real - state->soc_display;
+	/* Display follows the integrated charge every second, WITHOUT the 1%/min cap.
+	 * The cap applies only to the estimator correction, not to real consumption.
+	 * Otherwise a sustained 12-15 A discharge on a 17.4 Ah pack outruns the HMI,
+	 * and a reboot suddenly exposes the hidden SOC_real - SOC_display gap. */
+	const float display_after_charge = state->soc_display -
+		(input->delta_mah / (float)input->capacity_estimated_mah) * 100.0f;
+	float diff = state->soc_real - display_after_charge;
 	float step = SOC_DISP_GAIN * diff;
 	float max_step = SOC_DISP_MAX_STEP / 60.0f;
 	if (state->soc_real < 10.0f) {
@@ -158,7 +177,7 @@ void soc_core_step_1hz(soc_core_state_t *state, const soc_core_input_t *input)
 	if (step < -max_step) {
 		step = -max_step;
 	}
-	state->soc_display += step;
+	state->soc_display = display_after_charge + step;
 	if (state->soc_display < 0.0f) {
 		state->soc_display = 0.0f;
 	}
@@ -173,6 +192,7 @@ void soc_core_step_1hz(soc_core_state_t *state, const soc_core_input_t *input)
 			state->soc_display = 100.0f;
 		} else {
 			state->full_anchor = 0U;
+			state->soc_display = state->soc_real; /* release 100%% at the true 1%% consumed */
 		}
 	}
 }
