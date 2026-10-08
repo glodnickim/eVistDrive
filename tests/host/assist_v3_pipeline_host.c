@@ -477,6 +477,22 @@ static void g1_backstop(void)
 			CHECK(r2 <= 4 && end > 300, "BS7 stop past T_STOP_HARD -> restart: re-open at <= 3.5 Iq/ms");
 		}
 	}
+	/* D: wheel intervals give an interpolated distance bound before the 1500 ms time cap. */
+	backstop_setup(800U);
+	R.in.wheel_pulse_tick=R.tick;
+	rig_ms();
+	rig_run(1000U);
+	R.in.wheel_pulse_tick=R.tick;
+	rig_ms();
+	R.rpm=0;
+	int first_stop=-1, by_distance=-1;
+	for(int k=0;k<1800;k++){
+		rig_ms();
+		if(first_stop<0 && g53_port_pas_true_stop()) first_stop=k;
+		if(first_stop>=0 && R.cmd.final_iq_request==0){by_distance=k;break;}
+	}
+	CHECK(first_stop>=0 && by_distance>first_stop && by_distance<first_stop+1500,
+	      "BS9 wheel-interpolated distance closes the independent backstop before its time cap");
 }
 
 /* ------------------------------------------------------------------ G1-STOP / G1-STAND (V3 vs G5300) */

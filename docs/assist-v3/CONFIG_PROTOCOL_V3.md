@@ -33,8 +33,8 @@ Per mode (ECO, TRAIL, SPORT, SPORT+, BOOST, AUTO) one **mode profile object** st
 | 14 | max_acceleration | ADVANCED candidate | 0..100 | pending SIL/L4 |
 | 15 | phase_compensation | ADVANCED candidate | 0..100 | pending SIL |
 | 16 | carry_strength | ADVANCED | 0..100 | D |
-| 17 | carry_time_limit | ADVANCED | ms, 0..hard max | D |
-| 18 | carry_distance_limit | ADVANCED | dm, 0..hard max | D |
+| 17 | carry_time_limit | ADVANCED | ms, 0..1200 | D |
+| 18 | carry_distance_limit | ADVANCED | dm, 0..15 | D |
 | 19 | terrain_adaptation | ADVANCED | 0..100 (AUTO) | F |
 | 20 | high_cadence_bias | ADVANCED | −50..+50, wire = value + 0x8000 | E |
 | 21..23 | reserved | | `0xFFFF` | |

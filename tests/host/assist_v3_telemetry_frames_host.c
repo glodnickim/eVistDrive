@@ -25,9 +25,9 @@
 #error "build with -DCAN_DIAGNOSTICS_ENABLE=1 -DASSIST_V3=1"
 #endif
 
-_Static_assert(DIAG_EFID_RIDE_TELEM_HI == RIDE_TELEMETRY_EFID_BASE + 14U,
+_Static_assert(DIAG_EFID_RIDE_TELEM_HI == RIDE_TELEMETRY_EFID_BASE + 17U,
                "F5 the V3 frame range is reserved in the diagnostic id map");
-_Static_assert(RIDE_TELEMETRY_V3_SCHEMA == 2U, "F3 V3 schema 2 (Milestone C: V3D/V3E added)");
+_Static_assert(RIDE_TELEMETRY_V3_SCHEMA == 3U, "F3 V3 schema 3 carries full rate mode");
 
 #define MAX_FRAMES 64
 
@@ -104,7 +104,10 @@ int main(void)
     s.v3.intent = 1234U; s.v3.env_equiv = 567U; s.v3.demand_iq = -21;
     s.v3.base_target_iq = 400; s.v3.target_iq = 399; s.v3.e_short = 1111U;
     s.v3.kappa_q12 = 6029U; s.v3.template_conf = 200U; s.v3.phase = 95U;
-    s.v3.release_class = 4U; s.v3.rate_mode = 5U; s.v3.flags = 0xA5U;
+    s.v3.release_class = 4U; s.v3.rate_mode = 9U; s.v3.flags = 0xA5U;
+    s.v3.carry_score_q12=3500U; s.v3.carry_state=1U; s.v3.carry_cancel_reason=3U;
+    s.v3.carry_remaining_ms=700U; s.v3.carry_remaining_cm=88U;
+    s.v3.speed_est_x100=545U; s.v3.rel_accel_permille_s=-123; s.v3.motion_quality=2U;
     s.v3.final_iq = 321; s.v3.backstop_iq = -1; s.v3.cpu_max_div16 = 0x1234U;
     s.v3.dropped_logical_ticks = 7U; s.v3.cpu_last_div16 = 0x0456U; s.v3.backstop_state = 3U;
     s.v3.flags2 = 0x0BU;
@@ -127,14 +130,14 @@ int main(void)
             ids[k++] = frames[i].id;
             if (be16(frames[i].d) != 0x1357U) coherent = 0U;
         }
-        check(k == want_n, "F2b the V3 cycle has 9 + 5 data frames");
+        check(k == want_n, "F2b the V3 cycle has 9 + 8 data frames");
         int ids_ok = 1;
         for (unsigned i = 0U; i < k; i++) {
             const uint32_t want = RIDE_TELEMETRY_EFID_BASE + ((i <= 6U) ? i : (i + 1U));
             if (ids[i] != want) ids_ok = 0;
         }
-        check(ids_ok, "F2c identifiers BASE+0..6, 8..9, then V3 BASE+10..14");
-        check(coherent, "F2d one coherent tick across all fourteen frames");
+        check(ids_ok, "F2c identifiers BASE+0..6, 8..9, then V3 BASE+10..17");
+        check(coherent, "F2d one coherent tick across all seventeen frames");
         /* the frame after the V3 group starts the next cycle at CORE (or META) */
         unsigned after = first;
         for (unsigned seen = 0U; after < frame_count && seen < want_n; after++)
@@ -155,13 +158,24 @@ int main(void)
         check(b && bei16(&b->d[2]) == 400 && bei16(&b->d[4]) == 399 && be16(&b->d[6]) == 1111U,
               "F3b V3B base target / target / e_short");
         check(c && be16(&c->d[2]) == 6029U && c->d[4] == 200U && c->d[5] == 95U &&
-              (c->d[6] & 7U) == 4U && ((c->d[6] >> 3) & 7U) == 5U &&
-              ((c->d[6] >> 6) & 3U) == RIDE_TELEMETRY_V3_SCHEMA && c->d[7] == 0xA5U,
-              "F3c V3C kappa / conf / phase / class|mode|schema / flags");
+              (c->d[6] & 7U) == 4U && ((c->d[6] >> 3) & 15U) == 9U &&
+              c->d[7] == 0xA5U,
+              "F3c V3C kappa / conf / phase / class|4-bit mode / flags");
         check(dd && bei16(&dd->d[2]) == 321 && bei16(&dd->d[4]) == -1 && be16(&dd->d[6]) == 0x1234U,
               "F3d V3D published final_iq / backstop_iq (-1 open) / cpu max");
         check(e && be16(&e->d[2]) == 7U && be16(&e->d[4]) == 0x0456U && e->d[6] == 3U && e->d[7] == 0x0BU,
               "F3e V3E dropped G53 ticks / cpu last / backstop state / flags2");
+        const frame_t *ff=0,*gg=0,*hh=0;
+        for (unsigned i=first;i<frame_count;i++) {
+            if(frames[i].id==RIDE_TELEMETRY_EFID_V3_BASE+5U && !ff) ff=&frames[i];
+            if(frames[i].id==RIDE_TELEMETRY_EFID_V3_BASE+6U && !gg) gg=&frames[i];
+            if(frames[i].id==RIDE_TELEMETRY_EFID_V3_BASE+7U && !hh) hh=&frames[i];
+        }
+        check(ff && ff->d[2]==3U && ff->d[3]==1U && be16(&ff->d[4])==3500U &&
+              ff->d[6]==3U && ff->d[7]==2U, "F3f V3F schema/carry/quality");
+        check(gg && be16(&gg->d[2])==700U && be16(&gg->d[4])==88U &&
+              be16(&gg->d[6])==545U, "F3g V3G carry caps and speed");
+        check(hh && bei16(&hh->d[2])==-123, "F3h V3H relative acceleration");
     }
 
     /* F4: pacing */

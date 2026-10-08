@@ -379,6 +379,21 @@ The wheel sensor gives one pulse per 2.218 m, reads 0 below ~3 km/h and needs tw
 Carry caps, the carry acceleration cancel, the Milestone D standstill predicate and the backstop distance bound read
 only this estimator.
 
+Milestone D implementation: `motion_est.c` owns the pipeline's 0.01 km/h speed,
+wrap-safe millimetre distance and relative motor acceleration (permille/s). Quality
+is 0 unknown, 1 wheel interval or 2 motor ERPS with a learned ratio. Ratio learning
+requires a wheel interval, cadence at least 20 rpm stable across pulses, measured
+motor current and speed at least 5 km/h. The estimator integrates between sparse
+pulses; after the ratio is learned a pulse does not jump the distance estimate.
+Carry admission requires the recent rider intent above 8000 CLU, high measured
+motor load, forward cadence, estimated speed 1.5..10 km/h and no acceleration
+above 100 permille/s. The Q12 score includes intent, motor load and recent attack.
+The last good score is retained for 200 ms and frozen at the first stop. The
+firmware bounds carry to 1200 ms / 1500 mm and the pipeline backstop to 1500 ms /
+2000 mm, with compile-time assertions. The carry target depends on the frozen
+score and configured strength. The configured BASIC macro resolves to 0..1200 ms
+and 0..15 dm; caps end carry on the first limit reached.
+
 ## 8. Envelopes and dynamic range (Milestone E/F — contracts only now)
 
 - **Max Torque** (E): ceiling on motor torque demand, per level, as % of the V3 demand full scale 0.65·P (D-033);

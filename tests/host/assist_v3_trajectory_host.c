@@ -58,6 +58,12 @@ typedef struct {
 	bool real_stop;
 	uint32_t el;           /* ticks per call */
 	motion_input_t raw_motion;
+	uint32_t speed_est, distance_est;
+	int16_t rel_accel;
+	uint8_t motion_quality, carry_strength;
+	uint16_t carry_time_ms, carry_distance_dm;
+	int32_t iq_measured;
+	bool brake, native_cut;
 } rig_t;
 
 static void rig_init(rig_t *r)
@@ -102,6 +108,16 @@ static int32_t rig_step(rig_t *r)
 	in.g1_q12 = 4096u;
 	in.level = r->level;
 	in.response_pct = r->response;
+	in.speed_est_x100 = r->speed_est;
+	in.distance_est_mm = r->distance_est;
+	in.rel_accel_permille_s = r->rel_accel;
+	in.motion_quality = r->motion_quality;
+	in.carry_strength_pct = r->carry_strength;
+	in.carry_time_ms = r->carry_time_ms;
+	in.carry_distance_dm = r->carry_distance_dm;
+	in.iq_measured = r->iq_measured;
+	in.brake = r->brake;
+	in.native_cut = r->native_cut;
 	in.eb74_zero = 750u;
 	in.eb74_armed = r->armed;
 	assist_motion_sanitize(&r->raw_motion, &in.motion);
@@ -404,6 +420,56 @@ static void t13_reset(void)
 	(void)learned;
 }
 
+static void carry_prepare(rig_t *r, uint16_t time_ms, uint16_t distance_dm)
+{
+	fresh(r);
+	r->rpm=65u; r->load=10000u; r->speed_est=850u; r->motion_quality=2u;
+	r->iq_measured=350; r->carry_strength=70u;
+	r->carry_time_ms=time_ms; r->carry_distance_dm=distance_dm;
+	(void)settle(r,3000u);
+	r->rpm=0u; r->load=0u; r->real_stop=true;
+	(void)rig_step(r);
+}
+
+static void t14_carry(void)
+{
+	rig_t r;
+	carry_prepare(&r,100u,15u);
+	CHECK(assist_v3_telemetry()->carry_state==1u &&
+	      assist_v3_telemetry()->carry_score_q12>=3000u,
+	      "T14a loaded stop activates carry with a frozen score");
+	for(unsigned i=0;i<450u;i++) (void)rig_step(&r);
+	CHECK(assist_v3_telemetry()->carry_cancel_reason==4u,
+	      "T14b time cap retires carry");
+	carry_prepare(&r,1200u,1u);
+	r.distance_est+=101u; (void)rig_step(&r);
+	CHECK(assist_v3_telemetry()->carry_cancel_reason==5u,
+	      "T14c distance cap retires carry first");
+	carry_prepare(&r,1200u,15u);
+	r.brake=true; r.native_cut=true; (void)rig_step(&r);
+	CHECK(assist_v3_telemetry()->carry_state!=1u &&
+	      assist_v3_telemetry()->carry_cancel_reason==1u,
+	      "T14d brake/native cut cancel carry");
+	carry_prepare(&r,1200u,15u);
+	r.rel_accel=400; (void)rig_step(&r);
+	CHECK(assist_v3_telemetry()->carry_cancel_reason==3u,
+	      "T14e acceleration cancels carry");
+	carry_prepare(&r,1200u,15u);
+	r.dir=-1; r.rpm=60u; r.real_stop=false;
+	for(unsigned i=0;i<20u;i++) (void)rig_step(&r);
+	CHECK(assist_v3_telemetry()->carry_state!=1u,
+	      "T14f reverse cancels carry");
+	carry_prepare(&r,1200u,15u);
+	r.real_stop=false; r.rpm=65u; r.load=10000u;
+	for(unsigned i=0;i<50u;i++) (void)rig_step(&r);
+	CHECK(assist_v3_telemetry()->carry_state==0u && assist_v3_engaged(),
+	      "T14g restart returns to normal from the current trajectory");
+	carry_prepare(&r,1200u,15u);
+	r.level=0u; (void)rig_step(&r);
+	CHECK(assist_v3_telemetry()->carry_cancel_reason==1u,
+	      "T14h assist off cancels carry");
+}
+
 int main(void)
 {
 	puts("assist_v3 trajectory / transient manager (Milestone C rules, module level)");
@@ -420,6 +486,7 @@ int main(void)
 	t11_elapsed();
 	t12_motion();
 	t13_reset();
+	t14_carry();
 	if (host_test_failures) {
 		printf("assist_v3 trajectory: %d check(s) FAILED\n", host_test_failures);
 		return 1;

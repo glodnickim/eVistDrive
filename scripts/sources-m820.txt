@@ -4,6 +4,7 @@ src/assist_modes.c
 src/assist_v3_config.c
 src/assist_v3.c
 src/assist_v3_intent.c
+src/motion_est.c
 src/assist_motion.c
 src/crank_phase.c
 src/ap2_pas_state.c

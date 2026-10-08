@@ -94,6 +94,9 @@ DECODED_FIELDS = [
     "permission_bits_hex", "debug_flags_hex", "assist_level", "session_state", "qzero_state",
     "theta_q15", "hall_age_ticks", "hall_state", "rotor_trusted", "bridge_lifecycle_rotor", "pwm_on",
     "pas_ab_snapshot", "pas_direction_state", "pas_backpedal", "direction_inhibit", "start_phase",
+    "v3_schema", "v3_rate_mode", "v3_carry_score_q12", "v3_carry_state",
+    "v3_carry_cancel_reason", "v3_carry_remaining_ms", "v3_carry_remaining_cm",
+    "v3_speed_est_x100", "v3_rel_accel_permille_s", "v3_motion_quality",
 ]
 
 CANONICAL_FIELDS = [
@@ -282,6 +285,17 @@ def decode_row(s: Snapshot, t0: int, capture0: int, capture_hz: float) -> dict[s
                    rotor_trusted=bool((rr>>3)&1), bridge_lifecycle_rotor=(rr>>4)&7, pwm_on=bool((rr>>7)&1),
                    pas_ab_snapshot=pp&3, pas_direction_state=(pp>>2)&3, pas_backpedal=bool((pp>>4)&1),
                    direction_inhibit=bool((pp>>5)&1), start_phase=bool((pp>>6)&1))
+    if 15 in s.frames and 12 in s.frames and s.frames[15][2] == 3:
+        f=s.frames[15]; c=s.frames[12]
+        row.update(v3_schema=3, v3_rate_mode=(c[6]>>3)&15,
+                   v3_carry_state=f[3], v3_carry_score_q12=u16(f,4),
+                   v3_carry_cancel_reason=f[6], v3_motion_quality=f[7])
+    if 16 in s.frames and row["v3_schema"] == 3:
+        f=s.frames[16]
+        row.update(v3_carry_remaining_ms=u16(f,2), v3_carry_remaining_cm=u16(f,4),
+                   v3_speed_est_x100=u16(f,6))
+    if 17 in s.frames and row["v3_schema"] == 3:
+        row["v3_rel_accel_permille_s"] = i16(s.frames[17],2)
     return row
 
 
@@ -341,7 +355,7 @@ def main() -> int:
     for fr in iter_canable(args.input):
         total_frames += 1
         if capture_first_all is None: capture_first_all=fr.capture_tick
-        if not (BASE <= fr.can_id <= BASE+RIDER):
+        if not (BASE <= fr.can_id <= BASE+17):
             continue
         telem_frames += 1
         if capture_first_telem is None: capture_first_telem=fr.capture_tick

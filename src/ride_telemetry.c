@@ -138,8 +138,8 @@ static void build_data_frame(uint8_t index, const ride_telemetry_snapshot_t *s,
         put_u16(&d[2], s->v3.kappa_q12);
         d[4] = s->v3.template_conf;
         d[5] = s->v3.phase;
-        d[6] = (uint8_t)((s->v3.release_class & 0x07U) | ((s->v3.rate_mode & 0x07U) << 3) |
-                         ((RIDE_TELEMETRY_V3_SCHEMA & 0x03U) << 6));
+        d[6] = (uint8_t)((s->v3.release_class & 0x07U) | ((s->v3.rate_mode & 0x0FU) << 3) |
+                         0x80U); /* schema 3 marker; +15 carries the full schema number */
         d[7] = s->v3.flags;
         break;
     case 12U: /* V3D */
@@ -152,6 +152,21 @@ static void build_data_frame(uint8_t index, const ride_telemetry_snapshot_t *s,
         put_u16(&d[4], s->v3.cpu_last_div16);
         d[6] = s->v3.backstop_state;
         d[7] = s->v3.flags2;
+        break;
+    case 14U: /* V3F: schema and carry classification */
+        d[2] = RIDE_TELEMETRY_V3_SCHEMA;
+        d[3] = s->v3.carry_state;
+        put_u16(&d[4], s->v3.carry_score_q12);
+        d[6] = s->v3.carry_cancel_reason;
+        d[7] = s->v3.motion_quality;
+        break;
+    case 15U: /* V3G: remaining caps and motion speed */
+        put_u16(&d[2], s->v3.carry_remaining_ms);
+        put_u16(&d[4], s->v3.carry_remaining_cm);
+        put_u16(&d[6], s->v3.speed_est_x100);
+        break;
+    case 16U: /* V3H: gear-independent relative acceleration */
+        put_i16(&d[2], s->v3.rel_accel_permille_s);
         break;
 #endif
     default:

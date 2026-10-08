@@ -1699,7 +1699,9 @@ static int run_hall_start_angle_sweep(void)
                           "v3_response_pct,v3_engaged,v3_crank_stopped,v3_stop_target_zero," \
                           "v3_imu_valid,v3_engine_active,v3_engine_requested,v3_request_iq," \
                           "v3_backstop_state,v3_backstop_iq,v3_final_iq,v3_standstill_zero," \
-                          "v3_pulled_down,v3_intent_max_work\n"
+                          "v3_pulled_down,v3_intent_max_work,v3_carry_score_q12,v3_carry_state," \
+                          "v3_carry_cancel_reason,v3_carry_remaining_ms,v3_carry_remaining_cm," \
+                          "v3_speed_est_x100,v3_rel_accel_permille_s,v3_motion_quality\n"
 static void sil_v3_csv_row(FILE *f, double t_s, uint32_t tick)
 {
     const assist_v3_telemetry_t *t = assist_v3_telemetry();
@@ -1707,7 +1709,7 @@ static void sil_v3_csv_row(FILE *f, double t_s, uint32_t tick)
      * tick's latch); the intent op-count is the D-039 host estimate (max per call so far). */
     const assist_pipeline_v3_status_t *ps = assist_pipeline_v3_status();
     fprintf(f, "%.4f,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u,%ld,%ld,%ld,%d,%u,%u,%u,%u,%u,%u,"
-               "%u,%u,%ld,%u,%ld,%ld,%u,%u,%lu\n",
+               "%u,%u,%ld,%u,%ld,%ld,%u,%u,%lu,%u,%u,%u,%u,%u,%lu,%d,%u\n",
             t_s, tick, t->intent, t->env_equiv, t->kappa_q12, t->e_short, t->e_long, t->phase,
             t->phase_aligned ? 1U : 0U, t->template_mode ? 1U : 0U, t->template_conf_q12,
             t->expected_effort, t->release_class, t->base_target_e2, t->applied_ratio,
@@ -1716,7 +1718,10 @@ static void sil_v3_csv_row(FILE *f, double t_s, uint32_t tick)
             t->stop_target_zero ? 1U : 0U, t->imu_valid ? 1U : 0U, ps->engine_v3_active ? 1U : 0U,
             ps->engine_v3_requested ? 1U : 0U, (long)ps->v3_request_iq, ps->backstop_state,
             (long)ps->backstop_iq, (long)ps->final_iq, ps->standstill_zero ? 1U : 0U,
-            ps->pulled_down ? 1U : 0U, (unsigned long)assist_v3_intent_debug()->max_work_per_call);
+            ps->pulled_down ? 1U : 0U, (unsigned long)assist_v3_intent_debug()->max_work_per_call,
+            t->carry_score_q12,t->carry_state,t->carry_cancel_reason,t->carry_remaining_ms,
+            t->carry_remaining_cm,(unsigned long)t->speed_est_x100,t->rel_accel_permille_s,
+            t->motion_quality);
 }
 static FILE *sil_v3_csv;   /* open only while a --script run writes <out>.csv */
 #endif

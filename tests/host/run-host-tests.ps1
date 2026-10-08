@@ -644,6 +644,9 @@ $suites = @(
                    (Join-Path $root 'src\assist_motion.c'),
                    (Join-Path $root 'src\g53_port_chain.c'))
        IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common')) },
+    @{ Name = 'motion_est wheel pulses, motor ratio, interpolation, acceleration and quality'
+       Harness = Join-Path $PSScriptRoot 'motion_est_host.c'
+       Modules = @((Join-Path $root 'src\motion_est.c')) },
     @{ Name = 'assist_v3 DIAG frame group on the FW-145 stream (real ride_telemetry, V3 diagnostic build)'
        # Built as the diagnostic V3 firmware: no V3 frame without V3 data (G5300 engine), five frames
        # after RIDER with it (V3 schema 2: published final_iq, backstop, CPU probe, dropped G53 ticks),
@@ -671,6 +674,7 @@ $suites = @(
                    (Join-Path $root 'src\assist_v3.c'),
                    (Join-Path $root 'src\assist_v3_intent.c'),
                    (Join-Path $root 'src\assist_motion.c'),
+                   (Join-Path $root 'src\motion_est.c'),
                    (Join-Path $root 'src\assist_v3_config.c'))
        IncludeDirs = @((Join-Path $PSScriptRoot 'common\host_stubs'), (Join-Path $PSScriptRoot 'common'))
        Defines = @('-Wno-type-limits', '-DASSIST_V3=1', '-Wl,--wrap=assist_v3_update',

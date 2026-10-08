@@ -43,6 +43,7 @@
  * main.c feeds it (REVIEW 1 #19), and the explicit engine selection (G-EQ rule 1). */
 #include "crank_phase.h"
 #if ASSIST_V3
+#include "assist_v3.h"
 #include "assist_v3_harness.h"
 #endif
 #include "walk_assist_motor.h"
@@ -318,6 +319,7 @@ static uint16_t l4_pre_eb74_from_load(uint16_t load_ctrl)
     return (uint16_t)source;
 }
 
+bool l4_script_v3;
 static void l4_init(l4_t *s,float true_soc,evd_battery_profile_t profile,float grade,
                     float target_rpm,float base_torque_nm,float gear_ratio,float r0_mohm,
                     double start_electrical_rev)
@@ -330,7 +332,8 @@ static void l4_init(l4_t *s,float true_soc,evd_battery_profile_t profile,float g
     ride_control_init(); pas_direction_init(); pas_liveness_init(); pas_cadence_reset();
     cadence_filter_reset(); pas_sampler_init(0U); crank_phase_init();
 #if ASSIST_V3
-    if(!assist_v3_harness_select_engine(false)){ fprintf(stderr,"L4: V3 engine write rejected\n"); abort(); }
+    extern bool l4_script_v3;
+    if(!assist_v3_harness_select_engine(l4_script_v3)){ fprintf(stderr,"L4: V3 engine write rejected\n"); abort(); }
 #endif
     evd_bike_init(&s->bike); evd_rider_init(&s->rider);
     s->bike.grade=grade; s->bike.chain_gear_ratio=gear_ratio;
@@ -429,6 +432,7 @@ static void l4_tick(l4_t *s,FILE *csv)
     r.pas_forward=pedaling; r.pedaling_active=pedaling; r.crank_forward_steps=pas_direction_fwd_run();
     r.crank_direction_ok=direction_ok; r.real_stop=real_stop;
     r.wheel_valid=ride_wheel_valid(s->tick,s->wheel_sensor.last_tick);
+    r.wheel_pulse_tick=s->wheel_sensor.last_tick;
     r.direction_inhibit_active=pas_direction_direction_inhibit_active();
     r.forward_confirmed_this_tick=pas_direction_forward_confirmed_last_call(); r.sample_tick=s->tick;
     r.start_phase=s->start_phase!=0U; r.torque_sensor_valid=true; r.pas_sensor_valid=true;
@@ -751,7 +755,8 @@ static int run_scenario(const scenario_t *sc,const char *outdir)
     l4_t s; l4_init(&s,sc->soc,sc->profile,sc->grade,sc->target_rpm,sc->base_torque,sc->gear,sc->r0_mohm,0.03);
     l4_eb74_observer_reset();
     s.inject_pas_bounce=sc->bounce;
-    char path[512]; snprintf(path,sizeof(path),"%s/%s.csv",outdir,sc->name);
+    char path[512]; snprintf(path,sizeof(path),"%s/%s%s.csv",outdir,sc->name,
+                             l4_script_v3?".v3":"");
     FILE *f=fopen(path,"wb"); if(!f){perror(path);return 1;}
     fprintf(f,"time_s,distance_m,speed_kph,cadence_rpm,rider_torque_nm,torque_ckg,battery_v,battery_a,true_soc,fw_soc,iq_request,iq_ref,iq_actual,motor_erps,u_abs,limp,session,debug,battery_limit,hall_age\n");
     char prehistory_path[512];
@@ -856,9 +861,12 @@ static int run_script(const l4_script_t *sc,const char *outdir)
     l4_eb74_observer_reset();
     if(!l4_eb74_prehistory(&s,NULL,"L4-PRE"))return 1;
     s.scripted_trace=true;
-    char path[512]; snprintf(path,sizeof(path),"%s/%s.csv",outdir,sc->name);
+    char path[512]; snprintf(path,sizeof(path),"%s/%s%s.csv",outdir,sc->name,
+                             l4_script_v3?".v3":"");
     FILE *f=fopen(path,"wb"); if(!f){perror(path);return 1;}
-    fputs("time_s,crank_angle_deg,crank_rpm,wheel_physics_kph,wheel_sensor_kph,distance_m,pas_ab,pas_index,iq_ref,battery_a,battery_wh\n",f);
+    fputs("time_s,crank_angle_deg,crank_rpm,wheel_physics_kph,wheel_sensor_kph,distance_m,pas_ab,pas_index,iq_ref,battery_a,battery_wh",f);
+    if(l4_script_v3)fputs(",v3_carry_state,v3_carry_cancel_reason,v3_carry_score_q12,v3_speed_est_x100,v3_motion_quality,v3_rel_accel,v3_intent,v3_iq_measured",f);
+    fputc('\n',f);
     float stop_distance=0.0f,reverse_start_rev=0.0f;
     uint32_t zero_tick=0U,stop_tick=(uint32_t)(sc->stop_s*CTRL_HZ);
     uint32_t stopped_pas_edges=0U;
@@ -889,7 +897,22 @@ static int run_script(const l4_script_t *sc,const char *outdir)
             if(transition>1.0f)transition=1.0f;
             s.bike.grade=0.05f-0.10f*transition;
         }
-        l4_tick(&s,f);
+        l4_tick(&s,l4_script_v3?NULL:f);
+#if ASSIST_V3
+        if(l4_script_v3 && (s.tick%20U)==0U){
+            const assist_v3_telemetry_t *v3=assist_v3_telemetry();
+            fprintf(f,"%.4f,%.4f,%.3f,%.4f,%.4f,%.4f,%u,%lld,%.2f,%.3f,%.4f,%u,%u,%u,%u,%u,%d,%u,%ld\n",
+                (double)s.tick/CTRL_HZ,(double)s.bike.crank_rev*360.0,
+                (double)s.bike.crank_rpm,(double)s.bike.speed_mps*3.6,
+                (double)s.wheel_sensor.speed_x100/100.0,(double)s.bike.distance_m,
+                (unsigned)s.pas_ab,(long long)s.pas_transition_index,(double)s.ms.i_q_setpoint,
+                (double)s.batt.current_a,(double)s.batt.discharged_wh,
+                (unsigned)v3->carry_state,(unsigned)v3->carry_cancel_reason,
+                (unsigned)v3->carry_score_q12,(unsigned)v3->speed_est_x100,
+                (unsigned)v3->motion_quality,(int)v3->rel_accel_permille_s,
+                (unsigned)v3->intent,(long)s.ms.i_q);
+        }
+#endif
         if(t==stop_tick)stop_pas_index=s.pas_transition_index;
         if(t>stop_tick && strcmp(sc->name,"reverse_while_motor")!=0 &&
            s.pas_transition_index!=stop_pas_index)stopped_pas_edges++;
@@ -1098,7 +1121,8 @@ static int run_fuzz(unsigned count,const char *outdir)
 int main(int argc,char **argv)
 {
     const char *outdir=".build/level4";
-    if(argc>=2&&strcmp(argv[1],"--script")==0){
+    if(argc>=2&&(strcmp(argv[1],"--script")==0||strcmp(argv[1],"--script-v3")==0)){
+        l4_script_v3=strcmp(argv[1],"--script-v3")==0;
         if(argc<3){fprintf(stderr,"--script requires a scenario name\n");return 2;}
         for(size_t i=0;i<sizeof(L4_SCRIPTS)/sizeof(L4_SCRIPTS[0]);i++)
             if(strcmp(argv[2],L4_SCRIPTS[i].name)==0)return run_script(&L4_SCRIPTS[i],outdir);

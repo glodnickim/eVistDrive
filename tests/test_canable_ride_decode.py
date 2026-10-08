@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import csv, json, subprocess, sys, tempfile
+import csv, json, re, subprocess, sys, tempfile
 from pathlib import Path
 R=Path(__file__).resolve().parents[1]
 BASE=0x10400
@@ -185,6 +185,31 @@ def schema2():
         assert vmeta['missing_frame_counts'] == meta['missing_frame_counts'], vmeta
         assert (d / 'v2_v3.decoded.csv').read_bytes() == (d / 'v2.decoded.csv').read_bytes()
         assert (d / 'v2_v3.canonical.csv').read_bytes() == (d / 'v2.canonical.csv').read_bytes()
+        # Schema-3 carry extension: the full four-bit rate and each motion/cap field survive
+        # CANable text decoding while canonical replay remains the same sensor history.
+        ext=[]
+        for ln in lines:
+            ext.append(ln)
+            if 'ID:80010409' in ln:
+                data=[int(x,16) for x in ln.split('Data:')[1].split()]
+                tk=(data[0]<<8)|data[1]
+                us=int(re.search(r'\]\s+(\d+)\s+ID:',ln).group(1))
+                ext.extend([
+                    line(us,EFF|BASE+12,frame(tk,12,u16(4096)+[200,40,4|(9<<3)|0x80,0])),
+                    line(us,EFF|BASE+15,frame(tk,15,[3,1]+u16(3500)+[3,2])),
+                    line(us,EFF|BASE+16,frame(tk,16,u16(700)+u16(88)+u16(545))),
+                    line(us,EFF|BASE+17,frame(tk,17,i16(-123)+[0,0,0,0])),
+                ])
+        extlog=d/'v2_v3_schema3.log'; extlog.write_text(''.join(ext))
+        subprocess.run([sys.executable,str(R/'tools/decode_canable_ride_log.py'),str(extlog),
+                        '--output-prefix',str(d/'v2_v3_schema3')],cwd=R,check=True)
+        with (d/'v2_v3_schema3.decoded.csv').open(newline='') as f:
+            erows=list(csv.DictReader(f))
+        assert erows[0]['v3_schema']=='3' and erows[0]['v3_rate_mode']=='9'
+        assert erows[0]['v3_carry_score_q12']=='3500' and erows[0]['v3_carry_state']=='1'
+        assert erows[0]['v3_carry_remaining_ms']=='700' and erows[0]['v3_carry_remaining_cm']=='88'
+        assert erows[0]['v3_speed_est_x100']=='545' and erows[0]['v3_rel_accel_permille_s']=='-123'
+        assert (d/'v2_v3_schema3.canonical.csv').read_bytes()==(d/'v2.canonical.csv').read_bytes()
         subprocess.run([sys.executable, str(R / 'tools/run_replay.py'),
                         str(d / 'v2.canonical.csv'), '--output', str(d / 'v2.replayed.csv')],
                        cwd=R, check=True)

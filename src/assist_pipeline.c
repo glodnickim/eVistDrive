@@ -60,6 +60,7 @@ typedef struct {
     /* The V3 demand (Iq, pre-g1, pre-limits) of this tick and its g1-scaled request. */
     int32_t v3_iq_demand;
     int32_t v3_request;
+    motion_est_t motion_est;
     /* Pipeline-owned stop/reverse backstop (ARCHITECTURE_V3 7.3, D-008): own state, independent
      * of assist_v3.c, a ceiling on the published request only. */
     struct {
@@ -70,6 +71,7 @@ typedef struct {
         int32_t last_steps;
         int32_t ceiling;          /* Iq, meaningful while state != OPEN */
         uint32_t hold_ticks;      /* control ticks in HOLD */
+        uint32_t start_distance_mm;
         uint32_t rate_acc;        /* BDE8-rate remainder, Iq * 40000 */
         int32_t decay_from;       /* ceiling when the post-hold decay began */
         uint32_t decay_acc;       /* post-hold decay remainder, Iq * (300 ms * 4 ticks) */
@@ -208,6 +210,19 @@ static void v3_stage(const assist_pipeline_input_t *in, uint32_t used_ticks, boo
     v3.level=assist_off ? 0u : in->assist_level_index;
     /* Milestone C release source through the resolver (REVIEW-T #5, #14). */
     v3.response_pct=assist_v3_effective_release_pct(in->assist_level_index);
+    {
+        const assist_v3_effective_t *eff=assist_v3_effective(in->assist_level_index);
+        if(eff){
+            v3.carry_strength_pct=(uint8_t)eff->value[16];
+            v3.carry_time_ms=eff->value[17];
+            v3.carry_distance_dm=eff->value[18];
+        }
+    }
+    v3.speed_est_x100=ctx.motion_est.out.speed_x100;
+    v3.distance_est_mm=ctx.motion_est.out.distance_mm;
+    v3.rel_accel_permille_s=ctx.motion_est.out.rel_accel_permille_s;
+    v3.motion_quality=ctx.motion_est.out.quality;
+    v3.native_cut=in->safety_cut || !in->torque_sensor_valid || !in->pas_sensor_valid;
     v3.brake=in->brake;
     v3.eb74_zero=g53_port_eb74_zero();
     v3.eb74_armed=g53_port_eb74_armed();
@@ -254,7 +269,8 @@ static int32_t v3_bde8_step(uint32_t *acc, int32_t p, uint32_t ticks)
  *   standstill                    the separate predicate below (FORCE_ZERO).
  * It runs in both engines (its state is a latch veto) and binds only in V3 mode.
  */
-#define V3_BS_T_STOP_HARD_TICKS (1500u*AP2_TICKS_PER_MS)
+#define V3_BS_T_STOP_HARD_TICKS (ASSIST_V3_BACKSTOP_HARD_MAX_MS*AP2_TICKS_PER_MS)
+#define V3_BS_D_STOP_HARD_MM ASSIST_V3_BACKSTOP_HARD_MAX_MM
 #define V3_BS_STOP_DECAY_TICKS  (300u*AP2_TICKS_PER_MS)
 static void v3_backstop_close(uint8_t state)
 {
@@ -263,6 +279,7 @@ static void v3_backstop_close(uint8_t state)
     ctx.bs.state=state;
     ctx.bs.fwd_seen=false;
     ctx.bs.hold_ticks=0;
+    ctx.bs.start_distance_mm=ctx.motion_est.out.distance_mm;
     ctx.bs.rate_acc=0;
     ctx.bs.decay_acc=0;
 }
@@ -305,7 +322,8 @@ static void v3_backstop_step(const assist_pipeline_input_t *in, uint32_t ticks, 
     case ASSIST_PIPELINE_BS_HOLD:
         if(ctx.bs.ceiling>ctx.last_final_iq) ctx.bs.ceiling=ctx.last_final_iq;
         ctx.bs.hold_ticks+=ticks;
-        if(ctx.bs.hold_ticks<V3_BS_T_STOP_HARD_TICKS) break;
+        if(ctx.bs.hold_ticks<V3_BS_T_STOP_HARD_TICKS &&
+           (uint32_t)(ctx.motion_est.out.distance_mm-ctx.bs.start_distance_mm)<V3_BS_D_STOP_HARD_MM) break;
         ctx.bs.state=ASSIST_PIPELINE_BS_DECAY;
         ctx.bs.decay_from=ctx.bs.ceiling;
         ctx.bs.decay_acc=0;
@@ -338,7 +356,8 @@ static void v3_backstop_step(const assist_pipeline_input_t *in, uint32_t ticks, 
  * misbehaves the bound at standstill is the independent backstop (<= 1.8 s). */
 static bool v3_standstill_zero(const assist_pipeline_input_t *in)
 {
-    const bool speed_zero=(in->speed_x100/10u)==0u;
+    const bool speed_zero=ctx.motion_est.out.quality ? ctx.motion_est.out.speed_x100<10u :
+        (in->speed_x100/10u)==0u;
     const bool crank_stopped=g53_port_pas_true_stop() || in->real_stop;
     return speed_zero && (in->direction_inhibit || (crank_stopped && assist_v3_stop_target_zero()));
 }
@@ -383,6 +402,8 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
 #if ASSIST_V3
     /* The engine that publishes THIS tick (truthful readback, changed only by the latch below). */
     const bool v3_mode=assist_v3_config_engine_active();
+    (void)motion_est_update(&ctx.motion_est,in->control_tick,used_ticks,in->wheel_valid,
+        in->wheel_pulse_tick,in->motor_erps,in->cadence_rpm,in->iq_measured);
     v3_stage(in,used_ticks,assist_off);   /* both engines: shadow in G5300, published in V3 */
     {
         /* x g1 (battery envelope, as BDE8 applies it), this tick's g1, Q12, clamped to 0..1.0 */

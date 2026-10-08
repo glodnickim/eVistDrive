@@ -523,13 +523,13 @@ def carry(tr: Trace) -> dict:
     st = tr.col('v3_carry_state')
     t = tr.col('t_s')
     lab = tr.col('gt_label')
-    spd = tr.col('speed_x100')
+    spd = tr.col('v3_speed_est_x100') if 'v3_speed_est_x100' in tr.cols else tr.col('speed_x100')
     act = 0
     dur = dist = 0.0
     during_cut = 0
     for k in range(len(st)):
-        on = st[k] > 0
-        if on and (k == 0 or st[k - 1] <= 0):
+        on = st[k] == 1
+        if on and (k == 0 or st[k - 1] != 1):
             act += 1
         if on and lab[k] in ('BRAKE', 'REVERSE'):
             during_cut += 1
@@ -568,6 +568,9 @@ CHECKS: dict[str, tuple[str, float]] = {
     'safety_overshoot': ('<=', 0.0),
     'cadence_rel_spread': ('<=', 0.5),
     'carry_active_during_cut_rows': ('<=', 0.0),
+    'carry_false_positives': ('<=', 0.0),
+    'carry_duration_s': ('<=', 1.2),
+    'carry_distance_m': ('<=', 1.5),
 }
 
 

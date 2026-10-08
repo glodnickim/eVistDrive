@@ -7,9 +7,9 @@
 | 1 | 7 (`0x10400..0x10406`) | FW145 | the original block |
 | 2 | 9 (`0x10400..0x10406`, `0x10408`, `0x10409`) | Assist Pipeline V2 | CORE bytes 4..7 changed meaning; the STATE spare byte carries limiter flags; two frames added |
 
-Assist V3 phase 1 reserves an optional three-frame extension (`0x1040A..0x1040C`). It does not
-change schema 2 or any existing frame. Each extension frame carries its own V3 schema (currently 1)
-in byte 6 of `0x1040C`. A schema-2 decoder may ignore these IDs; the CANable replay decoder does.
+Assist V3 has an optional eight-frame extension (`0x1040A..0x10411`). Its schema 3
+adds carry and motion observations and gives `rate_mode` four bits. It does not
+change the nine base schema-2 frames; a base-only decoder may ignore the V3 IDs.
 
 **Schema 2 added its frames ABOVE META, not in place of it.** `0x10407` stays META and every
 schema-1 frame keeps the identifier its decoder already knows, so a decoder that understands only
@@ -44,8 +44,8 @@ cannot enable it when diagnostics are globally disabled.
   QZERO state-machine object.
 - The foreground builds one coherent snapshot about every 84 control ticks (~21 ms / ~47.6 Hz).
 - The main loop serializes at most one telemetry CAN frame every 12 control ticks (~3 ms).
-- A snapshot is seven data frames under schema 1, nine under schema 2, or twelve when the optional
-  V3 extension is enabled; every data frame in
+- A snapshot is seven data frames under schema 1, nine under schema 2, or seventeen with the
+  optional V3 schema-3 extension; every data frame in
   it carries the same `tick16`, which is what identifies the snapshot.
 - META is inserted at most once per second between complete snapshots.
 - Critical CAN queue, HMI multiframe traffic and existing diagnostic dumps have priority.
@@ -74,6 +74,11 @@ The range is compile-time checked against all other EVistDrive diagnostic blocks
 0x0001040A V3A        optional Assist V3 extension
 0x0001040B V3B        optional Assist V3 extension
 0x0001040C V3C        optional Assist V3 extension
+0x0001040D V3D        final request / backstop / CPU max
+0x0001040E V3E        dropped ticks / CPU last / backstop state
+0x0001040F V3F        carry score / state / motion quality
+0x00010410 V3G        remaining caps / estimated speed
+0x00010411 V3H        relative acceleration
 ```
 
 `0x10300..0x10307` remains owned by STOP_TRACE and must not be reused.
@@ -248,7 +253,7 @@ dimension.
 6..7 auto_factor       where an adaptive profile currently sits between calm and strong
 ```
 
-### 0x1040A..0x1040C Assist V3 extension (schema 1)
+### 0x1040A..0x1040C Assist V3 extension (historical schema 1)
 
 This optional group is appended after RIDER in a diagnostic build with `ASSIST_V3=1` and
 `ASSIST_V3_SHADOW_TELEMETRY=1`. Phase 1 computes V3 in shadow; G53 still drives the motor. A
@@ -271,6 +276,30 @@ completeness criteria. The separate V3 schema allows its payload to evolve indep
 
 ## 0x10407 META
 
+### Assist V3 extension schema 3 (Milestone D)
+
+The optional V3 group now spans `0x1040A..0x10411` (eight data frames). The
+first five frames retain their schema-2 fields, except V3C byte 6: bits 0..2
+are release class, bits 3..6 are the full four-bit `rate_mode`, and bit 7 is a
+schema-3 marker. The full schema number is V3F byte 2. V3 rate modes 8 and 9
+are carry and carry release. Existing CORE through RIDER bytes and META ID are
+unchanged. A capture without V3 data still has nine data frames.
+
+```text
+0x1040F V3F: 0..1 tick16 | 2 schema (=3) | 3 carry_state (0 idle, 1 carry,
+              2 release) | 4..5 carry_score Q12 | 6 cancel reason
+              (0 none, 1 native cut/assist off, 2 reverse, 3 acceleration,
+               4 time cap, 5 distance cap, 6 restart) | 7 motion quality
+              (0 unknown, 1 wheel, 2 learned motor ratio)
+0x10410 V3G: 0..1 tick16 | 2..3 carry remaining ms | 4..5 carry remaining cm |
+              6..7 estimated speed in 0.01 km/h
+0x10411 V3H: 0..1 tick16 | 2..3 relative acceleration, signed permille/s |
+              4..7 reserved zero
+```
+
+The CANable decoder adds these V3 observations to decoded CSV when the V3F
+schema byte is 3. Replay input remains the same sensor history.
+
 At most once per second:
 
 ```text
@@ -279,7 +308,7 @@ byte 1     active assist-profile bank
 byte 2..5  full 32-bit 4 kHz control tick
 byte 6     failed telemetry-frame counter, saturated to 255
 byte 7     number of data frames per snapshot (7 for schema 1, 9 for schema 2,
-           12 when the V3 extension is present)
+           12 for V3 schema 1, 14 for V3 schema 2, 17 for V3 schema 3)
 ```
 
 ### Captures that begin before the first META

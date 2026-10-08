@@ -208,7 +208,15 @@ def run_variant(exe: Path, scenarios: list[dict], outdir: Path, jobs: int, pre=(
 
 def _score(args):
     path, profile = args
-    return M.scenario_metrics(M.load_trace(path), profile)
+    tr = M.load_trace(path)
+    sidecar = Path(path).with_suffix('.v3.csv')
+    if sidecar.exists():
+        v3 = M.load_trace(sidecar)
+        if len(v3) != len(tr) or any(abs(a-b)>1e-6 for a,b in
+                                       zip(tr.col('t_s'),v3.col('t_s'))):
+            raise M.MetricRefused(f'{sidecar.name}: V3 rows do not match primary trace')
+        tr.cols.update({k:v for k,v in v3.cols.items() if k.startswith('v3_')})
+    return M.scenario_metrics(tr, profile)
 
 
 # ------------------------------------------------------------------------------- equivalence
@@ -394,7 +402,9 @@ def main() -> int:
     t_ran = time.perf_counter()
 
     scores = {}
-    with cf.ProcessPoolExecutor(a.jobs) as ex:
+    # CSV scoring is bounded I/O and threads also work in restricted Windows sessions where
+    # Python's process-pool wakeup pipe cannot be created.
+    with cf.ThreadPoolExecutor(a.jobs) as ex:
         for tag in ('baseline', 'candidate'):
             res = ex.map(_score, [(BUILD / tag / f'{s["name"]}.csv', s['profile']) for s in scen])
             scores[tag] = {s['name']: r for s, r in zip(scen, res)}

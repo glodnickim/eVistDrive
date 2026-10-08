@@ -18,7 +18,7 @@ mods=[
  'src/pas_sampler.c','src/pas_cadence.c',
  # ASSIST-V3: production crank step accumulator (fed by the harness drain, REVIEW 1 #19) and the
  # V3 stage. Linked always; referenced by the pipeline only when built with -DASSIST_V3.
- 'src/crank_phase.c','src/assist_v3.c','src/assist_v3_intent.c','src/assist_motion.c',
+ 'src/crank_phase.c','src/assist_v3.c','src/assist_v3_intent.c','src/assist_motion.c','src/motion_est.c',
  'src/assist_v3_config.c',
  'tests/host/common/map_adapter.c',
  'tests/host/common/motor_service_stub.c']

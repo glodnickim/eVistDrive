@@ -3596,6 +3596,14 @@ void reg_ADC_processing(void)
                 rt.v3.phase = v3t->phase;
                 rt.v3.release_class = v3t->release_class;
                 rt.v3.rate_mode = v3t->rate_mode;
+                rt.v3.carry_score_q12 = v3t->carry_score_q12;
+                rt.v3.carry_state = v3t->carry_state;
+                rt.v3.carry_cancel_reason = v3t->carry_cancel_reason;
+                rt.v3.carry_remaining_ms = v3t->carry_remaining_ms;
+                rt.v3.carry_remaining_cm = v3t->carry_remaining_cm;
+                rt.v3.speed_est_x100 = (uint16_t)(v3t->speed_est_x100 > 65535U ? 65535U : v3t->speed_est_x100);
+                rt.v3.rel_accel_permille_s = v3t->rel_accel_permille_s;
+                rt.v3.motion_quality = v3t->motion_quality;
                 rt.v3.flags = (uint8_t)(
                     (v3t->phase_aligned ? RIDE_TELEM_V3_F_ALIGNED : 0U) |
                     (v3t->template_mode ? RIDE_TELEM_V3_F_TEMPLATE_MODE : 0U) |

@@ -12,6 +12,7 @@
 #include "fast_iq_slew.h"
 #include "g53_port.h"
 #include "assist_motion.h"
+#include "motion_est.h"
 
 /*
  * ASSIST PIPELINE V2 - the whole pedal-assist path, in one place.

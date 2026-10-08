@@ -6,7 +6,7 @@ rider, bicycle, road and battery plants. The simulator is intentionally slower t
 use --quick for the ordinary edit loop and the default/full mode before a firmware candidate.
 """
 from __future__ import annotations
-import argparse, os, shutil, subprocess, sys
+import argparse, csv, os, shutil, subprocess, sys
 from pathlib import Path
 import re
 R=Path(__file__).resolve().parents[1]
@@ -27,7 +27,7 @@ PROD=[
  'src/soc_core.c','src/walk_assist_motor.c','src/walk_speed_controller.c',
  # ASSIST-V3: production crank step accumulator (fed by the harness drain, REVIEW 1 #19) and the
  # V3 stage. Linked always; referenced by the pipeline only when built with -DASSIST_V3.
- 'src/crank_phase.c','src/assist_v3.c','src/assist_v3_intent.c','src/assist_motion.c',
+ 'src/crank_phase.c','src/assist_v3.c','src/assist_v3_intent.c','src/assist_motion.c','src/motion_est.c',
  'src/assist_v3_config.c',
  'tests/host/common/map_adapter.c','tests/host/common/motor_service_stub.c']
 # The Assist V3 candidate compiles the V3 shadow stage in (tools/build_firmware.py default).
@@ -105,6 +105,27 @@ def assist_v3_equivalence(fixed_on:str,fuzz_on:str,n:int,script_on:dict[str,str]
     print(line,end='')
     return line
 
+def carry_scripts(exe: Path) -> str:
+    lines=[]
+    for name in SCRIPTS:
+        run(exe,['--script-v3',name],echo=False)
+        with (OUT/f'{name}.v3.csv').open(newline='') as f:
+            rows=list(csv.DictReader(f))
+        active=[r for r in rows if int(r['v3_carry_state'])==1]
+        starts=sum(int(r['v3_carry_state'])==1 and
+                   (i==0 or int(rows[i-1]['v3_carry_state'])!=1)
+                   for i,r in enumerate(rows))
+        duration=len(active)*0.005
+        distance=(float(active[-1]['distance_m'])-float(active[0]['distance_m'])) if active else 0.0
+        reasons={int(r['v3_carry_cancel_reason']) for r in rows}
+        want=1 if name=='climb_pedal_stop_obstacle' else 0
+        ok=(starts==want and duration<=1.2 and distance<=1.5 and
+            (want==0 or bool(reasons & {3,4,5,6})))
+        line=f'L4 CARRY {name} active={starts} duration={duration:.3f}s distance={distance:.3f}m cancel={sorted(reasons)} {"PASS" if ok else "FAIL"}'
+        print(line); lines.append(line)
+        if not ok: raise SystemExit(1)
+    return '\n'.join(lines)+'\n'
+
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument('--quick',action='store_true')
@@ -141,6 +162,8 @@ def main():
     report=fixed+'\n'+fuzz
     if a.assist_v3=='both':
         report+='\n'+assist_v3_equivalence(fixed,fuzz,n,script_out)
+    if a.assist_v3 in ('on','both'):
+        report+='\n'+carry_scripts(exe)
     if a.sanitize:
         san=OUT/('virtual_bike_l4_asan'+EXE_SUFFIX); build(san,True,extra)
         env=os.environ.copy(); env['ASAN_OPTIONS']='detect_leaks=1:halt_on_error=1'; env['UBSAN_OPTIONS']='halt_on_error=1'

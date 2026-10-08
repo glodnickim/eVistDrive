@@ -1,6 +1,6 @@
 /*
  * Assist Behavior V3 - transient manager and THE trajectory (ARCHITECTURE_V3.md 5, 6).
- * See inc/assist_v3.h for the contract. Milestone C rules; carry (Milestone D) is not here.
+ * See inc/assist_v3.h for the contract. Carry selects a target; this is still the only trajectory.
  *
  * Per call:
  *   1. rider intent (assist_v3_intent_update), with V3's OWN engaged flag selecting the EB74
@@ -23,6 +23,7 @@
 #include <string.h>
 
 #define V3_TICKS_PER_MS 4u
+#define V3_CARRY_EFFORT_MIN 4500u      /* carry admission: recent intent, CLU (candidate)          */
 #define V3_P_MAX 8000                 /* E2->Q8 product stays in 32 bits up to this P          */
 #define V3_E2_FULL 40960u             /* D7EC E2 full scale (= 0.65 * P Iq)                     */
 #define V3_FRAC_SHIFT 18u             /* rate units: Q8 * 2^16 per ms, budget over ticks * 1/4   */
@@ -42,6 +43,13 @@ typedef struct {
 	bool     rev_hold;                /* a reverse zeroed y: no rise before a forward step     */
 	int16_t  cad_good;                /* last cadence seen with no PAS glitch for 250 ms       */
 	uint32_t cad_hold;                /* control ticks left in the post-glitch cadence hold     */
+	uint32_t carry_ticks, carry_start_mm, carry_target_q8;
+	uint32_t recent_y_q8;
+	uint32_t score_hold_ticks;
+	uint16_t carry_score_q12, frozen_score_q12, carry_cap_ticks, carry_cap_mm;
+	uint16_t prior_intent, recent_attack;
+	uint8_t carry_state, carry_cancel_reason;
+	bool was_stopped;
 	assist_v3_telemetry_t tlm;
 } v3_state_t;
 
@@ -188,6 +196,72 @@ int32_t assist_v3_update(const assist_v3_input_t *in)
 	ii.eb74_armed = in->eb74_armed;
 	ii.v3_engaged = engaged;
 	assist_v3_intent_update(&ii, &io);
+	if (io.forward_step) {
+		const uint32_t delta = io.intent > V.prior_intent ?
+			(uint32_t)io.intent - V.prior_intent : 0u;
+		V.recent_attack = (uint16_t)(delta > 2000u ? 2000u : delta);
+		V.prior_intent = io.intent;
+	}
+	/* Score is sampled during forward pedalling and frozen at the first stop transition.
+	 * Fixed point evidence is deliberately conservative: a coast, crest or light spin must
+	 * fail even when one sensor is briefly optimistic. */
+	const bool stopped_now = io.release_class == ASSIST_V3_CLASS_PEDAL_STOP ||
+		in->g53_true_stop || in->real_stop;
+	if (!stopped_now && !in->direction_inhibit && in->level > 0u) {
+		const uint32_t effort = io.intent > 12000u ? 12000u : io.intent;
+		const uint32_t peak = in->load_ctrl > 2600u ? 2600u : in->load_ctrl;
+		const uint32_t motor = in->iq_measured > 0 && p > 0 ?
+			(uint32_t)in->iq_measured * 4096u / (uint32_t)p : 0u;
+		const bool motion_ok = in->motion_quality && in->speed_est_x100 >= 150u &&
+			in->speed_est_x100 <= 1000u && in->rel_accel_permille_s <= 100;
+		/* Candidate thresholds (Milestone D): CLU full scale is 12000, 60 kg ~ 8400 CLU; 4500 CLU is a
+		 * strong sustained effort. Calibrate from DIAG ride logs (carry_score) before production. */
+		const bool loaded = effort >= V3_CARRY_EFFORT_MIN && peak >= 1500u && motor >= 650u &&
+			in->cadence_rpm >= 20 && motion_ok &&
+			V.y_q8 >= (uint32_t)p * 20u;
+		if (loaded) {
+			uint32_t score = 2800u + (effort - V3_CARRY_EFFORT_MIN) / 8u +
+				(motor > 650u ? (motor - 650u) / 4u : 0u) + V.recent_attack / 8u;
+			if (score > 4096u) score = 4096u;
+			V.carry_score_q12 = (uint16_t)score;
+			V.recent_y_q8 = V.y_q8;
+			V.score_hold_ticks = 800u; /* 200 ms to the confirmed stop */
+		} else if (V.score_hold_ticks > el_raw) V.score_hold_ticks -= el_raw;
+		else { V.score_hold_ticks = 0u; V.carry_score_q12 = 0u; }
+	}
+	if (stopped_now && !V.was_stopped) {
+		V.frozen_score_q12 = V.carry_score_q12;
+		V.carry_cancel_reason = 0u;
+		if (V.frozen_score_q12 >= 3000u && in->motion_quality &&
+			in->speed_est_x100 <= 1000u && in->carry_strength_pct > 0u &&
+			!in->native_cut && !in->brake && !in->direction_inhibit && in->level > 0u) {
+			V.carry_state = 1u;
+			V.carry_ticks = 0u;
+			V.carry_start_mm = in->distance_est_mm;
+			V.carry_cap_ticks = (uint16_t)((in->carry_time_ms > ASSIST_V3_CARRY_HARD_MAX_MS ?
+				ASSIST_V3_CARRY_HARD_MAX_MS : in->carry_time_ms) * V3_TICKS_PER_MS);
+			V.carry_cap_mm = (uint16_t)((in->carry_distance_dm > ASSIST_V3_CARRY_HARD_MAX_MM / 100u ?
+				ASSIST_V3_CARRY_HARD_MAX_MM / 100u : in->carry_distance_dm) * 100u);
+			V.carry_target_q8 = (uint32_t)((uint64_t)V.recent_y_q8 *
+				in->carry_strength_pct * V.frozen_score_q12 / (100u * 4096u));
+			if (V.carry_target_q8 > V.y_q8) V.carry_target_q8 = V.y_q8;
+			if (!V.carry_cap_ticks || !V.carry_cap_mm || !V.carry_target_q8)
+				V.carry_state = 0u;
+		}
+	}
+	V.was_stopped = stopped_now;
+	if (V.carry_state == 1u) {
+		const uint32_t distance = in->distance_est_mm - V.carry_start_mm;
+		uint8_t cancel = 0u;
+		if (in->native_cut || in->brake || in->level == 0u) cancel = 1u;
+		else if (in->direction_inhibit || io.reverse_any || in->cadence_rpm < 0) cancel = 2u;
+		else if (in->motion_quality && in->rel_accel_permille_s > 300) cancel = 3u;
+		else if (V.carry_ticks >= V.carry_cap_ticks) cancel = 4u;
+		else if (distance >= V.carry_cap_mm) cancel = 5u;
+		if (cancel) { V.carry_state = 2u; V.carry_cancel_reason = cancel; }
+		else if (io.forward_step && !stopped_now) { V.carry_state = 0u; V.carry_cancel_reason = 6u; }
+		else V.carry_ticks += el_raw;
+	} else if (V.carry_state == 2u && !stopped_now) V.carry_state = 0u;
 
 	/* 2. base assist: the G5300 characteristic as a pure function (section 5). Called every
 	 * tick so the ratio limiter advances with elapsed time whatever the gates below decide, as
@@ -278,6 +352,21 @@ int32_t assist_v3_update(const assist_v3_input_t *in)
 		V.y_q8 = 0u; V.frac = 0u; V.dir = 0;
 		target = 0u;
 		mode = ASSIST_V3_RATE_REVERSE;
+	} else if (V.carry_state == 1u && crank_stopped) {
+		/* A linear profile ending at half the original assist is slower than ordinary
+		 * Response. move_toward remains the sole rate limiter and never raises a stop. */
+		const uint32_t remaining = V.carry_ticks < V.carry_cap_ticks ?
+			V.carry_cap_ticks - V.carry_ticks : 0u;
+		target = (uint32_t)((uint64_t)V.carry_target_q8 *
+			(V.carry_cap_ticks + remaining) / (2u * V.carry_cap_ticks));
+		if (target > V.y_q8) target = V.y_q8;
+		rate = rate_bde8(p);
+		mode = ASSIST_V3_RATE_CARRY;
+	} else if (V.carry_state == 2u && crank_stopped) {
+		target = 0u;
+		rate = rate_response(in->response_pct, p);
+		mode = ASSIST_V3_RATE_CARRY_RELEASE;
+		if (V.y_q8 == 0u) V.carry_state = 0u;
 	} else if (crank_stopped) {
 		if (load_released && stop_confirmed) {
 			/* Legacy stop, load released, stop confirmed (R1-#9, measured): at the G53 PAS true-stop
@@ -358,6 +447,19 @@ int32_t assist_v3_update(const assist_v3_input_t *in)
 		t->cadence_rpm = in->cadence_rpm;
 		t->rate_mode = mode;
 		t->response_pct = in->response_pct;
+		t->carry_score_q12 = V.frozen_score_q12;
+		t->carry_state = V.carry_state;
+		t->carry_cancel_reason = V.carry_cancel_reason;
+		t->carry_remaining_ms = V.carry_state == 1u && V.carry_ticks < V.carry_cap_ticks ?
+			(uint16_t)((V.carry_cap_ticks - V.carry_ticks) / V3_TICKS_PER_MS) : 0u;
+		{
+			const uint32_t traveled = in->distance_est_mm - V.carry_start_mm;
+			t->carry_remaining_cm = V.carry_state == 1u && traveled < V.carry_cap_mm ?
+				(uint16_t)((V.carry_cap_mm - traveled) / 10u) : 0u;
+		}
+		t->speed_est_x100 = in->speed_est_x100;
+		t->rel_accel_permille_s = in->rel_accel_permille_s;
+		t->motion_quality = in->motion_quality;
 		t->engaged = engaged;
 		t->crank_stopped = crank_stopped;
 		t->stop_target_zero = V.stop_target_zero;

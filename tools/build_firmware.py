@@ -30,7 +30,7 @@ RAM_ORIGIN = 0x20000000
 G53_OPTIMIZED_SOURCES = {
     "src/g53_port.c", "src/g53_port_chain.c",
     "src/g53_port_boundaries.c", "src/g53_port_pas.c", "src/g53_g1_limiter.c",
-    "src/assist_v3.c", "src/assist_v3_intent.c",
+    "src/assist_v3.c", "src/assist_v3_intent.c", "src/motion_est.c",
 }
 # Assist Behavior V3 candidate build (feature/assist-behavior-v3): ASSIST_V3 is compiled in by
 # default. Milestone C: the V3 engine publishes when it is the ACTIVE engine (config block, latch in

@@ -22,7 +22,7 @@ typedef struct { uint16_t lo, hi, response, start, carry, torque, power, floor_r
 static const profile_t profile[ASSIST_V3_MODES]={
     {47,190,40,40,20,80,350,20,66465,66451}, {119,387,60,60,70,100,65000,40,66316,66311},
     {188,512,80,80,50,100,65000,30,66195,66197}, {394,700,90,90,80,100,65000,30,65913,65914},
-    {292,945,80,80,50,100,65000,30,66309,66311}, {119,387,60,60,70,100,65000,35,66316,66311}
+    {292,945,80,80,50,100,65000,30,66309,66311}, {119,387,60,60,60,100,65000,35,66316,66311}
 };
 static const uint16_t factory_ratio[ASSIST_V3_LEVELS]={95,215,310,525,525};
 static const uint16_t anchor_ratio[ASSIST_V3_MODES]={95,215,310,525,525,215};
@@ -82,7 +82,7 @@ static uint16_t profile_default(uint8_t m,uint8_t p){
     case 10:return m==3U?525U:ASSIST_V3_UNSET;
     case 11:return m==3U?50U:0U;
     case 12:case 13:return q->response;
-    case 16:return q->carry;case 17:return 400U;case 18:return 100U;
+    case 16:return q->carry;case 17:return 1200U;case 18:return 15U;
     case 19:return m==5U?50U:ASSIST_V3_UNSET;
     case 20:return 0x8000U;default:return ASSIST_V3_UNSET;
     }
@@ -93,7 +93,8 @@ static bool range_ok(uint8_t p,uint16_t x){
     if(p==1U)return x>=10U&&x<=100U;
     if(p==2U)return x>=50U&&x<=65000U;
     if(p==8U||p==9U||p==10U)return x<=1000U;
-    if(p==17U||p==18U)return x<=10000U;
+    if(p==17U)return x<=1200U;
+    if(p==18U)return x<=15U;
     if(p==20U)return x>=0x7FCEU&&x<=0x8032U;
     return x<=100U;
 }
@@ -223,8 +224,8 @@ static void resolve_cache(uint8_t level,uint8_t m){
             case 11U:v=m==3U?macro[0]:0U;break;
             case 12U:case 13U:v=macro[3];break;
             case 16U:v=macro[5];break;
-            case 17U:v=(uint16_t)(macro[5]*4U);break;
-            case 18U:v=macro[5];break;
+            case 17U:v=(uint16_t)(macro[5]*12U);break;
+            case 18U:v=(uint16_t)(macro[5]*15U/100U);break;
             default:v=profile_default(m,p);s=0U;break;
             }
         }

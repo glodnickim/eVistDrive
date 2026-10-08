@@ -350,6 +350,9 @@ class Carry(unittest.TestCase):
         self.assertAlmostEqual(r['distance_m'], 2.0 * 15 / 3.6, delta=0.05)
         self.assertGreater(r['active_during_cut_rows'], 0)
         self.assertFalse(M.check('carry_active_during_cut_rows', r['active_during_cut_rows']))
+        self.assertFalse(M.check('carry_false_positives', r['false_positives']))
+        self.assertFalse(M.check('carry_duration_s', r['duration_s']))
+        self.assertFalse(M.check('carry_distance_m', r['distance_m']))
 
 
 class CadenceInvariance(unittest.TestCase):

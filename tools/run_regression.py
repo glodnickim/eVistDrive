@@ -89,7 +89,7 @@ ride_mod=assist_mod+['ride_control.c','iq_chain.c','motor_core.c']
 # byte for byte (any difference is a defect); engine V3 (harness argument `v3`, Milestone C) runs
 # every scenario again with V3 publishing, checked for bounds and that V3 really published.
 V3_DEFS=['-DASSIST_V3=1']
-V3_MODS=['assist_v3.c','assist_v3_intent.c','assist_motion.c','assist_v3_config.c']
+V3_MODS=['assist_v3.c','assist_v3_intent.c','assist_motion.c','motion_est.c','assist_v3_config.c']
 
 torque=build('torque_trace',Path('torque/torque_trace_host.c'),['crank_model.c'],['torque_input.c'])
 assist=build('assist_pipeline',Path('pipeline/assist_pipeline_host.c'),['crank_model.c'],assist_mod)

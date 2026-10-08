@@ -6,6 +6,16 @@
 
 #include "assist_motion.h"
 
+/* Shared independent bounds: carry caps are strictly inside the pipeline backstop. */
+#define ASSIST_V3_CARRY_HARD_MAX_MS 1200u
+#define ASSIST_V3_CARRY_HARD_MAX_MM 1500u
+#define ASSIST_V3_BACKSTOP_HARD_MAX_MS 1500u
+#define ASSIST_V3_BACKSTOP_HARD_MAX_MM 2000u
+_Static_assert(ASSIST_V3_CARRY_HARD_MAX_MS <= ASSIST_V3_BACKSTOP_HARD_MAX_MS,
+               "carry time must fit inside pipeline backstop");
+_Static_assert(ASSIST_V3_CARRY_HARD_MAX_MM <= ASSIST_V3_BACKSTOP_HARD_MAX_MM,
+               "carry distance must fit inside pipeline backstop");
+
 /*
  * Assist Behavior V3 - transient manager and THE trajectory (ARCHITECTURE_V3.md sections 5, 6;
  * V3-4 base assist, V3-5 transient manager, V3-6 trajectory).
@@ -61,6 +71,14 @@ typedef struct {
 	uint16_t g1_q12;             /* observation: the pipeline applies g1, not this module        */
 	uint8_t  level;              /* assist level index 0..5 (0 = assist off)                     */
 	uint8_t  response_pct;       /* V3 Response of this level, 0..100 (assist_v3_config)         */
+	uint8_t  carry_strength_pct;
+	uint16_t carry_time_ms;
+	uint16_t carry_distance_dm;
+	uint32_t speed_est_x100;
+	uint32_t distance_est_mm;
+	int16_t  rel_accel_permille_s;
+	uint8_t  motion_quality;
+	bool     native_cut;
 	bool     brake;              /* observation only: the cut is native_cut in the pipeline      */
 	uint16_t eb74_zero;          /* EB74 zero from the shadow chain accessor (750 today)         */
 	bool     eb74_armed;         /* EB74 startup window done + pedal seen unloaded (R1-#14)      */
@@ -78,7 +96,9 @@ typedef enum {
 	ASSIST_V3_RATE_STOP_HELD = 4,     /* PEDAL_STOP, load held, stop confirmed: D3E      */
 	ASSIST_V3_RATE_STOP_WAIT = 5,     /* PEDAL_STOP, load held, stop not yet confirmed   */
 	ASSIST_V3_RATE_REVERSE = 6,       /* reverse: y zeroed at once (legacy BDE8 zero)    */
-	ASSIST_V3_RATE_START_BLOCKED = 7  /* at 0: engage gate (EB74 armed/threshold/readiness) closed */
+	ASSIST_V3_RATE_START_BLOCKED = 7, /* at 0: engage gate (EB74 armed/threshold/readiness) closed */
+	ASSIST_V3_RATE_CARRY = 8,
+	ASSIST_V3_RATE_CARRY_RELEASE = 9
 } assist_v3_rate_mode_t;
 
 /*
@@ -107,6 +127,14 @@ typedef struct {
 	int16_t  cadence_rpm;        /* G53 PAS signed cadence used this call                */
 	uint8_t  rate_mode;          /* assist_v3_rate_mode_t                                */
 	uint8_t  response_pct;
+	uint16_t carry_score_q12;
+	uint16_t carry_remaining_ms;
+	uint16_t carry_remaining_cm;
+	uint32_t speed_est_x100;
+	int16_t rel_accel_permille_s;
+	uint8_t motion_quality;
+	uint8_t carry_state;
+	uint8_t carry_cancel_reason;
 	bool     engaged;            /* y > 0 at the start of the call (selects EB74 820)    */
 	bool     crank_stopped;      /* PEDAL_STOP or G53 true-stop or native real_stop      */
 	bool     stop_target_zero;   /* the value assist_v3_stop_target_zero() returns       */
