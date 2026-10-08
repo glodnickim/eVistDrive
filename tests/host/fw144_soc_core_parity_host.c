@@ -84,19 +84,21 @@ static void ref_step(soc_core_state_t *s, const soc_core_input_t *in)
 			s->remaining_mah=s->soc_real/100.0f*(float)in->capacity_estimated_mah;
 		}
 	}else s->rest_seconds=0;
-	float diff=s->soc_real-s->soc_display;
+	/* independent reference: charge drain bypasses the display correction clamp */
+	float after_charge=s->soc_display - in->delta_mah/(float)in->capacity_estimated_mah*100.0f;
+	float diff=s->soc_real-after_charge;
 	float step=SOC_DISP_GAIN*diff;
 	float max_step=SOC_DISP_MAX_STEP/60.0f;
 	if(s->soc_real<10.0f) step=diff;
 	if(step>max_step)step=max_step;
 	if(step<-max_step)step=-max_step;
-	s->soc_display+=step;
+	s->soc_display=after_charge+step;
 	if(s->soc_display<0)s->soc_display=0;
 	if(s->soc_display>100)s->soc_display=100;
 	if(s->full_anchor){
 		if((s->anchor_start_mah-s->remaining_mah)<SOC_FULL_RELEASE_FRAC*(float)in->capacity_estimated_mah)
 			s->soc_display=100.0f;
-		else s->full_anchor=0;
+		else { s->full_anchor=0; s->soc_display=s->soc_real; }
 	}
 }
 
@@ -154,6 +156,31 @@ int main(void)
 			}
 		}
 	}
-	printf("FW144 SOC core parity: OCV + limp + 200x100 randomized 1Hz transitions PASS\n");
+	/* Regression: HMI must not overstate SOC after sustained 12 A discharge. */
+	{
+		const float cap=(float)BATTERY_CAPACITY_MAH;
+		if(BATTERY_CAPACITY_MAH != 17400 || BATTERY_CELLS_SERIES != 11U || BATTERY_CELLS_PARALLEL != 3U){
+			fprintf(stderr,"LG M58T 11S3P default capacity mismatch\n"); return 1;
+		}
+		soc_core_state_t s={0};
+		s.remaining_mah=cap; s.soc_real=100.0f; s.soc_display=100.0f; s.boot_full_done=1;
+		soc_core_input_t in={0};
+		in.voltage_mv=42500U; in.battery_current_ma=12000; in.delta_mah=12000.0f/3600.0f;
+		in.capacity_estimated_mah=BATTERY_CAPACITY_MAH; in.r_batt_mohm=80; in.system_voltage=40;
+		for(int i=0;i<3600;i++) soc_core_step_1hz(&s,&in);
+		float expected=100.0f - 12000.0f/cap*100.0f;
+		if(fabsf(s.soc_real-expected)>0.1f || fabsf(s.soc_display-expected)>0.1f){
+			fprintf(stderr,"HMI SOC discharge drift: real=%.3f display=%.3f expected=%.3f\n",
+				s.soc_real,s.soc_display,expected); return 1;
+		}
+	}
+	/* A high-confidence full 11S pack anchors immediately; a lower/loaded one waits. */
+	if(!soc_core_can_mark_full_at_boot(46200U,0, SOC_FULL_MAGIC,4598U) ||
+	   soc_core_can_mark_full_at_boot(45500U,0,SOC_FULL_MAGIC,4598U) ||
+	   soc_core_can_mark_full_at_boot(46200U,1500,SOC_FULL_MAGIC,4598U) ||
+	   soc_core_can_mark_full_at_boot(46200U,0,0U,4598U)){
+		fprintf(stderr,"early boot full-charge qualification failed\n"); return 1;
+	}
+	printf("FW144 SOC core parity + LG M58T 11S3P regressions: PASS\n");
 	return 0;
 }
