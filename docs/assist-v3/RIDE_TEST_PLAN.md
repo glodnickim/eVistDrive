@@ -1,4 +1,4 @@
-# Assist Behavior V3 — Controlled Ride Test Plan (DRAFT)
+# Assist Behavior V3 — Controlled Ride Test Plan (RC1)
 
 ```text
 STATUS:    RC1 — ride 0.645 (DIAG, SHA-256 ff7f3d12…2183); details and HEAD in RELEASE_REPORT.md
