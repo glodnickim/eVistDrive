@@ -80,6 +80,11 @@ typedef struct {
     bool     template_mode;    /* true: template classifier; false: fallback classifier           */
     bool     kl_from_prior;    /* kL currently taken from the prior template                      */
     bool     engage_ok;        /* env_equiv > 0 with the active threshold and EB74 armed (6.2)    */
+    bool     reverse_step;     /* back-pedalling: this call counted a reverse step and >= 2 in a row
+                                * (one reverse step between forward steps is PAS jitter); an
+                                * INVALID two-bit jump is a glitch, never a reverse step         */
+    bool     reverse_any;      /* this call counted at least one reverse step                    */
+    bool     forward_step;     /* this call counted at least one forward step                    */
 } assist_v3_intent_out_t;
 
 /* Internal constants. Every value is a *candidate* for the simulation matrix
@@ -166,6 +171,10 @@ const assist_v3_intent_params_t *assist_v3_intent_params(void);
 const assist_v3_intent_debug_t *assist_v3_intent_debug(void);
 /* Current template s[NB] (Q12, mean 4096) and the fixed prior. */
 const uint16_t *assist_v3_intent_template(void);
+/* The 96-entry ring of per-step obs (raw phase order) and the source of the kL in force:
+ * 0 prior, 1 learned template, 2 measured ring revolution. Telemetry / tests only. */
+const uint16_t *assist_v3_intent_ring(void);
+uint8_t assist_v3_intent_kl_source(void);
 const uint16_t *assist_v3_intent_prior(void);
 
 /* Pure helpers (no state), exported for tests and for the static-map stage. */
@@ -177,5 +186,10 @@ uint16_t assist_v3_eb74_active(uint32_t load_clu, uint16_t thr);
  * NULL. */
 uint16_t assist_v3_intent_compute_kl(const uint16_t *s_q12, uint16_t i_rev, uint16_t cad_rpm,
                                      uint16_t thr, uint16_t *env_ss, uint32_t *iterations);
+/* The same from a measured revolution of 96 per-step loads (CLU, chronological circular order); the
+ * revolution mean is the normalisation. The source of kL whenever the ring holds one clean
+ * revolution (G1-LEVEL rework). */
+uint16_t assist_v3_intent_compute_kl_ring(const uint16_t ring[ASSIST_V3_STEPS_PER_REV], uint16_t cad_rpm,
+                                          uint16_t thr, uint16_t *env_ss, uint32_t *iterations);
 
 #endif /* ASSIST_V3_INTENT_H */

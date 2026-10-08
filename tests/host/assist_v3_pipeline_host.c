@@ -188,7 +188,7 @@ static uint8_t caps_engine_active_byte(void)
 {
 	uint8_t caps[ASSIST_V3_CAPS_LEN] = { 0 }, len = 0U;
 	(void)assist_v3_config_can_read(ASSIST_V3_SOURCE_TOOL, ASSIST_V3_CMD_CAPS, 0U, caps, caps, &len);
-	return len == ASSIST_V3_CAPS_LEN ? caps[22] : 0xFFU;
+	return len == ASSIST_V3_CAPS_LEN ? caps[24] : 0xFFU;
 }
 
 /* Engine request written through the real protocol, without re-initialising the config owner. */
@@ -197,7 +197,7 @@ static void request_engine(bool v3)
 	assist_v3_values_t v;
 	uint8_t blk[ASSIST_V3_BLOCK_LEN];
 	assist_v3_config_ram_values(&v);
-	v.global[0] = v3 ? ASSIST_V3_ENGINE_V3 : ASSIST_V3_ENGINE_G5300;
+	v.engine = v3 ? ASSIST_V3_ENGINE_V3 : ASSIST_V3_ENGINE_G5300;
 	assist_v3_block_encode(&v, ASSIST_V3_CAPS, assist_v3_config_generation(), blk);
 	(void)assist_v3_config_can_declare(ASSIST_V3_SOURCE_TOOL, ASSIST_V3_BLOCK_LEN, 0U);
 	for (uint8_t f = 0U; ; f++) {
@@ -423,6 +423,25 @@ static void g1_backstop(void)
 	const int32_t rise = run_max_rise(800U, &end);
 	printf("    re-open after reverse: max rise %d Iq/ms, end %d\n", rise, end);
 	CHECK(rise <= 4 && end > 300, "BS3 re-open after forward steps at <= 3.5 Iq/ms (+1 count)");
+
+	/* rework (pas_glitch rows): an INVALID-transition inhibit (not reverse) while pedalling forward,
+	 * V3 real, never closes the backstop and never dips the published request */
+	rig_ride(true, 60, 3000U, 1500U, 2500U);
+	{
+		const int32_t b0 = R.cmd.final_iq_request;
+		int32_t lo = b0;
+		bool closed = false;
+		R.in.direction_inhibit = true; R.in.inhibit_is_reverse = false;
+		for (int k = 0; k < 40; ++k) {
+			rig_ms();
+			if (st()->backstop_state != ASSIST_PIPELINE_BS_OPEN) closed = true;
+			if (R.cmd.final_iq_request < lo) lo = R.cmd.final_iq_request;
+		}
+		R.in.direction_inhibit = false;
+		printf("    INVALID inhibit 40 ms while pedalling: published %d -> min %d, backstop closed %d\n",
+		       (int)b0, (int)lo, closed);
+		CHECK(!closed && lo * 10 >= b0 * 9, "BS8 an INVALID-transition inhibit (not reverse) neither closes the backstop nor dips the request");
+	}
 
 	/* reverse at speed 0: standstill predicate (direction term, independent of V3) -> FORCE_ZERO */
 	backstop_setup(0U);

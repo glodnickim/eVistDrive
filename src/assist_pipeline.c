@@ -66,6 +66,7 @@ typedef struct {
         uint8_t state;            /* assist_pipeline_backstop_t */
         bool fwd_seen;            /* a forward crank step since the ceiling closed */
         bool steps_primed;
+        uint8_t rev_run;          /* consecutive reverse crank steps */
         int32_t last_steps;
         int32_t ceiling;          /* Iq, meaningful while state != OPEN */
         uint32_t hold_ticks;      /* control ticks in HOLD */
@@ -243,7 +244,7 @@ static int32_t v3_bde8_step(uint32_t *acc, int32_t p, uint32_t ticks)
  * PIPELINE BACKSTOP (ARCHITECTURE_V3 7.3, D-008, R1-#4). A CEILING on the published request in V3
  * mode, independent of every V3 internal (it reads native PAS facts, the G53 PAS true-stop
  * accessor, the crank step count and the published value only):
- *   reverse / direction inhibit   the ceiling decays from the published value at the BDE8 rate
+ *   reverse inhibit               the ceiling decays from the published value at the BDE8 rate
  *                                 (3.5 Iq/ms, full scale in 130 ms), as G5300 reverse does;
  *   crank stopped (G53 true-stop  the ceiling holds (never above the published value) for at most
  *   or native real_stop)          T_STOP_HARD = 1500 ms, then decays to 0 within 300 ms;
@@ -268,10 +269,18 @@ static void v3_backstop_close(uint8_t state)
 static void v3_backstop_step(const assist_pipeline_input_t *in, uint32_t ticks, int32_t request)
 {
     const int32_t p=in->phase_current_max>0 ? in->phase_current_max : 0;
-    const bool reverse=in->direction_inhibit;
+    /* REVERSE = a counted reverse crank step or the native reverse inhibit. An INVALID PAS
+     * transition also raises direction_inhibit (and flips the G53 PAS direction for a few ms);
+     * closing on it turned every PAS glitch into a 3.5 Iq/ms assist dip that baseline G53 never
+     * shows (pas_glitch matrix, rework 2026-10-07). */
+    int32_t dsteps=0;
+    if(ctx.bs.steps_primed) dsteps=(int32_t)((uint32_t)in->crank_steps-(uint32_t)ctx.bs.last_steps);
+    if(dsteps>0) ctx.bs.rev_run=0;
+    else if(dsteps<0) ctx.bs.rev_run=(uint8_t)(ctx.bs.rev_run-dsteps>255 ? 255 : ctx.bs.rev_run-dsteps);
+    /* two or more reverse steps in a row: one reverse step between forward steps is PAS jitter */
+    const bool reverse=(dsteps<0 && ctx.bs.rev_run>=2u) || (in->direction_inhibit && in->inhibit_is_reverse);
     const bool stop=g53_port_pas_true_stop() || in->real_stop;
-    bool fwd_step=false;
-    if(ctx.bs.steps_primed) fwd_step=(int32_t)((uint32_t)in->crank_steps-(uint32_t)ctx.bs.last_steps)>0;
+    const bool fwd_step=dsteps>0;
     ctx.bs.steps_primed=true;
     ctx.bs.last_steps=in->crank_steps;
     if(ctx.bs.state==ASSIST_PIPELINE_BS_OPEN || ctx.bs.state==ASSIST_PIPELINE_BS_REOPEN) {

@@ -8,6 +8,8 @@
 #include "main.h"
 #include "CAN_Display.h"
 #include "g53_port.h"
+/* Parser host probes link this module alone; the config observer is present on target. */
+extern void assist_v3_config_set_legacy(uint8_t level,uint16_t ratio,uint8_t power,uint8_t accel) __attribute__((weak));
 
 #define ASSIST_LEVELS_MAGIC 0xA560U
 static const uint8_t factory_accel[10]={1,4,4,5,5,6,6,7,8,8};
@@ -37,6 +39,8 @@ void apply_assist_levels(const MotorParams_t* MP){
 		accel[slot]=MP->assist_settings[i+1][2];
 		ratio[slot]=MP->TQO_threshold[i+1];
 		power[slot]=MP->assist_settings[i+1][0];
+		if(assist_v3_config_set_legacy)
+			assist_v3_config_set_legacy((uint8_t)(i+1U),ratio[slot],power[slot],accel[slot]);
 	}
 	g53_port_set_levels(accel,ratio,power);
 }

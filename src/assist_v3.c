@@ -30,6 +30,7 @@
                                        * G53 port drops catch-up beyond 64 logical ms the same way */
 #define V3_RESP_SLOW_MS 600u          /* R(Response) full scale at 0 %   (candidate, 6.1)       */
 #define V3_RESP_FAST_MS 150u          /* R(Response) full scale at 100 % (candidate, 6.1)       */
+#define V3_CAD_HOLD_TICKS (250u * V3_TICKS_PER_MS)   /* cadence hold after a PAS glitch       */
 
 typedef struct {
 	uint32_t y_q8;                    /* THE demand state: Iq Q8, pre-g1, pre-limits           */
@@ -38,6 +39,9 @@ typedef struct {
 	uint8_t  ms_ticks;                /* 0..3 control ticks not yet worth a full ms           */
 	g53_static_ratio_state_t ratio;   /* own G7 ratio limiter state (D+208 equivalent)        */
 	bool     stop_target_zero;
+	bool     rev_hold;                /* a reverse zeroed y: no rise before a forward step     */
+	int16_t  cad_good;                /* last cadence seen with no PAS glitch for 250 ms       */
+	uint32_t cad_hold;                /* control ticks left in the post-glitch cadence hold     */
 	assist_v3_telemetry_t tlm;
 } v3_state_t;
 
@@ -166,7 +170,16 @@ int32_t assist_v3_update(const assist_v3_input_t *in)
 	ii.crank_steps = in->crank_steps;
 	ii.crank_step_tick = in->crank_step_tick;
 	ii.pas_glitch = in->pas_glitch;
-	ii.cadence_rpm = in->cadence_rpm;
+	/* PAS glitch rework: an INVALID jump or a lost step corrupts the G53 PAS cadence estimate for a
+	 * while (spikes and drops at a steady crank, pas_glitch rows); the static map (c2 ~ env x cad)
+	 * and kL would turn that into an assist dip. For 250 ms after a glitch V3 uses the last
+	 * cadence seen before it; reverse detection keeps the live signed value. */
+	if (in->pas_glitch) V.cad_hold = V3_CAD_HOLD_TICKS;
+	else if (V.cad_hold > el_raw) V.cad_hold -= el_raw;
+	else V.cad_hold = 0u;
+	if (V.cad_hold == 0u && !in->pas_glitch) V.cad_good = in->cadence_rpm;
+	const int16_t cad = (V.cad_hold != 0u && in->cadence_rpm >= 0) ? V.cad_good : in->cadence_rpm;
+	ii.cadence_rpm = cad;
 	ii.g53_true_stop = in->g53_true_stop;
 	ii.real_stop = in->real_stop;
 	ii.direction_inhibit = in->direction_inhibit;
@@ -188,11 +201,33 @@ int32_t assist_v3_update(const assist_v3_input_t *in)
 	g53_static_input_t si;
 	g53_static_diag_t sd;
 	si.env = io.env_equiv;
-	si.cadence = in->cadence_rpm;
+	si.cadence = cad;
 	si.lut_cadence = in->lut_cadence;
 	si.speed_native = in->speed_native;
 	si.level = slot;
-	const uint16_t e2 = g53_static_target(&si, &V.ratio, ms, &sd);
+	uint16_t e2 = g53_static_target(&si, &V.ratio, ms, &sd);
+	{
+		/* G1-LEVEL rework, quantisation: the transcribed map truncates at every stage (c2 = env x
+		 * 700 / 10000 or env x cad x 35 / 10000, c4, d4, conv), a step of ~5-15 env units. At low
+		 * assist (c2 ~ 10-20 units) the truncation of ONE constant env_equiv is up to 1 unit = 5-10 %
+		 * either way, while the baseline envelope sweeps across the steps and averages them. The
+		 * map is therefore averaged over four env offsets spanning +-3/8 of one c2 step (pure
+		 * re-evaluations, elapsed 0: the ratio limiter state is not advanced again). Never applied
+		 * below one step, so a zero env_equiv can never become a demand. */
+		const uint32_t c2_step = cad > 20 ? (10000u + 35u * (uint32_t)cad - 1u) / (35u * (uint32_t)cad) : 15u;
+		if (si.env >= c2_step && c2_step >= 4u) {
+			const uint16_t env0 = si.env;
+			uint32_t acc = 0u;
+			for (uint32_t k = 0u; k < 4u; k++) {
+				const int32_t off = ((int32_t)(2u * k) - 3) * (int32_t)c2_step / 8;
+				g53_static_diag_t sk;
+				si.env = (uint16_t)((int32_t)env0 + off);
+				acc += g53_static_target(&si, &V.ratio, 0u, &sk);
+			}
+			si.env = env0;
+			e2 = (uint16_t)((acc + 2u) / 4u);
+		}
+	}
 	const uint32_t map_q8 = assist_v3_e2_to_iq_q8(e2, p);
 
 	/* 3. transient manager -------------------------------------------------------------- */
@@ -212,8 +247,18 @@ int32_t assist_v3_update(const assist_v3_input_t *in)
 	 * (m2aa 2385 -> 2335 -> 0 within 3 logical ms, SIL reverse_60 [SIM]); the published Iq then
 	 * follows the 6.84 Iq/ms fast slew. Milestone C reverse <= baseline: y is zeroed at once and the
 	 * fast slew shapes the published Iq exactly as at baseline (G1-STOP). */
-	const bool reverse = in->cadence_rpm < 0 || in->g53_reverse ||
+	/* Rework: the G53 PAS direction alone (in->g53_reverse) is NOT reverse - an illegal PAS pattern
+	 * flips it for a few ms while the rider pedals on, and baseline D7EC does not clear on it
+	 * (pas_glitch rows). A reverse is a counted reverse crank step (crank_phase), the native
+	 * reverse inhibit, or the negative G53 cadence D7EC itself clears on. */
+	const bool reverse = in->cadence_rpm < 0 || io.reverse_step ||
 	                     (in->direction_inhibit && in->inhibit_is_reverse);
+	/* Baseline clears at the FIRST reverse step when the load is released (D7EC zero-reset with
+	 * drive permission lost, SIL reverse rows): mirrored for stop/reverse <= baseline. */
+	const bool reverse_released = io.reverse_any &&
+		assist_v3_eb74_active(in->torque_valid ? in->load_ctrl : 0u, thr) == 0u;
+	if (reverse || reverse_released) V.rev_hold = true;
+	else if (io.forward_step) V.rev_hold = false;
 	/* Start readiness (6.2): the D7EC readiness rule with the chain's own thresholds, applied to
 	 * V3's forward step evidence (crank_phase.c, D-006) and env_equiv. */
 	uint16_t ready_env = 0u;
@@ -229,7 +274,7 @@ int32_t assist_v3_update(const assist_v3_input_t *in)
 		V.y_q8 = 0u; V.frac = 0u; V.dir = 0;
 		target = 0u;
 		mode = ASSIST_V3_RATE_HOLD;
-	} else if (reverse) {
+	} else if (reverse || reverse_released || V.rev_hold) {
 		V.y_q8 = 0u; V.frac = 0u; V.dir = 0;
 		target = 0u;
 		mode = ASSIST_V3_RATE_REVERSE;

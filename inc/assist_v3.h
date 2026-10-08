@@ -47,7 +47,7 @@ typedef struct {
 	uint16_t lut_cadence;        /* D7EC `sb` (trace d7ec_m50); inert while D+33 selects fp     */
 	uint16_t speed_native;       /* D7EC `sl` (trace d7ec_speed); inert while the D+34 taper is off */
 	bool     g53_true_stop;      /* G53 PAS crank stopped (accessor)                             */
-	bool     g53_reverse;        /* G53 PAS direction < 0 (trace pas_direction): D7EC hard-clear */
+	bool     g53_reverse;        /* G53 PAS direction < 0 (observation only: an illegal PAS pattern flips it) */
 	bool     direction_inhibit;  /* native observations                                          */
 	bool     inhibit_is_reverse;
 	bool     real_stop;

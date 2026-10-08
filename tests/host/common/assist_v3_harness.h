@@ -26,7 +26,7 @@ static bool assist_v3_harness_select_engine(bool v3)
 
 	assist_v3_config_init(0);   /* absent record: compiled defaults */
 	assist_v3_config_ram_values(&v);
-	v.global[0] = v3 ? ASSIST_V3_ENGINE_V3 : ASSIST_V3_ENGINE_G5300;
+	v.engine = v3 ? ASSIST_V3_ENGINE_V3 : ASSIST_V3_ENGINE_G5300;
 	assist_v3_block_encode(&v, ASSIST_V3_CAPS, assist_v3_config_generation(), blk);
 	r = assist_v3_config_can_declare(ASSIST_V3_SOURCE_TOOL, ASSIST_V3_BLOCK_LEN, 0U);
 	if (r.kind != ASSIST_V3_REPLY_DECL_ACK) return false;

@@ -224,6 +224,23 @@ static double float_kl(const uint16_t *s, double irev, double cad, unsigned thr,
     return kl < 1.0 ? 1.0 : kl > 2.5 ? 2.5 : kl;
 }
 
+/* Float D7EC recurrence (no truncation) over a measured 96-step stroke, starting at its peak. */
+static double float_env_ss_ring(const uint16_t *ring, double cad, unsigned thr)
+{
+    double k = 8.0 * cad, env = 0.0, sum = 0.0, acc;
+    long cnt = 0;
+    int pb = 0;
+    for (int p = 1; p < 96; ++p) if (ring[p] > ring[pb]) pb = p;
+    acc = pb * 6000.0 / 96.0;
+    for (double a = acc; a < acc + 6000.0; a += cad) {
+        int p = (int)floor(a * 96.0 / 6000.0 + 1e-9) % 96;
+        double x = assist_v3_eb74_active(ring[p], (uint16_t)thr);
+        env = x > env ? x : floor(env * k / (k + 1.0));   /* udiv truncation, as D7EC */
+        sum += env; cnt++;
+    }
+    return sum / (double)cnt;
+}
+
 /* Expected template as an integer Q12 table (for kL references with a "learned" shape). */
 static void shape_q12(const rider_script_t *sh, uint16_t q[NBINS])
 {
@@ -819,7 +836,33 @@ static void test_kl(void)
                assist_v3_intent_compute_kl(tpl[0], 1000, 120, 820, NULL, NULL) / 4096.0);
     }
 
-    /* in the loop: learned template kL, env_equiv formula, prior below the floor, thresholds */
+    /* G1-LEVEL rework: kL from the MEASURED stroke of a clean revolution (96 steps), not from the
+     * binned template - the bins average 4 steps and shave the peaks the D7EC envelope holds */
+    {
+        uint16_t ring[96], tq[NBINS];
+        double fref;
+        shape_q12(&SH_DEAD, tq);
+        for (int p = 0; p < 96; ++p) {
+            double sum = 0.0;
+            for (int q = 0; q < 32; ++q) sum += rider_script_shape(&SH_DEAD, (p + (q + 0.5) / 32.0) * 3.75);
+            ring[p] = (uint16_t)lround(1000.0 * sum / 32.0);
+        }
+        {
+            uint16_t ring_ess = 0, tpl_ess = 0, flat[96];
+            const uint16_t kr = assist_v3_intent_compute_kl_ring(ring, 60, 820, &ring_ess, NULL);
+            const uint16_t kt = assist_v3_intent_compute_kl(tq, 1000, 60, 820, &tpl_ess, NULL);
+            fref = float_env_ss_ring(ring, 60.0, 820);
+            printf("  kL dead-spot stroke @60 rpm: measured ring %.3f (env_ss %u, float D7EC over the per-step stroke %.1f) vs binned template %.3f (env_ss %u)\n",
+                   kr / 4096.0, ring_ess, fref, kt / 4096.0, tpl_ess);
+            CHECK(kr > kt && ring_ess > tpl_ess, "kL ring >= binned template on a peaky stroke (bins shave peaks)");
+            CHECK(fabs(ring_ess - fref) <= 0.02 * fref, "kL ring env_ss within 2 % of the D7EC recurrence (float state, udiv truncation) over the same stroke");
+            for (int p = 0; p < 96; ++p) flat[p] = 500u;
+            CHECK(assist_v3_intent_compute_kl_ring(flat, 60, 820, NULL, NULL) == 4096u,
+                  "kL of a measured FLAT stroke is exactly 1.0 (engage parity, G1-START)");
+        }
+    }
+
+    /* in the loop: measured-ring kL, env_equiv formula, prior below the floor, thresholds */
     for (int mode = 1; mode <= 2; ++mode) {
         uint16_t thr = mode == 1 ? 820 : 995;
         uint16_t ref;
@@ -829,8 +872,11 @@ static void test_kl(void)
         /* D-039: the revolution's kL is evaluated by the deferred job over the next calls
          * (<= 7 calls of 64 recurrence iterations, plus the learning unit): settle 10 ms. */
         sim_seconds(&s, 0.01);
-        ref = assist_v3_intent_compute_kl(assist_v3_intent_template(), assist_v3_intent_debug()->last_rev_mean, 60, thr, NULL, NULL);
-        CHECK(!s.out.kl_from_prior && s.out.kl_q12 == ref, "kL from the learned template at a stable revolution");
+        /* the ring has moved on by ~4 steps since the revolution's kL was computed: 2 % band */
+        ref = assist_v3_intent_compute_kl_ring(assist_v3_intent_ring(), 60, thr, NULL, NULL);
+        CHECK(!s.out.kl_from_prior && assist_v3_intent_kl_source() == 2u &&
+              abs((int)s.out.kl_q12 - (int)ref) * 50 <= (int)ref,
+              "kL from the measured ring at a stable clean revolution");
         CHECK(s.out.env_equiv == assist_v3_eb74_active(((uint32_t)s.out.kl_q12 * s.out.intent) >> 12, thr),
               "env_equiv = EB74_active(kL * I) with V3's own threshold");
         CHECK(s.out.engage_ok == (s.out.env_equiv > 0), "engage_ok follows env_equiv and EB74 armed");
@@ -874,6 +920,54 @@ static void test_kl(void)
 }
 
 /* ------------------------------------------------------------------ CPU sanity */
+
+/* ------------------------------------------------------------------ rework: engage parity, jitter */
+
+static void test_engage_jitter(void)
+{
+    sim_t s;
+    rider_script_t flat = make_shape(0, 0, 0, 0);
+    /* G1-START engage parity: a FLAT load engages exactly where EB74 of that load does
+     * (750 + L*2450/6000 > 995 <=> L > 600 CLU), from power-on (prior kL) and after the measured
+     * flat stroke gave kL = 1.0 */
+    {
+        static const double loads[] = { 500.0, 580.0, 640.0, 800.0 };
+        for (int i = 0; i < 4; ++i) {
+            uint16_t maxenv = 0;
+            sim_init(&s, &flat, 60.0, loads[i], 0.0, 1400u + (uint32_t)i);
+            s.engaged_mode = 2;   /* V3 not engaged: engage threshold zero + 245 */
+            for (uint32_t k = 0; k < (uint32_t)(10.0 * TICK_HZ); ++k) {
+                sim_tick(&s);
+                if (s.out.env_equiv > maxenv) maxenv = s.out.env_equiv;
+            }
+            {
+                char msg[160];
+                const bool g53_engages = assist_v3_eb74_active((uint32_t)loads[i], 995u) > 0u;
+                printf("  engage parity flat %.0f CLU: G53 engages %d, V3 max env_equiv %u (kL %.3f, source %u)\n",
+                       loads[i], g53_engages, maxenv, s.out.kl_q12 / 4096.0, assist_v3_intent_kl_source());
+                snprintf(msg, sizeof(msg), "G1-START engage parity at a flat %.0f CLU (V3 engages iff EB74 does)", loads[i]);
+                CHECK((maxenv > 0u) == g53_engages, msg);
+            }
+        }
+    }
+    /* one reverse step between forward steps (PAS jitter A-B-A) never restarts or lowers intent */
+    {
+        uint16_t i_before, i_min = 65535u;
+        sim_init(&s, &SH_DEAD, 60.0, 1000.0, 0.0, 1500u);
+        sim_revs(&s, 12.0);
+        i_before = s.out.intent;
+        for (int j = 0; j < 5; ++j) {
+            s.extra -= 1;           /* the observed count falls by one step ... */
+            sim_seconds(&s, 0.004);
+            s.extra += 1;           /* ... and comes back on the next forward step */
+            sim_revs(&s, 0.5);
+            if (s.out.intent < i_min) i_min = s.out.intent;
+        }
+        printf("  PAS jitter (one reverse step) x5: intent %u -> min %u\n", i_before, i_min);
+        CHECK(i_min * 100u >= i_before * 95u && s.out.release_class != ASSIST_V3_CLASS_PEDAL_STOP,
+              "one reverse step inside forward pedalling is jitter: intent kept (no restart, no dip)");
+    }
+}
 
 static void test_cpu(void)
 {
@@ -928,6 +1022,7 @@ int main(void)
     test_pas();
     test_determinism();
     test_kl();
+    test_engage_jitter();
     test_cpu();
     if (host_test_failures) {
         printf("assist_v3_intent: %d FAIL\n", host_test_failures);

@@ -115,14 +115,15 @@ static void fresh(rig_t *r)
 	rig_init(r);
 }
 
-/* Pedal until the demand settles (no change for 200 ms) or `max_ms` passes. */
+/* Pedal until the demand settles (no change for 1.5 s: longer than one revolution at the rig
+ * cadences, so the measured-ring kL of the rework is in force) or `max_ms` passes. */
 static int32_t settle(rig_t *r, uint32_t max_ms)
 {
 	int32_t y = 0, last = -1;
 	uint32_t still = 0u;
 	for (uint32_t t = 0u; t < max_ms * 4u; t++) {
 		y = rig_step(r);
-		if (y == last) { if (++still > 800u) break; } else { still = 0u; last = y; }
+		if (y == last) { if (++still > 6000u) break; } else { still = 0u; last = y; }
 	}
 	return y;
 }
@@ -217,9 +218,12 @@ static int32_t release_rate_100ms(uint8_t response)
 	(void)settle(&r, 5000u);
 	r.load = 0u;   /* TRUE_RELEASE while pedalling */
 	int32_t end = 0;
-	const int32_t worst = max_change_per_window(&r, 1500u, 100u, -1, &end);
+	/* rework: with the measured flat stroke (kL = 1.0) the demand is no longer saturated, so it
+	 * already follows the falling intent before TRUE_RELEASE fires; the Response rate is measured
+	 * over 20 ms windows (x5 = per 100 ms) inside the release fall. */
+	const int32_t worst = max_change_per_window(&r, 1500u, 20u, -1, &end);
 	CHECK(end == 0, "T6 release while pedalling reaches 0");
-	return worst;
+	return worst * 5;
 }
 
 static void t6_release(void)
@@ -230,8 +234,8 @@ static void t6_release(void)
 	const int32_t exp0 = (int32_t)((650 * P / 1000) * 100 / 600);     /* 0.65 P per 600 ms */
 	printf("    T6 release: Response 100 %% %d Iq/100 ms (expect %d), 0 %% %d (expect %d)\n",
 	       r100, exp100, r0, exp0);
-	CHECK(r100 <= exp100 + 1 && r100 >= exp100 - 2, "T6a Response 100 %: full scale in 150 ms");
-	CHECK(r0 <= exp0 + 1 && r0 >= exp0 - 2, "T6b Response 0 %: full scale in 600 ms");
+	CHECK(r100 <= exp100 + 5 && r100 >= exp100 - 10, "T6a Response 100 %: full scale in 150 ms");
+	CHECK(r0 <= exp0 + 5 && r0 >= exp0 - 10, "T6b Response 0 %: full scale in 600 ms");
 }
 
 static void t7_stop_released(void)
@@ -262,7 +266,10 @@ static void t8_stop_held(void)
 {
 	rig_t r;
 	fresh(&r);
-	r.rpm = 60u; r.load = 4000u;
+	/* rework: a flat 4000 CLU now gives the measured kL 1.0 and an unsaturated demand, and this rig
+	 * drops the cadence to 0 at once (the static map then saturates before PEDAL_STOP fires); a
+	 * heavier flat load keeps the demand at the 0.65 P cap so T8b tests the hold, not that artefact */
+	r.rpm = 60u; r.load = 9000u;
 	const int32_t y0 = settle(&r, 5000u);
 	r.rpm = 0u;   /* crank stops, load HELD */
 	int32_t y = 0;
@@ -333,9 +340,9 @@ static int32_t scenario_end(uint32_t el)
 	for (uint32_t t = 0u; t < 12000u / el; t++) (void)rig_step(&r);
 	r.load = 0u;
 	int32_t y = 0;
-	/* release detection takes up to 180 deg (~430 ms at 70 rpm), then a 600 ms fall: 700 ms
-	 * after the release the demand is mid-ramp */
-	for (uint32_t t = 0u; t < 2800u / el; t++) y = rig_step(&r);
+	/* rework: the unsaturated demand follows the falling intent, then the 600 ms Response fall:
+	 * 300 ms after the release the demand is mid-ramp */
+	for (uint32_t t = 0u; t < 1200u / el; t++) y = rig_step(&r);
 	return y;
 }
 
