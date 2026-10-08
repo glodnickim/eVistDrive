@@ -44,6 +44,11 @@ typedef struct {
 /* Existing production LG-M58T OCV lookup, pack voltage in mV. */
 int8_t soc_core_calculate_ocv(uint16_t voltage_mv, uint8_t cells_in_series);
 
+/* Conservative full-at-boot predicate. Requires configured full threshold, low current,
+ * and a margin above threshold. Does not change the 10 s verification fallback. */
+uint8_t soc_core_can_mark_full_at_boot(uint32_t voltage_mv, int32_t battery_current_ma,
+    uint16_t full_magic, uint16_t full_pack_10mv);
+
 /* Existing production low-SOC power scale, expressed as 0.0..1.0. */
 float soc_core_limp_factor(float soc, uint8_t limit_pct, uint8_t stage2_pct);
 
