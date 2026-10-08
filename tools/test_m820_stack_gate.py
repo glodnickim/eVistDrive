@@ -451,7 +451,9 @@ def main() -> int:
         rc_build, rep, rc_gate = firmware_known_bad(a.toolchain, work, r.gate_path)
         fg, total = rep.get("foreground_bytes", 0), rep.get("total_worst_bytes", 0)
         ok = (rc_build != 0 and rc_gate != 0 and rep.get("verdict") == "FAIL"
-              and rep.get("reserved_stack_bytes") == 2048 and 3000 <= fg <= 3300 and 4200 <= total <= 4500
+              # Characterisation window of the known-bad O0/2K image. Assist V3 (2026-10-08) deepened the
+              # foreground frame of assist_pipeline_update at -O0: measured fg 3344 / total 4496 B (was <= 3300).
+              and rep.get("reserved_stack_bytes") == 2048 and 3000 <= fg <= 3500 and 4200 <= total <= 4700
               and any("STACK BUDGET UNSAFE" in e for e in rep.get("errors", [])))
         label = (f"REJECTED (fg={fg} total={total} reserved={rep.get('reserved_stack_bytes')} "
                  f"build rc={rc_build} gate rc={rc_gate})") if ok else f"FALSE PASS / WRONG REASON: {rep}"
