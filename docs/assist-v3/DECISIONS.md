@@ -190,3 +190,28 @@ true-stop with the crank unloaded; the published Iq is then shaped by the fast s
 "stop/reverse timing <= baseline", V3 sets y = 0 on a G53 reverse step (new input g53_reverse = G53 pas_direction < 0)
 and on a confirmed stop with the crank unloaded. The loaded-crank stop keeps the legacy D3E ramp; the fast slew stays
 the electrical guard. SIL: stop ref0 81-114 ms vs baseline 87-122 ms, reverse 32-59 ms vs 35-68 ms.
+
+### D-042 — 2026-10-08 — Milestone C rework choices (9dc1a0a)
+kL from the measured last clean revolution (template only as fallback); static map averaged over four env offsets
+of ±3/8 c2 step against integer quantisation; prior-phase kL scaled by 3/4 of the measured peak/mean excess; restart
+intent normalised by expected effort; a single INVALID/jitter step neither restarts intent nor closes the backstop —
+the backstop closes on >= 2 consecutive backward steps or the native reverse inhibit; V3 holds the last good cadence
+for 250 ms after a PAS glitch. REVIEW 2 verified that a single INVALID step cannot keep demand alive in a real reverse.
+
+### D-043 — 2026-10-08 — Carry admission threshold is a candidate (4500 CLU), calibrated on the bike
+CODEX tuned 8000 CLU to the Level-4 rider model (intent 10–12 k CLU); CLU full scale is 12000 and 60 kg ≈ 8400 CLU,
+so 8000 would make carry practically dead on the bike. 4500 CLU plus high motor load, 1.5–10 km/h and no acceleration.
+Carry is observational in the first controlled ride (DIAG carry_score/state logged); thresholds are set from logs.
+
+### D-044 — 2026-10-08 — V3 stage skipped while G5300 publishes and V3 is not requested (REVIEW 2 #1)
+Keeps a G5300-selected image at baseline CPU/timing on the bike; brake handling in the foreground is not delayed.
+Shadow-telemetry builds keep computing it. V3 is reset when it starts again.
+
+### D-045 — 2026-10-08 — Backstop hold ended by the distance bound decays over 300 ms (REVIEW 2 #4)
+The time-remainder subtraction wrapped and dropped the ceiling to 0 at once (safe direction, wrong timing). Test BS9b
+pins it (mutation-checked: fails on the old code with a 700 -> 0 step).
+
+### D-046 — 2026-10-08 — Release candidate scope = milestones B, C, D + config v2; E/F after the first ride
+Mode-character activation (E) and AUTO/terrain (F) need ride data: the physical CLU -> kg scale (CLAIM-004/TQ-02C),
+carry calibration, and the owner's feel of the new release behaviour. Stopping for the controlled bike test here
+follows the program rule "stop and escalate when a physical bike test is required".

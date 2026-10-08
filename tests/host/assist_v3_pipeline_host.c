@@ -486,13 +486,20 @@ static void g1_backstop(void)
 	rig_ms();
 	R.rpm=0;
 	int first_stop=-1, by_distance=-1;
+	int32_t prev=R.cmd.final_iq_request, v_stop=0, max_drop=0;
 	for(int k=0;k<1800;k++){
 		rig_ms();
-		if(first_stop<0 && g53_port_pas_true_stop()) first_stop=k;
+		if(first_stop<0 && g53_port_pas_true_stop()) { first_stop=k; v_stop=R.cmd.final_iq_request; }
+		if(first_stop>=0 && prev-R.cmd.final_iq_request>max_drop) max_drop=prev-R.cmd.final_iq_request;
+		prev=R.cmd.final_iq_request;
 		if(first_stop>=0 && R.cmd.final_iq_request==0){by_distance=k;break;}
 	}
 	CHECK(first_stop>=0 && by_distance>first_stop && by_distance<first_stop+1500,
 	      "BS9 wheel-interpolated distance closes the independent backstop before its time cap");
+	/* REVIEW 2 #4: a hold ended by the distance bound must still DECAY over ~300 ms, never step to 0. */
+	printf("    BS9b distance-ended hold: published at stop %d, max drop per ms %d\n", (int)v_stop, (int)max_drop);
+	CHECK(v_stop>0 && max_drop*200<=v_stop*1+400,
+	      "BS9b a hold ended by the distance bound decays (<= published/200 + 2 Iq per ms), no step to 0");
 }
 
 /* ------------------------------------------------------------------ G1-STOP / G1-STAND (V3 vs G5300) */

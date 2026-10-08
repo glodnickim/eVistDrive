@@ -303,7 +303,7 @@ def _build_one(version: str, variant: str, version_source: str, entries: list[st
         "toolchain": "Arm GNU Toolchain arm-none-eabi", "toolchain_version": gcc_version,
         "linker": "ldscripts/gd32f30x_flash.ld", "source_manifest": "scripts/sources-m820.txt",
         "source_count": len(entries),
-        "assist_v3": {"compiled_in": assist_v3, "stage": "shadow (Milestone B)",
+        "assist_v3": {"compiled_in": assist_v3, "stage": ("active: engine V3 publishes when latched (default without a CONFIG_A record: V3); G5300 selectable" if assist_v3 else "absent"),
                       "shadow_telemetry": v3_shadow_telemetry},
         "optimization_default": "-O0",
         "optimization_overrides": {s: "-O2" for s in sorted(G53_OPTIMIZED_SOURCES)},

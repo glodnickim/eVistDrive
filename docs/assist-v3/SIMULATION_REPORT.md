@@ -66,6 +66,46 @@ Verdict against §2: release, phase dip, ripple, attack, stop/reverse/brake PASS
 **restart FAIL at 30 rpm** (dip 0.10) and first-Iq delay at 25/40 rpm — rework in progress. pas_glitch scenario:
 phase-dip FP 0.05–0.30 at 25–100 rpm — rework in progress.
 
+## 5. Release candidate (milestones C + D, after REVIEW 2 fixes) vs baseline — full matrix, level 3 [SIM]
+
+Each cell: baseline / V3. Tool: `tools/run_assist_v3_matrix.py --engine v3`; acceptance:
+`tools/assist_v3_acceptance.py --l4-log <run_level4 output>` (14 reject self-tests).
+
+| Metric | 20 | 25 | 30 | 40 | 60 | 80 | 100 | 110 | 120 | 130 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| TRUE_RELEASE to 50 % (ms) | 820 / 160 | 860 / 136 | 900 / 119 | 1190 / 100 | 1950 / 83 | 3040 / 151 | 3150 / 95 | 2780 / 139 | 2500 / 97 | 2431 / 109 |
+| TRUE_RELEASE to 50 % (deg) | 102 / 20 | 130 / 21 | 161 / 23 | 288 / 25 | 700 / 32 | 1453 / 70 | 1881 / 56 | 1827 / 91 | 1794 / 74 | 1887 / 82 |
+| Ripple, steady | 0.77 / 0.04 | 0.55 / 0.01 | 0.43 / 0.04 | 0.27 / 0.01 | 0.15 / 0.05 | 0.17 / 0.11 | 0.12 / 0.10 | 0.12 / 0.10 | 0.12 / 0.10 | 0.12 / 0.11 |
+| Ripple, dead spot | 0.97 / 0.26 | 0.81 / 0.16 | 0.67 / 0.09 | 0.32 / 0.09 | 0.21 / 0.10 | 0.28 / 0.20 | 0.23 / 0.19 | 0.24 / 0.19 | 0.22 / 0.19 | 0.23 / 0.20 |
+| Phase-dip FP, steady | 1.00 / 0.00 | 1.00 / 0.00 | 1.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 |
+| Phase-dip FP, dead spot | 1.00 / 0.00 | 1.00 / 0.00 | 0.95 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 |
+| Attack t63 (ms) | 321 / 366 | 350 / 356 | 381 / 389 | 421 / 426 | 490 / 488 | 591 / 601 | 571 / 574 | 591 / 596 | 571 / 570 | 571 / 570 |
+| Coast ref->0 (ms) | 106 / 101 | 85 / 86 | 77 / 75 | 70 / 63 | 55 / 53 | 54 / 50 | 66 / 64 | 79 / 71 | 80 / 72 | 89 / 81 |
+| Reverse ref->0 (ms) | 37 / 32 | 36 / 34 | 37 / 36 | 40 / 34 | 35 / 33 | 54 / 48 | 66 / 59 | 59 / 54 | 60 / 56 | 68 / 61 |
+| Brake ref->0 (ms) | 196 / 194 | 194 / 194 | 198 / 198 | 197 / 199 | 196 / 199 | 199 / 198 | 198 / 198 | 198 / 198 | 198 / 198 | 198 / 198 |
+| Restart dip | 0.01 / 0.00 | 0.00 / 0.00 | 0.01 / 0.01 | 0.00 / 0.01 | 0.00 / 0.01 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 | 0.00 / 0.00 |
+| Restart first Iq (ms) | 111 / 105 | 231 / 240 | 81 / 73 | 151 / 153 | 41 / 40 | 31 / 24 | 71 / 28 | 31 / 22 | 21 / 17 | 51 / 20 |
+| Level parity steady (V3/baseline) | min 0.978, max 1.001 | | | | | | | | | |
+| Level parity dead_spot (V3/baseline) | min 0.966, max 1.016 | | | | | | | | | |
+| Level parity asymmetry (V3/baseline) | min 0.987, max 1.007 | | | | | | | | | |
+| Level parity climb (V3/baseline) | min 1.000, max 1.012 | | | | | | | | | |
+
+
+Closed loop (Level-4, freewheel drivetrain): carry active only in `climb_pedal_stop_obstacle` (0.20 s, 0.50 m, ended
+by the distance cap); none in `crest_pedal_stop`, `coast_stop`, `reverse_while_motor`. Open-loop SIL: 0 carry
+activations in all 150 scenarios (no false positives; carry true positives exist only closed loop).
+
+**Acceptance: 487/488.** The one failing criterion is the low-cadence ripple target I set before seeing data:
+dead spot at 20 rpm, per-revolution ripple **0.257 vs target < 0.25** (baseline 0.97; phase-dip false positives 0).
+Two hypotheses were tested and rejected: (a) the 180° long window at high template confidence (no change: confidence
+is below the threshold at 20 rpm), (b) a crank-domain cadence filter for the static map (ripple passed, but restart
+dip worsened to 0.12–0.19 and level parity to +5–6 % at 20 rpm). Cause [UNKNOWN]; an owner waiver is requested in
+RELEASE_REPORT, the alternative being further tuning before the ride.
+
+Acceptance criteria refinements made with the data (documented, not silent): ripple "not applicable" when both
+engines are pinned at the 455 Iq ceiling; ripple limit `max(baseline + 0.01, 0.10)` (smoothness below 10 % per
+revolution); 2 ms trace-resolution slack on stop/reverse timing, 5 ms on brake (native SAFETY path unchanged).
+
 ## 4. Candidates
 
 (filled at Milestone B/C: template NB 12 vs 24, α, windows, R_rel/R_att, Response mapping)

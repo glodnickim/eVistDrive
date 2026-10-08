@@ -60,6 +60,7 @@ typedef struct {
     /* The V3 demand (Iq, pre-g1, pre-limits) of this tick and its g1-scaled request. */
     int32_t v3_iq_demand;
     int32_t v3_request;
+    bool v3_skipped;        /* V3 stage not computed last tick (G5300 publishing, V3 not requested) */
     motion_est_t motion_est;
     /* Pipeline-owned stop/reverse backstop (ARCHITECTURE_V3 7.3, D-008): own state, independent
      * of assist_v3.c, a ceiling on the published request only. */
@@ -327,7 +328,9 @@ static void v3_backstop_step(const assist_pipeline_input_t *in, uint32_t ticks, 
         ctx.bs.state=ASSIST_PIPELINE_BS_DECAY;
         ctx.bs.decay_from=ctx.bs.ceiling;
         ctx.bs.decay_acc=0;
-        ticks=ctx.bs.hold_ticks-V3_BS_T_STOP_HARD_TICKS;   /* the part of this call past the hold */
+        /* the part of this call past the hold; a hold ended by the DISTANCE bound starts its 300 ms
+         * decay now (REVIEW 2 #4: the subtraction wrapped and dropped the ceiling to 0 at once) */
+        ticks=ctx.bs.hold_ticks>V3_BS_T_STOP_HARD_TICKS ? ctx.bs.hold_ticks-V3_BS_T_STOP_HARD_TICKS : 0u;
         /* fall through */
     case ASSIST_PIPELINE_BS_DECAY: {
         /* linear: decay_from in exactly 300 ms (whole Iq per tick, remainder carried) */
@@ -404,7 +407,17 @@ void assist_pipeline_update(const assist_pipeline_input_t *in,assist_pipeline_co
     const bool v3_mode=assist_v3_config_engine_active();
     (void)motion_est_update(&ctx.motion_est,in->control_tick,used_ticks,in->wheel_valid,
         in->wheel_pulse_tick,in->motor_erps,in->cadence_rpm,in->iq_measured);
-    v3_stage(in,used_ticks,assist_off);   /* both engines: shadow in G5300, published in V3 */
+    /* REVIEW 2 #1: the V3 stage costs foreground time (static map x5, resolver). When G5300 publishes
+     * and V3 is not requested, it is skipped, so a G5300 image behaves (and times) like the baseline
+     * on the bike; brake latency in the foreground is not lengthened. Shadow-telemetry builds keep
+     * computing it. When it starts again V3 is reset (stale intent ring), and y is 0 by the latch rule. */
+    {
+        const bool v3_needed=v3_mode || assist_v3_config_engine_requested() || ASSIST_V3_SHADOW_TELEMETRY;
+        if(v3_needed) {
+            if(ctx.v3_skipped) { assist_v3_reset(); ctx.v3_skipped=false; }
+            v3_stage(in,used_ticks,assist_off);   /* shadow in G5300 (requested V3), published in V3 */
+        } else { ctx.v3_skipped=true; ctx.v3_iq_demand=0; }
+    }
     {
         /* x g1 (battery envelope, as BDE8 applies it), this tick's g1, Q12, clamped to 0..1.0 */
         int32_t g1=ctx.g53.trace.g1;

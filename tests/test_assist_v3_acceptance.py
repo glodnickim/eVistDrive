@@ -41,8 +41,13 @@ def write(rows) -> Path:
     return Path(f.name)
 
 
-def run(rows) -> bool:
-    return A.verdict(A.criteria(A.load(write(rows))))
+def run(rows, required=None) -> bool:
+    saved = A.REQUIRED
+    A.REQUIRED = {} if required is None else required   # row-presence is tested separately below
+    try:
+        return A.verdict(A.criteria(A.load(write(rows))))
+    finally:
+        A.REQUIRED = saved
 
 
 def mutate(index, value):
@@ -88,6 +93,20 @@ class Acceptance(unittest.TestCase):
 
     def test_rejects_carry_during_cut(self):
         self.assertFalse(run(mutate(12, 3)))
+
+    def test_rejects_missing_required_row(self):
+        self.assertTrue(run(GOOD, required={"true_release": ("release_latency_50_ms",)}))
+        self.assertFalse(run(GOOD, required={"true_release": ("release_latency_50_ms", "absent_metric")}))
+        self.assertFalse(run(GOOD, required={"absent_profile": ("x",)}))
+
+    def test_l4_carry_evidence(self):
+        good = "\n".join(f"L4 CARRY {n} active={v} duration=0.2s" for n, v in A.L4_CARRY_EXPECT.items())
+        self.assertTrue(all(r["pass"] for r in A.l4_carry(good)))
+        dead = good.replace("climb_pedal_stop_obstacle active=1", "climb_pedal_stop_obstacle active=0")
+        self.assertFalse(all(r["pass"] for r in A.l4_carry(dead)))
+        eager = good.replace("coast_stop active=0", "coast_stop active=1")
+        self.assertFalse(all(r["pass"] for r in A.l4_carry(eager)))
+        self.assertFalse(all(r["pass"] for r in A.l4_carry("")))
 
 
 if __name__ == "__main__":

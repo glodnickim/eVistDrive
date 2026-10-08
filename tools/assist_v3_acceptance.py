@@ -24,6 +24,21 @@ NO_CARRY_PROFILES = ("steady", "dead_spot", "asymmetry", "coast", "crest", "grad
                      "pas_glitch", "stall_noise", "reverse", "brake")
 DIP_PROFILES = ("steady", "dead_spot", "asymmetry", "climb", "pas_glitch", "stall_noise")
 LEVEL_PROFILES = ("steady", "dead_spot", "asymmetry", "climb")
+# Rows that must exist for every cadence of the matrix; a missing row is a FAIL, never a silent pass.
+REQUIRED = {
+    "true_release": ("release_latency_50_ms",),
+    "steady": ("phase_dip_fp_rate", "ripple_rev_median", "level_mean_iq", "carry_activations"),
+    "dead_spot": ("phase_dip_fp_rate", "ripple_rev_median", "level_mean_iq", "carry_activations"),
+    "asymmetry": ("phase_dip_fp_rate", "ripple_rev_median", "level_mean_iq", "carry_activations"),
+    "climb": ("phase_dip_fp_rate", "level_mean_iq"),
+    "attack": ("attack_t63_ms",),
+    "attack_stop_restart": ("restart_dip_frac", "restart_first_iq_ms"),
+    "coast": ("safety_ref0_ms", "carry_activations"),
+    "reverse": ("safety_ref0_ms",),
+    "brake": ("safety_ref0_ms",),
+    "crest": ("carry_activations",),
+}
+L4_CARRY_EXPECT = {"climb_pedal_stop_obstacle": 1, "crest_pedal_stop": 0, "coast_stop": 0, "reverse_while_motor": 0}
 
 
 def num(v):
@@ -47,6 +62,15 @@ def criteria(m: dict) -> list[dict]:
     def add(name, key, ok, detail):
         out.append({"criterion": name, "case": f"{key[0]}@{key[1]}rpm", "pass": bool(ok), "detail": detail})
 
+    for prof, needed in REQUIRED.items():
+        cadences = sorted({c for (p, c) in m if p == prof})
+        if not cadences:
+            add("required profile present", (prof, 0), False, "profile missing from the matrix")
+        for cad in cadences:
+            met = m.get((prof, cad), {})
+            for metric in needed:
+                if metric not in met:
+                    add(f"required row present: {metric}", (prof, cad), False, "missing row")
     for key, met in sorted(m.items()):
         prof, cad = key
         g = met.get
@@ -96,6 +120,20 @@ def criteria(m: dict) -> list[dict]:
     return out
 
 
+def l4_carry(log_text: str) -> list[dict]:
+    """Positive and negative carry evidence from the closed-loop Level-4 scripts (tools/run_level4.py output)."""
+    import re
+    out = []
+    seen = {}
+    for name, active in re.findall(r"L4 CARRY (\S+) active=(\d)", log_text):
+        seen[name] = int(active)
+    for name, want in L4_CARRY_EXPECT.items():
+        got = seen.get(name)
+        out.append({"criterion": "L4 carry activates only where intended", "case": name,
+                    "pass": got == want, "detail": f"expected active={want}, got {got}"})
+    return out
+
+
 def verdict(results: list[dict]) -> bool:
     return bool(results) and all(r["pass"] for r in results)
 
@@ -104,8 +142,13 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("matrix", nargs="?", type=Path, default=DEFAULT)
     ap.add_argument("--json", type=Path)
+    ap.add_argument("--l4-log", type=Path, help="output of tools/run_level4.py (required for carry evidence)")
     a = ap.parse_args()
     res = criteria(load(a.matrix))
+    if a.l4_log is None or not a.l4_log.exists():
+        res.append({"criterion": "L4 carry evidence supplied", "case": "--l4-log", "pass": False, "detail": "missing"})
+    else:
+        res += l4_carry(a.l4_log.read_text(errors="replace"))
     fails = [r for r in res if not r["pass"]]
     by = defaultdict(lambda: [0, 0])
     for r in res:
